@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS trades (
     shares REAL NOT NULL,
     stop_loss REAL NOT NULL,
     take_profit REAL NOT NULL,
-    exit_reason TEXT,
+    exit_reason TEXT CHECK (exit_reason IN ('stop_loss', 'take_profit', 'trend_reversal', 'max_hold', 'manual')),
     pnl_dollars REAL,
     pnl_pct REAL,
     hold_days INTEGER,
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_id INTEGER REFERENCES trades(id),
+    trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
     ticker TEXT NOT NULL,
     date TEXT NOT NULL,
     ema_fast REAL,
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS suggestions (
     current_value TEXT NOT NULL,
     proposed_value TEXT NOT NULL,
     evidence TEXT NOT NULL,
-    status TEXT DEFAULT 'pending',
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     applied_date TEXT
 );
 
@@ -86,3 +86,9 @@ CREATE TABLE IF NOT EXISTS parameters (
     max_positions INTEGER NOT NULL,
     r_ratio_min REAL NOT NULL
 );
+
+-- Indexes for frequent query patterns
+CREATE INDEX IF NOT EXISTS idx_trades_open ON trades (exit_date) WHERE exit_date IS NULL;
+CREATE INDEX IF NOT EXISTS idx_trades_exit_date ON trades (exit_date);
+CREATE INDEX IF NOT EXISTS idx_signals_ticker_date ON signals (ticker, date);
+CREATE INDEX IF NOT EXISTS idx_agent_logs_cycle_date ON agent_logs (cycle_date);
