@@ -59,6 +59,7 @@ Create a `.env` file in the project root:
 
 ```env
 TRADING_MODE=paper
+DATA_FEED=iex
 
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
@@ -70,6 +71,8 @@ CLAUDE_MODEL=claude-sonnet-4-6
 RISK_PER_TRADE=0.01
 MAX_POSITIONS=5
 ```
+
+> **Note:** Free Alpaca paper trading accounts use the IEX data feed (`DATA_FEED=iex`). Paid live accounts use SIP (`DATA_FEED=sip`), which covers 100% of market volume vs ~60% for IEX.
 
 ### Initialise the database
 
@@ -123,6 +126,7 @@ nano /opt/trading-bot/.env
 
 ```env
 TRADING_MODE=paper
+DATA_FEED=iex
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
 ANTHROPIC_API_KEY=your_anthropic_key
@@ -190,13 +194,14 @@ Edit `config/watchlist.py` to change the list. Tickers should be S&P 500 constit
 
 ## Switching to Live Trading
 
-Change one env var:
+Update two env vars in your `.env`:
 
 ```env
 TRADING_MODE=live
+DATA_FEED=sip
 ```
 
-The bot will route to `api.alpaca.markets` and place real orders. Test thoroughly on paper first.
+The bot will route to `api.alpaca.markets` and use the full SIP data feed. Test thoroughly on paper first — real orders will be placed immediately.
 
 ## Development
 
