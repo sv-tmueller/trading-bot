@@ -162,7 +162,7 @@ python3 main.py scan
 crontab -e
 ```
 
-Add these lines (all times UTC):
+If prompted to choose an editor, select **1** (nano). You'll see an empty file — scroll to the bottom and add these lines (all times UTC):
 
 ```
 35 14 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
@@ -175,6 +175,8 @@ Add these lines (all times UTC):
 | 14:35 Mon–Fri | Morning agent pipeline (09:35 ET) |
 | :00 15–20 Mon–Fri | Hourly position check |
 | 21:00 Mon–Fri | End-of-day final check |
+
+Save and exit: `Ctrl+O` → Enter → `Ctrl+X`. You should see `crontab: installing new crontab` confirming it worked.
 
 ### Updating the bot
 
