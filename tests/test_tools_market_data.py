@@ -80,3 +80,10 @@ def test_is_entry_signal_false_when_volume_low():
         "volume_ratio": 1.2,
     }
     assert is_entry_signal(signals, rsi_lower=40, rsi_upper=60, volume_multiplier=1.5) is False
+
+
+def test_compute_signals_ema_crossover_is_native_bool(bullish_bars):
+    signals = compute_signals(bullish_bars, ema_fast=20, ema_slow=50, rsi_period=14, atr_period=14)
+    assert isinstance(signals["ema_crossover"], bool)
+    result = is_entry_signal(signals, rsi_lower=40, rsi_upper=60, volume_multiplier=1.5)
+    assert isinstance(result, bool)
