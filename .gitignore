@@ -1,5 +1,5 @@
 .env
-storage/trades.db
+storage/*.db
 reports/
 __pycache__/
 *.pyc
@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 dist/
 .DS_Store
+venv/
+.venv/
+logs/
