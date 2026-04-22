@@ -24,6 +24,10 @@ Always respond with a JSON object containing:
 - top_movers: list of tickers showing strongest signals today
 """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._conn = None
+
     def get_tools(self) -> list:
         return [
             {
@@ -41,10 +45,11 @@ Always respond with a JSON object containing:
     def _get_tool_functions(self) -> list:
         from tools.portfolio import get_open_positions_with_prices
         from tools.broker import get_current_price
+        conn = self._conn  # capture locally so closures don't hold mutable self reference
 
         def get_portfolio_state():
             prices = {t: get_current_price(t) for t in WATCHLIST}
-            return get_open_positions_with_prices(self._conn, prices)
+            return get_open_positions_with_prices(conn, prices)
 
         def get_watchlist():
             return WATCHLIST

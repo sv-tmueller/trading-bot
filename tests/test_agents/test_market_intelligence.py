@@ -16,19 +16,40 @@ def make_mock_claude_response(text: str):
 def test_market_intelligence_returns_briefing(db_conn):
     mock_client = MagicMock()
     mock_client.messages.create.return_value = make_mock_claude_response(
-        '{"watchlist_summary": "AMD trending up", "flagged_positions": [], "market_context": "bullish"}'
+        '{"watchlist_summary": "AMD trending up", "flagged_positions": [], "market_context": "bullish", "top_movers": ["AMD"]}'
     )
 
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client):
         agent = MarketIntelligenceAgent()
         result = agent.run("Scan the watchlist", conn=db_conn)
 
-    assert "watchlist_summary" in result
-    assert "flagged_positions" in result
-    assert "market_context" in result
+    assert result["watchlist_summary"] == "AMD trending up"
+    assert result["flagged_positions"] == []
+    assert result["market_context"] == "bullish"
+    assert "top_movers" in result
 
 
 def test_market_intelligence_name():
     with patch("agents.base.anthropic.Anthropic"):
         agent = MarketIntelligenceAgent()
     assert agent.name == "market_intelligence"
+
+
+def test_market_intelligence_parse_fallback():
+    with patch("agents.base.anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="Markets look volatile today")]
+        mock_response.usage.input_tokens = 100
+        mock_response.usage.output_tokens = 50
+        mock_response.stop_reason = "end_turn"
+        mock_client.messages.create.return_value = mock_response
+        mock_anthropic.return_value = mock_client
+
+        agent = MarketIntelligenceAgent()
+        result = agent.run("Scan the watchlist")
+
+    assert result["watchlist_summary"] == "Markets look volatile today"
+    assert result["flagged_positions"] == []
+    assert result["market_context"] == "unknown"
+    assert result["top_movers"] == []
