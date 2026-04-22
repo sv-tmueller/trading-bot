@@ -91,20 +91,96 @@ python3 main.py scan
 python3 main.py monitor
 ```
 
-## VPS Scheduling (cron)
+## VPS Deployment
 
-See `scripts/cron_setup.sh` for ready-to-use crontab entries. All times UTC:
-
-| Schedule | Command | Purpose |
-|---|---|---|
-| 14:35 Mon–Fri | `run_scan.sh` | Morning agent pipeline (09:35 ET) |
-| :00 15–20 Mon–Fri | `run_monitor.sh` | Hourly position check |
-| 21:00 Mon–Fri | `run_monitor.sh` | End-of-day final check |
+### 1. SSH in and install dependencies
 
 ```bash
-# Quick setup — prints instructions
-bash scripts/cron_setup.sh
+ssh user@your-vps-ip
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv git
 ```
+
+### 2. Clone the repo
+
+```bash
+git clone https://github.com/sv-tmueller/trading-bot /opt/trading-bot
+cd /opt/trading-bot
+```
+
+### 3. Set up Python environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4. Create your `.env` file on the VPS
+
+```bash
+nano /opt/trading-bot/.env
+```
+
+```env
+TRADING_MODE=paper
+ALPACA_API_KEY=your_alpaca_key
+ALPACA_SECRET_KEY=your_alpaca_secret
+ANTHROPIC_API_KEY=your_anthropic_key
+CLAUDE_MODEL=claude-sonnet-4-6
+```
+
+Save with `Ctrl+O`, exit with `Ctrl+X`.
+
+### 5. Initialise the database
+
+```bash
+cd /opt/trading-bot
+source venv/bin/activate
+python3 -c "from storage.init_db import init_db; init_db()"
+```
+
+### 6. Create the log directory
+
+```bash
+sudo mkdir -p /var/log/trading-bot
+sudo chown $USER /var/log/trading-bot
+```
+
+### 7. Test manually before scheduling
+
+```bash
+python3 main.py scan
+```
+
+### 8. Set up cron
+
+```bash
+crontab -e
+```
+
+Add these lines (all times UTC):
+
+```
+35 14 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
+0 15-20 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+0 21 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+```
+
+| Schedule | Purpose |
+|---|---|
+| 14:35 Mon–Fri | Morning agent pipeline (09:35 ET) |
+| :00 15–20 Mon–Fri | Hourly position check |
+| 21:00 Mon–Fri | End-of-day final check |
+
+### Updating the bot
+
+When you push code changes to GitHub, on the VPS run:
+
+```bash
+cd /opt/trading-bot && git pull
+```
+
+No restart needed — cron picks up the latest code on each run.
 
 ## Watchlist
 
