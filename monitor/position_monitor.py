@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date as date_cls, datetime
 from config import settings
+from tools.database import get_open_trades, close_trade
+from tools.broker import get_current_price, close_position as broker_close
 
 
 @dataclass
@@ -35,10 +37,6 @@ def evaluate_position(
 
 
 def run_monitor(conn, today: str = None) -> list:
-    from datetime import date as date_cls
-    from tools.database import get_open_trades, close_trade
-    from tools.broker import get_current_price, close_position as broker_close
-
     today = today or date_cls.today().isoformat()
     trades = get_open_trades(conn)
     actions = []
