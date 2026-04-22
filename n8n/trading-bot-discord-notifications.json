@@ -1,0 +1,39 @@
+{
+  "name": "Trading Bot Discord Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trading-bot-notify",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-240, 0],
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "Webhook"
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "content": "={{ $json.body.message }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [80, 0],
+      "id": "a1b2c3d4-0002-0002-0002-000000000002",
+      "name": "Discord"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Discord", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" }
+}

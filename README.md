@@ -188,6 +188,44 @@ cd /opt/trading-bot && git pull
 
 No restart needed — cron picks up the latest code on each run.
 
+## Discord Notifications (via n8n)
+
+The bot sends trade summaries and alerts to a Discord channel through an n8n webhook.
+
+### What gets posted
+
+| Event | Notification |
+|---|---|
+| Scan complete with trades | Summary of market context, approved trades, token cost |
+| No candidates found | Brief note with reason |
+| No trades approved | Risk review rejection summary |
+| Position closed (monitor) | Ticker, reason, silent if nothing closed |
+| *(errors)* | Stack trace excerpt |
+
+### Setup
+
+**1. Add the Discord webhook as an n8n credential**
+
+In n8n: **Credentials → New → Discord Webhook API** → paste your Discord channel webhook URL → name it `Discord Webhook #trading-bot` → save.
+
+**2. Import the workflow**
+
+In n8n: **Workflows → Add workflow → ⋯ (top right) → Import from JSON** → paste the contents of `n8n/trading-bot-discord-notifications.json` → save.
+
+On the Discord node, select `Discord Webhook #trading-bot` as the credential, then **activate** the workflow.
+
+**3. Copy the n8n webhook URL**
+
+After activating, click the Webhook trigger node — copy the production URL (looks like `http://your-vps:5678/webhook/trading-bot-notify`).
+
+**4. Add to `.env`**
+
+```env
+N8N_WEBHOOK_URL=http://localhost:5678/webhook/trading-bot-notify
+```
+
+The bot will silently skip notifications if `N8N_WEBHOOK_URL` is not set, so this is fully optional.
+
 ## Watchlist
 
 Default tickers: `AMD, NOW, SHEL, NVDA, MSFT, GOOGL, META, AMZN`
