@@ -9,6 +9,7 @@ from tools.database import (
     log_agent_output,
     get_active_parameters,
     insert_parameters,
+    get_daily_token_costs,
 )
 
 
@@ -57,10 +58,33 @@ def test_log_agent_output(db_conn):
         "output_summary": "3 candidates found",
         "full_reasoning": "...",
         "tokens_used": 1200,
+        "input_tokens": 900,
+        "output_tokens": 300,
     })
     rows = db_conn.execute("SELECT * FROM agent_logs").fetchall()
     assert len(rows) == 1
     assert rows[0]["agent_name"] == "market_intelligence"
+    assert rows[0]["input_tokens"] == 900
+    assert rows[0]["output_tokens"] == 300
+
+
+def test_get_daily_token_costs(db_conn):
+    log_agent_output(db_conn, {
+        "cycle_date": "2026-04-22",
+        "agent_name": "strategy",
+        "input_summary": "scan",
+        "output_summary": "candidates",
+        "full_reasoning": "...",
+        "tokens_used": 1400,
+        "input_tokens": 1000,
+        "output_tokens": 400,
+    })
+    costs = get_daily_token_costs(db_conn, "2026-04-22")
+    assert costs["input_tokens"] == 1000
+    assert costs["output_tokens"] == 400
+    assert costs["total_tokens"] == 1400
+    # 1000/1M * $3 + 400/1M * $15 = $0.003 + $0.006 = $0.009
+    assert costs["cost_usd"] == pytest.approx(0.009, rel=1e-3)
 
 
 def test_insert_and_get_parameters(db_conn):

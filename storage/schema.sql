@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS agent_logs (
     input_summary TEXT,
     output_summary TEXT,
     full_reasoning TEXT,
-    tokens_used INTEGER DEFAULT 0
+    tokens_used INTEGER DEFAULT 0,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS daily_stats (

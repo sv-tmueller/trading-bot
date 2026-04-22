@@ -47,7 +47,8 @@ class BaseAgent(ABC):
             kwargs["tools"] = tools
 
         response = self.client.messages.create(**kwargs)
-        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+        total_input = response.usage.input_tokens
+        total_output = response.usage.output_tokens
 
         # Tool-use loop — accumulate tokens across all turns
         while response.stop_reason == "tool_use":
@@ -58,10 +59,10 @@ class BaseAgent(ABC):
             ]
             kwargs["messages"] = messages
             response = self.client.messages.create(**kwargs)
-            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+            total_input += response.usage.input_tokens
+            total_output += response.usage.output_tokens
 
         result = self.parse_output(response)
-        tokens_used = total_tokens
 
         if conn is not None:
             log_agent_output(conn, {
@@ -70,7 +71,9 @@ class BaseAgent(ABC):
                 "input_summary": prompt[:200],
                 "output_summary": str(result)[:200],
                 "full_reasoning": str(result),
-                "tokens_used": tokens_used,
+                "tokens_used": total_input + total_output,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
             })
 
         return result

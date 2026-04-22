@@ -11,6 +11,7 @@ from agents.strategy import StrategyAgent
 from agents.risk_review import RiskReviewAgent
 from agents.team_leader import TeamLeaderAgent
 from monitor.position_monitor import run_monitor
+from tools.database import get_daily_token_costs
 
 
 def is_trading_day(today: date = None) -> bool:
@@ -25,7 +26,17 @@ def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    # Add token cost columns to agent_logs if upgrading from an older DB
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(agent_logs)")}
+    for col, definition in [("input_tokens", "INTEGER DEFAULT 0"), ("output_tokens", "INTEGER DEFAULT 0")]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE agent_logs ADD COLUMN {col} {definition}")
+    conn.commit()
 
 
 def run_morning_scan():
@@ -48,6 +59,8 @@ def run_morning_scan():
 
     if not candidates.get("candidates"):
         print(f"No trade candidates: {candidates.get('no_trade_reason')}")
+        costs = get_daily_token_costs(conn, date.today().isoformat())
+        print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
         conn.close()
         return
 
@@ -58,6 +71,8 @@ def run_morning_scan():
 
     if not reviewed.get("approved"):
         print("No trades approved by risk review.")
+        costs = get_daily_token_costs(conn, date.today().isoformat())
+        print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
         conn.close()
         return
 
@@ -72,6 +87,9 @@ def run_morning_scan():
         pending_targets=pending_targets,
     )
     print(f"Session summary: {decisions.get('summary')}")
+
+    costs = get_daily_token_costs(conn, date.today().isoformat())
+    print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
 
     conn.close()
 

@@ -50,12 +50,38 @@ def insert_signal(conn: sqlite3.Connection, signal: dict) -> None:
 def log_agent_output(conn: sqlite3.Connection, log: dict) -> None:
     conn.execute(
         """INSERT INTO agent_logs
-               (cycle_date, agent_name, input_summary, output_summary, full_reasoning, tokens_used)
+               (cycle_date, agent_name, input_summary, output_summary, full_reasoning,
+                tokens_used, input_tokens, output_tokens)
            VALUES
-               (:cycle_date, :agent_name, :input_summary, :output_summary, :full_reasoning, :tokens_used)""",
+               (:cycle_date, :agent_name, :input_summary, :output_summary, :full_reasoning,
+                :tokens_used, :input_tokens, :output_tokens)""",
         log,
     )
     conn.commit()
+
+
+def get_daily_token_costs(conn: sqlite3.Connection, cycle_date: str) -> dict:
+    row = conn.execute(
+        """SELECT
+               SUM(input_tokens)  AS total_input,
+               SUM(output_tokens) AS total_output,
+               SUM(tokens_used)   AS total_tokens
+           FROM agent_logs
+           WHERE cycle_date = ?""",
+        (cycle_date,),
+    ).fetchone()
+    total_input = row["total_input"] or 0
+    total_output = row["total_output"] or 0
+    total_tokens = row["total_tokens"] or 0
+    # claude-sonnet-4-6: $3.00 / 1M input, $15.00 / 1M output
+    cost_usd = (total_input / 1_000_000 * 3.0) + (total_output / 1_000_000 * 15.0)
+    return {
+        "date": cycle_date,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "total_tokens": total_tokens,
+        "cost_usd": round(cost_usd, 6),
+    }
 
 
 def insert_parameters(conn: sqlite3.Connection, params: dict) -> None:
