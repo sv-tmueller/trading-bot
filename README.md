@@ -188,6 +188,20 @@ cd /opt/trading-bot && git pull
 
 No restart needed — cron picks up the latest code on each run.
 
+### Private repository authentication
+
+GitHub no longer accepts passwords for git operations. If the repo is private, create a **Personal Access Token (PAT)**:
+
+1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)**
+2. Select the **`repo`** scope, set an expiration, and generate
+3. Embed the token in the remote URL on the VPS (do this once):
+
+```bash
+git remote set-url origin https://sv-tmueller:<YOUR_TOKEN>@github.com/sv-tmueller/trading-bot.git
+```
+
+Future `git pull` calls will work without any prompt.
+
 ## Discord Notifications (via n8n)
 
 The bot sends trade summaries and alerts to a Discord channel through an n8n webhook.

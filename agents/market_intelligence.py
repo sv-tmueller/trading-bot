@@ -61,7 +61,7 @@ Always respond with a JSON object containing:
         return super().run(prompt, conn=conn)
 
     def parse_output(self, response) -> dict:
-        text = response.content[0].text
+        text = self._extract_json_text(response.content[0].text)
         try:
             return json.loads(text)
         except json.JSONDecodeError:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import date
@@ -32,6 +33,12 @@ class BaseAgent(ABC):
     def parse_output(self, response) -> dict:
         """Extract structured result from the raw Claude response."""
         ...
+
+    @staticmethod
+    def _extract_json_text(text: str) -> str:
+        """Strip markdown code fences if the model wrapped its JSON response."""
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        return match.group(1).strip() if match else text
 
     def run(self, prompt: str, conn: sqlite3.Connection = None) -> dict:
         messages = [{"role": "user", "content": prompt}]
