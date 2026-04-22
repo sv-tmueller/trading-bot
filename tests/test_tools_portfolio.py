@@ -54,3 +54,19 @@ def test_deployed_pct_computed_correctly(db_conn):
     # deployed = 100 * 100 = 10_000 / 100_000 = 0.10
     stats = get_portfolio_stats(db_conn, portfolio_value=100_000, current_prices={"AMD": 100.0})
     assert stats["deployed_pct"] == pytest.approx(0.10)
+
+
+def test_missing_ticker_falls_back_to_entry_price(db_conn):
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-22",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+    # No current price provided — should use entry_price, so unrealized_pnl = 0
+    positions = get_open_positions_with_prices(db_conn, current_prices={})
+    assert len(positions) == 1
+    assert positions[0]["current_price"] == 150.0
+    assert positions[0]["unrealized_pnl"] == 0.0
