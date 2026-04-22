@@ -20,6 +20,8 @@ ALPACA_BASE_URL = (
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
+
 DATA_FEED = os.getenv("DATA_FEED", "iex").lower()
 if DATA_FEED not in ("iex", "sip"):
     raise ValueError(f"DATA_FEED must be 'iex' or 'sip', got: {DATA_FEED!r}")

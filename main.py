@@ -12,6 +12,13 @@ from agents.risk_review import RiskReviewAgent
 from agents.team_leader import TeamLeaderAgent
 from monitor.position_monitor import run_monitor
 from tools.database import get_daily_token_costs
+from tools.notifications import (
+    notify_scan_complete,
+    notify_no_candidates,
+    notify_no_approved,
+    notify_monitor,
+    notify_error,
+)
 
 
 def is_trading_day(today: date = None) -> bool:
@@ -61,6 +68,7 @@ def run_morning_scan():
         print(f"No trade candidates: {candidates.get('no_trade_reason')}")
         costs = get_daily_token_costs(conn, date.today().isoformat())
         print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+        notify_no_candidates(date.today().isoformat(), candidates.get("no_trade_reason", ""), costs["cost_usd"])
         conn.close()
         return
 
@@ -73,6 +81,7 @@ def run_morning_scan():
         print("No trades approved by risk review.")
         costs = get_daily_token_costs(conn, date.today().isoformat())
         print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+        notify_no_approved(date.today().isoformat(), costs["cost_usd"])
         conn.close()
         return
 
@@ -90,6 +99,15 @@ def run_morning_scan():
 
     costs = get_daily_token_costs(conn, date.today().isoformat())
     print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+    notify_scan_complete(
+        date=date.today().isoformat(),
+        market_context=market_briefing.get("market_context", "unknown"),
+        candidates_found=len(candidates.get("candidates", [])),
+        approved=len(reviewed.get("approved", [])),
+        rejected=len(reviewed.get("rejected", [])),
+        decisions=decisions.get("decisions", []),
+        cost_usd=costs["cost_usd"],
+    )
 
     conn.close()
 
@@ -97,11 +115,14 @@ def run_morning_scan():
 def run_position_monitor():
     if not is_trading_day():
         return
-    print(f"=== Position monitor — {date.today()} ===")
+    from datetime import datetime
+    now = datetime.now().strftime("%H:%M")
+    print(f"=== Position monitor — {date.today()} {now} ===")
     conn = get_db()
     actions = run_monitor(conn)
     closed = [a for a in actions if a.action == "close"]
     print(f"Checked {len(actions)} positions. Closed: {len(closed)}")
+    notify_monitor(date.today().isoformat(), now, len(actions), closed)
     conn.close()
 
 
