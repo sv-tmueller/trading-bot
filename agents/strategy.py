@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import json
+from agents.base import BaseAgent
+from config.watchlist import WATCHLIST
+from config import settings
+
+
+class StrategyAgent(BaseAgent):
+    name = "strategy"
+    system_prompt = """You are the Strategy Agent for a swing trading bot.
+
+Your job:
+1. Analyse each ticker on the watchlist using technical signals (EMA crossover, RSI, Volume)
+2. Score each ticker 0.0–1.0 on entry attractiveness
+3. Propose trade candidates ranked by score, with clear reasoning
+4. If conditions are not right for any entry, explain why
+
+Current strategy parameters are provided in the prompt.
+Candidates must meet ALL three entry conditions:
+- EMA20 crossed above EMA50 (trend confirmation)
+- RSI between RSI_LOWER and RSI_UPPER (not overextended)
+- Volume > VOLUME_MULTIPLIER × 20-day average (conviction)
+
+Respond with JSON:
+{
+  "candidates": [
+    {"ticker": "AMD", "score": 0.85, "reasoning": "...", "ema_crossover": true, "rsi": 52.1, "volume_ratio": 1.9}
+  ],
+  "no_trade_reason": ""
+}
+If no candidates, return empty candidates list and explain in no_trade_reason.
+"""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def get_tools(self) -> list:
+        return [
+            {
+                "name": "compute_ticker_signals",
+                "description": "Compute EMA, RSI, ATR, and volume signals for a ticker",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"ticker": {"type": "string"}},
+                    "required": ["ticker"],
+                },
+            }
+        ]
+
+    def _get_tool_functions(self) -> list:
+        from tools.market_data import fetch_bars, compute_signals
+
+        def compute_ticker_signals(ticker: str) -> dict:
+            bars = fetch_bars(ticker, days=60)
+            return compute_signals(
+                bars,
+                ema_fast=settings.EMA_FAST,
+                ema_slow=settings.EMA_SLOW,
+                rsi_period=settings.RSI_PERIOD,
+                atr_period=settings.ATR_PERIOD,
+            )
+
+        return [compute_ticker_signals]
+
+    def run(self, prompt: str, conn=None) -> dict:
+        params_prompt = (
+            f"Strategy parameters:\n"
+            f"- EMA fast/slow: {settings.EMA_FAST}/{settings.EMA_SLOW}\n"
+            f"- RSI range: {settings.RSI_LOWER}–{settings.RSI_UPPER}\n"
+            f"- Volume multiplier: {settings.VOLUME_MULTIPLIER}x\n"
+            f"- Watchlist: {', '.join(WATCHLIST)}\n\n"
+            f"Market briefing: {prompt}\n\n"
+            f"Scan each ticker and return trade candidates."
+        )
+        return super().run(params_prompt, conn=conn)
+
+    def parse_output(self, response) -> dict:
+        text = response.content[0].text
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"candidates": [], "no_trade_reason": text}
