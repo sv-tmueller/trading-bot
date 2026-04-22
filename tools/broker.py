@@ -50,4 +50,8 @@ def get_current_price(ticker: str) -> float:
     request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
     quote = data_client.get_stock_latest_quote(request)
     q = quote[ticker]
-    return float((q.bid_price + q.ask_price) / 2)
+    bid = float(q.bid_price)
+    ask = float(q.ask_price)
+    if bid > 0 and ask > 0:
+        return (bid + ask) / 2
+    return ask if ask > 0 else bid

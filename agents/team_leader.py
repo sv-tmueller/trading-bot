@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from agents.base import BaseAgent
 
 
@@ -67,7 +67,7 @@ Respond with JSON:
     def _get_tool_functions(self) -> list:
         from tools.broker import place_market_order, close_position as broker_close_position
         from tools.broker import get_current_price
-        from tools.database import insert_trade
+        from tools.database import insert_trade, get_open_trades, close_trade
         conn = self._conn
         pending_stops = self._pending_stops
         pending_targets = self._pending_targets
@@ -88,6 +88,27 @@ Respond with JSON:
 
         def close_position(ticker: str) -> dict:
             order_id = broker_close_position(ticker)
+            today = date.today().isoformat()
+            price = get_current_price(ticker)
+            open_trades = get_open_trades(conn)
+            trade = next((t for t in open_trades if t["ticker"] == ticker), None)
+            if trade is not None:
+                entry_price = trade["entry_price"]
+                stop_distance = entry_price - trade["stop_loss"]
+                pnl_dollars = (price - entry_price) * trade["shares"]
+                r_multiple = (price - entry_price) / stop_distance if stop_distance != 0 else 0.0
+                entry_date = datetime.strptime(trade["entry_date"], "%Y-%m-%d").date()
+                today_date = datetime.strptime(today, "%Y-%m-%d").date()
+                hold_days = (today_date - entry_date).days
+                close_trade(conn, trade["id"], {
+                    "exit_date": today,
+                    "exit_price": price,
+                    "exit_reason": "manual",
+                    "pnl_dollars": round(pnl_dollars, 2),
+                    "pnl_pct": round(pnl_dollars / (entry_price * trade["shares"]), 4),
+                    "hold_days": hold_days,
+                    "r_multiple": round(r_multiple, 3),
+                })
             return {"order_id": order_id, "status": "closed"}
 
         return [place_order, close_position]
