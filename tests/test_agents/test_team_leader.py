@@ -36,16 +36,11 @@ def test_team_leader_name():
 
 
 def test_team_leader_parse_fallback():
-    with patch("agents.base.anthropic.Anthropic") as mock_anthropic:
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(type="text", text="No trades today, conditions unfavorable")]
-        mock_response.usage.input_tokens = 100
-        mock_response.usage.output_tokens = 50
-        mock_response.stop_reason = "end_turn"
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.return_value = mock_client
-
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = make_mock_claude_response(
+        "No trades today, conditions unfavorable"
+    )
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client):
         agent = TeamLeaderAgent()
         result = agent.run("Approved: AMD 222 shares")
 
