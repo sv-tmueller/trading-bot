@@ -224,7 +224,17 @@ After activating, click the Webhook trigger node — copy the production URL (lo
 N8N_WEBHOOK_URL=http://localhost:5678/webhook/trading-bot-notify
 ```
 
+> **Important:** Use `http://localhost:5678` (not your public n8n URL) since the bot and n8n run on the same VPS. If your n8n is behind Cloudflare Access, the public URL will be blocked with a 302 redirect — localhost bypasses this entirely and is more secure.
+
 The bot will silently skip notifications if `N8N_WEBHOOK_URL` is not set, so this is fully optional.
+
+**5. Test the connection**
+
+```bash
+curl -X POST http://localhost:5678/webhook/trading-bot-notify -H "Content-Type: application/json" -d '{"message": "Test from trading bot"}'
+```
+
+If a message appears in Discord, the setup is complete.
 
 ## Watchlist
 
