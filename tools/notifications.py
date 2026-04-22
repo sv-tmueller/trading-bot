@@ -18,8 +18,8 @@ def _post(message: str) -> None:
     )
     try:
         urllib.request.urlopen(req, timeout=5)
-    except urllib.error.URLError:
-        pass  # never let a notification failure crash the bot
+    except Exception as e:
+        print(f"[notifications] failed to send: {e}")
 
 
 def notify_scan_complete(
@@ -45,9 +45,11 @@ def notify_scan_complete(
 
 
 def notify_no_candidates(date: str, reason: str, cost_usd: float) -> None:
+    short_reason = reason[:300] + "…" if len(reason) > 300 else reason
     _post(
         f"🤖 **Morning Scan — {date}**\n"
-        f"⏭ No trade candidates: {reason}\n"
+        f"⏭ No trade candidates today\n"
+        f"{short_reason}\n"
         f"💰 Token cost: ${cost_usd:.4f}"
     )
 
