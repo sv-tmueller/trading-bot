@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TRADING_MODE = os.getenv("TRADING_MODE", "paper")
+TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
+if TRADING_MODE not in ("paper", "live"):
+    raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got: {TRADING_MODE!r}")
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
@@ -19,7 +21,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
+if not 0.001 <= RISK_PER_TRADE <= 0.05:
+    raise ValueError(f"RISK_PER_TRADE={RISK_PER_TRADE} is outside safe bounds [0.001, 0.05]")
+
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
+if not 1 <= MAX_POSITIONS <= 20:
+    raise ValueError(f"MAX_POSITIONS={MAX_POSITIONS} is outside safe bounds [1, 20]")
 MAX_PORTFOLIO_EXPOSURE = 0.20
 DAILY_DRAWDOWN_LIMIT = 0.03
 MAX_HOLD_DAYS = 5
