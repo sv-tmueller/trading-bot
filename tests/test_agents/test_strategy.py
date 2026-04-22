@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 from agents.strategy import StrategyAgent
 
 
-def make_mock_response(text):
+def make_mock_claude_response(text):
     mock = MagicMock()
     mock.content = [MagicMock(type="text", text=text)]
     mock.usage.input_tokens = 1000
@@ -15,7 +15,7 @@ def make_mock_response(text):
 
 def test_strategy_agent_returns_candidates(db_conn):
     mock_client = MagicMock()
-    mock_client.messages.create.return_value = make_mock_response(
+    mock_client.messages.create.return_value = make_mock_claude_response(
         '{"candidates": [{"ticker": "AMD", "score": 0.85, "reasoning": "strong trend"}], "no_trade_reason": ""}'
     )
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client):

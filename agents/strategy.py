@@ -32,9 +32,6 @@ Respond with JSON:
 If no candidates, return empty candidates list and explain in no_trade_reason.
 """
 
-    def __init__(self) -> None:
-        super().__init__()
-
     def get_tools(self) -> list:
         return [
             {
