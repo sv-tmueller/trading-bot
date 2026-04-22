@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -15,6 +17,8 @@ def get_trading_client() -> TradingClient:
 
 
 def place_market_order(ticker: str, shares: int, side: str) -> str:
+    if side not in ("buy", "sell"):
+        raise ValueError(f"Invalid order side: {side!r}. Must be 'buy' or 'sell'.")
     client = get_trading_client()
     order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
     request = MarketOrderRequest(
@@ -40,11 +44,10 @@ def get_portfolio_value() -> float:
 
 
 def get_current_price(ticker: str) -> float:
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockLatestQuoteRequest
     data_client = StockHistoricalDataClient(
         settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
     )
     request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
     quote = data_client.get_stock_latest_quote(request)
-    return float(quote[ticker].ask_price)
+    q = quote[ticker]
+    return float((q.bid_price + q.ask_price) / 2)

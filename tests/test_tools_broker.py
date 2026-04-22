@@ -53,3 +53,8 @@ def test_close_position():
 
     mock_client.close_position.assert_called_once_with("AMD")
     assert result == "close-789"
+
+
+def test_place_market_order_invalid_side_raises():
+    with pytest.raises(ValueError, match="Invalid order side"):
+        place_market_order("AMD", 100, "BUY")
