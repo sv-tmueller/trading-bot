@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -47,7 +48,7 @@ def get_current_price(ticker: str) -> float:
     data_client = StockHistoricalDataClient(
         settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
     )
-    request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
+    request = StockLatestQuoteRequest(symbol_or_symbols=ticker, feed=DataFeed.IEX)
     quote = data_client.get_stock_latest_quote(request)
     q = quote[ticker]
     bid = float(q.bid_price)

@@ -5,6 +5,7 @@ import ta
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 from config import settings
 
 
@@ -22,6 +23,7 @@ def fetch_bars(ticker: str, days: int = 60) -> pd.DataFrame:
         timeframe=TimeFrame.Day,
         start=start,
         end=end,
+        feed=DataFeed.IEX,
     )
     bars = client.get_stock_bars(request).df
     if isinstance(bars.index, pd.MultiIndex):
