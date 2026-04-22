@@ -27,8 +27,11 @@ Respond with JSON:
   "candidates": [
     {"ticker": "AMD", "score": 0.85, "reasoning": "...", "ema_crossover": true, "rsi": 52.1, "volume_ratio": 1.9}
   ],
-  "no_trade_reason": ""
+  "no_trade_reason": "",
+  "tldr": "One sentence summary of market conditions, max 100 chars",
+  "tickers_to_watch": ["SHEL", "NOW"]
 }
+Always populate tldr and tickers_to_watch regardless of whether there are candidates.
 If no candidates, return empty candidates list and explain in no_trade_reason.
 """
 
@@ -77,4 +80,4 @@ If no candidates, return empty candidates list and explain in no_trade_reason.
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            return {"candidates": [], "no_trade_reason": text}
+            return {"candidates": [], "no_trade_reason": text, "tldr": "", "tickers_to_watch": []}

@@ -25,32 +25,31 @@ def _post(message: str) -> None:
 def notify_scan_complete(
     date: str,
     market_context: str,
-    candidates_found: int,
+    tldr: str,
     approved: int,
     rejected: int,
     decisions: list,
     cost_usd: float,
 ) -> None:
     lines = [f"🤖 **Morning Scan — {date}**"]
-    lines.append(f"📈 Market: {market_context}")
-    lines.append(f"📊 Candidates: {candidates_found} found | ✅ Approved: {approved} | ❌ Rejected: {rejected}")
+    lines.append(f"📈 {tldr or market_context}")
     for d in decisions:
         action = d.get("action", "").upper()
         ticker = d.get("ticker", "")
         shares = d.get("shares", "")
         emoji = "🟢" if action == "BUY" else "🔴"
         lines.append(f"{emoji} {action} {ticker} — {shares} shares")
-    lines.append(f"💰 Token cost: ${cost_usd:.4f}")
+    lines.append(f"✅ {approved} approved | ❌ {rejected} rejected | 💰 ${cost_usd:.4f}")
     _post("\n".join(lines))
 
 
-def notify_no_candidates(date: str, reason: str, cost_usd: float) -> None:
-    short_reason = reason[:300] + "…" if len(reason) > 300 else reason
+def notify_no_candidates(date: str, tldr: str, tickers_to_watch: list, cost_usd: float) -> None:
+    watch = ", ".join(tickers_to_watch) if tickers_to_watch else "none"
     _post(
         f"🤖 **Morning Scan — {date}**\n"
-        f"⏭ No trade candidates today\n"
-        f"{short_reason}\n"
-        f"💰 Token cost: ${cost_usd:.4f}"
+        f"⏭ No trades today — {tldr}\n"
+        f"👀 Watch: {watch}\n"
+        f"💰 ${cost_usd:.4f}"
     )
 
 

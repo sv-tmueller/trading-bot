@@ -68,7 +68,12 @@ def run_morning_scan():
         print(f"No trade candidates: {candidates.get('no_trade_reason')}")
         costs = get_daily_token_costs(conn, date.today().isoformat())
         print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
-        notify_no_candidates(date.today().isoformat(), candidates.get("no_trade_reason", ""), costs["cost_usd"])
+        notify_no_candidates(
+            date.today().isoformat(),
+            tldr=candidates.get("tldr", "conditions not met"),
+            tickers_to_watch=candidates.get("tickers_to_watch", []),
+            cost_usd=costs["cost_usd"],
+        )
         conn.close()
         return
 
@@ -102,7 +107,7 @@ def run_morning_scan():
     notify_scan_complete(
         date=date.today().isoformat(),
         market_context=market_briefing.get("market_context", "unknown"),
-        candidates_found=len(candidates.get("candidates", [])),
+        tldr=candidates.get("tldr", ""),
         approved=len(reviewed.get("approved", [])),
         rejected=len(reviewed.get("rejected", [])),
         decisions=decisions.get("decisions", []),
