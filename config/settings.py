@@ -20,6 +20,10 @@ ALPACA_BASE_URL = (
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
+DATA_FEED = os.getenv("DATA_FEED", "iex").lower()
+if DATA_FEED not in ("iex", "sip"):
+    raise ValueError(f"DATA_FEED must be 'iex' or 'sip', got: {DATA_FEED!r}")
+
 RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
 if not 0.001 <= RISK_PER_TRADE <= 0.05:
     raise ValueError(f"RISK_PER_TRADE={RISK_PER_TRADE} is outside safe bounds [0.001, 0.05]")

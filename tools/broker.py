@@ -48,7 +48,8 @@ def get_current_price(ticker: str) -> float:
     data_client = StockHistoricalDataClient(
         settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
     )
-    request = StockLatestQuoteRequest(symbol_or_symbols=ticker, feed=DataFeed.IEX)
+    feed = DataFeed.SIP if settings.DATA_FEED == "sip" else DataFeed.IEX
+    request = StockLatestQuoteRequest(symbol_or_symbols=ticker, feed=feed)
     quote = data_client.get_stock_latest_quote(request)
     q = quote[ticker]
     bid = float(q.bid_price)

@@ -18,12 +18,13 @@ def fetch_bars(ticker: str, days: int = 60) -> pd.DataFrame:
     client = get_data_client()
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days + 15)  # buffer for weekends/holidays
+    feed = DataFeed.SIP if settings.DATA_FEED == "sip" else DataFeed.IEX
     request = StockBarsRequest(
         symbol_or_symbols=ticker,
         timeframe=TimeFrame.Day,
         start=start,
         end=end,
-        feed=DataFeed.IEX,
+        feed=feed,
     )
     bars = client.get_stock_bars(request).df
     if isinstance(bars.index, pd.MultiIndex):
