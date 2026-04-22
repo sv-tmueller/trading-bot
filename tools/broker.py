@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+from config import settings
+
+
+def get_trading_client() -> TradingClient:
+    return TradingClient(
+        settings.ALPACA_API_KEY,
+        settings.ALPACA_SECRET_KEY,
+        paper=(settings.TRADING_MODE == "paper"),
+    )
+
+
+def place_market_order(ticker: str, shares: int, side: str) -> str:
+    client = get_trading_client()
+    order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+    request = MarketOrderRequest(
+        symbol=ticker,
+        qty=shares,
+        side=order_side,
+        time_in_force=TimeInForce.DAY,
+    )
+    order = client.submit_order(request)
+    return str(order.id)
+
+
+def close_position(ticker: str) -> str:
+    client = get_trading_client()
+    order = client.close_position(ticker)
+    return str(order.id)
+
+
+def get_portfolio_value() -> float:
+    client = get_trading_client()
+    account = client.get_account()
+    return float(account.portfolio_value)
+
+
+def get_current_price(ticker: str) -> float:
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockLatestQuoteRequest
+    data_client = StockHistoricalDataClient(
+        settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
+    )
+    request = StockLatestQuoteRequest(symbol_or_symbols=ticker)
+    quote = data_client.get_stock_latest_quote(request)
+    return float(quote[ticker].ask_price)
