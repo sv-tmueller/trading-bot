@@ -72,3 +72,15 @@ def notify_monitor(date: str, time: str, checked: int, closed: list) -> None:
 
 def notify_error(context: str, error: str) -> None:
     _post(f"⚠️ **Bot Error — {context}**\n```{error[:500]}```")
+
+
+def notify_backtest(result: dict) -> None:
+    params = result["params"]
+    agg = result["aggregate"]
+    _post(
+        f"📊 Backtest ({params['years']}y, EMA {params['ema_fast']}/{params['ema_slow']})\n"
+        f"{agg['trades']} trades across {len(result['tickers'])} tickers\n"
+        f"Win rate: {agg['win_rate'] * 100:.1f}% | "
+        f"Return: {agg['total_return'] * 100:+.1f}% | "
+        f"Max DD: {agg['max_drawdown'] * 100:.1f}%"
+    )
