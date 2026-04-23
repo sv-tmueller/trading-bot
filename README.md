@@ -70,6 +70,9 @@ CLAUDE_MODEL=claude-sonnet-4-6
 # Optional overrides (safe defaults shown)
 RISK_PER_TRADE=0.01
 MAX_POSITIONS=5
+MAX_HOLD_DAYS=5
+RR_RATIO_MIN=2.0
+MAX_PORTFOLIO_EXPOSURE=0.20
 ```
 
 > **Note:** Free Alpaca paper trading accounts use the IEX data feed (`DATA_FEED=iex`). Paid live accounts use SIP (`DATA_FEED=sip`), which covers 100% of market volume vs ~60% for IEX.
@@ -324,3 +327,33 @@ python3 -m pytest tests/test_monitor.py -v
     ├── run_monitor.sh
     └── cron_setup.sh
 ```
+
+## Changelog
+
+### v1.4.1 — pre-release (2026-04-23)
+
+**Data integrity hardening:**
+- `close_position` and `place_order` now fetch the current price **before** calling the broker, eliminating the ghost-position risk where a failed post-broker price lookup would leave the DB out of sync with the actual account state (#21)
+- `place_market_order` returns the Alpaca fill price; entry price in the DB now uses the actual fill rather than a post-order quote (#8)
+- Fill price falls back to the pre-order quote if the order isn't yet filled (common in paper trading)
+
+**Operational reliability:**
+- DB connection is now closed in a `finally` block — guaranteed even when an agent or the monitor raises mid-run (#22)
+- `MAX_HOLD_DAYS`, `RR_RATIO_MIN`, and `MAX_PORTFOLIO_EXPOSURE` are now configurable via environment variables with validation at startup (#6)
+
+### v1.4.0 (2026-04-23)
+
+- Morning scan and position monitor wrapped in `try/except` — errors post to Discord and never crash the cron process (#2)
+- Inter-agent data serialised with `json.dumps` instead of Python `repr` — downstream agents can now reliably parse the handoff (#4)
+- `close_position` tool passes the LLM-supplied exit reason through to the DB (#14)
+- `get_current_price` raises `ValueError` on a zero or missing quote instead of silently returning 0.0 (#3)
+- `fetch_bars` requests a wider historical window to ensure EMA50 always has enough warmup data (#5)
+- Position monitor heartbeat now fires every hour regardless of whether any positions were closed (#17)
+
+### v1.3.0 (2026-04-22)
+
+- Backtest module: run the EMA crossover strategy against historical data via `python3 main.py backtest` (#10)
+- Configurable backtest parameters: `--years`, `--rsi-lower`, `--rsi-upper`, `--ema-fast`, `--ema-slow`, `--atr-multiplier`, `--rr-ratio`
+- Backtest results posted to Discord
+
+### v1.0.0 — initial release
