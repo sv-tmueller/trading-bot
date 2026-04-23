@@ -94,6 +94,19 @@ python3 main.py scan
 python3 main.py monitor
 ```
 
+### Backtest (historical simulation)
+
+```bash
+# Default: 1 year, strategy parameters from settings.py
+python3 main.py backtest
+
+# Custom parameters
+python3 main.py backtest --years 3 --rsi-lower 35 --rsi-upper 70
+python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-ratio 2.5
+```
+
+Runs the EMA crossover strategy against each watchlist ticker using `yfinance` data and prints a per-ticker results table to the terminal. Also sends a summary to Discord.
+
 ## VPS Deployment
 
 ### 1. SSH in and install dependencies
@@ -213,7 +226,7 @@ The bot sends trade summaries and alerts to a Discord channel through an n8n web
 | Scan complete with trades | Summary of market context, approved trades, token cost |
 | No candidates found | Brief note with reason |
 | No trades approved | Risk review rejection summary |
-| Position closed (monitor) | Ticker, reason, silent if nothing closed |
+| Position monitor (hourly) | Heartbeat with position count; closures listed if any |
 | *(errors)* | Stack trace excerpt |
 
 ### Setup
@@ -280,7 +293,7 @@ python3 -m pytest tests/test_monitor.py -v
 ## Project Structure
 
 ```
-├── main.py                  # Entry point — scan and monitor modes
+├── main.py                  # Entry point — scan, monitor, and backtest modes
 ├── config/
 │   ├── settings.py          # All parameters (env-driven)
 │   └── watchlist.py         # Tickers to scan
@@ -293,6 +306,11 @@ python3 -m pytest tests/test_monitor.py -v
 │   ├── portfolio.py         # Open positions and stats
 │   ├── risk.py              # Position sizing, stop/target
 │   └── broker.py            # Alpaca order wrapper
+├── backtest/
+│   ├── data.py              # yfinance OHLCV fetcher
+│   ├── strategy.py          # EMAStrategy (backtesting.py subclass)
+│   ├── report.py            # Terminal formatter + Discord notify
+│   └── runner.py            # Per-ticker orchestration and aggregation
 ├── monitor/
 │   └── position_monitor.py  # Hourly rule-based exit check
 ├── agents/
