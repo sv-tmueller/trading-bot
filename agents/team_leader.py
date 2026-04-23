@@ -58,7 +58,14 @@ Respond with JSON:
                 "description": "Close an open position entirely",
                 "input_schema": {
                     "type": "object",
-                    "properties": {"ticker": {"type": "string"}},
+                    "properties": {
+                        "ticker": {"type": "string"},
+                        "reason": {
+                            "type": "string",
+                            "enum": ["stop_loss", "take_profit", "trend_reversal", "max_hold", "manual"],
+                            "description": "Why this position is being closed",
+                        },
+                    },
                     "required": ["ticker"],
                 },
             },
@@ -86,7 +93,7 @@ Respond with JSON:
                 })
             return {"order_id": order_id, "status": "submitted"}
 
-        def close_position(ticker: str) -> dict:
+        def close_position(ticker: str, reason: str = "manual") -> dict:
             order_id = broker_close_position(ticker)
             today = date.today().isoformat()
             price = get_current_price(ticker)
@@ -103,7 +110,7 @@ Respond with JSON:
                 close_trade(conn, trade["id"], {
                     "exit_date": today,
                     "exit_price": price,
-                    "exit_reason": "manual",
+                    "exit_reason": reason,
                     "pnl_dollars": round(pnl_dollars, 2),
                     "pnl_pct": round(pnl_dollars / (entry_price * trade["shares"]), 4),
                     "hold_days": hold_days,

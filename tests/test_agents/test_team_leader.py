@@ -46,3 +46,50 @@ def test_team_leader_parse_fallback():
 
     assert result["decisions"] == []
     assert "No trades today" in result["summary"]
+
+
+def test_team_leader_close_position_records_reason(db_conn):
+    """close_position tool must write the LLM-supplied reason, not always 'manual'."""
+    from tools.database import insert_trade
+    from datetime import date
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": date.today().isoformat(),
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 140.0,
+        "take_profit": 170.0,
+    })
+
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_001"
+    tool_use_block.name = "close_position"
+    tool_use_block.input = {"ticker": "AMD", "reason": "trend_reversal"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 100, "reasoning": "reversal"}], "summary": "closed AMD"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=155.0), \
+         patch("tools.broker.TradingClient") as mock_tc:
+        mock_tc.return_value.close_position.return_value = MagicMock(id="order-999")
+        agent = TeamLeaderAgent()
+        agent.run("Close AMD — trend reversal", conn=db_conn)
+
+    row = db_conn.execute(
+        "SELECT exit_reason FROM trades WHERE ticker = 'AMD'"
+    ).fetchone()
+    assert row is not None
+    assert row["exit_reason"] == "trend_reversal"
