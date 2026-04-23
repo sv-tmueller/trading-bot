@@ -138,5 +138,24 @@ if __name__ == "__main__":
         run_morning_scan()
     elif mode == "monitor":
         run_position_monitor()
+    elif mode == "backtest":
+        import argparse
+        from backtest.runner import run_backtest
+        from config import settings as _s
+
+        parser = argparse.ArgumentParser(prog="main.py backtest")
+        parser.add_argument("--years", type=int, default=1)
+        parser.add_argument("--ema-fast", type=int, default=_s.EMA_FAST, dest="ema_fast")
+        parser.add_argument("--ema-slow", type=int, default=_s.EMA_SLOW, dest="ema_slow")
+        parser.add_argument("--rsi-period", type=int, default=_s.RSI_PERIOD, dest="rsi_period")
+        parser.add_argument("--rsi-lower", type=float, default=_s.RSI_LOWER, dest="rsi_lower")
+        parser.add_argument("--rsi-upper", type=float, default=_s.RSI_UPPER, dest="rsi_upper")
+        parser.add_argument("--volume-multiplier", type=float, default=_s.VOLUME_MULTIPLIER, dest="volume_multiplier")
+        parser.add_argument("--atr-period", type=int, default=_s.ATR_PERIOD, dest="atr_period")
+        parser.add_argument("--atr-multiplier", type=float, default=_s.ATR_STOP_MULTIPLIER, dest="atr_multiplier")
+        parser.add_argument("--rr-ratio", type=float, default=_s.RR_RATIO_MIN, dest="rr_ratio")
+        parser.add_argument("--max-hold-days", type=int, default=_s.MAX_HOLD_DAYS, dest="max_hold_days")
+        args = parser.parse_args(sys.argv[2:])
+        run_backtest(**vars(args))
     else:
-        print(f"Unknown mode: {mode}. Use 'scan' or 'monitor'")
+        print(f"Unknown mode: {mode}. Use 'scan', 'monitor', or 'backtest'")
