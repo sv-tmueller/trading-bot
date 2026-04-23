@@ -62,12 +62,15 @@ def notify_no_approved(date: str, cost_usd: float) -> None:
 
 
 def notify_monitor(date: str, time: str, checked: int, closed: list) -> None:
-    if closed:
-        lines = [f"👁 **Position Monitor — {date} {time}**"]
+    lines = [f"👁 **Position Monitor — {date} {time}**"]
+    if checked == 0:
+        lines.append("📭 No open positions")
+    else:
+        holding = checked - len(closed)
+        lines.append(f"📊 {checked} position{'s' if checked != 1 else ''} checked — {holding} holding")
         for a in closed:
             lines.append(f"🔴 Closed {a.ticker} — {a.reason}")
-        _post("\n".join(lines))
-    # stay silent when nothing happened — no noise for routine checks
+    _post("\n".join(lines))
 
 
 def notify_error(context: str, error: str) -> None:
