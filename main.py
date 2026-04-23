@@ -53,6 +53,7 @@ def run_morning_scan():
         print("Not a trading day. Exiting.")
         return
 
+    conn = None
     try:
         print(f"=== Morning scan — {date.today()} ===")
         conn = get_db()
@@ -77,7 +78,6 @@ def run_morning_scan():
                 tickers_to_watch=candidates.get("tickers_to_watch", []),
                 cost_usd=costs["cost_usd"],
             )
-            conn.close()
             return
 
         print("Running Risk Review Agent...")
@@ -90,7 +90,6 @@ def run_morning_scan():
             costs = get_daily_token_costs(conn, date.today().isoformat())
             print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
             notify_no_approved(date.today().isoformat(), costs["cost_usd"])
-            conn.close()
             return
 
         print("Running Team Leader Agent...")
@@ -116,16 +115,19 @@ def run_morning_scan():
             decisions=decisions.get("decisions", []),
             cost_usd=costs["cost_usd"],
         )
-        conn.close()
 
     except Exception as e:
         print(f"SCAN ERROR: {e}")
         notify_error("morning_scan", traceback.format_exc())
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def run_position_monitor():
     if not is_trading_day():
         return
+    conn = None
     try:
         from datetime import datetime
         now = datetime.now().strftime("%H:%M")
@@ -135,10 +137,12 @@ def run_position_monitor():
         closed = [a for a in actions if a.action == "close"]
         print(f"Checked {len(actions)} positions. Closed: {len(closed)}")
         notify_monitor(date.today().isoformat(), now, len(actions), closed)
-        conn.close()
     except Exception as e:
         print(f"MONITOR ERROR: {e}")
         notify_error("position_monitor", traceback.format_exc())
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

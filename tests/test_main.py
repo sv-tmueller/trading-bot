@@ -90,3 +90,33 @@ def test_run_position_monitor_calls_notify_error_on_exception(db_conn):
     context, error_text = mock_notify_error.call_args[0]
     assert context == "position_monitor"
     assert "connection refused" in error_text
+
+
+def test_run_morning_scan_closes_conn_on_exception(db_conn):
+    """DB connection must be closed even when an agent raises."""
+    mock_conn = MagicMock()
+    mock_conn.row_factory = None
+
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=mock_conn), \
+         patch("main.MarketIntelligenceAgent") as MockMI, \
+         patch("main.notify_error"):
+        MockMI.return_value.run.side_effect = RuntimeError("boom")
+        from main import run_morning_scan
+        run_morning_scan()
+
+    mock_conn.close.assert_called_once()
+
+
+def test_run_position_monitor_closes_conn_on_exception(db_conn):
+    """DB connection must be closed even when run_monitor raises."""
+    mock_conn = MagicMock()
+
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=mock_conn), \
+         patch("main.run_monitor", side_effect=RuntimeError("boom")), \
+         patch("main.notify_error"):
+        from main import run_position_monitor
+        run_position_monitor()
+
+    mock_conn.close.assert_called_once()
