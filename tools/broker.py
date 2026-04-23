@@ -56,4 +56,8 @@ def get_current_price(ticker: str) -> float:
     ask = float(q.ask_price)
     if bid > 0 and ask > 0:
         return (bid + ask) / 2
-    return ask if ask > 0 else bid
+    if ask > 0:
+        return ask
+    if bid > 0:
+        return bid
+    raise ValueError(f"No valid quote for {ticker}: bid={bid}, ask={ask}")

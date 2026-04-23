@@ -58,3 +58,15 @@ def test_close_position():
 def test_place_market_order_invalid_side_raises():
     with pytest.raises(ValueError, match="Invalid order side"):
         place_market_order("AMD", 100, "BUY")
+
+
+def test_get_current_price_raises_on_zero_quote():
+    mock_data_client = MagicMock()
+    mock_quote = MagicMock()
+    mock_quote.bid_price = "0.0"
+    mock_quote.ask_price = "0.0"
+    mock_data_client.get_stock_latest_quote.return_value = {"AMD": mock_quote}
+
+    with patch("tools.broker.StockHistoricalDataClient", return_value=mock_data_client):
+        with pytest.raises(ValueError, match="No valid quote for AMD"):
+            get_current_price("AMD")
