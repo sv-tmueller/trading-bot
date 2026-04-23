@@ -17,7 +17,7 @@ def fetch_bars(ticker: str, days: int = 60) -> pd.DataFrame:
     from datetime import datetime, timedelta, timezone
     client = get_data_client()
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days * 2 + 20)  # warmup buffer for EMA50
+    start = end - timedelta(days=max(days * 2 + 20, days + 90))  # warmup buffer for EMA50
     feed = DataFeed.SIP if settings.DATA_FEED == "sip" else DataFeed.IEX
     request = StockBarsRequest(
         symbol_or_symbols=ticker,

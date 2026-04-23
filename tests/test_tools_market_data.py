@@ -90,21 +90,23 @@ def test_compute_signals_ema_crossover_is_native_bool(bullish_bars):
 
 
 def test_fetch_bars_requests_enough_buffer_for_ema50():
-    """fetch_bars must request at least 130 calendar days so EMA50 has warmup data."""
+    """fetch_bars must request at least days+70 calendar days so EMA50 has warmup data."""
     from unittest.mock import patch, MagicMock
     import tools.market_data as md
 
     captured = {}
+    days = 60
 
     with patch("tools.market_data.get_data_client", return_value=MagicMock()), \
          patch("tools.market_data.StockBarsRequest", side_effect=lambda **kw: captured.update(kw) or MagicMock()):
         try:
-            md.fetch_bars("AMD", days=60)
+            md.fetch_bars("AMD", days=days)
         except Exception:
             pass
 
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    if "start" in captured and captured["start"] is not None:
-        diff = (now - captured["start"]).days
-        assert diff >= 130, f"Buffer too thin: only {diff} calendar days requested (need ≥130 for EMA50 warmup)"
+    assert "start" in captured, "StockBarsRequest was never called — check mock setup"
+    diff = (now - captured["start"]).days
+    min_days = days + 70  # EMA50 needs 50 bars warmup ≈ 70 calendar days
+    assert diff >= min_days, f"Buffer too thin: only {diff} calendar days requested (need ≥{min_days})"
