@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import traceback
 import pandas_market_calendars as mcal
 from datetime import date
 from pathlib import Path
@@ -52,84 +53,92 @@ def run_morning_scan():
         print("Not a trading day. Exiting.")
         return
 
-    print(f"=== Morning scan — {date.today()} ===")
-    conn = get_db()
+    try:
+        print(f"=== Morning scan — {date.today()} ===")
+        conn = get_db()
 
-    print("Running Market Intelligence Agent...")
-    mi_agent = MarketIntelligenceAgent()
-    market_briefing = mi_agent.run("Scan the watchlist and assess open positions.", conn=conn)
-    print(f"Market context: {market_briefing.get('market_context')}")
+        print("Running Market Intelligence Agent...")
+        mi_agent = MarketIntelligenceAgent()
+        market_briefing = mi_agent.run("Scan the watchlist and assess open positions.", conn=conn)
+        print(f"Market context: {market_briefing.get('market_context')}")
 
-    print("Running Strategy Agent...")
-    strategy_agent = StrategyAgent()
-    candidates = strategy_agent.run(json.dumps(market_briefing), conn=conn)
-    print(f"Candidates found: {len(candidates.get('candidates', []))}")
+        print("Running Strategy Agent...")
+        strategy_agent = StrategyAgent()
+        candidates = strategy_agent.run(json.dumps(market_briefing), conn=conn)
+        print(f"Candidates found: {len(candidates.get('candidates', []))}")
 
-    if not candidates.get("candidates"):
-        print(f"No trade candidates: {candidates.get('no_trade_reason')}")
+        if not candidates.get("candidates"):
+            print(f"No trade candidates: {candidates.get('no_trade_reason')}")
+            costs = get_daily_token_costs(conn, date.today().isoformat())
+            print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+            notify_no_candidates(
+                date.today().isoformat(),
+                tldr=candidates.get("tldr", "conditions not met"),
+                tickers_to_watch=candidates.get("tickers_to_watch", []),
+                cost_usd=costs["cost_usd"],
+            )
+            conn.close()
+            return
+
+        print("Running Risk Review Agent...")
+        risk_agent = RiskReviewAgent()
+        reviewed = risk_agent.run(json.dumps(candidates), conn=conn)
+        print(f"Approved: {len(reviewed.get('approved', []))} | Rejected: {len(reviewed.get('rejected', []))}")
+
+        if not reviewed.get("approved"):
+            print("No trades approved by risk review.")
+            costs = get_daily_token_costs(conn, date.today().isoformat())
+            print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+            notify_no_approved(date.today().isoformat(), costs["cost_usd"])
+            conn.close()
+            return
+
+        print("Running Team Leader Agent...")
+        pending_stops = {t["ticker"]: t["stop_loss"] for t in reviewed["approved"]}
+        pending_targets = {t["ticker"]: t["take_profit"] for t in reviewed["approved"]}
+        leader_agent = TeamLeaderAgent()
+        decisions = leader_agent.run(
+            json.dumps(reviewed),
+            conn=conn,
+            pending_stops=pending_stops,
+            pending_targets=pending_targets,
+        )
+        print(f"Session summary: {decisions.get('summary')}")
+
         costs = get_daily_token_costs(conn, date.today().isoformat())
         print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
-        notify_no_candidates(
-            date.today().isoformat(),
-            tldr=candidates.get("tldr", "conditions not met"),
-            tickers_to_watch=candidates.get("tickers_to_watch", []),
+        notify_scan_complete(
+            date=date.today().isoformat(),
+            market_context=market_briefing.get("market_context", "unknown"),
+            tldr=candidates.get("tldr", ""),
+            approved=len(reviewed.get("approved", [])),
+            rejected=len(reviewed.get("rejected", [])),
+            decisions=decisions.get("decisions", []),
             cost_usd=costs["cost_usd"],
         )
         conn.close()
-        return
 
-    print("Running Risk Review Agent...")
-    risk_agent = RiskReviewAgent()
-    reviewed = risk_agent.run(json.dumps(candidates), conn=conn)
-    print(f"Approved: {len(reviewed.get('approved', []))} | Rejected: {len(reviewed.get('rejected', []))}")
-
-    if not reviewed.get("approved"):
-        print("No trades approved by risk review.")
-        costs = get_daily_token_costs(conn, date.today().isoformat())
-        print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
-        notify_no_approved(date.today().isoformat(), costs["cost_usd"])
-        conn.close()
-        return
-
-    print("Running Team Leader Agent...")
-    pending_stops = {t["ticker"]: t["stop_loss"] for t in reviewed["approved"]}
-    pending_targets = {t["ticker"]: t["take_profit"] for t in reviewed["approved"]}
-    leader_agent = TeamLeaderAgent()
-    decisions = leader_agent.run(
-        json.dumps(reviewed),
-        conn=conn,
-        pending_stops=pending_stops,
-        pending_targets=pending_targets,
-    )
-    print(f"Session summary: {decisions.get('summary')}")
-
-    costs = get_daily_token_costs(conn, date.today().isoformat())
-    print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
-    notify_scan_complete(
-        date=date.today().isoformat(),
-        market_context=market_briefing.get("market_context", "unknown"),
-        tldr=candidates.get("tldr", ""),
-        approved=len(reviewed.get("approved", [])),
-        rejected=len(reviewed.get("rejected", [])),
-        decisions=decisions.get("decisions", []),
-        cost_usd=costs["cost_usd"],
-    )
-
-    conn.close()
+    except Exception as e:
+        print(f"SCAN ERROR: {e}")
+        notify_error("morning_scan", traceback.format_exc())
 
 
 def run_position_monitor():
     if not is_trading_day():
         return
-    from datetime import datetime
-    now = datetime.now().strftime("%H:%M")
-    print(f"=== Position monitor — {date.today()} {now} ===")
-    conn = get_db()
-    actions = run_monitor(conn)
-    closed = [a for a in actions if a.action == "close"]
-    print(f"Checked {len(actions)} positions. Closed: {len(closed)}")
-    notify_monitor(date.today().isoformat(), now, len(actions), closed)
-    conn.close()
+    try:
+        from datetime import datetime
+        now = datetime.now().strftime("%H:%M")
+        print(f"=== Position monitor — {date.today()} {now} ===")
+        conn = get_db()
+        actions = run_monitor(conn)
+        closed = [a for a in actions if a.action == "close"]
+        print(f"Checked {len(actions)} positions. Closed: {len(closed)}")
+        notify_monitor(date.today().isoformat(), now, len(actions), closed)
+        conn.close()
+    except Exception as e:
+        print(f"MONITOR ERROR: {e}")
+        notify_error("position_monitor", traceback.format_exc())
 
 
 if __name__ == "__main__":

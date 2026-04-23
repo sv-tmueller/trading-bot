@@ -59,3 +59,34 @@ def test_inter_agent_handoff_is_valid_json(db_conn):
     leader_arg = leader_mock.run.call_args[0][0]
     parsed = json.loads(leader_arg)
     assert "approved" in parsed
+
+
+def test_run_morning_scan_calls_notify_error_on_exception(db_conn):
+    """If any agent raises, notify_error must be called and the exception must not propagate."""
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.MarketIntelligenceAgent") as MockMI, \
+         patch("main.notify_error") as mock_notify_error:
+        MockMI.return_value.run.side_effect = RuntimeError("API timeout")
+        from main import run_morning_scan
+        run_morning_scan()  # must NOT raise
+
+    mock_notify_error.assert_called_once()
+    context, error_text = mock_notify_error.call_args[0]
+    assert context == "morning_scan"
+    assert "API timeout" in error_text
+
+
+def test_run_position_monitor_calls_notify_error_on_exception(db_conn):
+    """If run_monitor raises, notify_error must be called."""
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.run_monitor", side_effect=RuntimeError("connection refused")), \
+         patch("main.notify_error") as mock_notify_error:
+        from main import run_position_monitor
+        run_position_monitor()  # must NOT raise
+
+    mock_notify_error.assert_called_once()
+    context, error_text = mock_notify_error.call_args[0]
+    assert context == "position_monitor"
+    assert "connection refused" in error_text
