@@ -22,6 +22,13 @@ python3 main.py monitor
 
 # Initialise the database (first time only)
 python3 -c "from storage.init_db import init_db; init_db()"
+
+# Run a backtest (defaults: 1 year, settings.py params)
+python3 main.py backtest
+
+# Backtest with custom parameters
+python3 main.py backtest --years 3 --rsi-lower 35 --rsi-upper 70
+python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-ratio 2.5
 ```
 
 ## Python version
