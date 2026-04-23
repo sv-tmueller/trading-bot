@@ -33,10 +33,19 @@ if not 0.001 <= RISK_PER_TRADE <= 0.05:
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 if not 1 <= MAX_POSITIONS <= 20:
     raise ValueError(f"MAX_POSITIONS={MAX_POSITIONS} is outside safe bounds [1, 20]")
-MAX_PORTFOLIO_EXPOSURE = 0.20
+MAX_PORTFOLIO_EXPOSURE = float(os.getenv("MAX_PORTFOLIO_EXPOSURE", "0.20"))
+if not 0.05 <= MAX_PORTFOLIO_EXPOSURE <= 0.50:
+    raise ValueError(f"MAX_PORTFOLIO_EXPOSURE={MAX_PORTFOLIO_EXPOSURE} outside safe bounds [0.05, 0.50]")
+
 DAILY_DRAWDOWN_LIMIT = 0.03
-MAX_HOLD_DAYS = 5
-RR_RATIO_MIN = 2.0
+
+MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5"))
+if not 1 <= MAX_HOLD_DAYS <= 30:
+    raise ValueError(f"MAX_HOLD_DAYS={MAX_HOLD_DAYS} outside safe bounds [1, 30]")
+
+RR_RATIO_MIN = float(os.getenv("RR_RATIO_MIN", "2.0"))
+if not 1.0 <= RR_RATIO_MIN <= 5.0:
+    raise ValueError(f"RR_RATIO_MIN={RR_RATIO_MIN} outside safe bounds [1.0, 5.0]")
 
 # Strategy parameters — also versioned in DB
 EMA_FAST = 20

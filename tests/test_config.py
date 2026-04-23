@@ -59,6 +59,54 @@ def test_risk_per_trade_out_of_bounds_raises(monkeypatch):
         importlib.reload(s)
 
 
+def test_max_hold_days_env_override(monkeypatch):
+    monkeypatch.setenv("MAX_HOLD_DAYS", "10")
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.MAX_HOLD_DAYS == 10
+
+
+def test_rr_ratio_min_env_override(monkeypatch):
+    monkeypatch.setenv("RR_RATIO_MIN", "2.5")
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.RR_RATIO_MIN == pytest.approx(2.5)
+
+
+def test_max_portfolio_exposure_env_override(monkeypatch):
+    monkeypatch.setenv("MAX_PORTFOLIO_EXPOSURE", "0.30")
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.MAX_PORTFOLIO_EXPOSURE == pytest.approx(0.30)
+
+
+def test_max_hold_days_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("MAX_HOLD_DAYS", "0")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="MAX_HOLD_DAYS"):
+        importlib.reload(s)
+
+
+def test_rr_ratio_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("RR_RATIO_MIN", "0.5")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="RR_RATIO_MIN"):
+        importlib.reload(s)
+
+
+def test_max_portfolio_exposure_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("MAX_PORTFOLIO_EXPOSURE", "0.99")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="MAX_PORTFOLIO_EXPOSURE"):
+        importlib.reload(s)
+
+
 def test_watchlist_not_empty():
     from config.watchlist import WATCHLIST
     assert len(WATCHLIST) > 0
