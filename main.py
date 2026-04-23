@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import pandas_market_calendars as mcal
 from datetime import date
@@ -61,7 +62,7 @@ def run_morning_scan():
 
     print("Running Strategy Agent...")
     strategy_agent = StrategyAgent()
-    candidates = strategy_agent.run(str(market_briefing), conn=conn)
+    candidates = strategy_agent.run(json.dumps(market_briefing), conn=conn)
     print(f"Candidates found: {len(candidates.get('candidates', []))}")
 
     if not candidates.get("candidates"):
@@ -79,7 +80,7 @@ def run_morning_scan():
 
     print("Running Risk Review Agent...")
     risk_agent = RiskReviewAgent()
-    reviewed = risk_agent.run(str(candidates), conn=conn)
+    reviewed = risk_agent.run(json.dumps(candidates), conn=conn)
     print(f"Approved: {len(reviewed.get('approved', []))} | Rejected: {len(reviewed.get('rejected', []))}")
 
     if not reviewed.get("approved"):
@@ -95,7 +96,7 @@ def run_morning_scan():
     pending_targets = {t["ticker"]: t["take_profit"] for t in reviewed["approved"]}
     leader_agent = TeamLeaderAgent()
     decisions = leader_agent.run(
-        str(reviewed),
+        json.dumps(reviewed),
         conn=conn,
         pending_stops=pending_stops,
         pending_targets=pending_targets,
