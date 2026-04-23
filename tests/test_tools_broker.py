@@ -9,25 +9,56 @@ def test_place_market_order_buy():
     mock_client = MagicMock()
     mock_order = MagicMock()
     mock_order.id = "order-123"
+    mock_order.filled_avg_price = "150.00"
     mock_client.submit_order.return_value = mock_order
 
     with patch("tools.broker.get_trading_client", return_value=mock_client):
         result = place_market_order("AMD", 100, "buy")
 
     mock_client.submit_order.assert_called_once()
-    assert result == "order-123"
+    assert result["order_id"] == "order-123"
+    assert result["fill_price"] == pytest.approx(150.00)
 
 
 def test_place_market_order_sell():
     mock_client = MagicMock()
     mock_order = MagicMock()
     mock_order.id = "order-456"
+    mock_order.filled_avg_price = "148.50"
     mock_client.submit_order.return_value = mock_order
 
     with patch("tools.broker.get_trading_client", return_value=mock_client):
         result = place_market_order("AMD", 100, "sell")
 
-    assert result == "order-456"
+    assert result["order_id"] == "order-456"
+    assert result["fill_price"] == pytest.approx(148.50)
+
+
+def test_place_market_order_fill_price_zero_when_zero_filled():
+    mock_client = MagicMock()
+    mock_order = MagicMock()
+    mock_order.id = "order-789"
+    mock_order.filled_avg_price = "0.0"
+    mock_client.submit_order.return_value = mock_order
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert result["fill_price"] == pytest.approx(0.0)
+
+
+def test_place_market_order_fill_price_none_when_not_filled():
+    mock_client = MagicMock()
+    mock_order = MagicMock()
+    mock_order.id = "order-456"
+    mock_order.filled_avg_price = None
+    mock_client.submit_order.return_value = mock_order
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert result["order_id"] == "order-456"
+    assert result["fill_price"] is None
 
 
 def test_get_portfolio_value():

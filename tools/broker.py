@@ -17,7 +17,7 @@ def get_trading_client() -> TradingClient:
     )
 
 
-def place_market_order(ticker: str, shares: int, side: str) -> str:
+def place_market_order(ticker: str, shares: int, side: str) -> dict:
     if side not in ("buy", "sell"):
         raise ValueError(f"Invalid order side: {side!r}. Must be 'buy' or 'sell'.")
     client = get_trading_client()
@@ -29,7 +29,8 @@ def place_market_order(ticker: str, shares: int, side: str) -> str:
         time_in_force=TimeInForce.DAY,
     )
     order = client.submit_order(request)
-    return str(order.id)
+    fill_price = float(order.filled_avg_price) if order.filled_avg_price is not None else None
+    return {"order_id": str(order.id), "fill_price": fill_price}
 
 
 def close_position(ticker: str) -> str:

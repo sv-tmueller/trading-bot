@@ -80,23 +80,25 @@ Respond with JSON:
         pending_targets = self._pending_targets
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
-            order_id = place_market_order(ticker, shares, side)
+            price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
+            order_result = place_market_order(ticker, shares, side)
+            order_id = order_result["order_id"]
             if side == "buy":
-                price = get_current_price(ticker)
+                entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # use fill; fall back to quote
                 insert_trade(conn, {
                     "ticker": ticker,
                     "entry_date": date.today().isoformat(),
-                    "entry_price": price,
+                    "entry_price": entry_price,
                     "shares": shares,
-                    "stop_loss": pending_stops.get(ticker, price * 0.97),
-                    "take_profit": pending_targets.get(ticker, price * 1.06),
+                    "stop_loss": pending_stops.get(ticker, entry_price * 0.97),
+                    "take_profit": pending_targets.get(ticker, entry_price * 1.06),
                 })
             return {"order_id": order_id, "status": "submitted"}
 
         def close_position(ticker: str, reason: str = "manual") -> dict:
+            price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
             order_id = broker_close_position(ticker)
             today = date.today().isoformat()
-            price = get_current_price(ticker)
             open_trades = get_open_trades(conn)
             trade = next((t for t in open_trades if t["ticker"] == ticker), None)
             if trade is not None:

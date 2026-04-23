@@ -19,7 +19,8 @@ def test_team_leader_executes_trades(db_conn):
         '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 222, "reasoning": "all signals aligned"}], "summary": "1 trade placed"}'
     )
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client):
-        with patch("tools.broker.place_market_order", return_value="order-123"):
+        with patch("tools.broker.place_market_order", return_value={"order_id": "order-123", "fill_price": 150.0}), \
+             patch("tools.broker.get_current_price", return_value=150.0):
             agent = TeamLeaderAgent()
             result = agent.run("Approved: AMD 222 shares", conn=db_conn)
 
@@ -93,3 +94,59 @@ def test_team_leader_close_position_records_reason(db_conn):
     ).fetchone()
     assert row is not None
     assert row["exit_reason"] == "trend_reversal"
+
+
+def test_close_position_fetches_price_before_broker(db_conn):
+    """get_current_price must be called before broker_close_position to prevent ghost positions."""
+    from tools.database import insert_trade
+    from datetime import date
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": date.today().isoformat(),
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 140.0,
+        "take_profit": 170.0,
+    })
+
+    call_order = []
+
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_001"
+    tool_use_block.name = "close_position"
+    tool_use_block.input = {"ticker": "AMD", "reason": "manual"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response('{"decisions": [], "summary": "done"}')
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    def mock_price(ticker):
+        call_order.append("price")
+        return 155.0
+
+    def mock_broker_close(ticker):
+        call_order.append("broker")
+        mock_order = MagicMock()
+        mock_order.id = "order-999"
+        return str(mock_order.id)
+
+    # Patching tools.broker.close_position works because _get_tool_functions uses a
+    # deferred import (`from tools.broker import close_position as broker_close_position`)
+    # that resolves at run() time, so the patch is already active when the import executes.
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", side_effect=mock_price), \
+         patch("tools.broker.close_position", side_effect=mock_broker_close):
+        agent = TeamLeaderAgent()
+        agent.run("Close AMD", conn=db_conn)
+
+    assert call_order.index("price") < call_order.index("broker"), \
+        "get_current_price must be called before broker_close_position"
