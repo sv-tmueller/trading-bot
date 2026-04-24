@@ -19,21 +19,23 @@ Between agent cycles, a lightweight **position monitor** runs hourly and closes 
 
 ### Entry Conditions (all three required)
 
-- EMA 20 trend confirmation (strict: crossover today; or trend-following: EMA20 > EMA50 any day — controlled by `STRICT_CROSSOVER`)
-- RSI(14) between 40–60 (not overextended)
-- Volume > 1.5× 20-day average (conviction)
+- EMA 20 trend confirmation — `STRICT_CROSSOVER=true` requires the crossover event today; `false` accepts any day where EMA20 > EMA50 (trend-following)
+- RSI(14) between `RSI_LOWER` and `RSI_UPPER` (default 40–60; widen to 35–70 for more signal)
+- Volume > `VOLUME_MULTIPLIER` × 20-day average (default 1.5×; conviction filter)
+
+All three thresholds are env-driven — see Configure below. The current tuned production values live in [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md).
 
 ### Risk Rules
 
-| Parameter | Default |
-|---|---|
-| Risk per trade | 1% of portfolio |
-| Max open positions | 5 |
-| Max portfolio exposure | 20% |
-| Daily drawdown limit | 3% |
-| Max hold days | 5 |
-| Min reward:risk ratio | 2:1 |
-| Stop distance | 1.5× ATR |
+| Parameter | Env var | Default | Safe bounds |
+|---|---|---|---|
+| Risk per trade | `RISK_PER_TRADE` | 1% | [0.1%, 5%] |
+| Max open positions | `MAX_POSITIONS` | 5 | [1, 20] |
+| Max portfolio exposure | `MAX_PORTFOLIO_EXPOSURE` | 20% | [5%, 50%] |
+| Max hold days | `MAX_HOLD_DAYS` | 5 | [1, 30] |
+| Min reward:risk ratio | `RR_RATIO_MIN` | 2.0 | [1.0, 5.0] |
+| Stop distance (× ATR) | `ATR_STOP_MULTIPLIER` | 1.5 | [0.5, 5.0] |
+| Daily drawdown limit | _(hardcoded)_ | 3% | — |
 
 ## Setup
 
@@ -73,8 +75,14 @@ MAX_POSITIONS=5
 MAX_HOLD_DAYS=5
 RR_RATIO_MIN=2.0
 MAX_PORTFOLIO_EXPOSURE=0.20
-STRICT_CROSSOVER=true  # false = trend-following (EMA20 > EMA50 any day)
+STRICT_CROSSOVER=true       # false = trend-following (EMA20 > EMA50 any day)
+RSI_LOWER=40
+RSI_UPPER=60
+VOLUME_MULTIPLIER=1.5
+ATR_STOP_MULTIPLIER=1.5
 ```
+
+> These are the original baseline values. The production bot runs a backtest-tuned config — see [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md) for the current live values and their justification.
 
 > **Note:** Free Alpaca paper trading accounts use the IEX data feed (`DATA_FEED=iex`). Paid live accounts use SIP (`DATA_FEED=sip`), which covers 100% of market volume vs ~60% for IEX.
 
@@ -128,8 +136,10 @@ Runs the EMA crossover strategy against each watchlist ticker using `yfinance` d
 
 ```bash
 ssh user@your-vps-ip
-sudo apt update && sudo apt install -y python3 python3-pip python3-venv git
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv git gh
 ```
+
+`gh` (GitHub CLI) is optional but recommended — it lets you open/merge PRs directly from the VPS. After install, run `gh auth login` once and pick "Login with a web browser".
 
 ### 2. Clone the repo
 
@@ -162,6 +172,8 @@ CLAUDE_MODEL=claude-sonnet-4-6
 ```
 
 Save with `Ctrl+O`, exit with `Ctrl+X`.
+
+> **For production parity** — this minimal `.env` uses baseline strategy defaults. To match the current live bot (which runs backtest-tuned parameters), also copy the strategy block from [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md) into your `.env`. Backtesting showed the baseline produces ~5 trades over 3 years; the tuned config produces ~470 with +8.7% aggregate return.
 
 ### 5. Initialise the database
 
