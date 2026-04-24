@@ -45,6 +45,19 @@ def get_portfolio_value() -> float:
     return float(account.portfolio_value)
 
 
+def get_alpaca_positions() -> list[dict]:
+    client = get_trading_client()
+    positions = client.get_all_positions()
+    return [
+        {
+            "ticker": pos.symbol,
+            "qty": int(float(pos.qty)),
+            "avg_entry_price": float(pos.avg_entry_price),
+        }
+        for pos in positions
+    ]
+
+
 def get_current_price(ticker: str) -> float:
     data_client = StockHistoricalDataClient(
         settings.ALPACA_API_KEY, settings.ALPACA_SECRET_KEY
