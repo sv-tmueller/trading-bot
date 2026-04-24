@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS trades (
     r_multiple REAL
 );
 
+-- Future work: signals, daily_stats, weekly_stats, suggestions are defined but not yet
+-- written to by the pipeline. signals should be populated at trade entry (insert_signal
+-- in tools/database.py). daily_stats/weekly_stats are intended for performance tracking.
+-- suggestions is for parameter-tuning feedback. Implement when reporting is prioritised.
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,

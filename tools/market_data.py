@@ -56,6 +56,7 @@ def compute_signals(
     ema_f_prev = ema_fast_series.iloc[-2]
     ema_s_prev = ema_slow_series.iloc[-2]
 
+    # Strict: fires only on the exact crossover day. Intentional — avoids chasing continuation moves.
     crossover = bool((ema_f > ema_s) and (ema_f_prev <= ema_s_prev))
 
     return {
@@ -70,6 +71,8 @@ def compute_signals(
 
 def is_entry_signal(
     signals: dict,
+    # Conservative bounds — excludes overextended setups. To test wider ranges:
+    # python3 main.py backtest --rsi-lower 35 --rsi-upper 70
     rsi_lower: float = 40,
     rsi_upper: float = 60,
     volume_multiplier: float = 1.5,
