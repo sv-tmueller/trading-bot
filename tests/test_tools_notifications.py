@@ -102,3 +102,25 @@ def test_notify_error_includes_context(mocker):
     msg = mock_post.call_args[0][0]
     assert "morning_scan" in msg
     assert "something went wrong" in msg
+
+
+def test_notify_performance_summary_calls_post(mocker):
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_performance_summary
+    stats = {
+        "days": 30,
+        "trade_count": 5,
+        "win_count": 3,
+        "loss_count": 2,
+        "win_rate": 0.6,
+        "total_pnl_dollars": 250.0,
+        "avg_r_multiple": 1.5,
+    }
+    notify_performance_summary(stats)
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "trailing 30d" in msg
+    assert "5 trades" in msg
+    assert "60.0%" in msg
+    assert "+250.00" in msg
+    assert "+1.50" in msg

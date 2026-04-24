@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import date, timedelta
 
 
 def insert_trade(conn: sqlite3.Connection, trade: dict) -> int:
@@ -102,3 +103,38 @@ def get_active_parameters(conn: sqlite3.Connection) -> dict:
         "SELECT * FROM parameters ORDER BY id DESC LIMIT 1"
     ).fetchone()
     return dict(row) if row else {}
+
+
+def get_closed_trade_stats(conn: sqlite3.Connection, days: int = 30) -> dict:
+    since = (date.today() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT pnl_dollars, r_multiple
+           FROM trades
+           WHERE exit_date IS NOT NULL AND exit_date >= ?""",
+        (since,),
+    ).fetchall()
+    trade_count = len(rows)
+    if trade_count == 0:
+        return {
+            "days": days,
+            "trade_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "win_rate": 0.0,
+            "total_pnl_dollars": 0.0,
+            "avg_r_multiple": 0.0,
+        }
+    win_count = sum(1 for r in rows if r["pnl_dollars"] is not None and r["pnl_dollars"] > 0)
+    loss_count = trade_count - win_count
+    total_pnl = sum(r["pnl_dollars"] or 0.0 for r in rows)
+    r_multiples = [r["r_multiple"] for r in rows if r["r_multiple"] is not None]
+    avg_r = sum(r_multiples) / len(r_multiples) if r_multiples else 0.0
+    return {
+        "days": days,
+        "trade_count": trade_count,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "win_rate": win_count / trade_count,
+        "total_pnl_dollars": total_pnl,
+        "avg_r_multiple": avg_r,
+    }
