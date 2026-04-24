@@ -75,3 +75,12 @@ def test_run_backtest_calls_notify(mocker):
     run_backtest(years=1)
 
     mock_notify.assert_called_once()
+
+
+def test_run_backtest_default_years_is_3(mocker):
+    mocker.patch("backtest.runner.fetch_data", return_value=_make_fixture())
+    mocker.patch("backtest.runner.notify_backtest")
+
+    result = run_backtest()
+
+    assert result["params"]["years"] == 3

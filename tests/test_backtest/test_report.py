@@ -46,6 +46,18 @@ def test_format_terminal_contains_param_header():
     assert "RSI 40-60" in output
 
 
+def test_format_terminal_shows_single_year_warning():
+    output = format_terminal(_make_result())
+    assert "Single-year" in output
+
+
+def test_format_terminal_no_warning_for_multi_year():
+    result = _make_result()
+    result["params"]["years"] = 3
+    output = format_terminal(result)
+    assert "Single-year" not in output
+
+
 def test_notify_backtest_calls_post(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     notify_backtest(_make_result())
