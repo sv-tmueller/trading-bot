@@ -23,7 +23,7 @@ python3 main.py monitor
 # Initialise the database (first time only)
 python3 -c "from storage.init_db import init_db; init_db()"
 
-# Run a backtest (defaults: 1 year, settings.py params)
+# Run a backtest (defaults: 3 years, settings.py params)
 python3 main.py backtest
 
 # Backtest with custom parameters
@@ -100,6 +100,7 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 - Stop-loss priority: `stop_loss → take_profit → max_hold → hold` — order matters
 - `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
 - `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
+- Morning scan is idempotent: `main.py scan` sets `_scan_already_ran = True` after the first successful run and skips subsequent calls within the same process — prevents double-firing if cron overlaps
 
 ## Architectural invariants
 

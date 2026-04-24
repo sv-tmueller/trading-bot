@@ -182,15 +182,15 @@ If prompted to choose an editor, select **1** (nano). You'll see an empty file �
 
 ```
 35 13 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
-0 14-20 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
-0 21 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+0 14-19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+55 19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
 ```
 
 | Schedule | UTC | ET | German (CEST) | Purpose |
 |---|---|---|---|---|
 | Scan | 13:35 | 09:35 | 15:35 | Morning agent pipeline (5 min after open) |
-| Monitor | :00 14–20 | 10:00–16:00 | 16:00–22:00 | Hourly position check |
-| Final check | 21:00 | 17:00 | 23:00 | End-of-day close |
+| Monitor | :00 14–19 | 10:00–15:00 | 16:00–21:00 | Hourly position check |
+| Pre-close | 19:55 | 15:55 | 21:55 | Final check 5 min before NYSE close |
 
 Save and exit: `Ctrl+O` → Enter → `Ctrl+X`. You should see `crontab: installing new crontab` confirming it worked.
 
