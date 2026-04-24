@@ -218,17 +218,28 @@ No restart needed — cron picks up the latest code on each run.
 
 ### Running Claude Code on the VPS
 
-To inspect scan history, DB state, or logs interactively on the VPS, install Claude Code:
+> **Run as a non-root user.** Claude Code refuses to start under `root` when the project has `bypassPermissions` enabled (it does, in `.claude/settings.json`). Create a dedicated user the first time:
+> ```bash
+> # As root, once:
+> adduser --disabled-password --gecos "" trader
+> chown -R trader:trader /opt/trading-bot
+>
+> # Switch to that user for all bot work
+> su - trader
+> ```
+> Also move cron to this user: `crontab -u trader -e`.
+
+To inspect scan history, DB state, or logs interactively on the VPS, install Claude Code (the `npm install` below needs root, the rest runs as `trader`):
 
 ```bash
-# 1. Install Node 20+ (required by claude-code)
+# 1. Install Node 20+ (required by claude-code) — run as root
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# 2. Install the Claude Code CLI
+# 2. Install the Claude Code CLI globally — run as root
 sudo npm install -g @anthropic-ai/claude-code
 
-# 3. Launch from the repo
+# 3. Launch from the repo — run as trader
 cd /opt/trading-bot
 claude
 ```
