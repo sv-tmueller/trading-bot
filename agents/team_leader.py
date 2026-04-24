@@ -37,6 +37,7 @@ Respond with JSON:
         self._conn = None
         self._pending_stops: dict = {}
         self._pending_targets: dict = {}
+        self._dry_run: bool = False
 
     def get_tools(self) -> list:
         return [
@@ -78,8 +79,12 @@ Respond with JSON:
         conn = self._conn
         pending_stops = self._pending_stops
         pending_targets = self._pending_targets
+        dry_run = self._dry_run
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
+            if dry_run:
+                print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
+                return {"order_id": "dry-run", "status": "dry-run"}
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
             order_result = place_market_order(ticker, shares, side)
             order_id = order_result["order_id"]
@@ -96,6 +101,9 @@ Respond with JSON:
             return {"order_id": order_id, "status": "submitted"}
 
         def close_position(ticker: str, reason: str = "manual") -> dict:
+            if dry_run:
+                print(f"[DRY RUN] would close {ticker} ({reason})")
+                return {"order_id": "dry-run", "status": "dry-run"}
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
             order_id = broker_close_position(ticker)
             today = date.today().isoformat()
@@ -122,10 +130,11 @@ Respond with JSON:
 
         return [place_order, close_position]
 
-    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None) -> dict:
+    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None, dry_run: bool = False) -> dict:
         self._conn = conn
         self._pending_stops = pending_stops or {}
         self._pending_targets = pending_targets or {}
+        self._dry_run = dry_run
         return super().run(prompt, conn=conn)
 
     def parse_output(self, response) -> dict:
