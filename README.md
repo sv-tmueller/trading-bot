@@ -347,6 +347,30 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.5.0 (2026-04-24)
+
+**Bug fixes:**
+- Morning scan is now idempotent — a duplicate cron run on the same day exits immediately without placing orders (#7)
+- Position monitor pre-close check moved to 19:55 UTC (5 min before NYSE close); hourly runs stop at 19:00 UTC to avoid submitting orders at the close bell (#13)
+
+**Performance:**
+- `MarketIntelligenceAgent` now fetches prices only for tickers with open positions — eliminates up to 8 unnecessary Alpaca API calls on days with no open trades (#16)
+
+**Strategy & backtest:**
+- Backtest defaults to 3 years instead of 1 to avoid single-period cherry-picking; prints a warning when `--years 1` is used (#19)
+- EMA crossover strict single-day behaviour documented as intentional (#11)
+- RSI 40–60 conservative bounds documented with backtest comparison commands (#12)
+
+**Documentation:**
+- Added "Before going live" section covering slippage, spread costs, and liquidity filters (#18)
+- Architectural invariant documented in `CLAUDE.md`: the LLM must never control stop-loss, take-profit, or risk parameters (#20)
+- Unused DB tables (`signals`, `daily_stats`, `weekly_stats`, `suggestions`) documented as planned future work (#9)
+
+**Testing:**
+- `BaseAgent` tool-use loop and multi-turn token accumulation now covered by tests (#15)
+
+---
+
 ### v1.4.1 — pre-release (2026-04-23)
 
 **Data integrity hardening:**
