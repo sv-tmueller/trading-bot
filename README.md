@@ -272,6 +272,23 @@ Default tickers: `AMD, NOW, SHEL, NVDA, MSFT, GOOGL, META, AMZN`
 
 Edit `config/watchlist.py` to change the list. Tickers should be S&P 500 constituents with high liquidity.
 
+## Before going live
+
+Paper trading on Alpaca uses simulated fills at the mid-price with no market impact. Real trading will differ in several ways:
+
+| Factor | Paper trading | Live trading |
+|---|---|---|
+| Fill price | Mid-price | Ask (buys) / Bid (sells) |
+| Spread cost | None | Implicit in bid-ask spread |
+| Market impact | None | Thin books can cause partial fills |
+| Commission | Simulated (0.1%) | Zero (Alpaca US equities) |
+
+**Checklist before switching to live capital:**
+- [ ] Compare paper PnL vs backtest results to calibrate the gap
+- [ ] Set a minimum liquidity filter — edit `config/watchlist.py` to remove tickers with average daily volume below 1M shares
+- [ ] Run the backtest on 3 years of data (`python3 main.py backtest --years 3`) to confirm strategy robustness across different market regimes
+- [ ] Review open positions and confirm stop-loss distances are acceptable at live spread widths
+
 ## Switching to Live Trading
 
 Update two env vars in your `.env`:
