@@ -90,6 +90,9 @@ python3 -c "from storage.init_db import init_db; init_db()"
 
 ```bash
 python3 main.py scan
+
+# Dry run — full agent pipeline, no orders placed or recorded
+python3 main.py scan --dry-run
 ```
 
 ### Hourly position monitor
@@ -98,10 +101,18 @@ python3 main.py scan
 python3 main.py monitor
 ```
 
+### Trailing performance summary
+
+```bash
+python3 main.py summary
+```
+
+Prints (and posts to Discord) the win rate, total PnL, and average R-multiple across trades closed in the last 30 days.
+
 ### Backtest (historical simulation)
 
 ```bash
-# Default: 1 year, strategy parameters from settings.py
+# Default: 3 years, strategy parameters from settings.py
 python3 main.py backtest
 
 # Custom parameters
@@ -231,6 +242,7 @@ The bot sends trade summaries and alerts to a Discord channel through an n8n web
 | No candidates found | Brief note with reason |
 | No trades approved | Risk review rejection summary |
 | Position monitor (hourly) | Heartbeat with position count; closures listed if any |
+| Performance summary (`main.py summary`) | Trailing-30d win rate, PnL, avg R-multiple |
 | *(errors)* | Stack trace excerpt |
 
 ### Setup
@@ -269,7 +281,7 @@ If a message appears in Discord, the setup is complete.
 
 ## Watchlist
 
-Default tickers: `AMD, NOW, SHEL, NVDA, MSFT, GOOGL, META, AMZN`
+Default tickers (16): `AMD, NOW, SHEL, NVDA, MSFT, GOOGL, META, AMZN, TSLA, AAPL, JPM, V, MA, UNH, LLY, AVGO`
 
 Edit `config/watchlist.py` to change the list. Tickers should be S&P 500 constituents with high liquidity.
 

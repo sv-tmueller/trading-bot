@@ -23,6 +23,9 @@ python3 main.py scan --dry-run
 # Run the position monitor manually
 python3 main.py monitor
 
+# Print trailing-30d performance summary (win rate, PnL, avg R) and post to Discord
+python3 main.py summary
+
 # Initialise the database (first time only)
 python3 -c "from storage.init_db import init_db; init_db()"
 
