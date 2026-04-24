@@ -51,10 +51,23 @@ if not 1.0 <= RR_RATIO_MIN <= 5.0:
 EMA_FAST = 20
 EMA_SLOW = 50
 RSI_PERIOD = 14
-RSI_LOWER = 40
-RSI_UPPER = 60
-VOLUME_MULTIPLIER = 1.5
+
+RSI_LOWER = float(os.getenv("RSI_LOWER", "40"))
+if not 0 <= RSI_LOWER <= 50:
+    raise ValueError(f"RSI_LOWER={RSI_LOWER} outside safe bounds [0, 50]")
+RSI_UPPER = float(os.getenv("RSI_UPPER", "60"))
+if not 50 <= RSI_UPPER <= 100:
+    raise ValueError(f"RSI_UPPER={RSI_UPPER} outside safe bounds [50, 100]")
+if RSI_LOWER >= RSI_UPPER:
+    raise ValueError(f"RSI_LOWER ({RSI_LOWER}) must be < RSI_UPPER ({RSI_UPPER})")
+
+VOLUME_MULTIPLIER = float(os.getenv("VOLUME_MULTIPLIER", "1.5"))
+if not 0.5 <= VOLUME_MULTIPLIER <= 5.0:
+    raise ValueError(f"VOLUME_MULTIPLIER={VOLUME_MULTIPLIER} outside safe bounds [0.5, 5.0]")
+
 ATR_PERIOD = 14
-ATR_STOP_MULTIPLIER = 1.5
+ATR_STOP_MULTIPLIER = float(os.getenv("ATR_STOP_MULTIPLIER", "1.5"))
+if not 0.5 <= ATR_STOP_MULTIPLIER <= 5.0:
+    raise ValueError(f"ATR_STOP_MULTIPLIER={ATR_STOP_MULTIPLIER} outside safe bounds [0.5, 5.0]")
 
 STRICT_CROSSOVER: bool = os.getenv("STRICT_CROSSOVER", "true").lower() == "true"
