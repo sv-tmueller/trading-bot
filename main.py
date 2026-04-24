@@ -48,6 +48,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _scan_already_ran(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM agent_logs WHERE agent_name = 'team_leader' AND cycle_date = ?",
+        (date.today().isoformat(),),
+    ).fetchone()
+    return row is not None
+
+
 def run_morning_scan():
     if not is_trading_day():
         print("Not a trading day. Exiting.")
@@ -57,6 +65,10 @@ def run_morning_scan():
     try:
         print(f"=== Morning scan — {date.today()} ===")
         conn = get_db()
+
+        if _scan_already_ran(conn):
+            print("Morning scan already completed today. Skipping.")
+            return
 
         print("Running Market Intelligence Agent...")
         mi_agent = MarketIntelligenceAgent()

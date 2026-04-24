@@ -120,3 +120,28 @@ def test_run_position_monitor_closes_conn_on_exception(db_conn):
         run_position_monitor()
 
     mock_conn.close.assert_called_once()
+
+
+def test_run_morning_scan_skips_if_already_ran_today(db_conn):
+    """If team_leader already ran today, the scan must exit without calling any agent."""
+    from tools.database import log_agent_output
+    from datetime import date
+    log_agent_output(db_conn, {
+        "cycle_date": date.today().isoformat(),
+        "agent_name": "team_leader",
+        "input_summary": "prev run",
+        "output_summary": "prev run",
+        "full_reasoning": "prev run",
+        "tokens_used": 100,
+        "input_tokens": 80,
+        "output_tokens": 20,
+    })
+
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.MarketIntelligenceAgent") as MockMI, \
+         patch("main.notify_error"):
+        from main import run_morning_scan
+        run_morning_scan()
+
+    MockMI.assert_not_called()
