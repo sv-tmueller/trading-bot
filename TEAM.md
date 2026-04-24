@@ -78,7 +78,6 @@ Start a session and state your intent. The Team Leader decides which subagents t
    EOF
    )"
    ```
-7. For **test-only (`tests/`) or docs-only (`*.md`, `.env.example`) changes**, commit directly to `main` — no PR needed.
 
 **Does not:** open new issues, skip tests, or merge its own PR.
 
@@ -142,7 +141,6 @@ Start a session and state your intent. The Team Leader decides which subagents t
 
 ## Workflow
 
-**Production code (agents/, tools/, monitor/, main.py, config/settings.py, storage/schema.sql):**
 ```
 Team Leader dispatches QA → finds issues
 Team Leader dispatches Lead → triages, sets status:ready
@@ -153,7 +151,4 @@ Team Leader dispatches Lead → confirms tests, merges PR
 Team Leader dispatches Docs → updates README / CLAUDE.md
 ```
 
-**Test-only or docs-only changes (tests/, *.md, .env.example):**
-```
-Team Leader dispatches Engineer → commits directly to main
-```
+**Every change goes through a PR.** No direct commits to `main`.
