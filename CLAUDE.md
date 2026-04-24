@@ -101,6 +101,20 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 - `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
 - `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
 
+## Architectural invariants
+
+**The LLM must never control risk parameters directly.** This is non-negotiable.
+
+Specifically:
+- Stop-loss and take-profit values are always calculated by `tools/risk.py` (ATR-based, deterministic). The LLM receives them as inputs — it cannot set or override them.
+- Position monitor exit logic in `monitor/position_monitor.py` is rule-based only. No LLM call is made during exits.
+- Portfolio guardrails (`check_portfolio_guardrails` in `tools/risk.py`) run deterministically before any order is placed. The LLM cannot bypass them.
+- Only `TeamLeaderAgent` places orders, and only with stop/target values that come from `pending_stops`/`pending_targets` — pre-approved by the risk layer.
+
+**Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
+
+_Rationale: LLM outputs are non-deterministic and can behave unexpectedly under novel market conditions. The deterministic rules engine is the safety net that makes the system auditable and prevents runaway losses._
+
 ## Team
 
 This project uses a four-role Claude Code session structure. See [`TEAM.md`](TEAM.md) for the full playbook.
