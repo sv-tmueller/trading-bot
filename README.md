@@ -19,7 +19,7 @@ Between agent cycles, a lightweight **position monitor** runs hourly and closes 
 
 ### Entry Conditions (all three required)
 
-- EMA 20 crossed above EMA 50 (trend confirmation)
+- EMA 20 trend confirmation (strict: crossover today; or trend-following: EMA20 > EMA50 any day — controlled by `STRICT_CROSSOVER`)
 - RSI(14) between 40–60 (not overextended)
 - Volume > 1.5× 20-day average (conviction)
 
@@ -73,6 +73,7 @@ MAX_POSITIONS=5
 MAX_HOLD_DAYS=5
 RR_RATIO_MIN=2.0
 MAX_PORTFOLIO_EXPOSURE=0.20
+STRICT_CROSSOVER=true  # false = trend-following (EMA20 > EMA50 any day)
 ```
 
 > **Note:** Free Alpaca paper trading accounts use the IEX data feed (`DATA_FEED=iex`). Paid live accounts use SIP (`DATA_FEED=sip`), which covers 100% of market volume vs ~60% for IEX.
@@ -346,6 +347,14 @@ python3 -m pytest tests/test_monitor.py -v
 ```
 
 ## Changelog
+
+### v1.7.0 (2026-04-24)
+
+**Strategy:**
+- `STRICT_CROSSOVER` env var (default `true`) — when `false`, EMA entry condition switches from "EMA20 crossed above EMA50 today" to "EMA20 > EMA50 on any day" (trend-following mode). Entry signal is now enforced deterministically before the LLM sees results — LLM cannot override it (#40)
+- Watchlist expanded from 8 to 16 tickers — adds TSLA, AAPL, JPM, V, MA, UNH, LLY, AVGO (all > 5M avg daily volume). Backtest: 5 trades / 60% win rate vs 4 trades / 50% baseline (#41)
+
+---
 
 ### v1.6.0 (2026-04-24)
 
