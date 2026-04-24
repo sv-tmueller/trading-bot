@@ -347,6 +347,15 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.5.1 (2026-04-24)
+
+**Testing:**
+- `notify_backtest` and all 5 other notification functions now covered by tests — 108 tests total (#23)
+- Backtest single-year warning and default `years=3` asserted in tests (#24, #26)
+- `MarketIntelligenceAgent` `get_portfolio_state` tool closure covered by a two-turn tool-use test, confirming prices are only fetched for open-position tickers (#25)
+
+---
+
 ### v1.5.0 (2026-04-24)
 
 **Bug fixes:**
