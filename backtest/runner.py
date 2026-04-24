@@ -12,7 +12,7 @@ from backtest.report import format_terminal, notify_backtest
 
 
 def run_backtest(
-    years: int = 1,
+    years: int = 3,
     ema_fast: int = settings.EMA_FAST,
     ema_slow: int = settings.EMA_SLOW,
     rsi_period: int = settings.RSI_PERIOD,
@@ -46,6 +46,8 @@ def run_backtest(
     except ValueError:
         start = date(end.year - years, end.month, 28)
     period_str = f"{start.isoformat()} → {end.isoformat()}"
+    if years == 1:
+        print("⚠️  Single-year backtest — results may not reflect strategy robustness across different market regimes.")
 
     ticker_results: dict = {}
     for ticker in WATCHLIST:

@@ -170,7 +170,7 @@ if __name__ == "__main__":
         from config import settings as _s
 
         parser = argparse.ArgumentParser(prog="main.py backtest")
-        parser.add_argument("--years", type=int, default=1)
+        parser.add_argument("--years", type=int, default=3)
         parser.add_argument("--ema-fast", type=int, default=_s.EMA_FAST, dest="ema_fast")
         parser.add_argument("--ema-slow", type=int, default=_s.EMA_SLOW, dest="ema_slow")
         parser.add_argument("--rsi-period", type=int, default=_s.RSI_PERIOD, dest="rsi_period")

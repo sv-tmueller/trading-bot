@@ -14,6 +14,7 @@ def format_terminal(result: dict) -> str:
         f"Hold ≤{p['max_hold_days']}d"
     )
     note = "(each ticker independent — max-positions constraint not simulated)"
+    warn = "⚠️  Single-year backtest — may not reflect robustness across regimes." if p["years"] == 1 else ""
     col = f"{'Ticker':<8} {'Trades':>6} {'Win%':>6} {'Return':>9} {'Max DD':>8}"
     sep = "-" * len(col)
 
@@ -30,4 +31,8 @@ def format_terminal(result: dict) -> str:
         f"{agg['total_return'] * 100:>+8.1f}% "
         f"{agg['max_drawdown'] * 100:>7.1f}%"
     )
-    return "\n".join([header, note, "", col, sep] + rows + [sep, total])
+    parts = [header, note]
+    if warn:
+        parts.append(warn)
+    parts += ["", col, sep] + rows + [sep, total]
+    return "\n".join(parts)
