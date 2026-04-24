@@ -89,6 +89,30 @@ def test_compute_signals_ema_crossover_is_native_bool(bullish_bars):
     assert isinstance(result, bool)
 
 
+def test_is_entry_signal_trend_following_ema_above_not_crossover():
+    """strict_crossover=False: EMA20 > EMA50 but no crossover should return True when RSI/volume ok."""
+    signals = {
+        "ema_crossover": False,
+        "ema_fast": 105.0,
+        "ema_slow": 100.0,
+        "rsi": 50.0,
+        "volume_ratio": 1.8,
+    }
+    assert is_entry_signal(signals, rsi_lower=40, rsi_upper=60, volume_multiplier=1.5, strict_crossover=False) is True
+
+
+def test_is_entry_signal_strict_mode_requires_crossover():
+    """strict_crossover=True: EMA20 > EMA50 but no crossover should return False."""
+    signals = {
+        "ema_crossover": False,
+        "ema_fast": 105.0,
+        "ema_slow": 100.0,
+        "rsi": 50.0,
+        "volume_ratio": 1.8,
+    }
+    assert is_entry_signal(signals, rsi_lower=40, rsi_upper=60, volume_multiplier=1.5, strict_crossover=True) is False
+
+
 def test_fetch_bars_requests_enough_buffer_for_ema50():
     """fetch_bars must request at least days+70 calendar days so EMA50 has warmup data."""
     from unittest.mock import patch, MagicMock
