@@ -64,11 +64,13 @@ If no candidates, return empty candidates list and explain in no_trade_reason.
         return [compute_ticker_signals]
 
     def run(self, prompt: str, conn=None) -> dict:
+        ema_mode = "strict crossover (EMA20 must cross above EMA50 today)" if settings.STRICT_CROSSOVER else "trend-following (EMA20 > EMA50 on any day)"
         params_prompt = (
             f"Strategy parameters:\n"
             f"- EMA fast/slow: {settings.EMA_FAST}/{settings.EMA_SLOW}\n"
             f"- RSI range: {settings.RSI_LOWER}–{settings.RSI_UPPER}\n"
             f"- Volume multiplier: {settings.VOLUME_MULTIPLIER}x\n"
+            f"- EMA entry mode: {ema_mode}\n"
             f"- Watchlist: {', '.join(WATCHLIST)}\n\n"
             f"Market briefing: {prompt}\n\n"
             f"Scan each ticker and return trade candidates."

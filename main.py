@@ -214,6 +214,8 @@ if __name__ == "__main__":
         parser.add_argument("--atr-multiplier", type=float, default=_s.ATR_STOP_MULTIPLIER, dest="atr_multiplier")
         parser.add_argument("--rr-ratio", type=float, default=_s.RR_RATIO_MIN, dest="rr_ratio")
         parser.add_argument("--max-hold-days", type=int, default=_s.MAX_HOLD_DAYS, dest="max_hold_days")
+        parser.add_argument("--strict-crossover", action="store_true", default=_s.STRICT_CROSSOVER, dest="strict_crossover")
+        parser.add_argument("--no-strict-crossover", action="store_false", dest="strict_crossover")
         args = parser.parse_args(sys.argv[2:])
         run_backtest(**vars(args))
     elif mode == "summary":

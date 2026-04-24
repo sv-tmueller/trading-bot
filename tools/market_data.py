@@ -76,9 +76,14 @@ def is_entry_signal(
     rsi_lower: float = 40,
     rsi_upper: float = 60,
     volume_multiplier: float = 1.5,
+    strict_crossover: bool = True,
 ) -> bool:
+    if strict_crossover:
+        ema_ok = signals["ema_crossover"] is True
+    else:
+        ema_ok = signals["ema_fast"] > signals["ema_slow"]
     return (
-        signals["ema_crossover"] is True
+        ema_ok
         and rsi_lower <= signals["rsi"] <= rsi_upper
         and signals["volume_ratio"] >= volume_multiplier
     )

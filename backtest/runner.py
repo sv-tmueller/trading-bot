@@ -23,6 +23,7 @@ def run_backtest(
     atr_multiplier: float = settings.ATR_STOP_MULTIPLIER,
     rr_ratio: float = settings.RR_RATIO_MIN,
     max_hold_days: int = settings.MAX_HOLD_DAYS,
+    strict_crossover: bool = settings.STRICT_CROSSOVER,
 ) -> dict:
     params = dict(
         years=years,
@@ -36,6 +37,7 @@ def run_backtest(
         atr_multiplier=atr_multiplier,
         rr_ratio=rr_ratio,
         max_hold_days=max_hold_days,
+        strict_crossover=strict_crossover,
     )
 
     strategy_params = {k: v for k, v in params.items() if k != "years"}

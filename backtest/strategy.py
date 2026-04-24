@@ -17,6 +17,7 @@ class EMAStrategy(Strategy):
     atr_multiplier: float = 1.5
     rr_ratio: float = 2.0
     max_hold_days: int = 5
+    strict_crossover: bool = True
 
     def init(self) -> None:
         def _ema(arr: np.ndarray, window: int) -> np.ndarray:
@@ -62,11 +63,14 @@ class EMAStrategy(Strategy):
         if any(np.isnan(v) for v in (ema_f, ema_s, ema_f_prev, ema_s_prev, rsi, atr, vol_sma)):
             return
 
-        crossover = bool((ema_f > ema_s) and (ema_f_prev <= ema_s_prev))
+        if self.strict_crossover:
+            ema_ok = bool((ema_f > ema_s) and (ema_f_prev <= ema_s_prev))
+        else:
+            ema_ok = bool(ema_f > ema_s)
         rsi_ok = self.rsi_lower <= rsi <= self.rsi_upper
         vol_ok = (self.data.Volume[-1] / vol_sma) >= self.volume_multiplier
 
-        if not (crossover and rsi_ok and vol_ok):
+        if not (ema_ok and rsi_ok and vol_ok):
             return
 
         stop_dist = atr * self.atr_multiplier
