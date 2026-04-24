@@ -90,13 +90,27 @@ def notify_performance_summary(stats: dict) -> None:
     )
 
 
+def _fmt_optional(value, fmt: str, fallback: str = "n/a") -> str:
+    if value is None:
+        return fallback
+    if value == float("inf"):
+        return "∞"
+    return format(value, fmt)
+
+
 def notify_backtest(result: dict) -> None:
     params = result["params"]
     agg = result["aggregate"]
+    pf = _fmt_optional(agg.get("profit_factor"), ".2f")
+    wl = _fmt_optional(agg.get("winner_loser_ratio"), ".2f")
+    exp = _fmt_optional(agg.get("expectancy_pct"), "+.2f")
     _post(
         f"📊 Backtest ({params['years']}y, EMA {params['ema_fast']}/{params['ema_slow']})\n"
         f"{agg['trades']} trades across {len(result['tickers'])} tickers\n"
         f"Win rate: {agg['win_rate'] * 100:.1f}% | "
         f"Return: {agg['total_return'] * 100:+.1f}% | "
-        f"Max DD: {agg['max_drawdown'] * 100:.1f}%"
+        f"Max DD: {agg['max_drawdown'] * 100:.1f}%\n"
+        f"Profit factor: {pf} | "
+        f"Winner:Loser: {wl} | "
+        f"Expectancy: {exp}%"
     )
