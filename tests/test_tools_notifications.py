@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 
 def test_post_skips_when_no_webhook_url(mocker):
@@ -98,3 +98,19 @@ def test_notify_error_includes_context(mocker):
     msg = mock_post.call_args[0][0]
     assert "morning_scan" in msg
     assert "something went wrong" in msg
+
+
+def test_notify_backtest_includes_trades_and_win_rate(mocker):
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_backtest
+    result = {
+        "params": {"years": 3, "ema_fast": 20, "ema_slow": 50},
+        "tickers": {"AMD": {}, "NVDA": {}},
+        "aggregate": {"trades": 5, "win_rate": 0.60, "total_return": 0.04, "max_drawdown": -0.02},
+    }
+    notify_backtest(result)
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "Backtest" in msg
+    assert "5 trades" in msg
+    assert "60.0%" in msg
