@@ -84,7 +84,7 @@ Respond with JSON:
             order_result = place_market_order(ticker, shares, side)
             order_id = order_result["order_id"]
             if side == "buy":
-                entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # use fill; fall back to quote
+                entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # Alpaca fills async; fill_price may be None on paper — pre-order quote is the fallback
                 insert_trade(conn, {
                     "ticker": ticker,
                     "entry_date": date.today().isoformat(),
