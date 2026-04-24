@@ -150,3 +150,69 @@ def test_close_position_fetches_price_before_broker(db_conn):
 
     assert call_order.index("price") < call_order.index("broker"), \
         "get_current_price must be called before broker_close_position"
+
+
+def test_dry_run_skips_place_order(db_conn):
+    """With dry_run=True, place_order must not call place_market_order or insert_trade."""
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_001"
+    tool_use_block.name = "place_order"
+    tool_use_block.input = {"ticker": "AMD", "shares": 100, "side": "buy"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "dry run"}], "summary": "dry run"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.database.insert_trade") as mock_insert:
+        agent = TeamLeaderAgent()
+        result = agent.run("Approved: AMD 100 shares", conn=db_conn, dry_run=True)
+
+    mock_place.assert_not_called()
+    mock_insert.assert_not_called()
+    assert result.get("summary") == "dry run"
+
+
+def test_dry_run_skips_close_position(db_conn):
+    """With dry_run=True, close_position must not call broker or close_trade."""
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_002"
+    tool_use_block.name = "close_position"
+    tool_use_block.input = {"ticker": "AMD", "reason": "manual"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 0, "reasoning": "dry run close"}], "summary": "dry run close"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price") as mock_price, \
+         patch("tools.broker.close_position") as mock_broker_close, \
+         patch("tools.database.close_trade") as mock_close_trade:
+        agent = TeamLeaderAgent()
+        result = agent.run("Close AMD", conn=db_conn, dry_run=True)
+
+    mock_price.assert_not_called()
+    mock_broker_close.assert_not_called()
+    mock_close_trade.assert_not_called()
+    assert result.get("summary") == "dry run close"

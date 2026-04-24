@@ -79,7 +79,7 @@ def _reconcile_positions(conn: sqlite3.Connection) -> None:
         notify_error("reconciliation", message)
 
 
-def run_morning_scan():
+def run_morning_scan(dry_run: bool = False):
     if not is_trading_day():
         print("Not a trading day. Exiting.")
         return
@@ -141,6 +141,7 @@ def run_morning_scan():
             conn=conn,
             pending_stops=pending_stops,
             pending_targets=pending_targets,
+            dry_run=dry_run,
         )
         print(f"Session summary: {decisions.get('summary')}")
 
@@ -189,7 +190,11 @@ if __name__ == "__main__":
     import sys
     mode = sys.argv[1] if len(sys.argv) > 1 else "scan"
     if mode == "scan":
-        run_morning_scan()
+        import argparse
+        parser = argparse.ArgumentParser(prog="main.py scan")
+        parser.add_argument("--dry-run", action="store_true", dest="dry_run", default=False)
+        args = parser.parse_args(sys.argv[2:])
+        run_morning_scan(dry_run=args.dry_run)
     elif mode == "monitor":
         run_position_monitor()
     elif mode == "backtest":
