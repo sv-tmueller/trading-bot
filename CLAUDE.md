@@ -17,6 +17,9 @@ python3 -m pytest tests/test_monitor.py::test_stop_loss_triggered -v
 # Run the morning scan manually
 python3 main.py scan
 
+# Dry-run scan — full agent pipeline, no orders placed or recorded
+python3 main.py scan --dry-run
+
 # Run the position monitor manually
 python3 main.py monitor
 

@@ -347,6 +347,16 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.6.0 (2026-04-24)
+
+**Reliability:**
+- Position reconciliation runs at scan startup — detects ghost positions (open on Alpaca but missing from DB) and phantom DB entries (DB thinks open but Alpaca closed). Alerts via Discord, never blocks the scan (#30)
+
+**Developer experience:**
+- `python3 main.py scan --dry-run` runs the full four-agent pipeline without placing any orders or writing to the DB — prints `[DRY RUN] would buy/sell N shares of TICKER` instead (#28)
+
+---
+
 ### v1.5.1 (2026-04-24)
 
 **Testing:**
