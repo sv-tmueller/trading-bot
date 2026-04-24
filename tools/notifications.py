@@ -77,6 +77,19 @@ def notify_error(context: str, error: str) -> None:
     _post(f"⚠️ **Bot Error — {context}**\n```{error[:500]}```")
 
 
+def notify_performance_summary(stats: dict) -> None:
+    days = stats["days"]
+    trade_count = stats["trade_count"]
+    if trade_count == 0:
+        _post(f"📈 **Performance Summary** — no closed trades in the last {days} days")
+        return
+    _post(
+        f"📈 **Performance Summary — trailing {days}d**\n"
+        f"{trade_count} trades | Win rate: {stats['win_rate']:.1%} | "
+        f"PnL: ${stats['total_pnl_dollars']:+.2f} | Avg R: {stats['avg_r_multiple']:+.2f}"
+    )
+
+
 def notify_backtest(result: dict) -> None:
     params = result["params"]
     agg = result["aggregate"]

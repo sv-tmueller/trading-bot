@@ -10,6 +10,7 @@ from tools.database import (
     get_active_parameters,
     insert_parameters,
     get_daily_token_costs,
+    get_closed_trade_stats,
 )
 
 
@@ -85,6 +86,54 @@ def test_get_daily_token_costs(db_conn):
     assert costs["total_tokens"] == 1400
     # 1000/1M * $3 + 400/1M * $15 = $0.003 + $0.006 = $0.009
     assert costs["cost_usd"] == pytest.approx(0.009, rel=1e-3)
+
+
+def test_get_closed_trade_stats_no_trades(db_conn):
+    stats = get_closed_trade_stats(db_conn, days=30)
+    assert stats["trade_count"] == 0
+    assert stats["win_rate"] == 0.0
+    assert stats["total_pnl_dollars"] == 0.0
+    assert stats["avg_r_multiple"] == 0.0
+    assert stats["days"] == 30
+
+
+def test_get_closed_trade_stats_with_wins_and_losses(db_conn):
+    from datetime import date, timedelta
+    recent = (date.today() - timedelta(days=5)).isoformat()
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("AMD", "2026-04-01", recent, 150.0, 160.0, 10, 145.0, 165.0, "take_profit", 100.0, 0.067, 9, 2.0),
+    )
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("NVDA", "2026-04-01", recent, 200.0, 190.0, 5, 195.0, 210.0, "stop_loss", -50.0, -0.025, 4, -1.0),
+    )
+    db_conn.commit()
+    stats = get_closed_trade_stats(db_conn, days=30)
+    assert stats["trade_count"] == 2
+    assert stats["win_count"] == 1
+    assert stats["loss_count"] == 1
+    assert stats["win_rate"] == pytest.approx(0.5)
+    assert stats["total_pnl_dollars"] == pytest.approx(50.0)
+    assert stats["avg_r_multiple"] == pytest.approx(0.5)
+
+
+def test_get_closed_trade_stats_filters_old_trades(db_conn):
+    from datetime import date, timedelta
+    old = (date.today() - timedelta(days=60)).isoformat()
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("AMD", "2026-02-01", old, 150.0, 160.0, 10, 145.0, 165.0, "take_profit", 100.0, 0.067, 9, 2.0),
+    )
+    db_conn.commit()
+    stats = get_closed_trade_stats(db_conn, days=30)
+    assert stats["trade_count"] == 0
 
 
 def test_insert_and_get_parameters(db_conn):

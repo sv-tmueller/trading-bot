@@ -216,5 +216,20 @@ if __name__ == "__main__":
         parser.add_argument("--max-hold-days", type=int, default=_s.MAX_HOLD_DAYS, dest="max_hold_days")
         args = parser.parse_args(sys.argv[2:])
         run_backtest(**vars(args))
+    elif mode == "summary":
+        conn = None
+        try:
+            conn = get_db()
+            from tools.database import get_closed_trade_stats
+            from tools.notifications import notify_performance_summary
+            stats = get_closed_trade_stats(conn)
+            print(f"Trailing {stats['days']}d: {stats['trade_count']} trades | "
+                  f"Win rate: {stats['win_rate']:.1%} | "
+                  f"PnL: ${stats['total_pnl_dollars']:+.2f} | "
+                  f"Avg R: {stats['avg_r_multiple']:+.2f}")
+            notify_performance_summary(stats)
+        finally:
+            if conn:
+                conn.close()
     else:
-        print(f"Unknown mode: {mode}. Use 'scan', 'monitor', or 'backtest'")
+        print(f"Unknown mode: {mode}. Use 'scan', 'monitor', 'backtest', or 'summary'")
