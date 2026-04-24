@@ -44,11 +44,14 @@ Always respond with a JSON object containing:
 
     def _get_tool_functions(self) -> list:
         from tools.portfolio import get_open_positions_with_prices
+        from tools.database import get_open_trades
         from tools.broker import get_current_price
         conn = self._conn  # capture locally so closures don't hold mutable self reference
 
         def get_portfolio_state():
-            prices = {t: get_current_price(t) for t in WATCHLIST}
+            open_trades = get_open_trades(conn)
+            open_tickers = [t["ticker"] for t in open_trades]
+            prices = {t: get_current_price(t) for t in open_tickers}
             return get_open_positions_with_prices(conn, prices)
 
         def get_watchlist():
