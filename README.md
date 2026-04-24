@@ -291,6 +291,58 @@ claude
   export ANTHROPIC_API_KEY=sk-ant-...
   ```
 
+### Reconnecting after a dropped SSH session
+
+If your internet blinks or you close the terminal by accident, here's the exact sequence to get back to a working Claude Code session — copy-paste line by line.
+
+**1. SSH back into the VPS**
+
+Open a new terminal and run your usual ssh command. If you use the port-forwarded form from the Auth section above, re-use it:
+
+```bash
+ssh -L 54545:localhost:54545 user@your-vps
+```
+
+**2. Switch to the `trader` user**
+
+You'll land as your own user (the one your SSH key is for). Claude Code needs to run as `trader` — the user that owns `/opt/trading-bot`. Two ways to switch:
+
+```bash
+# Recommended — uses your sudo password, not trader's:
+sudo -u trader -i
+
+# Alternative, requires trader's password:
+su - trader
+```
+
+If `sudo -u trader -i` complains about missing permissions, see the "Run as a non-root user" box above for the one-time setup.
+
+**3. Go into the bot folder**
+
+```bash
+cd /opt/trading-bot
+```
+
+**4. Resume your previous Claude Code session**
+
+```bash
+claude --continue
+```
+
+`--continue` picks the most recent session in the current directory and replays the full conversation history so you land back exactly where you left off. If you want to see a list of recent sessions and pick one, use `claude --resume` instead (opens a session picker).
+
+If there was no previous session — or Claude Code doesn't find one — just run `claude` to start a fresh session. No harm done; previous sessions aren't deleted, they're just not selected.
+
+**5. If your screen was showing something running**
+
+If a long-running command (backtest, scan, deploy) was in-flight when you disconnected, it may have been killed with the SSH session. Check with:
+
+```bash
+ps -u trader | grep -E "python|claude"
+```
+
+If nothing is running and you need that command again, just re-invoke it. For commands you want to survive disconnects, prefix with `nohup ... &` or use `tmux` / `screen`.
+
 ### Private repository authentication
 
 GitHub no longer accepts passwords for git operations. If the repo is private, create a **Personal Access Token (PAT)**:
