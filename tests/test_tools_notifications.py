@@ -68,6 +68,8 @@ def test_notify_no_approved_includes_date(mocker):
     mock_post.assert_called_once()
     msg = mock_post.call_args[0][0]
     assert "2026-04-24" in msg
+    assert "No trades approved" in msg
+    assert "0.0021" in msg
 
 
 def test_notify_monitor_no_positions(mocker):
