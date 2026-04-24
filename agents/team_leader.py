@@ -83,7 +83,7 @@ Respond with JSON:
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
             if dry_run:
-                print(f"[DRY RUN] would buy {shares} shares of {ticker}")
+                print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
                 return {"order_id": "dry-run", "status": "dry-run"}
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
             order_result = place_market_order(ticker, shares, side)

@@ -192,7 +192,7 @@ if __name__ == "__main__":
     if mode == "scan":
         import argparse
         parser = argparse.ArgumentParser(prog="main.py scan")
-        parser.add_argument("--dry-run", action="store_true", dest="dry_run", default=False)
+        parser.add_argument("--dry-run", action="store_true", dest="dry_run")
         args = parser.parse_args(sys.argv[2:])
         run_morning_scan(dry_run=args.dry_run)
     elif mode == "monitor":

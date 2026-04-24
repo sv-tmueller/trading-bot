@@ -184,6 +184,38 @@ def test_dry_run_skips_place_order(db_conn):
     assert result.get("summary") == "dry run"
 
 
+def test_dry_run_skips_place_order_sell_side(db_conn):
+    """With dry_run=True and side=sell, place_order must not call place_market_order or insert_trade."""
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_003"
+    tool_use_block.name = "place_order"
+    tool_use_block.input = {"ticker": "AMD", "shares": 100, "side": "sell"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 100, "reasoning": "dry-run sell"}], "summary": "dry-run"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.database.insert_trade") as mock_insert:
+        agent = TeamLeaderAgent()
+        result = agent.run("Approved: AMD 100 shares sell", conn=db_conn, dry_run=True)
+
+    mock_place.assert_not_called()
+    mock_insert.assert_not_called()
+    assert "dry-run" in str(result)
+
+
 def test_dry_run_skips_close_position(db_conn):
     """With dry_run=True, close_position must not call broker or close_trade."""
     tool_use_block = MagicMock()
