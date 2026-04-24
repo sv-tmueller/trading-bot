@@ -111,7 +111,28 @@ def run_backtest(
     rr_ratio: float = settings.RR_RATIO_MIN,
     max_hold_days: int = settings.MAX_HOLD_DAYS,
     strict_crossover: bool = settings.STRICT_CROSSOVER,
+    portfolio: bool = False,
 ) -> dict:
+    if portfolio:
+        from backtest.portfolio import run_portfolio_backtest
+        from backtest.report import format_portfolio
+
+        result = run_portfolio_backtest(
+            years=years,
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            rsi_period=rsi_period,
+            rsi_lower=rsi_lower,
+            rsi_upper=rsi_upper,
+            volume_multiplier=volume_multiplier,
+            atr_period=atr_period,
+            atr_multiplier=atr_multiplier,
+            rr_ratio=rr_ratio,
+            max_hold_days=max_hold_days,
+            strict_crossover=strict_crossover,
+        )
+        print(format_portfolio(result))
+        return result
     params = dict(
         years=years,
         ema_fast=ema_fast,

@@ -216,6 +216,13 @@ if __name__ == "__main__":
         parser.add_argument("--max-hold-days", type=int, default=_s.MAX_HOLD_DAYS, dest="max_hold_days")
         parser.add_argument("--strict-crossover", action="store_true", default=_s.STRICT_CROSSOVER, dest="strict_crossover")
         parser.add_argument("--no-strict-crossover", action="store_false", dest="strict_crossover")
+        parser.add_argument(
+            "--portfolio",
+            action="store_true",
+            default=False,
+            dest="portfolio",
+            help="Run the portfolio-level simulator (MAX_POSITIONS-aware) instead of the per-ticker runner.",
+        )
         args = parser.parse_args(sys.argv[2:])
         run_backtest(**vars(args))
     elif mode == "summary":
