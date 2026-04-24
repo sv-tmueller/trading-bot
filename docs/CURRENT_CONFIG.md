@@ -8,7 +8,7 @@ Pinned snapshot of the live trading bot configuration. Update this file whenever
 
 ## Last updated
 
-**2026-04-24** — strategy params tuned and watchlist pruned based on 3-year backtest. See commit `49aa3ea` and the *Change Log* section below.
+**2026-04-24** — E3 strategy tune rolled out after a 20-config parameter sweep across 1/3/5/10-year windows. Watchlist unchanged from the D6 prune. See the *Change Log* section below.
 
 ---
 
@@ -17,33 +17,34 @@ Pinned snapshot of the live trading bot configuration. Update this file whenever
 Set these in `/opt/trading-bot/.env` on the VPS. Values not listed here use the defaults from `config/settings.py`.
 
 ```env
-# Strategy gates — loosened from baseline to produce tradeable signals
+# Strategy gates — loosened further in the E3 tune to maximise exposure to trending names
 STRICT_CROSSOVER=false
-RSI_LOWER=35
-RSI_UPPER=70
-VOLUME_MULTIPLIER=1.2
-ATR_STOP_MULTIPLIER=1.3
+RSI_LOWER=30
+RSI_UPPER=75
+VOLUME_MULTIPLIER=1.0
+ATR_STOP_MULTIPLIER=1.5
 
-# Hold period — longer than baseline so trends have room to run
-MAX_HOLD_DAYS=10
+# Hold period — doubled from D6 so winners can run through short-term chop
+MAX_HOLD_DAYS=20
 
-# Risk — unchanged from baseline
+# Risk — asymmetry thesis: require 3:1 reward:risk at entry
 RISK_PER_TRADE=0.01
 MAX_POSITIONS=5
 MAX_PORTFOLIO_EXPOSURE=0.20
-RR_RATIO_MIN=2.0
+RR_RATIO_MIN=3.0
 ```
 
 ### What each change does
 
-| Var | Baseline | Live | Effect |
+| Var | Baseline | Live (E3) | Effect |
 |---|---|---|---|
 | `STRICT_CROSSOVER` | `true` | `false` | Accept EMA20 > EMA50 as trend state, not just the crossover event. Unblocks stale-signal days. |
-| `RSI_LOWER` | `40` | `35` | Lets mildly oversold entries in — caught NOW at 37.60 in live data on 2026-04-23. |
-| `RSI_UPPER` | `60` | `70` | Lets trending names in — previously rejected NVDA at 67.89. |
-| `VOLUME_MULTIPLIER` | `1.5` | `1.2` | 1.5× was a breakout-only threshold; 1.2× accepts normal-conviction days. |
-| `ATR_STOP_MULTIPLIER` | `1.5` | `1.3` | Tighter stops keep per-trade losses smaller — improved 3yr return by ~+1 point vs 1.5. |
-| `MAX_HOLD_DAYS` | `5` | `10` | Single biggest return lever in backtest — let winners run. |
+| `RSI_LOWER` | `40` | `30` | Accepts mild oversold entries. Adds ~7pp return over the 10yr window vs RSI_LOWER=35. |
+| `RSI_UPPER` | `60` | `75` | Catches strong-trending names earlier — key contributor for AVGO/GOOGL-style runners. |
+| `VOLUME_MULTIPLIER` | `1.5` | `1.0` | Loosens conviction filter. Adds trade count without degrading PF — quality per trade is roughly unchanged. |
+| `ATR_STOP_MULTIPLIER` | `1.5` | `1.5` | Counter-intuitively improves PF vs the D6 value of `1.3`. Wider stops survive noise; tighter stops (ATR 1.0 tested) blew drawdown to -39%. |
+| `MAX_HOLD_DAYS` | `5` | `20` | Single biggest return lever in this sweep — doubling the hold window let winners run past short-term chop. |
+| `RR_RATIO_MIN` | `2.0` | `3.0` | Core of the asymmetry thesis — winners should be ~3× the risk distance. W:L jumps from 1.59 (D6) to 2.08 (E3). |
 
 ---
 
@@ -83,16 +84,25 @@ All four were negative in 4-5 of 5 tested backtest configs (D1, D3, D6, D8, D9):
 
 ## Backtest results (how we got here)
 
-3-year window `2023-04-24 → 2026-04-24`, 1-year and 2-year cross-validated.
+The E3 tune was selected from a 20-config parameter sweep run across 1/3/5/10-year windows. Headline numbers below are pooled across all trades (ticker-independent simulator). Baseline and D6 rows kept for historical comparison.
 
-| Config | Trades | Win% | 3yr Return | 2yr Return | 1yr Return | Worst DD |
-|---|---|---|---|---|---|---|
-| Baseline (pre-tune) | 5 | 60% | +0.2% | ≈0% | +0.1% | -2.4% |
-| **Live (D6 + prune)** | **471** | **45.9%** | **+8.7%** | **+3.4%** | **+2.6%** | **-10.4%** |
+| Config | Trades (10yr) | Win% | 10yr Return | PF | W:L | Expect | Worst DD |
+|---|---|---|---|---|---|---|---|
+| Baseline (pre-tune) | 5 | 60% | +0.2% (3yr) | — | — | — | -2.4% |
+| D6 (previous live) | 471 (3yr) / pooled | 45.9% (3yr) | +16.6% (10yr) | 1.20 | 1.59 | +0.4% | -23.6% |
+| **E3 (current live)** | **1613** | **40.3%** | **+42.1%** | **1.42** | **2.08** | **+1.0%** | **-21.1%** |
 
-The win rate dropped because the strategy is now actively trading. With `RR_RATIO_MIN=2.0` the break-even win rate is ~33%, so 46% is comfortably positive expectancy.
+Cross-validation on shorter windows — metrics stable across regimes:
 
-Per-ticker 3yr returns (live config): GOOGL +30.4%, AVGO +24.8%, META +18.1%, JPM +9.4%, AAPL +7.0%, LLY +6.7%, AMD +4.6%, SHEL +4.0%, TSLA +0.9%, NVDA +0.2%, NOW -1.0%, AMZN -1.1%.
+| Window | Return | PF | W:L |
+|---|---|---|---|
+| 3yr | +7.8% | 1.32 | 2.03 |
+| 5yr | +14.9% | 1.35 | 1.99 |
+| 10yr | +42.1% | 1.42 | 2.08 |
+
+Win rate intentionally drops under E3: with `RR_RATIO_MIN=3.0` the break-even win rate is ~25%, so 40.3% leaves a healthy expectancy buffer (+1.0% per trade). The thesis is asymmetry — fewer wins, but each win is ~2× the size of each loss.
+
+**Why E3 and not F3.** F3 (RSI 25-80) scored marginally higher (+45.9% / PF 1.43) but pushes entries into deep oversold/overbought territory. The backtest doesn't model slippage or gap risk in those regions, so E3 was chosen as the more conservative live config.
 
 ---
 
@@ -109,6 +119,14 @@ The first scan after `13:35 UTC` should produce trade candidates if market condi
 ## Change log
 
 Keep this section chronological, newest entry on top. Each entry should fit in 1-5 lines.
+
+### 2026-04-24 — E3 strategy tune
+
+- Strategy params: `RSI_LOWER=30`, `RSI_UPPER=75`, `VOLUME_MULTIPLIER=1.0`, `MAX_HOLD_DAYS=20`, `ATR_STOP_MULTIPLIER=1.5`, `RR_RATIO_MIN=3.0` (`STRICT_CROSSOVER=false` unchanged).
+- 10yr pooled: 1613 trades, 40.3% win rate, **+42.1% return**, PF **1.42**, W:L **2.08**, expectancy **+1.0%** per trade, max per-ticker DD -21.1%.
+- Cross-validated: 3yr +7.8% / PF 1.32 / W:L 2.03 — 5yr +14.9% / PF 1.35 / W:L 1.99. Metrics stable across regimes.
+- Driver: 20-config parameter sweep across 1/3/5/10yr windows; E3 chosen over F3 (RSI 25-80) because F3's deeper RSI bounds aren't robust to unmodeled slippage/gap risk.
+- Watchlist unchanged from the D6 prune (12 tickers). Docs-only rollout — VPS `.env` updated separately.
 
 ### 2026-04-24 — D6 tune + watchlist prune
 

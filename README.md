@@ -437,6 +437,19 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.9.0 (2026-04-24)
+
+**Strategy tuning (E3 — 10yr parameter sweep):**
+- `RSI_LOWER=30`, `RSI_UPPER=75`, `VOLUME_MULTIPLIER=1.0`, `MAX_HOLD_DAYS=20`, `ATR_STOP_MULTIPLIER=1.5`, `RR_RATIO_MIN=3.0` on the live bot (`STRICT_CROSSOVER=false` unchanged). 10yr pooled backtest: **+42.1% return**, profit factor **1.42**, winner:loser ratio **2.08**, 1613 trades at 40.3% win rate, max per-ticker drawdown -21.1%
+- Cross-validated on shorter windows: 3yr +7.8% / PF 1.32, 5yr +14.9% / PF 1.35 — metrics stable across regimes
+- Selected from a 20-config sweep; chose E3 over the marginally higher F3 (RSI 25-80) because F3's deeper RSI bounds aren't robust to unmodeled slippage and gap risk
+- Watchlist unchanged from v1.8.0 (12 tickers)
+
+**Documentation:**
+- [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md) updated with the E3 env block, refreshed "What each change does" table, new backtest results snapshot, and a change-log entry (#56)
+
+---
+
 ### v1.8.0 (2026-04-24)
 
 **Strategy tuning (3yr backtest driven):**
