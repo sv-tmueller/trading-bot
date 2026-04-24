@@ -121,11 +121,11 @@ _Rationale: LLM outputs are non-deterministic and can behave unexpectedly under 
 
 ## Team
 
-This project uses a four-role Claude Code session structure. See [`TEAM.md`](TEAM.md) for the full playbook.
+The main session always acts as **Team Leader** — it orchestrates Lead, Engineer, QA, and Docs as subagents. You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
 
-| Say this at session start | Role |
+| Tell the Team Leader | It will dispatch… |
 |---|---|
-| `Act as Lead` | Triage and prioritize GitHub Issues |
-| `Act as Engineer` | Implement the top-priority ready issue |
-| `Act as QA` | Discover bugs and gaps, open GitHub Issues |
-| `Act as Docs` | Update documentation based on recent changes |
+| `Triage open issues` | Lead — label, prioritize, set status:ready |
+| `Work on the issues` | Lead then Engineer per issue, with reviews |
+| `Run QA` | QA — discover bugs, open issues |
+| `Update docs` | Docs — sync README and CLAUDE.md |
