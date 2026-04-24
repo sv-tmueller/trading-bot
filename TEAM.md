@@ -27,9 +27,10 @@ Tell Claude which role to play at the start of every session:
 
 Note: `critical` label supersedes `priority: high` — preserve it if already set on an issue.
 
-5. Review any open PRs from the Engineer: `gh pr list` — check that tests pass and the change is scoped to the issue
-6. Merge approved PRs: `gh pr merge <N> --squash --delete-branch`
-7. Output a session summary: what was triaged, what the Engineer should tackle first
+5. Review any open PRs from the Engineer: `gh pr list` — check that the change is scoped to the issue
+6. Confirm status checks are green before merging: `gh pr checks <N> --watch`
+7. Merge approved PRs: `gh pr merge <N> --squash --delete-branch`
+8. Output a session summary: what was triaged, what the Engineer should tackle first
 
 **Does not:** write code, open new issues, or implement anything.
 
@@ -58,7 +59,7 @@ Note: `critical` label supersedes `priority: high` — preserve it if already se
    EOF
    )"
    ```
-8. For **test-only or docs-only changes**, push directly to `main` — no PR needed.
+8. For **test-only (`tests/`) or docs-only (`*.md`, `.env.example`) changes**, push directly to `main` — no PR needed.
 
 **Does not:** open new issues, skip tests, merge its own PR (Lead reviews and merges), or close issues before tests pass.
 
@@ -125,12 +126,17 @@ Note: `critical` label supersedes `priority: high` — preserve it if already se
 
 ## Workflow
 
+**Production code path (agents/, tools/, monitor/, main.py, config/settings.py, storage/schema.sql):**
 ```
 QA opens issue (type label)
   → Lead triages: adds priority + status:ready
     → Engineer picks up: adds status:in-progress, implements on a branch, opens PR
-      → Lead reviews PR, merges to main (issue auto-closes)
+      → Lead confirms checks green, merges to main (issue auto-closes)
         → Docs reviews git log, updates docs, closes documentation issues
 ```
 
-**PR rule:** PRs required for production code changes (agents, tools, monitor, main.py). Test-only and docs-only changes push directly to `main`.
+**Test-only or docs-only path (tests/, *.md, .env.example):**
+```
+Engineer commits directly to main
+  → Docs reviews git log if needed
+```

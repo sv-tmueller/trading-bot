@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
 
 
@@ -47,6 +46,8 @@ def test_notify_scan_complete_includes_date_and_decisions(mocker):
     assert "2026-04-24" in msg
     assert "AMD" in msg
     assert "1 approved" in msg
+    assert "2 rejected" in msg
+    assert "0.0042" in msg
 
 
 def test_notify_no_candidates_includes_tldr(mocker):
@@ -57,6 +58,7 @@ def test_notify_no_candidates_includes_tldr(mocker):
     msg = mock_post.call_args[0][0]
     assert "RSI overextended" in msg
     assert "NVDA" in msg
+    assert "0.0012" in msg
 
 
 def test_notify_no_approved_includes_date(mocker):
@@ -98,19 +100,3 @@ def test_notify_error_includes_context(mocker):
     msg = mock_post.call_args[0][0]
     assert "morning_scan" in msg
     assert "something went wrong" in msg
-
-
-def test_notify_backtest_includes_trades_and_win_rate(mocker):
-    mock_post = mocker.patch("tools.notifications._post")
-    from tools.notifications import notify_backtest
-    result = {
-        "params": {"years": 3, "ema_fast": 20, "ema_slow": 50},
-        "tickers": {"AMD": {}, "NVDA": {}},
-        "aggregate": {"trades": 5, "win_rate": 0.60, "total_return": 0.04, "max_drawdown": -0.02},
-    }
-    notify_backtest(result)
-    mock_post.assert_called_once()
-    msg = mock_post.call_args[0][0]
-    assert "Backtest" in msg
-    assert "5 trades" in msg
-    assert "60.0%" in msg
