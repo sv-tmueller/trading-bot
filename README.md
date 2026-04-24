@@ -216,6 +216,36 @@ cd /opt/trading-bot && git pull
 
 No restart needed — cron picks up the latest code on each run.
 
+### Running Claude Code on the VPS
+
+To inspect scan history, DB state, or logs interactively on the VPS, install Claude Code:
+
+```bash
+# 1. Install Node 20+ (required by claude-code)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# 2. Install the Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# 3. Launch from the repo
+cd /opt/trading-bot
+claude
+```
+
+**Auth on a headless VPS** — two options:
+
+- **Easiest: reuse your laptop login.** SSH in with a port forward so the OAuth callback lands on the VPS but opens in your laptop browser:
+  ```bash
+  ssh -L 54545:localhost:54545 user@your-vps
+  ```
+  Then run `claude` on the VPS and follow the URL it prints.
+
+- **Fallback: API key.** Console-billed only (not Pro/Max). Add to `~/.bashrc`:
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  ```
+
 ### Private repository authentication
 
 GitHub no longer accepts passwords for git operations. If the repo is private, create a **Personal Access Token (PAT)**:
