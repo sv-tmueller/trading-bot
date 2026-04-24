@@ -17,14 +17,29 @@ def _make_result() -> dict:
         },
         "period": "2024-04-23 → 2025-04-23",
         "tickers": {
-            "AMD": {"trades": 3, "win_rate": 0.667, "total_return": 0.05, "max_drawdown": -0.02},
-            "NVDA": {"trades": 2, "win_rate": 0.5, "total_return": 0.03, "max_drawdown": -0.01},
+            "AMD": {
+                "trades": 3, "win_rate": 0.667, "total_return": 0.05, "max_drawdown": -0.02,
+                "profit_factor": 2.1, "expectancy_pct": 1.5,
+                "best_trade_pct": 8.0, "worst_trade_pct": -2.5,
+                "avg_winner_pct": 4.2, "avg_loser_pct": -2.0, "winner_loser_ratio": 2.1,
+            },
+            "NVDA": {
+                "trades": 2, "win_rate": 0.5, "total_return": 0.03, "max_drawdown": -0.01,
+                "profit_factor": 1.3, "expectancy_pct": 0.8,
+                "best_trade_pct": 5.0, "worst_trade_pct": -3.0,
+                "avg_winner_pct": 3.5, "avg_loser_pct": -2.7, "winner_loser_ratio": 1.3,
+            },
         },
         "aggregate": {
             "trades": 5,
             "win_rate": 0.60,
             "total_return": 0.04,
             "max_drawdown": -0.02,
+            "profit_factor": 1.8,
+            "expectancy_pct": 1.2,
+            "avg_winner_pct": 3.9,
+            "avg_loser_pct": -2.3,
+            "winner_loser_ratio": 1.7,
         },
     }
 
@@ -66,3 +81,52 @@ def test_notify_backtest_calls_post(mocker):
     assert "Backtest" in msg
     assert "5 trades" in msg
     assert "60.0%" in msg
+
+
+def test_notify_backtest_includes_aggregate_metrics(mocker):
+    mock_post = mocker.patch("tools.notifications._post")
+    notify_backtest(_make_result())
+    msg = mock_post.call_args[0][0]
+    assert "Profit factor" in msg
+    assert "1.80" in msg  # PF
+    assert "Winner:Loser" in msg
+    assert "Expectancy" in msg
+
+
+def test_notify_backtest_handles_missing_aggregate_metrics(mocker):
+    mock_post = mocker.patch("tools.notifications._post")
+    result = _make_result()
+    result["aggregate"]["profit_factor"] = None
+    result["aggregate"]["winner_loser_ratio"] = None
+    result["aggregate"]["expectancy_pct"] = None
+    notify_backtest(result)
+    msg = mock_post.call_args[0][0]
+    assert "n/a" in msg
+
+
+def test_format_terminal_includes_new_columns():
+    output = format_terminal(_make_result())
+    assert "PF" in output
+    assert "Win $" in output
+    assert "Loss $" in output
+
+
+def test_format_terminal_includes_aggregate_block():
+    output = format_terminal(_make_result())
+    assert "Aggregate" in output
+    assert "Profit factor" in output
+    assert "Expectancy" in output
+    assert "Winner : Loser" in output
+
+
+def test_format_terminal_handles_none_metrics():
+    result = _make_result()
+    for s in result["tickers"].values():
+        s["profit_factor"] = None
+        s["avg_winner_pct"] = None
+        s["avg_loser_pct"] = None
+    result["aggregate"]["profit_factor"] = None
+    result["aggregate"]["winner_loser_ratio"] = None
+    result["aggregate"]["expectancy_pct"] = None
+    output = format_terminal(result)
+    assert "n/a" in output

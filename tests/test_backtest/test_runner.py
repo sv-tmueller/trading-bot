@@ -42,7 +42,11 @@ def test_run_backtest_aggregate_has_required_fields(mocker):
     result = run_backtest(years=1)
 
     agg = result["aggregate"]
-    assert set(agg.keys()) == {"trades", "win_rate", "total_return", "max_drawdown"}
+    required = {"trades", "win_rate", "total_return", "max_drawdown"}
+    new_fields = {"profit_factor", "expectancy_pct", "avg_winner_pct",
+                  "avg_loser_pct", "winner_loser_ratio"}
+    assert required.issubset(set(agg.keys()))
+    assert new_fields.issubset(set(agg.keys()))
 
 
 def test_run_backtest_stores_param_overrides(mocker):
