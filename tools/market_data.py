@@ -81,7 +81,11 @@ def is_entry_signal(
     if strict_crossover:
         ema_ok = signals["ema_crossover"] is True
     else:
-        ema_ok = signals["ema_fast"] > signals["ema_slow"]
+        ema_fast = signals.get("ema_fast")
+        ema_slow = signals.get("ema_slow")
+        if ema_fast is None or ema_slow is None:
+            raise KeyError("is_entry_signal requires 'ema_fast' and 'ema_slow' when strict_crossover=False")
+        ema_ok = ema_fast > ema_slow
     return (
         ema_ok
         and rsi_lower <= signals["rsi"] <= rsi_upper

@@ -18,7 +18,7 @@ Your job:
 
 Current strategy parameters are provided in the prompt.
 Candidates must meet ALL three entry conditions:
-- EMA20 crossed above EMA50 (trend confirmation)
+- EMA trend confirmation (mode and parameters specified in prompt)
 - RSI between RSI_LOWER and RSI_UPPER (not overextended)
 - Volume > VOLUME_MULTIPLIER × 20-day average (conviction)
 
