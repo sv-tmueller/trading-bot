@@ -100,3 +100,14 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 - Stop-loss priority: `stop_loss → take_profit → max_hold → hold` — order matters
 - `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
 - `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
+
+## Team
+
+This project uses a four-role Claude Code session structure. See [`TEAM.md`](TEAM.md) for the full playbook.
+
+| Say this at session start | Role |
+|---|---|
+| `Act as Lead` | Triage and prioritize GitHub Issues |
+| `Act as Engineer` | Implement the top-priority ready issue |
+| `Act as QA` | Discover bugs and gaps, open GitHub Issues |
+| `Act as Docs` | Update documentation based on recent changes |
