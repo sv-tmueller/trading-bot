@@ -41,9 +41,17 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.9+ and git
 - [Alpaca account](https://alpaca.markets) (free paper trading)
 - [Anthropic API key](https://console.anthropic.com)
+
+If Python and git aren't installed yet:
+
+| OS | One-time install |
+|---|---|
+| macOS | `brew install python git` (requires [Homebrew](https://brew.sh)) |
+| Ubuntu / Debian | `sudo apt install -y python3 python3-pip python3-venv git` |
+| Windows | Install [Python](https://python.org/downloads) (check "Add to PATH") and [Git](https://git-scm.com/download/win), then use PowerShell for the rest |
 
 ### Install
 
@@ -51,13 +59,27 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 git clone https://github.com/sv-tmueller/trading-bot
 cd trading-bot
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # macOS / Linux — see Windows note below
 pip install -r requirements.txt
 ```
 
+> **Windows users:** replace `source venv/bin/activate` with `venv\Scripts\activate` in PowerShell.
+>
+> **Every time you open a new terminal** to run the bot, re-run the activate command first — otherwise `python3 main.py ...` will fail with `ModuleNotFoundError`. Your prompt shows `(venv)` at the start when it's active.
+
 ### Configure
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root with your credentials and any overrides.
+
+**On macOS / Linux** — use `nano` (a simple terminal editor):
+
+```bash
+nano .env
+```
+
+Paste in the block below, then save with `Ctrl+O` (Enter to confirm) and exit with `Ctrl+X`.
+
+**On Windows** — open the `trading-bot` folder in Notepad or VS Code, create a new file called `.env`, paste the block below, and save.
 
 ```env
 TRADING_MODE=paper
@@ -334,9 +356,11 @@ If a message appears in Discord, the setup is complete.
 
 ## Watchlist
 
-Default tickers (16): `AMD, NOW, SHEL, NVDA, MSFT, GOOGL, META, AMZN, TSLA, AAPL, JPM, V, MA, UNH, LLY, AVGO`
+The list of tickers the bot scans each morning lives in [`config/watchlist.py`](config/watchlist.py) — that file is the source of truth.
 
-Edit `config/watchlist.py` to change the list. Tickers should be S&P 500 constituents with high liquidity.
+For the current production watchlist and the reasoning behind which tickers are included or excluded, see [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md).
+
+**When editing:** stick to S&P 500 constituents with high liquidity (≥ 5M average daily volume). The backtest (`python3 main.py backtest`) is a good way to sanity-check a new ticker before committing it.
 
 ## Before going live
 
@@ -412,6 +436,22 @@ python3 -m pytest tests/test_monitor.py -v
 ```
 
 ## Changelog
+
+### v1.8.0 (2026-04-24)
+
+**Strategy tuning (3yr backtest driven):**
+- `STRICT_CROSSOVER=false`, `MAX_HOLD_DAYS=10`, `RSI_LOWER=35`, `RSI_UPPER=70`, `VOLUME_MULTIPLIER=1.2`, `ATR_STOP_MULTIPLIER=1.3` on the live bot. 3yr aggregate backtest jumps from +0.2% / 5 trades (baseline) to +8.7% / 471 trades / 45.9% win rate
+- `RSI_LOWER`, `RSI_UPPER`, `VOLUME_MULTIPLIER`, `ATR_STOP_MULTIPLIER` promoted from hardcoded constants in `config/settings.py` to env-driven with safety bounds
+- Watchlist pruned from 16 to 12 tickers — removed `UNH`, `V`, `MSFT`, `MA` (all 4-5/5 negative across tested configs, avg -3.8% to -11.0%)
+
+**Documentation:**
+- New [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md) — pinned snapshot of the current live config, watchlist reasoning, and backtest results. Designed to accumulate tune entries rather than mutating the README each time.
+- README § Prerequisites now includes per-OS install hints (macOS / Ubuntu / Windows)
+- README § Setup clarifies venv activation (reactivate in each new terminal; Windows uses `venv\Scripts\activate`)
+- README § Configure shows the `nano .env` command with Ctrl+O/Ctrl+X tip (previously just said "create a file")
+- README § VPS Deployment step 1 installs `gh` so PR workflow is supported from the box
+
+---
 
 ### v1.7.0 (2026-04-24)
 
