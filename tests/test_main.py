@@ -43,7 +43,9 @@ def test_inter_agent_handoff_is_valid_json(db_conn):
          patch("main.TeamLeaderAgent", return_value=leader_mock), \
          patch("main.get_daily_token_costs", return_value={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}), \
          patch("main.notify_scan_complete"), \
-         patch("main.notify_error"):
+         patch("main.notify_error"), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.database.get_open_trades", return_value=[]):
         from main import run_morning_scan
         run_morning_scan()
 
@@ -159,8 +161,7 @@ def _make_amd_open_trade():
 
 def test_reconcile_no_discrepancy(db_conn):
     """Alpaca returns AMD, DB has AMD open — no notify_error call."""
-    with patch("main.get_db", return_value=db_conn), \
-         patch("tools.database.get_open_trades", return_value=[{"ticker": "AMD"}]), \
+    with patch("tools.database.get_open_trades", return_value=[{"ticker": "AMD"}]), \
          patch("tools.broker.get_alpaca_positions", return_value=_make_amd_open_trade()), \
          patch("main.notify_error") as mock_notify_error:
         from main import _reconcile_positions
@@ -170,7 +171,7 @@ def test_reconcile_no_discrepancy(db_conn):
 
 
 def test_reconcile_ghost_position(db_conn):
-    """Alpaca returns AMD, DB has no open trades — notify_error called with 'ghost' or 'AMD' in message."""
+    """Alpaca returns AMD, DB has no open trades — notify_error called with 'ghost' and 'AMD' in message."""
     with patch("tools.database.get_open_trades", return_value=[]), \
          patch("tools.broker.get_alpaca_positions", return_value=_make_amd_open_trade()), \
          patch("main.notify_error") as mock_notify_error:
@@ -180,11 +181,11 @@ def test_reconcile_ghost_position(db_conn):
     mock_notify_error.assert_called_once()
     context, message = mock_notify_error.call_args[0]
     assert context == "reconciliation"
-    assert "ghost" in message.lower() or "AMD" in message
+    assert "ghost" in message.lower() and "AMD" in message
 
 
 def test_reconcile_phantom_db_entry(db_conn):
-    """Alpaca returns nothing, DB has AMD open — notify_error called with 'phantom' or 'AMD' in message."""
+    """Alpaca returns nothing, DB has AMD open — notify_error called with 'phantom' and 'AMD' in message."""
     with patch("tools.database.get_open_trades", return_value=[{"ticker": "AMD"}]), \
          patch("tools.broker.get_alpaca_positions", return_value=[]), \
          patch("main.notify_error") as mock_notify_error:
@@ -194,7 +195,7 @@ def test_reconcile_phantom_db_entry(db_conn):
     mock_notify_error.assert_called_once()
     context, message = mock_notify_error.call_args[0]
     assert context == "reconciliation"
-    assert "phantom" in message.lower() or "AMD" in message
+    assert "phantom" in message.lower() and "AMD" in message
 
 
 def test_reconcile_failure_does_not_block_scan(db_conn):

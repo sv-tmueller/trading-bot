@@ -51,7 +51,7 @@ def get_alpaca_positions() -> list[dict]:
     return [
         {
             "ticker": pos.symbol,
-            "qty": int(float(pos.qty)),
+            "qty": int(float(pos.qty)),  # whole shares only — bot never places fractional orders
             "avg_entry_price": float(pos.avg_entry_price),
         }
         for pos in positions
