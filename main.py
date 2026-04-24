@@ -56,6 +56,29 @@ def _scan_already_ran(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def _reconcile_positions(conn: sqlite3.Connection) -> None:
+    from tools.broker import get_alpaca_positions
+    from tools.database import get_open_trades
+
+    alpaca_positions = get_alpaca_positions()
+    db_trades = get_open_trades(conn)
+
+    alpaca_tickers = {p["ticker"] for p in alpaca_positions}
+    db_tickers = {t["ticker"] for t in db_trades}
+
+    ghost_tickers = sorted(alpaca_tickers - db_tickers)
+    phantom_tickers = sorted(db_tickers - alpaca_tickers)
+
+    if ghost_tickers or phantom_tickers:
+        parts = []
+        if ghost_tickers:
+            parts.append(f"ghost positions (Alpaca has but DB missing): {ghost_tickers}")
+        if phantom_tickers:
+            parts.append(f"phantom DB entries (DB open but Alpaca closed): {phantom_tickers}")
+        message = "Position reconciliation mismatch — " + "; ".join(parts)
+        notify_error("reconciliation", message)
+
+
 def run_morning_scan():
     if not is_trading_day():
         print("Not a trading day. Exiting.")
@@ -69,6 +92,11 @@ def run_morning_scan():
         if _scan_already_ran(conn):
             print("Morning scan already completed today. Skipping.")
             return
+
+        try:
+            _reconcile_positions(conn)
+        except Exception as e:
+            notify_error("reconciliation", f"Reconciliation check failed: {e}")
 
         print("Running Market Intelligence Agent...")
         mi_agent = MarketIntelligenceAgent()
