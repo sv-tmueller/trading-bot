@@ -1,3 +1,8 @@
 {
-  "defaultMode": "bypassPermissions"
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)"
+    ],
+    "defaultMode": "bypassPermissions"
+  }
 }
