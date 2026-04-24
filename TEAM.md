@@ -17,7 +17,7 @@ Tell Claude which role to play at the start of every session:
 
 ## Lead
 
-**Responsibility:** Triage open issues, set priorities, tell the Engineer what to work on next.
+**Responsibility:** Triage open issues, set priorities, tell the Engineer what to work on next. Review and merge Engineer PRs.
 
 **Session playbook:**
 1. `gh issue list --repo sv-tmueller/trading-bot` — fetch all open issues
@@ -27,7 +27,9 @@ Tell Claude which role to play at the start of every session:
 
 Note: `critical` label supersedes `priority: high` — preserve it if already set on an issue.
 
-5. Output a session summary: what was triaged, what the Engineer should tackle first
+5. Review any open PRs from the Engineer: `gh pr list` — check that tests pass and the change is scoped to the issue
+6. Merge approved PRs: `gh pr merge <N> --squash --delete-branch`
+7. Output a session summary: what was triaged, what the Engineer should tackle first
 
 **Does not:** write code, open new issues, or implement anything.
 
@@ -41,11 +43,24 @@ Note: `critical` label supersedes `priority: high` — preserve it if already se
 1. `gh issue list --repo sv-tmueller/trading-bot --label "status: ready"` — fetch ready issues
 2. Pick the highest-priority one (`priority: high` first, then `priority: medium`)
 3. Add `status: in-progress` label: `gh issue edit <N> --add-label "status: in-progress" --remove-label "status: ready"`
-4. Implement — follow all patterns in `CLAUDE.md`
-5. Run `python3 -m pytest` — all tests must be green before closing
-6. Commit with `closes #N` in the message and push directly to `main`. This auto-closes the issue. If working on a branch, close the issue manually after the PR merges: `gh issue close <N>`
+4. Create a branch: `git checkout -b issue-N-short-description`
+5. Implement — follow all patterns in `CLAUDE.md`
+6. Run `python3 -m pytest` — all tests must be green before opening a PR
+7. Push the branch and open a PR targeting `main`:
+   ```bash
+   git push -u origin issue-N-short-description
+   gh pr create --title "short description — closes #N" --body "$(cat <<'EOF'
+   ## Summary
+   - [what changed and why]
 
-**Does not:** open new issues, skip tests, or close issues before tests pass.
+   ## Test plan
+   - [ ] `python3 -m pytest` passes
+   EOF
+   )"
+   ```
+8. For **test-only or docs-only changes**, push directly to `main` — no PR needed.
+
+**Does not:** open new issues, skip tests, merge its own PR (Lead reviews and merges), or close issues before tests pass.
 
 ---
 
@@ -113,6 +128,9 @@ Note: `critical` label supersedes `priority: high` — preserve it if already se
 ```
 QA opens issue (type label)
   → Lead triages: adds priority + status:ready
-    → Engineer picks up: adds status:in-progress, implements, closes
-      → Docs reviews git log, updates docs, closes documentation issues
+    → Engineer picks up: adds status:in-progress, implements on a branch, opens PR
+      → Lead reviews PR, merges to main (issue auto-closes)
+        → Docs reviews git log, updates docs, closes documentation issues
 ```
+
+**PR rule:** PRs required for production code changes (agents, tools, monitor, main.py). Test-only and docs-only changes push directly to `main`.
