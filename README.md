@@ -227,16 +227,24 @@ crontab -e
 If prompted to choose an editor, select **1** (nano). You'll see an empty file — scroll to the bottom and add these lines (all times UTC):
 
 ```
-35 13 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
+25 13 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
 0 14-19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
 55 19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
 ```
 
 | Schedule | UTC | ET | German (CEST) | Purpose |
 |---|---|---|---|---|
-| Scan | 13:35 | 09:35 | 15:35 | Morning agent pipeline (5 min after open) |
+| Scan | 13:25 | 09:25 | 15:25 | Pre-market agent pipeline (5 min before open) |
 | Monitor | :00 14–19 | 10:00–15:00 | 16:00–21:00 | Hourly position check |
 | Pre-close | 19:55 | 15:55 | 21:55 | Final check 5 min before NYSE close |
+
+> **Why pre-market, not after the open?** Signals are computed on **daily** bars
+> (`EMA20/EMA50`, `RSI(14)`, `volume vs 20-day average`). If the scan runs after
+> 13:30 UTC, today's daily bar is still being formed — `volume_ratio` collapses
+> toward zero (a few minutes of trading vs a 20-day full-day average) and every
+> ticker fails the volume gate. Running before the open means the strategy uses
+> yesterday's fully-closed bar and Team Leader places market orders that fill at
+> today's open.
 
 Save and exit: `Ctrl+O` → Enter → `Ctrl+X`. You should see `crontab: installing new crontab` confirming it worked.
 
