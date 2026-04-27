@@ -107,6 +107,7 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 - `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
 - `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
 - Morning scan is idempotent: `main.py scan` sets `_scan_already_ran = True` after the first successful run and skips subsequent calls within the same process — prevents double-firing if cron overlaps
+- Morning scan must run **pre-market** (cron at `25 13 * * 1-5` UTC, 5 min before NYSE open). Signals are computed on daily bars in `tools/market_data.py`; running after 13:30 UTC means the last bar is still forming and `volume_ratio` collapses to ~0, killing every entry. Yesterday's closed bar is the input; orders fill at today's open.
 
 ## Architectural invariants
 
