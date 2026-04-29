@@ -61,6 +61,13 @@ def notify_no_approved(date: str, cost_usd: float) -> None:
     )
 
 
+def notify_paused(date_iso: str) -> None:
+    _post(
+        f"🛑 **Trading paused — {date_iso}**\n"
+        f"⏭ Skipping morning scan (TRADING_PAUSED=true)"
+    )
+
+
 def notify_monitor(date: str, time: str, checked: int, closed: list) -> None:
     lines = [f"👁 **Position Monitor — {date} {time}**"]
     if checked == 0:

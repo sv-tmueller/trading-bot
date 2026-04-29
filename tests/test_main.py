@@ -128,6 +128,48 @@ def test_run_position_monitor_closes_conn_on_exception(db_conn):
     mock_conn.close.assert_called_once()
 
 
+def test_run_morning_scan_early_exits_when_trading_paused(db_conn):
+    """When TRADING_PAUSED=true, scan must early-exit before instantiating any agent or touching the DB."""
+    with patch("main.is_trading_day", return_value=True), \
+         patch("config.settings.TRADING_PAUSED", True), \
+         patch("main.get_db") as mock_get_db, \
+         patch("main.MarketIntelligenceAgent") as MockMI, \
+         patch("main.StrategyAgent") as MockStrategy, \
+         patch("main.RiskReviewAgent") as MockRisk, \
+         patch("main.TeamLeaderAgent") as MockLeader, \
+         patch("main.notify_paused") as mock_notify_paused, \
+         patch("main.notify_error") as mock_notify_error:
+        from main import run_morning_scan
+        run_morning_scan()
+
+    # No agent instantiated
+    MockMI.assert_not_called()
+    MockStrategy.assert_not_called()
+    MockRisk.assert_not_called()
+    MockLeader.assert_not_called()
+    # No DB connection opened
+    mock_get_db.assert_not_called()
+    # One Discord ping sent, no error
+    mock_notify_paused.assert_called_once()
+    mock_notify_error.assert_not_called()
+
+
+def test_run_position_monitor_unaffected_by_trading_paused(db_conn):
+    """TRADING_PAUSED must NOT block the position monitor — existing exits must keep working."""
+    with patch("main.is_trading_day", return_value=True), \
+         patch("config.settings.TRADING_PAUSED", True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.run_monitor", return_value=[]) as mock_run_monitor, \
+         patch("main.notify_monitor") as mock_notify_monitor, \
+         patch("main.notify_error") as mock_notify_error:
+        from main import run_position_monitor
+        run_position_monitor()
+
+    mock_run_monitor.assert_called_once()
+    mock_notify_monitor.assert_called_once()
+    mock_notify_error.assert_not_called()
+
+
 def test_run_morning_scan_skips_if_already_ran_today(db_conn):
     """If team_leader already ran today, the scan must exit without calling any agent."""
     from tools.database import log_agent_output

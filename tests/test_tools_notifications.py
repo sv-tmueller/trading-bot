@@ -72,6 +72,25 @@ def test_notify_no_approved_includes_date(mocker):
     assert "0.0021" in msg
 
 
+def test_notify_paused_posts_to_webhook(mocker):
+    """notify_paused must post a single 'Trading paused' message to the webhook."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_paused
+    notify_paused("2026-04-29")
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "2026-04-29" in msg
+    assert "Trading paused" in msg
+
+
+def test_notify_paused_swallows_errors_via_post(mocker):
+    """notify_paused must fail silently when the webhook call errors (matches other helpers)."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mocker.patch("tools.notifications.urllib.request.urlopen", side_effect=Exception("timeout"))
+    from tools.notifications import notify_paused
+    notify_paused("2026-04-29")  # must not raise
+
+
 def test_notify_monitor_no_positions(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_monitor

@@ -71,3 +71,5 @@ if not 0.5 <= ATR_STOP_MULTIPLIER <= 5.0:
     raise ValueError(f"ATR_STOP_MULTIPLIER={ATR_STOP_MULTIPLIER} outside safe bounds [0.5, 5.0]")
 
 STRICT_CROSSOVER: bool = os.getenv("STRICT_CROSSOVER", "true").lower() == "true"
+
+TRADING_PAUSED: bool = os.getenv("TRADING_PAUSED", "false").lower() == "true"
