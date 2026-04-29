@@ -506,6 +506,23 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.12.0 (2026-04-29)
+
+**New strategy/risk knobs (opt-in, default OFF — no behaviour change for existing deployments):**
+- Trailing stop-loss — `TRAILING_STOP_ENABLED=true` activates DB stop_loss ratchet-up logic in both the live position monitor and the portfolio backtest. Trail distance configurable via `TRAILING_STOP_ATR_MULT` (default 1.5×, range [0.5, 5.0]). Stops only ratchet up, never down. Idempotent schema migration adds `trailing_high` column to `trades` (#67, #91)
+- Earnings blackout window — `EARNINGS_BLACKOUT_DAYS=N` (range [0, 14], default 0 = disabled) skips entries within N days before next or after last earnings, in both strategy agent and portfolio backtest. New `tools/earnings.py` wraps yfinance with `lru_cache` + graceful failure (returns `None` on any error). Strategy agent receives `earnings_blackout_reason` in signals so the LLM understands why an entry is skipped. Backtest fails open when earnings data is unavailable (#68, #92)
+
+**Backlog research (no code change):**
+- Cap-value sweep at 0.20/0.30/0.40/0.50 (#61) — 0.30 is the risk-adjusted winner over 5y (+31.4% vs +8.5% at 0.20, similar drawdown). Recommendation deferred until v1.10/v1.11 live data exists; issue moved to `status: blocked`
+- Sector concentration analysis (#63) — found real concentration: Semiconductors 53.2% of trades, Tech mega-cap 34.8% of rejections at the 20% cap. Issue moved to `status: ready` for follow-up `MAX_PER_SECTOR` work
+- Portfolio-mode parameter sweep (#65, 27 combos) — current `ATR_STOP_MULTIPLIER=1.5` is dominated by both `1.0` and `2.0` clusters on 3y data. Issue moved to `status: ready`; no setting change yet (5y + chop window re-run pending)
+- Sim/live ranking proxy divergence (#62) — closed as expected design behaviour
+- Validate live PnL after 30-60d (#64) — closed as deferred until enough live data exists
+
+**Tests:** 194 → 218 passing (+24 from #67 and #68).
+
+---
+
 ### v1.11.0 (2026-04-29)
 
 **Bug fixes (post-v1.10 audit):**
