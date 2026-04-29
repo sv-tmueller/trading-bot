@@ -593,6 +593,77 @@ def test_buy_without_atr_falls_back_to_pending_prices(db_conn):
     assert kwargs.get("take_profit_price") == 160.0
 
 
+def test_place_order_rejects_malformed_bracket_when_atr_missing(db_conn):
+    """Issue #79: ATR missing AND LLM stop is above fresh quote → reject, no broker call."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_v1", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "stale"}], "summary": "rejected"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    # Fresh quote 200; LLM-supplied stop 210 (stale prior-close anchor) — invalid.
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=200.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.notifications.notify_order_rejected") as mock_notify:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_stops={"AMD": 210.0},   # stale: above fresh quote
+            pending_targets={"AMD": 220.0},
+            pending_atrs={},                # no ATR → falls back to LLM stops
+        )
+
+    mock_place.assert_not_called()
+    mock_notify.assert_called_once()
+    notify_args, _ = mock_notify.call_args
+    assert "AMD" in notify_args[0]
+    assert "invalid bracket" in notify_args[2]
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert rows == []
+
+
+def test_place_order_happy_path_bracket_unchanged(db_conn):
+    """Regression check: a valid ATR-derived bracket still goes through (PR #77 path)."""
+    from config import settings
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_v2", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    fresh_quote = 200.0
+    atr = 2.0
+    expected_stop = round(fresh_quote - atr * settings.ATR_STOP_MULTIPLIER, 4)
+    expected_target = round(fresh_quote + atr * settings.ATR_STOP_MULTIPLIER * settings.RR_RATIO_MIN, 4)
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=fresh_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-v2", "fill_price": fresh_quote}) as mock_place:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": atr},
+        )
+
+    assert mock_place.call_count == 1
+    _, kwargs = mock_place.call_args
+    assert kwargs.get("stop_price") == pytest.approx(expected_stop)
+    assert kwargs.get("take_profit_price") == pytest.approx(expected_target)
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert len(rows) == 1
+
+
 def test_sell_uses_plain_market_order_no_bracket(db_conn):
     """Sells (closes) must remain plain market orders — bracket params must be None."""
     tool_response = _make_tool_response(_make_place_order_tool_use("tu_s1", "AMD", 100, "sell"))

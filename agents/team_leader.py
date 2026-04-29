@@ -77,7 +77,7 @@ Respond with JSON:
         from tools.broker import place_market_order, close_position as broker_close_position
         from tools.broker import get_current_price, get_alpaca_positions, get_portfolio_value
         from tools.database import insert_trade, get_open_trades, close_trade
-        from tools.risk import check_exposure_for_new_order
+        from tools.risk import check_exposure_for_new_order, validate_bracket_params
         from tools.notifications import notify_order_rejected
         from config import settings
         conn = self._conn
@@ -141,6 +141,15 @@ Respond with JSON:
                     # so R:R math is at least roughly preserved.
                     bracket_stop = pending_stops.get(ticker)
                     bracket_target = pending_targets.get(ticker)
+
+                # Reject malformed brackets before they reach the broker — the
+                # Alpaca SDK does not validate stop/target ordering.
+                bracket_check = validate_bracket_params(price, bracket_stop, bracket_target)
+                if not bracket_check["valid"]:
+                    reason = f"invalid bracket: {bracket_check['reason']}"
+                    print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
+                    notify_order_rejected(ticker, shares, reason)
+                    return {"order_id": None, "status": "rejected", "reason": reason}
 
             order_result = place_market_order(
                 ticker,
