@@ -36,6 +36,7 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 | Min reward:risk ratio | `RR_RATIO_MIN` | 2.0 | [1.0, 5.0] |
 | Stop distance (× ATR) | `ATR_STOP_MULTIPLIER` | 1.5 | [0.5, 5.0] |
 | Daily drawdown limit | _(hardcoded)_ | 3% | — |
+| Trading kill switch | `TRADING_PAUSED` | `false` | `true` halts new entries; monitor still runs |
 
 ## Setup
 
@@ -83,6 +84,7 @@ Paste in the block below, then save with `Ctrl+O` (Enter to confirm) and exit wi
 
 ```env
 TRADING_MODE=paper
+TRADING_PAUSED=false        # set to true to halt new entries; monitor keeps running
 DATA_FEED=iex
 
 ALPACA_API_KEY=your_alpaca_key
@@ -151,6 +153,10 @@ python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-r
 ```
 
 Runs the EMA crossover strategy against each watchlist ticker using `yfinance` data and prints a per-ticker results table to the terminal. Also sends a summary to Discord.
+
+### Operational kill switch
+
+Set `TRADING_PAUSED=true` in `.env` to halt new entries: the next `main.py scan` exits immediately (one Discord ping, no agents run, no orders placed). The position monitor is unaffected, so existing positions still get stop-loss, take-profit, and max-hold handling. Use this to wind down safely while a bug is investigated, instead of editing the root crontab under pressure.
 
 ## VPS Deployment
 

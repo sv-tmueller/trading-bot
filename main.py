@@ -7,6 +7,7 @@ import pandas_market_calendars as mcal
 from datetime import date
 from pathlib import Path
 
+from config import settings
 from storage.init_db import init_db, DB_PATH
 from agents.market_intelligence import MarketIntelligenceAgent
 from agents.strategy import StrategyAgent
@@ -20,6 +21,7 @@ from tools.notifications import (
     notify_no_approved,
     notify_monitor,
     notify_error,
+    notify_paused,
 )
 
 
@@ -82,6 +84,11 @@ def _reconcile_positions(conn: sqlite3.Connection) -> None:
 def run_morning_scan(dry_run: bool = False):
     if not is_trading_day():
         print("Not a trading day. Exiting.")
+        return
+
+    if settings.TRADING_PAUSED:
+        print("Trading paused — skipping scan (TRADING_PAUSED=true).")
+        notify_paused(date.today().isoformat())
         return
 
     conn = None
