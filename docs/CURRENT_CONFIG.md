@@ -8,7 +8,7 @@ Pinned snapshot of the live trading bot configuration. Update this file whenever
 
 ## Last updated
 
-**2026-04-24** — E3 strategy tune rolled out after a 20-config parameter sweep across 1/3/5/10-year windows. Watchlist unchanged from the D6 prune. See the *Change Log* section below.
+**2026-04-29** — v1.10 risk hardening (deterministic exposure gate, bracket orders, `TRADING_PAUSED` kill switch) and v1.11 promotion of `DAILY_DRAWDOWN_LIMIT` to env-driven. Strategy params and watchlist unchanged from the E3 tune. See the *Change Log* section below.
 
 ---
 
@@ -31,7 +31,11 @@ MAX_HOLD_DAYS=20
 RISK_PER_TRADE=0.01
 MAX_POSITIONS=5
 MAX_PORTFOLIO_EXPOSURE=0.20
+DAILY_DRAWDOWN_LIMIT=0.03
 RR_RATIO_MIN=3.0
+
+# Operational kill switch — set to `true` to skip the scan without removing cron
+TRADING_PAUSED=false
 ```
 
 ### What each change does
@@ -45,6 +49,17 @@ RR_RATIO_MIN=3.0
 | `ATR_STOP_MULTIPLIER` | `1.5` | `1.5` | Counter-intuitively improves PF vs the D6 value of `1.3`. Wider stops survive noise; tighter stops (ATR 1.0 tested) blew drawdown to -39%. |
 | `MAX_HOLD_DAYS` | `5` | `20` | Single biggest return lever in this sweep — doubling the hold window let winners run past short-term chop. |
 | `RR_RATIO_MIN` | `2.0` | `3.0` | Core of the asymmetry thesis — winners should be ~3× the risk distance. W:L jumps from 1.59 (D6) to 2.08 (E3). |
+
+---
+
+## Risk invariants (v1.10/v1.11)
+
+Risk hardening that lives in code, not in the `.env` block. These rules are enforced deterministically before any LLM output reaches the broker.
+
+- **Deterministic `MAX_PORTFOLIO_EXPOSURE` gate.** `tools/risk.check_exposure_for_new_order` runs in `TeamLeaderAgent` immediately before order placement. An order that would push gross exposure above `MAX_PORTFOLIO_EXPOSURE` is rejected with `max_exposure` reason, regardless of what the LLM proposed.
+- **Bracket orders by default.** When the Team Leader has both a stop and a take-profit, `tools/broker.place_market_order` submits an Alpaca bracket so stops and targets live broker-side. Exits keep firing even if the local monitor cron is down — the position monitor reconciles broker-side closes back into the DB.
+- **`TRADING_PAUSED` kill switch.** Setting `TRADING_PAUSED=true` makes `main.py scan` print the pause message and exit 0 without instantiating any agent. Use it to halt new entries without removing cron; existing brackets keep managing open positions.
+- **`DAILY_DRAWDOWN_LIMIT` is env-driven (v1.11).** Promoted out of code in PR #89. The pre-trade guardrail in `tools/risk.check_portfolio_guardrails` reads `settings.DAILY_DRAWDOWN_LIMIT` (default `0.03`); breaching it blocks new orders for the rest of the session.
 
 ---
 
@@ -119,6 +134,13 @@ The first scan after `13:35 UTC` should produce trade candidates if market condi
 ## Change log
 
 Keep this section chronological, newest entry on top. Each entry should fit in 1-5 lines.
+
+### 2026-04-29 — v1.10/v1.11 risk hardening
+
+- Deterministic `MAX_PORTFOLIO_EXPOSURE` gate now runs in `TeamLeaderAgent` before every order — LLM cannot bypass.
+- Bracket orders: `place_market_order` submits Alpaca brackets when stop + target are set, so exits live broker-side.
+- `TRADING_PAUSED` kill switch added — set to `true` in `.env` to halt new entries without touching cron.
+- `DAILY_DRAWDOWN_LIMIT` promoted to env-driven (v1.11, PR #89). Default `0.03`; trips the daily guardrail in `tools/risk.py`.
 
 ### 2026-04-24 — E3 strategy tune
 

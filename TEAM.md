@@ -92,7 +92,10 @@ Start a session and state your intent. The Team Leader decides which subagents t
 2. Scan for `TODO` and `FIXME`: `grep -rn "TODO\|FIXME" --include="*.py" .`
 3. Check test coverage: cross-reference `ls agents/ tools/ monitor/` against `ls tests/test_agents/ tests/` — open a `testing` issue for each source module with no test file
 4. Review last 10 commits for changes without matching tests: `git log --oneline -10`
-5. Open a GitHub Issue for each finding using:
+5. Kill-switch smoke: `TRADING_PAUSED=true python main.py scan` must print the pause message and exit 0 without instantiating any agent. Open a `bug` + `critical` issue if a scan proceeds.
+6. Dry-run pipeline smoke: `python main.py scan --dry-run` must walk all four agents end-to-end against live APIs without placing orders. Watch for agent loading errors, JSON parse errors, and new deprecation warnings — open a `bug` issue for each.
+7. Doc-staleness scan: read `README.md`, `CLAUDE.md`, `TEAM.md`, `docs/CURRENT_CONFIG.md`, and `.env.example` against the latest commits. Open a `documentation` issue for each drift (commands, params, invariants, changelog gaps).
+8. Open a GitHub Issue for each finding using:
    ```
    **What:** [one sentence]
    **Where:** [file:line or area]
