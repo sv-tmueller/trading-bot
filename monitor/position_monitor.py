@@ -66,10 +66,17 @@ def _reconcile_phantom_closes(conn, open_trades: list, today: str) -> tuple[list
             entry_date = datetime.strptime(trade["entry_date"], "%Y-%m-%d").date()
             today_date = datetime.strptime(today, "%Y-%m-%d").date()
             hold_days = (today_date - entry_date).days
+            # Infer which bracket leg fired by comparing price to stop/target (0.5% slippage tolerance).
+            if price <= trade["stop_loss"] * 1.005:
+                exit_reason = "stop_loss"
+            elif price >= trade["take_profit"] * 0.995:
+                exit_reason = "take_profit"
+            else:
+                exit_reason = "manual"
             close_trade(conn, trade["id"], {
                 "exit_date": today,
                 "exit_price": price,
-                "exit_reason": "stop_loss",   # bracket fire is most likely a stop_loss; broker-side closures are conservatively logged this way
+                "exit_reason": exit_reason,
                 "pnl_dollars": round(pnl_dollars, 2),
                 "pnl_pct": round(pnl_dollars / (entry_price * trade["shares"]), 4),
                 "hold_days": hold_days,
