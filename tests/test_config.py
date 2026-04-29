@@ -107,6 +107,25 @@ def test_max_portfolio_exposure_out_of_range_raises(monkeypatch):
         importlib.reload(s)
 
 
+def test_daily_drawdown_limit_env_override(monkeypatch):
+    monkeypatch.setenv("DAILY_DRAWDOWN_LIMIT", "0.05")
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.DAILY_DRAWDOWN_LIMIT == pytest.approx(0.05)
+
+
+def test_daily_drawdown_limit_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("DAILY_DRAWDOWN_LIMIT", "0.001")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="DAILY_DRAWDOWN_LIMIT"):
+        importlib.reload(s)
+    monkeypatch.setenv("DAILY_DRAWDOWN_LIMIT", "0.5")
+    with pytest.raises(ValueError, match="DAILY_DRAWDOWN_LIMIT"):
+        importlib.reload(s)
+
+
 def test_watchlist_not_empty():
     from config.watchlist import WATCHLIST
     assert len(WATCHLIST) > 0

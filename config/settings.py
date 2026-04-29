@@ -37,7 +37,9 @@ MAX_PORTFOLIO_EXPOSURE = float(os.getenv("MAX_PORTFOLIO_EXPOSURE", "0.20"))
 if not 0.05 <= MAX_PORTFOLIO_EXPOSURE <= 0.50:
     raise ValueError(f"MAX_PORTFOLIO_EXPOSURE={MAX_PORTFOLIO_EXPOSURE} outside safe bounds [0.05, 0.50]")
 
-DAILY_DRAWDOWN_LIMIT = 0.03
+DAILY_DRAWDOWN_LIMIT = float(os.getenv("DAILY_DRAWDOWN_LIMIT", "0.03"))
+if not 0.005 <= DAILY_DRAWDOWN_LIMIT <= 0.20:
+    raise ValueError(f"DAILY_DRAWDOWN_LIMIT={DAILY_DRAWDOWN_LIMIT} outside safe bounds [0.005, 0.20]")
 
 MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5"))
 if not 1 <= MAX_HOLD_DAYS <= 30:
