@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_dollars REAL,
     pnl_pct REAL,
     hold_days INTEGER,
-    r_multiple REAL
+    r_multiple REAL,
+    trailing_high REAL
 );
 
 -- Future work: signals, daily_stats, weekly_stats, suggestions are defined but not yet

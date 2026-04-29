@@ -30,6 +30,7 @@ EXPECTED_TRADES_COLUMNS = {
     "pnl_pct",
     "hold_days",
     "r_multiple",
+    "trailing_high",
 }
 
 

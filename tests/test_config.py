@@ -130,3 +130,25 @@ def test_watchlist_not_empty():
     from config.watchlist import WATCHLIST
     assert len(WATCHLIST) > 0
     assert all(isinstance(t, str) for t in WATCHLIST)
+
+
+def test_trailing_stop_default_off(monkeypatch):
+    """Default behavior must be unchanged (TRAILING_STOP_ENABLED=false)."""
+    monkeypatch.delenv("TRAILING_STOP_ENABLED", raising=False)
+    monkeypatch.delenv("TRAILING_STOP_ATR_MULT", raising=False)
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.TRAILING_STOP_ENABLED is False
+    assert s.TRAILING_STOP_ATR_MULT == 1.5
+
+
+def test_trailing_stop_atr_mult_out_of_range_raises(monkeypatch):
+    monkeypatch.setenv("TRAILING_STOP_ATR_MULT", "0.1")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="TRAILING_STOP_ATR_MULT"):
+        importlib.reload(s)
+    monkeypatch.setenv("TRAILING_STOP_ATR_MULT", "10.0")
+    with pytest.raises(ValueError, match="TRAILING_STOP_ATR_MULT"):
+        importlib.reload(s)
