@@ -147,6 +147,72 @@ def test_run_monitor_reconciles_broker_closed_position(db_conn):
     assert row["exit_price"] == 146.0
 
 
+def test_run_monitor_reconciles_phantom_close_near_stop(db_conn):
+    """Phantom close with price near the stop level reconciles as stop_loss."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=145.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = db_conn.execute("SELECT exit_reason FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["exit_reason"] == "stop_loss"
+
+
+def test_run_monitor_reconciles_phantom_close_near_target(db_conn):
+    """Phantom close with price near the take-profit level reconciles as take_profit."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=158.5), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = db_conn.execute("SELECT exit_reason FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["exit_reason"] == "take_profit"
+
+
+def test_run_monitor_reconciles_phantom_close_mid_range(db_conn):
+    """Phantom close mid-range (outside slippage tolerance for both legs) reconciles as manual."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=152.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = db_conn.execute("SELECT exit_reason FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["exit_reason"] == "manual"
+
+
 def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
     """If get_alpaca_positions raises, the monitor must still run the soft stop check (defense-in-depth)."""
     from tools.database import insert_trade, get_open_trades
