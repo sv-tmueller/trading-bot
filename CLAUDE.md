@@ -117,7 +117,11 @@ Specifically:
 - Stop-loss and take-profit values are always calculated by `tools/risk.py` (ATR-based, deterministic). The LLM receives them as inputs — it cannot set or override them.
 - Position monitor exit logic in `monitor/position_monitor.py` is rule-based only. No LLM call is made during exits.
 - Portfolio guardrails (`check_portfolio_guardrails` in `tools/risk.py`) run deterministically before any order is placed. The LLM cannot bypass them.
+- The order-placement path has a deterministic exposure gate inside `team_leader.place_order` that calls `tools/risk.py::check_exposure_for_new_order` against broker truth (`get_alpaca_positions`) before submission. It fails closed on broker outage and cannot be bypassed by the LLM (the gate lives in the tool implementation, not the prompt).
 - Only `TeamLeaderAgent` places orders, and only with stop/target values that come from `pending_stops`/`pending_targets` — pre-approved by the risk layer.
+- Stops and take-profits execute server-side via Alpaca **bracket orders** (entry + take_profit + stop_loss legs submitted in one call). The `position_monitor` soft-stop check is defense-in-depth, not the primary mechanism — exits fire regardless of monitor process or data-API reachability.
+- ATR is plumbed `risk_review` → `main.py` → `team_leader` so brackets are anchored to a **fresh quote at submission**, not the LLM's stale prior-close estimate. This keeps the realised R:R within ±5% of `RR_RATIO_MIN` under typical fill drift.
+- Operational kill switch: `TRADING_PAUSED=true` in `.env` halts new entries — `main.py scan` exits immediately, no agents run. The position monitor is unaffected and continues exit handling.
 
 **Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
 

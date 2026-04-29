@@ -503,6 +503,22 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.10.0 (2026-04-29)
+
+**Risk hardening:**
+- Deterministic `MAX_PORTFOLIO_EXPOSURE` gate added to `team_leader.place_order` — computes post-trade exposure from broker truth (`get_alpaca_positions`) and rejects any buy that would breach the cap; LLM cannot bypass (#72, #75)
+- Bracket orders replace bare market entries — entry + take_profit + stop_loss legs submitted in one call, executed server-side on Alpaca's matching engine; stop/target recomputed locally from a fresh quote at submission instead of the LLM's stale prior-close estimate (#73, #77)
+
+**Reliability:**
+- Server-side stops/targets close the 2-hour reliability gap observed on 2026-04-28 — exits fire regardless of monitor process or data-API reachability; soft-stop check in `position_monitor` retained as defense-in-depth, with broker-truth reconciliation to detect bracket-child closures (#73, #77)
+
+**Operational:**
+- `TRADING_PAUSED` kill switch — `TRADING_PAUSED=true` in `.env` halts new entries on the next scan (one Discord ping, no agents run); position monitor is unaffected so existing positions still get exit handling (#74, #76)
+
+**Tests:** 147 → 174 passing (+27).
+
+---
+
 ### v1.9.0 (2026-04-24)
 
 **Strategy tuning (E3 — 10yr parameter sweep):**
