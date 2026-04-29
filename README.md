@@ -503,6 +503,27 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.11.0 (2026-04-29)
+
+**Bug fixes (post-v1.10 audit):**
+- Bracket pre-flight validation rejects malformed legs (stop ≥ entry, target ≤ entry, target ≤ stop, non-positive prices) before submission — closes the fallback path where a missing `pending_atrs` could ship inverted brackets to Alpaca (#79, #85)
+- `tools/broker.place_market_order` now wraps `submit_order` in try/except and re-raises a typed `BrokerSubmitError`; `team_leader.place_order` catches it as a soft rejection so Alpaca rejections (insufficient buying power, wash-trade, halted symbol) no longer crash the morning scan mid-loop (#81, #86)
+- Reconciled phantom closes infer `exit_reason` from the price's proximity to the stored stop/target levels (0.5% slippage tolerance) instead of hardcoding `stop_loss` for every broker-side close — restores accurate win/loss attribution (#80, #87)
+- `notify_monitor` now counts `reconciled` actions as `closed` instead of `held`, fixing a cosmetic Discord misreport for broker-side bracket fills (#78, #88)
+
+**Refactor:**
+- `DAILY_DRAWDOWN_LIMIT` promoted from a hardcoded module constant to env-driven setting with bounds `[0.005, 0.20]`; default unchanged at `0.03` (#69, #89)
+
+**Testing:**
+- Direct test coverage added for `storage/init_db.py` (fresh-install entrypoint, idempotency, schema column verification) — previously bypassed by the in-memory `db_conn` fixture (#84, #90)
+
+**Docs:**
+- TEAM.md QA playbook extended with v1.10 smoke checks (kill switch, dry-run pipeline, doc-staleness scan); `docs/CURRENT_CONFIG.md` refreshed to reflect v1.10/v1.11 invariants (#82, #83)
+
+**Tests:** 174 → 194 passing (+20).
+
+---
+
 ### v1.10.0 (2026-04-29)
 
 **Risk hardening:**
