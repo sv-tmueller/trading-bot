@@ -253,8 +253,10 @@ def test_place_order_passes_when_under_exposure_cap(db_conn):
         agent.run("Approved: AMD 100", conn=db_conn,
                   pending_stops={"AMD": 145.0}, pending_targets={"AMD": 160.0})
 
-    mock_place.assert_called_once_with("AMD", 100, "buy")
     # 100 * $150 = $15k = 15% of $100k → well under 20% cap
+    assert mock_place.call_count == 1
+    args, kwargs = mock_place.call_args
+    assert args[:3] == ("AMD", 100, "buy")
     rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
     assert len(rows) == 1
 
@@ -333,7 +335,7 @@ def test_place_order_multi_trade_first_passes_second_rejects(db_conn):
     def fake_get_positions():
         return list(live_positions)
 
-    def fake_place_order(ticker, shares, side):
+    def fake_place_order(ticker, shares, side, stop_price=None, take_profit_price=None):
         live_positions.append({"ticker": ticker, "qty": shares, "avg_entry_price": 150.0})
         return {"order_id": f"ord-{ticker}", "fill_price": 150.0}
 
@@ -353,7 +355,8 @@ def test_place_order_multi_trade_first_passes_second_rejects(db_conn):
     placed_tickers = [c.args[0] for c in mock_place.call_args_list]
     assert placed_tickers == ["AMD", "MSFT"]
     mock_notify.assert_called_once()
-    assert "GOOG" in mock_notify.call_args.args[0]
+    notify_args, _ = mock_notify.call_args
+    assert "GOOG" in notify_args[0]
 
     rows = db_conn.execute("SELECT ticker FROM trades ORDER BY id").fetchall()
     assert [r["ticker"] for r in rows] == ["AMD", "MSFT"]
@@ -401,7 +404,12 @@ def test_place_order_sell_skips_exposure_gate(db_conn):
         agent = TeamLeaderAgent()
         agent.run("Sell: AMD 100", conn=db_conn)
 
-    mock_place.assert_called_once_with("AMD", 100, "sell")
+    assert mock_place.call_count == 1
+    args, kwargs = mock_place.call_args
+    assert args[:3] == ("AMD", 100, "sell")
+    # Sell side does not compute a bracket — both bracket params must be None.
+    assert kwargs.get("stop_price") is None
+    assert kwargs.get("take_profit_price") is None
 
 
 def test_dry_run_skips_close_position(db_conn):
@@ -436,3 +444,175 @@ def test_dry_run_skips_close_position(db_conn):
     mock_broker_close.assert_not_called()
     mock_close_trade.assert_not_called()
     assert result.get("summary") == "dry run close"
+
+
+# --- Bracket order tests (issue #73) ---
+
+
+def test_buy_submits_bracket_with_fresh_quote_pricing(db_conn):
+    """Buy must submit a bracket with stop/target recomputed from the live quote (not LLM stop/target)."""
+    from config import settings
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_b1", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    fresh_quote = 200.0
+    atr = 2.0
+    expected_stop = round(fresh_quote - atr * settings.ATR_STOP_MULTIPLIER, 4)
+    expected_target = round(fresh_quote + atr * settings.ATR_STOP_MULTIPLIER * settings.RR_RATIO_MIN, 4)
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=fresh_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-b1", "fill_price": fresh_quote}) as mock_place:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_stops={"AMD": 999.0},   # stale — must be ignored
+            pending_targets={"AMD": 0.01},  # stale — must be ignored
+            pending_atrs={"AMD": atr},
+        )
+
+    assert mock_place.call_count == 1
+    _, kwargs = mock_place.call_args
+    assert kwargs.get("stop_price") == pytest.approx(expected_stop)
+    assert kwargs.get("take_profit_price") == pytest.approx(expected_target)
+    # DB row must reflect the recomputed bracket prices, not the stale LLM values.
+    row = db_conn.execute("SELECT stop_loss, take_profit FROM trades").fetchone()
+    assert row["stop_loss"] == pytest.approx(expected_stop)
+    assert row["take_profit"] == pytest.approx(expected_target)
+
+
+def test_acceptance_rr_and_risk_within_bounds_under_fill_drift(db_conn):
+    """Issue #73 acceptance: when the broker fills slightly above the latest quote (typical microseconds-old quote vs market fill), the stored R:R stays within ±5% of RR_RATIO_MIN and per-trade risk within ±10% of RISK_PER_TRADE × portfolio.
+
+    Pre-fix behaviour: bracket was anchored to LLM's prior-close estimate, which can drift several percent from the actual fill (see issue #73 GOOGL 6.3% drift example). Post-fix: bracket is anchored to the fresh quote at submission, so drift between quote and fill is bounded to typical bid-ask/microbar movement.
+    """
+    import math
+    from config import settings
+
+    portfolio_value = 100_000.0
+    # The LLM's stale assumed entry — what the old code anchored against.
+    llm_assumed_entry = 327.0
+    # The fresh quote at submission — what the new code anchors against.
+    fresh_quote = 347.60                # 6.3% above LLM estimate (mirrors GOOGL day-0 evidence)
+    # Realistic drift between submission quote and market fill: a few basis points
+    # (microseconds-old quote + bid-ask cross on a market order). The whole point
+    # of this fix: anchor the bracket to a microseconds-old quote, not an overnight-stale
+    # LLM estimate. The smaller the drift, the closer real R:R hugs RR_RATIO_MIN.
+    fill_price = fresh_quote + 0.02     # 2 cents over a $347 stock (~0.006%)
+    atr = 5.0
+    stop_distance = atr * settings.ATR_STOP_MULTIPLIER
+    risk_dollars = portfolio_value * settings.RISK_PER_TRADE
+    shares = math.floor(risk_dollars / stop_distance)   # same math as tools.risk.calculate_position
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_acc", "GOOGL", shares, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "GOOGL", "action": "buy", "shares": '
+        + str(shares) + ', "reasoning": "ok"}], "summary": "ok"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=fresh_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=portfolio_value), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("config.settings.MAX_PORTFOLIO_EXPOSURE", 1.0), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-acc", "fill_price": fill_price}):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: GOOGL",
+            conn=db_conn,
+            # The LLM/risk_review's stale stops/targets — must be ignored by the new code.
+            pending_stops={"GOOGL": llm_assumed_entry - stop_distance},
+            pending_targets={"GOOGL": llm_assumed_entry + stop_distance * settings.RR_RATIO_MIN},
+            pending_atrs={"GOOGL": atr},
+        )
+
+    row = db_conn.execute(
+        "SELECT entry_price, shares, stop_loss, take_profit FROM trades WHERE ticker = 'GOOGL'"
+    ).fetchone()
+    entry = row["entry_price"]   # the real fill
+    shares = row["shares"]
+    stop = row["stop_loss"]
+    target = row["take_profit"]
+
+    # R:R relative to the real fill
+    real_risk_per_share = entry - stop
+    real_reward_per_share = target - entry
+    real_rr = real_reward_per_share / real_risk_per_share
+
+    # Acceptance: within ±5% of RR_RATIO_MIN
+    rr_min = settings.RR_RATIO_MIN
+    assert abs(real_rr - rr_min) / rr_min <= 0.05, (
+        f"R:R {real_rr:.3f} not within ±5% of {rr_min:.2f}"
+    )
+
+    # Acceptance: per-trade risk within ±10% of RISK_PER_TRADE × portfolio_value
+    real_risk_dollars = real_risk_per_share * shares
+    target_risk = settings.RISK_PER_TRADE * portfolio_value
+    assert abs(real_risk_dollars - target_risk) / target_risk <= 0.10, (
+        f"Real risk ${real_risk_dollars:,.2f} not within ±10% of target ${target_risk:,.2f}"
+    )
+
+
+def test_buy_without_atr_falls_back_to_pending_prices(db_conn):
+    """If pending_atrs is missing for a ticker, fall back to the LLM-supplied stop/target rather than skipping the order."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_fb", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "fb"}], "summary": "fb"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-fb", "fill_price": 150.0}) as mock_place:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_stops={"AMD": 145.0},
+            pending_targets={"AMD": 160.0},
+            pending_atrs={},   # no ATR available
+        )
+
+    _, kwargs = mock_place.call_args
+    assert kwargs.get("stop_price") == 145.0
+    assert kwargs.get("take_profit_price") == 160.0
+
+
+def test_sell_uses_plain_market_order_no_bracket(db_conn):
+    """Sells (closes) must remain plain market orders — bracket params must be None."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_s1", "AMD", 100, "sell"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 100, "reasoning": "trim"}], "summary": "sold"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-sell", "fill_price": 150.0}) as mock_place:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Sell: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},   # even with ATR, sell side ignores it
+        )
+
+    _, kwargs = mock_place.call_args
+    assert kwargs.get("stop_price") is None
+    assert kwargs.get("take_profit_price") is None

@@ -142,12 +142,14 @@ def run_morning_scan(dry_run: bool = False):
         print("Running Team Leader Agent...")
         pending_stops = {t["ticker"]: t["stop_loss"] for t in reviewed["approved"]}
         pending_targets = {t["ticker"]: t["take_profit"] for t in reviewed["approved"]}
+        pending_atrs = {t["ticker"]: t["atr"] for t in reviewed["approved"] if t.get("atr") is not None}
         leader_agent = TeamLeaderAgent()
         decisions = leader_agent.run(
             json.dumps(reviewed),
             conn=conn,
             pending_stops=pending_stops,
             pending_targets=pending_targets,
+            pending_atrs=pending_atrs,
             dry_run=dry_run,
         )
         print(f"Session summary: {decisions.get('summary')}")
