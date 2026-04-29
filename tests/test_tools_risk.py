@@ -5,6 +5,7 @@ from tools.risk import (
     calculate_position,
     check_portfolio_guardrails,
     check_exposure_for_new_order,
+    validate_bracket_params,
 )
 
 
@@ -174,3 +175,47 @@ def test_check_exposure_for_new_order_invalid_portfolio_value():
     )
     assert result["can_trade"] is False
     assert "portfolio_value" in result["reason"]
+
+
+def test_validate_bracket_params_happy_path():
+    result = validate_bracket_params(entry_price=100.0, stop_price=95.0, take_profit_price=110.0)
+    assert result["valid"] is True
+    assert result["reason"] == ""
+
+
+def test_validate_bracket_params_stop_above_entry():
+    # Issue #79 scenario: stale LLM stop above fresh quote
+    result = validate_bracket_params(entry_price=200.0, stop_price=210.0, take_profit_price=220.0)
+    assert result["valid"] is False
+    assert "stop" in result["reason"]
+
+
+def test_validate_bracket_params_target_below_entry():
+    result = validate_bracket_params(entry_price=100.0, stop_price=95.0, take_profit_price=99.0)
+    assert result["valid"] is False
+    assert "target" in result["reason"]
+
+
+def test_validate_bracket_params_target_below_stop():
+    # Both legs below entry — target still rejected because it's below stop
+    result = validate_bracket_params(entry_price=100.0, stop_price=99.0, take_profit_price=95.0)
+    assert result["valid"] is False
+    # Either the target<=entry rule or the target<=stop rule fires; both are valid rejections
+    assert "target" in result["reason"]
+
+
+def test_validate_bracket_params_zero_or_negative_price():
+    # Zero entry
+    assert validate_bracket_params(0.0, 95.0, 110.0)["valid"] is False
+    # Negative entry
+    assert validate_bracket_params(-1.0, 95.0, 110.0)["valid"] is False
+    # Zero stop
+    assert validate_bracket_params(100.0, 0.0, 110.0)["valid"] is False
+    # Negative stop
+    assert validate_bracket_params(100.0, -5.0, 110.0)["valid"] is False
+    # Zero target
+    assert validate_bracket_params(100.0, 95.0, 0.0)["valid"] is False
+    # None values
+    assert validate_bracket_params(None, 95.0, 110.0)["valid"] is False
+    assert validate_bracket_params(100.0, None, 110.0)["valid"] is False
+    assert validate_bracket_params(100.0, 95.0, None)["valid"] is False

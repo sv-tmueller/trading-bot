@@ -56,6 +56,36 @@ def check_portfolio_guardrails(
     return {"can_trade": True, "reason": ""}
 
 
+def validate_bracket_params(
+    entry_price: float,
+    stop_price: float,
+    take_profit_price: float,
+) -> dict:
+    """Sanity-check that bracket legs are on the right side of entry."""
+    if entry_price is None or entry_price <= 0:
+        return {"valid": False, "reason": f"invalid entry_price ({entry_price})"}
+    if stop_price is None or stop_price <= 0:
+        return {"valid": False, "reason": f"invalid stop_price ({stop_price})"}
+    if take_profit_price is None or take_profit_price <= 0:
+        return {"valid": False, "reason": f"invalid take_profit_price ({take_profit_price})"}
+    if stop_price >= entry_price:
+        return {
+            "valid": False,
+            "reason": f"stop {stop_price} >= entry {entry_price} (stop must be below entry for a long)",
+        }
+    if take_profit_price <= entry_price:
+        return {
+            "valid": False,
+            "reason": f"target {take_profit_price} <= entry {entry_price} (target must be above entry)",
+        }
+    if take_profit_price <= stop_price:
+        return {
+            "valid": False,
+            "reason": f"target {take_profit_price} <= stop {stop_price}",
+        }
+    return {"valid": True, "reason": ""}
+
+
 def check_exposure_for_new_order(
     current_notional: float,
     candidate_notional: float,
