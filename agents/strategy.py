@@ -53,7 +53,9 @@ If no candidates, return empty candidates list and explain in no_trade_reason.
         ]
 
     def _get_tool_functions(self) -> list:
+        from datetime import date
         from tools.market_data import fetch_bars, compute_signals, is_entry_signal
+        from tools.earnings import is_in_blackout_window, get_next_earnings_date, get_last_earnings_date
 
         def compute_ticker_signals(ticker: str) -> dict:
             bars = fetch_bars(ticker, days=60)
@@ -71,6 +73,20 @@ If no candidates, return empty candidates list and explain in no_trade_reason.
                 volume_multiplier=settings.VOLUME_MULTIPLIER,
                 strict_crossover=settings.STRICT_CROSSOVER,
             )
+            if settings.EARNINGS_BLACKOUT_DAYS > 0:
+                today = date.today()
+                if is_in_blackout_window(ticker, today, settings.EARNINGS_BLACKOUT_DAYS):
+                    signals["entry_signal"] = False
+                    nxt = get_next_earnings_date(ticker, today=today)
+                    last = get_last_earnings_date(ticker, today=today)
+                    if nxt is not None and 0 <= (nxt - today).days <= settings.EARNINGS_BLACKOUT_DAYS:
+                        signals["earnings_blackout_reason"] = (
+                            f"next earnings {nxt.isoformat()} within {settings.EARNINGS_BLACKOUT_DAYS} days"
+                        )
+                    elif last is not None and 0 <= (today - last).days <= settings.EARNINGS_BLACKOUT_DAYS:
+                        signals["earnings_blackout_reason"] = (
+                            f"last earnings {last.isoformat()} within {settings.EARNINGS_BLACKOUT_DAYS} days"
+                        )
             return signals
 
         return [compute_ticker_signals]

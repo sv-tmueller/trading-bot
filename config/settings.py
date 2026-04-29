@@ -80,3 +80,7 @@ TRAILING_STOP_ENABLED: bool = os.getenv("TRAILING_STOP_ENABLED", "false").lower(
 TRAILING_STOP_ATR_MULT: float = float(os.getenv("TRAILING_STOP_ATR_MULT", "1.5"))
 if not 0.5 <= TRAILING_STOP_ATR_MULT <= 5.0:
     raise ValueError(f"TRAILING_STOP_ATR_MULT={TRAILING_STOP_ATR_MULT} outside safe bounds [0.5, 5.0]")
+
+EARNINGS_BLACKOUT_DAYS: int = int(os.getenv("EARNINGS_BLACKOUT_DAYS", "0"))
+if not 0 <= EARNINGS_BLACKOUT_DAYS <= 14:
+    raise ValueError(f"EARNINGS_BLACKOUT_DAYS={EARNINGS_BLACKOUT_DAYS} outside safe bounds [0, 14]")
