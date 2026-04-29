@@ -47,6 +47,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, definition in [("input_tokens", "INTEGER DEFAULT 0"), ("output_tokens", "INTEGER DEFAULT 0")]:
         if col not in existing:
             conn.execute(f"ALTER TABLE agent_logs ADD COLUMN {col} {definition}")
+    # Add trailing_high column to trades for trailing-stop support (issue #67)
+    trade_cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+    if "trailing_high" not in trade_cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN trailing_high REAL")
     conn.commit()
 
 

@@ -55,6 +55,11 @@ class OpenPosition:
     score: float
     # index on this ticker's DataFrame for the entry bar — used for max-hold
     entry_bar_index: int
+    # Highest price seen since entry — used by the optional trailing stop.
+    trailing_high: Optional[float] = None
+    # Initial stop distance (entry_price - stop) frozen at open; trailing
+    # stops use this as the volatility-anchored trail distance.
+    initial_stop_distance: float = 0.0
 
 
 @dataclass
@@ -236,6 +241,22 @@ class PortfolioSimulator:
         high = float(row["High"])
         close = float(row["Close"])
 
+        # Trailing stop ratchet (opt-in, default OFF). Update before exit
+        # checks so today's bar can fire against the freshly raised stop.
+        # Trail distance uses today's ATR × TRAILING_STOP_ATR_MULT when
+        # available, otherwise falls back to the entry-time stop distance.
+        if settings.TRAILING_STOP_ENABLED and pos.initial_stop_distance > 0:
+            new_high = max(pos.trailing_high or pos.entry_price, high)
+            pos.trailing_high = new_high
+            atr_today = row.get("atr") if hasattr(row, "get") else None
+            if atr_today is not None and not (isinstance(atr_today, float) and np.isnan(atr_today)) and atr_today > 0:
+                trail_distance = float(atr_today) * settings.TRAILING_STOP_ATR_MULT
+            else:
+                trail_distance = pos.initial_stop_distance
+            proposed_stop = new_high - trail_distance
+            if proposed_stop > pos.stop:
+                pos.stop = proposed_stop
+
         if low <= pos.stop:
             return self._close(pos, day, pos.stop, "stop")
         if high >= pos.target:
@@ -295,6 +316,8 @@ class PortfolioSimulator:
                 target=target,
                 score=score,
                 entry_bar_index=bar_index,
+                trailing_high=None,
+                initial_stop_distance=max(entry_price - stop, 0.0),
             )
         )
 

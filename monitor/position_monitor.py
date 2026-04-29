@@ -88,6 +88,52 @@ def _reconcile_phantom_closes(conn, open_trades: list, today: str) -> tuple[list
     return still_open, reconciled
 
 
+def _apply_trailing_stop(conn, trade: dict, current_price: float) -> dict:
+    """Ratchet trailing_high and stop_loss upward when TRAILING_STOP_ENABLED.
+
+    Returns the (possibly mutated) trade dict so the caller can use the new
+    stop_loss in the subsequent priority check. Stops only ratchet UP — never
+    down. Falls back to the initial stop distance baked in at entry when a
+    fresh ATR is not available.
+    """
+    if not settings.TRAILING_STOP_ENABLED:
+        return trade
+
+    entry_price = trade["entry_price"]
+    initial_stop = trade["stop_loss"]
+    initial_distance = entry_price - initial_stop
+    if initial_distance <= 0:
+        return trade
+
+    # Use the initial stop distance (entry-time ATR × multiplier) as the
+    # trailing distance. Cheap, deterministic, no extra data fetch — and the
+    # original stop is already volatility-anchored.
+    trail_distance = initial_distance
+
+    prior_high = trade.get("trailing_high")
+    new_high = max(prior_high or entry_price, current_price)
+
+    proposed_stop = new_high - trail_distance
+    new_stop = max(initial_stop, proposed_stop)
+
+    updates = {}
+    if new_high != (prior_high or entry_price) or prior_high is None:
+        updates["trailing_high"] = new_high
+    if new_stop > initial_stop:
+        updates["stop_loss"] = new_stop
+
+    if updates:
+        sets = ", ".join(f"{k} = :{k}" for k in updates)
+        conn.execute(
+            f"UPDATE trades SET {sets} WHERE id = :id",
+            {**updates, "id": trade["id"]},
+        )
+        conn.commit()
+        # Reflect the update in the in-memory row so evaluate_position sees it.
+        trade = {**trade, **updates}
+    return trade
+
+
 def run_monitor(conn, today: str = None) -> list:
     """Hourly check on open positions.
 
@@ -110,6 +156,8 @@ def run_monitor(conn, today: str = None) -> list:
     # Step 2 & 3: evaluate stop/target/max-hold for everything still open.
     for trade in trades:
         price = get_current_price(trade["ticker"])
+        # Apply trailing-stop ratchet (no-op when TRAILING_STOP_ENABLED is false).
+        trade = _apply_trailing_stop(conn, trade, price)
         action = evaluate_position(trade, price, today)
 
         if action.action == "close":

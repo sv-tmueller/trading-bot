@@ -277,6 +277,128 @@ def test_runner_does_not_call_notify_when_portfolio_mode(mocker):
     mock_notify.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Trailing-stop behavior (issue #67) — opt-in, default OFF
+# ---------------------------------------------------------------------------
+
+
+def test_trailing_off_keeps_initial_stop(monkeypatch):
+    """With TRAILING_STOP_ENABLED=false, OpenPosition.stop must equal the initial stop after _check_exit."""
+    from backtest.portfolio import OpenPosition
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", False)
+
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 110.0],
+            "High": [101.0, 115.0],
+            "Low": [99.0, 109.0],
+            "Close": [100.0, 112.0],
+            "Volume": [1, 1],
+            "atr": [1.0, 1.0],
+        },
+        index=pd.date_range("2024-01-02", periods=2, freq="B"),
+    )
+    sim = PortfolioSimulator(
+        years=1, ema_fast=20, ema_slow=50, rsi_period=14,
+        rsi_lower=0, rsi_upper=100, volume_multiplier=1.5,
+        atr_period=14, atr_multiplier=1.5, rr_ratio=2.0,
+        max_hold_days=10, strict_crossover=True,
+        tickers=["X"], data_loader=lambda *a, **kw: df,
+    )
+    sim.data["X"] = df
+    pos = OpenPosition(
+        ticker="X", entry_date=df.index[0], entry_price=100.0,
+        shares=10, stop=95.0, target=110.0, score=1.0,
+        entry_bar_index=0, trailing_high=None, initial_stop_distance=5.0,
+    )
+    sim._check_exit(pos, df.index[1])
+    assert pos.stop == 95.0
+    assert pos.trailing_high is None
+
+
+def test_trailing_on_ratchets_stop_up_on_new_high(monkeypatch):
+    """With TRAILING_STOP_ENABLED=true, a new high pushes the stop up by initial_stop_distance."""
+    from backtest.portfolio import OpenPosition
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", True)
+
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 110.0],
+            "High": [101.0, 115.0],
+            "Low": [99.0, 109.0],
+            "Close": [100.0, 112.0],
+            "Volume": [1, 1],
+            "atr": [1.0, 1.0],
+        },
+        index=pd.date_range("2024-01-02", periods=2, freq="B"),
+    )
+    sim = PortfolioSimulator(
+        years=1, ema_fast=20, ema_slow=50, rsi_period=14,
+        rsi_lower=0, rsi_upper=100, volume_multiplier=1.5,
+        atr_period=14, atr_multiplier=1.5, rr_ratio=2.0,
+        max_hold_days=10, strict_crossover=True,
+        tickers=["X"], data_loader=lambda *a, **kw: df,
+    )
+    sim.data["X"] = df
+    pos = OpenPosition(
+        ticker="X", entry_date=df.index[0], entry_price=100.0,
+        shares=10, stop=95.0, target=200.0, score=1.0,
+        entry_bar_index=0, trailing_high=None, initial_stop_distance=5.0,
+    )
+    sim._check_exit(pos, df.index[1])
+    # High of bar 1 is 115; today's ATR is 1.0 × 1.5 mult = trail 1.5.
+    # Stop should be 115 - 1.5 = 113.5.
+    assert pos.trailing_high == 115.0
+    assert pos.stop == pytest.approx(113.5)
+
+
+def test_trailing_on_never_ratchets_down(monkeypatch):
+    """A pullback bar must not lower trailing_high or stop."""
+    from backtest.portfolio import OpenPosition
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", True)
+
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 115.0, 108.0],
+            "High": [101.0, 116.0, 112.0],
+            "Low": [99.0, 114.0, 107.0],
+            "Close": [100.0, 115.0, 110.0],
+            "Volume": [1, 1, 1],
+            "atr": [1.0, 1.0, 1.0],
+        },
+        index=pd.date_range("2024-01-02", periods=3, freq="B"),
+    )
+    sim = PortfolioSimulator(
+        years=1, ema_fast=20, ema_slow=50, rsi_period=14,
+        rsi_lower=0, rsi_upper=100, volume_multiplier=1.5,
+        atr_period=14, atr_multiplier=1.5, rr_ratio=2.0,
+        max_hold_days=10, strict_crossover=True,
+        tickers=["X"], data_loader=lambda *a, **kw: df,
+    )
+    sim.data["X"] = df
+    pos = OpenPosition(
+        ticker="X", entry_date=df.index[0], entry_price=100.0,
+        shares=10, stop=95.0, target=200.0, score=1.0,
+        entry_bar_index=0, trailing_high=None, initial_stop_distance=5.0,
+    )
+    sim._check_exit(pos, df.index[1])
+    high_after_rally = pos.trailing_high
+    stop_after_rally = pos.stop
+    # ATR=1.0, mult=1.5 → trail 1.5; high 116 → stop 114.5.
+    assert high_after_rally == 116.0
+    assert stop_after_rally == pytest.approx(114.5)
+    sim._check_exit(pos, df.index[2])
+    # Pullback must not lower the high or the stop.
+    assert pos.trailing_high == high_after_rally
+    assert pos.stop == stop_after_rally
+
+
 def test_non_portfolio_path_unchanged(mocker):
     """Sanity: the per-ticker path still fires ``notify_backtest`` exactly once
     and returns the original schema when ``portfolio`` is False (default).

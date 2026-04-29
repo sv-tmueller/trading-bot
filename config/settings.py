@@ -75,3 +75,8 @@ if not 0.5 <= ATR_STOP_MULTIPLIER <= 5.0:
 STRICT_CROSSOVER: bool = os.getenv("STRICT_CROSSOVER", "true").lower() == "true"
 
 TRADING_PAUSED: bool = os.getenv("TRADING_PAUSED", "false").lower() == "true"
+
+TRAILING_STOP_ENABLED: bool = os.getenv("TRAILING_STOP_ENABLED", "false").lower() == "true"
+TRAILING_STOP_ATR_MULT: float = float(os.getenv("TRAILING_STOP_ATR_MULT", "1.5"))
+if not 0.5 <= TRAILING_STOP_ATR_MULT <= 5.0:
+    raise ValueError(f"TRAILING_STOP_ATR_MULT={TRAILING_STOP_ATR_MULT} outside safe bounds [0.5, 5.0]")

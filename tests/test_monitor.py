@@ -213,6 +213,140 @@ def test_run_monitor_reconciles_phantom_close_mid_range(db_conn):
     assert row["exit_reason"] == "manual"
 
 
+# --- Trailing-stop tests (issue #67) ---
+
+
+def test_schema_has_trailing_high_column(db_conn):
+    """The trades table must expose the trailing_high column after init."""
+    cols = {row[1] for row in db_conn.execute("PRAGMA table_info(trades)")}
+    assert "trailing_high" in cols
+
+
+def test_trailing_off_does_not_mutate_stop_or_trailing_high(db_conn, monkeypatch):
+    """With TRAILING_STOP_ENABLED=false the monitor must leave stop_loss/trailing_high untouched."""
+    from tools.database import insert_trade
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", False)
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = db_conn.execute("SELECT stop_loss, trailing_high FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["stop_loss"] == 145.5
+    assert row["trailing_high"] is None
+
+
+def test_trailing_on_ratchets_stop_up_on_new_high(db_conn, monkeypatch):
+    """When the price makes a new high, stop_loss must move up by the initial stop distance."""
+    from tools.database import insert_trade
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", True)
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,    # initial distance = 4.5
+        "take_profit": 165.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    # Price rallies to 158 — new trailing high. Expect stop = 158 - 4.5 = 153.5.
+    with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = db_conn.execute("SELECT stop_loss, trailing_high FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["trailing_high"] == 158.0
+    assert row["stop_loss"] == pytest.approx(153.5)
+
+
+def test_trailing_on_does_not_ratchet_down_on_pullback(db_conn, monkeypatch):
+    """After a high, a pullback must NOT lower stop_loss or trailing_high."""
+    from tools.database import insert_trade
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", True)
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 165.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+
+    # First pass: price 158 — stop ratchets to 153.5, trailing_high=158.
+    with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    # Second pass: price pulls back to 155 — must not lower stop or HWM.
+    with patch("monitor.position_monitor.get_current_price", return_value=155.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-23")
+
+    row = db_conn.execute("SELECT stop_loss, trailing_high FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert row["trailing_high"] == 158.0
+    assert row["stop_loss"] == pytest.approx(153.5)
+
+
+def test_trailing_on_stop_hit_closes_position(db_conn, monkeypatch):
+    """Once the trailed stop is hit, the position must close as a stop_loss exit."""
+    from tools.database import insert_trade, get_open_trades
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "TRAILING_STOP_ENABLED", True)
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,    # initial distance = 4.5
+        "take_profit": 170.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+
+    # Pass 1: rally to 160 — trailing stop becomes 155.5.
+    with patch("monitor.position_monitor.get_current_price", return_value=160.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    # Pass 2: drop to 155 — below new trailed stop 155.5 → close.
+    with patch("monitor.position_monitor.get_current_price", return_value=155.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close", return_value="order-trail") as mock_close:
+        actions = run_monitor(db_conn, today="2026-04-23")
+
+    assert any(a.action == "close" and a.reason == "stop_loss" for a in actions)
+    mock_close.assert_called_once_with("AMD")
+    assert get_open_trades(db_conn) == []
+
+
 def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
     """If get_alpaca_positions raises, the monitor must still run the soft stop check (defense-in-depth)."""
     from tools.database import insert_trade, get_open_trades
