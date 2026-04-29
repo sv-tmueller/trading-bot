@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from tools.risk import calculate_position, check_portfolio_guardrails
+from tools.risk import (
+    calculate_position,
+    check_portfolio_guardrails,
+    check_exposure_for_new_order,
+)
 
 
 def test_position_size_1pct_risk():
@@ -82,3 +86,91 @@ def test_guardrails_fail_exposure():
     )
     assert result["can_trade"] is False
     assert "exposure" in result["reason"]
+
+
+def test_guardrails_candidate_pct_pushes_over_cap():
+    # 18% deployed, candidate would add 5% → 23% post-trade > 20% cap
+    result = check_portfolio_guardrails(
+        open_positions=2,
+        max_positions=5,
+        deployed_pct=0.18,
+        max_exposure=0.20,
+        daily_pnl_pct=0.0,
+        drawdown_limit=0.03,
+        candidate_pct=0.05,
+    )
+    assert result["can_trade"] is False
+    assert "exposure" in result["reason"]
+
+
+def test_guardrails_candidate_pct_fits_under_cap():
+    # 10% deployed, candidate adds 5% → 15% post-trade < 20% cap
+    result = check_portfolio_guardrails(
+        open_positions=2,
+        max_positions=5,
+        deployed_pct=0.10,
+        max_exposure=0.20,
+        daily_pnl_pct=0.0,
+        drawdown_limit=0.03,
+        candidate_pct=0.05,
+    )
+    assert result["can_trade"] is True
+
+
+def test_check_exposure_for_new_order_passes_when_under_cap():
+    # 0 open, candidate notional $15k against $100k equity → 15% < 20%
+    result = check_exposure_for_new_order(
+        current_notional=0.0,
+        candidate_notional=15_000.0,
+        portfolio_value=100_000.0,
+        max_exposure=0.20,
+    )
+    assert result["can_trade"] is True
+    assert result["reason"] == ""
+
+
+def test_check_exposure_for_new_order_rejects_when_candidate_alone_over_cap():
+    # Single candidate worth $25k against $100k → 25% > 20%
+    result = check_exposure_for_new_order(
+        current_notional=0.0,
+        candidate_notional=25_000.0,
+        portfolio_value=100_000.0,
+        max_exposure=0.20,
+    )
+    assert result["can_trade"] is False
+    assert "exposure cap breached" in result["reason"]
+
+
+def test_check_exposure_for_new_order_rejects_when_total_over_cap():
+    # $15k already deployed + $10k candidate → $25k = 25% > 20%
+    result = check_exposure_for_new_order(
+        current_notional=15_000.0,
+        candidate_notional=10_000.0,
+        portfolio_value=100_000.0,
+        max_exposure=0.20,
+    )
+    assert result["can_trade"] is False
+    assert "25.0%" in result["reason"]
+
+
+def test_check_exposure_for_new_order_passes_at_exact_cap():
+    # Exactly at 20% should pass — strict ">", not ">="
+    result = check_exposure_for_new_order(
+        current_notional=10_000.0,
+        candidate_notional=10_000.0,
+        portfolio_value=100_000.0,
+        max_exposure=0.20,
+    )
+    assert result["can_trade"] is True
+
+
+def test_check_exposure_for_new_order_invalid_portfolio_value():
+    # Zero/negative portfolio value should fail-closed (treat as broken broker call)
+    result = check_exposure_for_new_order(
+        current_notional=0.0,
+        candidate_notional=1_000.0,
+        portfolio_value=0.0,
+        max_exposure=0.20,
+    )
+    assert result["can_trade"] is False
+    assert "portfolio_value" in result["reason"]

@@ -104,6 +104,17 @@ def test_notify_error_includes_context(mocker):
     assert "something went wrong" in msg
 
 
+def test_notify_order_rejected_includes_ticker_and_reason(mocker):
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_order_rejected
+    notify_order_rejected("AMD", 100, "exposure cap breached (25% > 20%)")
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "AMD" in msg
+    assert "100" in msg
+    assert "exposure cap breached" in msg
+
+
 def test_notify_performance_summary_calls_post(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_performance_summary
