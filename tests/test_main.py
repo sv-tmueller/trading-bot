@@ -170,6 +170,32 @@ def test_run_position_monitor_unaffected_by_trading_paused(db_conn):
     mock_notify_error.assert_not_called()
 
 
+def test_run_position_monitor_groups_reconciled_with_closed(db_conn):
+    """Reconciled actions must be reported as closed, not held (issue #78)."""
+    from monitor.position_monitor import MonitorAction
+    actions = [
+        MonitorAction(trade_id=1, ticker="AMD", action="close", reason="stop_loss", current_price=140.0),
+        MonitorAction(trade_id=2, ticker="NVDA", action="reconciled", reason="broker_closed", current_price=500.0),
+        MonitorAction(trade_id=3, ticker="TSLA", action="hold", reason="", current_price=250.0),
+    ]
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.run_monitor", return_value=actions), \
+         patch("main.notify_monitor") as mock_notify_monitor, \
+         patch("main.notify_error") as mock_notify_error:
+        from main import run_position_monitor
+        run_position_monitor()
+
+    mock_notify_error.assert_not_called()
+    mock_notify_monitor.assert_called_once()
+    # Signature: notify_monitor(date, time, checked, closed)
+    _date, _time, checked, closed = mock_notify_monitor.call_args[0]
+    assert checked == 3
+    assert len(closed) == 2
+    closed_actions = {a.action for a in closed}
+    assert closed_actions == {"close", "reconciled"}
+
+
 def test_run_morning_scan_skips_if_already_ran_today(db_conn):
     """If team_leader already ran today, the scan must exit without calling any agent."""
     from tools.database import log_agent_output
