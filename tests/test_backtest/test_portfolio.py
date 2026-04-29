@@ -397,6 +397,90 @@ def test_trailing_on_never_ratchets_down(monkeypatch):
     # Pullback must not lower the high or the stop.
     assert pos.trailing_high == high_after_rally
     assert pos.stop == stop_after_rally
+def test_earnings_blackout_disabled_matches_baseline():
+    """EARNINGS_BLACKOUT_DAYS=0 must produce identical trade count to baseline (no overhead)."""
+    data = {
+        "A": _with_signal_on_day(n=200, crossover_day=80, volume_spike=2.0),
+        "B": _with_signal_on_day(n=200, crossover_day=85, volume_spike=2.2),
+    }
+    baseline = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=0,
+    )
+    # earnings_loader should never fire when days=0
+    sentinel = {"hit": False}
+
+    def _loader_spy(_t):
+        sentinel["hit"] = True
+        return []
+
+    explicit_off = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=0,
+        earnings_loader=_loader_spy,
+    )
+    assert sentinel["hit"] is False
+    assert baseline["aggregate"]["trades"] == explicit_off["aggregate"]["trades"]
+
+
+def test_earnings_blackout_skips_trades_in_window():
+    """EARNINGS_BLACKOUT_DAYS=5 with earnings ON the entry bar must reduce trade count."""
+    data = {
+        "A": _with_signal_on_day(n=200, crossover_day=80, volume_spike=2.0),
+    }
+    baseline = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=0,
+    )
+    baseline_trades = baseline["aggregate"]["trades"]
+
+    # Force every ticker into permanent blackout.
+    def _all_blackout(_t):
+        # Return a dense set of dates spanning the entire fixture
+        return [pd.Timestamp(d).date() for d in data["A"].index]
+
+    with_blackout = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=5,
+        earnings_loader=_all_blackout,
+    )
+    assert with_blackout["aggregate"]["trades"] <= baseline_trades
+    if baseline_trades > 0:
+        assert with_blackout["aggregate"]["trades"] < baseline_trades
+        reasons = Counter(r["reason"] for r in with_blackout["rejected"])
+        assert reasons.get("earnings_blackout", 0) >= 1
+
+
+def test_earnings_blackout_unknown_ticker_fails_open(capsys):
+    """If yfinance returns nothing for a ticker, backtest must NOT skip the trade — fail-open."""
+    data = {
+        "A": _with_signal_on_day(n=200, crossover_day=80, volume_spike=2.0),
+    }
+    baseline = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=0,
+    )
+
+    fail_open = run_portfolio_backtest(
+        years=1,
+        tickers=list(data.keys()),
+        data_loader=_loader(data),
+        earnings_blackout_days=5,
+        earnings_loader=lambda _t: [],
+    )
+    captured = capsys.readouterr()
+    assert "No earnings data" in captured.out
+    assert fail_open["aggregate"]["trades"] == baseline["aggregate"]["trades"]
 
 
 def test_non_portfolio_path_unchanged(mocker):

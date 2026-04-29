@@ -80,8 +80,31 @@ class ClosedTrade:
 class RejectedSignal:
     date: pd.Timestamp
     ticker: str
-    reason: str   # "max_positions" | "max_exposure"
+    reason: str   # "max_positions" | "max_exposure" | "earnings_blackout"
     score: float
+
+
+def _default_earnings_loader(ticker: str) -> list:
+    """Default earnings loader: yfinance ``Ticker.earnings_dates``. Returns ``[]`` on failure."""
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(ticker)
+        df = tk.earnings_dates
+        if df is None:
+            return []
+        idx = getattr(df, "index", None)
+        if idx is None or len(idx) == 0:
+            return []
+        out = []
+        for ts in df.index:
+            try:
+                if hasattr(ts, "to_pydatetime"):
+                    out.append(ts.to_pydatetime().date())
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +213,9 @@ class PortfolioSimulator:
     tickers: list = field(default_factory=lambda: list(WATCHLIST))
     data_loader: object = fetch_data
 
+    earnings_blackout_days: int = 0
+    earnings_loader: object = None  # callable(ticker) -> list[date]; None => yfinance
+
     # --- runtime state (populated in run()) ---
     data: dict = field(default_factory=dict, init=False)
     cash: float = field(default=STARTING_CASH, init=False)
@@ -197,6 +223,7 @@ class PortfolioSimulator:
     closed_trades: list = field(default_factory=list, init=False)
     rejected: list = field(default_factory=list, init=False)
     equity_curve: list = field(default_factory=list, init=False)
+    earnings_dates: dict = field(default_factory=dict, init=False)
 
     # --- helpers -----------------------------------------------------------
 
@@ -212,6 +239,37 @@ class PortfolioSimulator:
                 rsi_period=self.rsi_period,
                 atr_period=self.atr_period,
             )
+        if self.earnings_blackout_days > 0:
+            self._load_earnings()
+
+    def _load_earnings(self) -> None:
+        """Populate ``self.earnings_dates`` with sorted ``date`` lists per ticker."""
+        loader = self.earnings_loader or _default_earnings_loader
+        for ticker in self.data.keys():
+            try:
+                dates = loader(ticker)
+            except Exception:
+                dates = []
+            if not dates:
+                print(f"[earnings] No earnings data for {ticker}; fail-open in backtest.")
+                self.earnings_dates[ticker] = []
+                continue
+            self.earnings_dates[ticker] = sorted(dates)
+
+    def _in_earnings_blackout(self, ticker: str, day: pd.Timestamp) -> bool:
+        """Return True if any earnings date for ``ticker`` is within the blackout window of ``day``."""
+        if self.earnings_blackout_days <= 0:
+            return False
+        dates = self.earnings_dates.get(ticker)
+        if not dates:
+            return False
+        today = day.date() if hasattr(day, "date") else day
+        window = self.earnings_blackout_days
+        for d in dates:
+            delta = (d - today).days
+            if -window <= delta <= window:
+                return True
+        return False
 
     def _mark_to_market(self, day: pd.Timestamp) -> float:
         equity = self.cash
@@ -360,6 +418,11 @@ class PortfolioSimulator:
                     volume_multiplier=self.volume_multiplier,
                     strict_crossover=self.strict_crossover,
                 ):
+                    continue
+                if self._in_earnings_blackout(ticker, day):
+                    self.rejected.append(
+                        RejectedSignal(day, ticker, "earnings_blackout", candidate_score(row))
+                    )
                     continue
                 candidates.append(
                     {
@@ -583,6 +646,8 @@ def run_portfolio_backtest(
     strict_crossover: bool = settings.STRICT_CROSSOVER,
     tickers: Optional[list] = None,
     data_loader=fetch_data,
+    earnings_blackout_days: int = settings.EARNINGS_BLACKOUT_DAYS,
+    earnings_loader=None,
 ) -> dict:
     """Run the portfolio simulator and return the enriched result dict."""
     sim = PortfolioSimulator(
@@ -600,6 +665,8 @@ def run_portfolio_backtest(
         strict_crossover=strict_crossover,
         tickers=list(tickers) if tickers is not None else list(WATCHLIST),
         data_loader=data_loader,
+        earnings_blackout_days=earnings_blackout_days,
+        earnings_loader=earnings_loader,
     )
     result = sim.run()
 
@@ -616,6 +683,7 @@ def run_portfolio_backtest(
         rr_ratio=rr_ratio,
         max_hold_days=max_hold_days,
         strict_crossover=strict_crossover,
+        earnings_blackout_days=earnings_blackout_days,
     )
     result["params"] = params
     if not result.get("period"):

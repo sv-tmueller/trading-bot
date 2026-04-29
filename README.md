@@ -38,6 +38,7 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 | Daily drawdown limit | `DAILY_DRAWDOWN_LIMIT` | 3% | [0.5%, 20%] |
 | Trailing stop (opt-in) | `TRAILING_STOP_ENABLED` | `false` | `true` ratchets DB stop_loss up as price makes new highs (live + backtest); default OFF |
 | Trailing distance (× ATR) | `TRAILING_STOP_ATR_MULT` | 1.5 | [0.5, 5.0] |
+| Earnings blackout window | `EARNINGS_BLACKOUT_DAYS` | 0 (off) | [0, 14] — skip entries within N days of next/last earnings |
 | Trading kill switch | `TRADING_PAUSED` | `false` | `true` halts new entries; monitor still runs |
 
 ## Setup
