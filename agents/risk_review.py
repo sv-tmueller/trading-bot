@@ -21,10 +21,10 @@ Rules you enforce:
 - Never exceed MAX_EXPOSURE of portfolio deployed
 - Reject if daily drawdown limit is breached
 
-Respond with JSON:
+Respond with JSON. Include the ATR you used for each approved trade so Team Leader can recompute the bracket against the latest quote at submission time:
 {
   "approved": [
-    {"ticker": "AMD", "shares": 222, "stop_loss": 145.5, "take_profit": 159.0, "risk_dollars": 1000.0}
+    {"ticker": "AMD", "shares": 222, "stop_loss": 145.5, "take_profit": 159.0, "risk_dollars": 1000.0, "atr": 3.0}
   ],
   "rejected": [
     {"ticker": "NVDA", "reason": "max positions reached"}

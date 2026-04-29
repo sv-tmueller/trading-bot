@@ -37,6 +37,7 @@ Respond with JSON:
         self._conn = None
         self._pending_stops: dict = {}
         self._pending_targets: dict = {}
+        self._pending_atrs: dict = {}
         self._dry_run: bool = False
 
     def get_tools(self) -> list:
@@ -82,6 +83,7 @@ Respond with JSON:
         conn = self._conn
         pending_stops = self._pending_stops
         pending_targets = self._pending_targets
+        pending_atrs = self._pending_atrs
         dry_run = self._dry_run
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
@@ -122,7 +124,31 @@ Respond with JSON:
                     notify_order_rejected(ticker, shares, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
-            order_result = place_market_order(ticker, shares, side)
+            # Bracket pricing: recompute stop/target locally from the fresh
+            # quote so the broker-side legs are anchored to a current price
+            # (not the LLM's stale prior-close). Falls back to the LLM-supplied
+            # values if no ATR was passed through (sells, missing data).
+            bracket_stop = None
+            bracket_target = None
+            if side == "buy":
+                atr = pending_atrs.get(ticker)
+                if atr is not None and atr > 0:
+                    stop_distance = atr * settings.ATR_STOP_MULTIPLIER
+                    bracket_stop = round(price - stop_distance, 4)
+                    bracket_target = round(price + stop_distance * settings.RR_RATIO_MIN, 4)
+                else:
+                    # Fallback: scale LLM-supplied prices to the fresh quote
+                    # so R:R math is at least roughly preserved.
+                    bracket_stop = pending_stops.get(ticker)
+                    bracket_target = pending_targets.get(ticker)
+
+            order_result = place_market_order(
+                ticker,
+                shares,
+                side,
+                stop_price=bracket_stop,
+                take_profit_price=bracket_target,
+            )
             order_id = order_result["order_id"]
             if side == "buy":
                 entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # Alpaca fills async; fill_price may be None on paper — pre-order quote is the fallback
@@ -131,8 +157,8 @@ Respond with JSON:
                     "entry_date": date.today().isoformat(),
                     "entry_price": entry_price,
                     "shares": shares,
-                    "stop_loss": pending_stops.get(ticker, entry_price * 0.97),
-                    "take_profit": pending_targets.get(ticker, entry_price * 1.06),
+                    "stop_loss": bracket_stop if bracket_stop is not None else (pending_stops.get(ticker, entry_price * 0.97)),
+                    "take_profit": bracket_target if bracket_target is not None else (pending_targets.get(ticker, entry_price * 1.06)),
                 })
             return {"order_id": order_id, "status": "submitted"}
 
@@ -166,10 +192,11 @@ Respond with JSON:
 
         return [place_order, close_position]
 
-    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None, dry_run: bool = False) -> dict:
+    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None, pending_atrs: dict = None, dry_run: bool = False) -> dict:
         self._conn = conn
         self._pending_stops = pending_stops or {}
         self._pending_targets = pending_targets or {}
+        self._pending_atrs = pending_atrs or {}
         self._dry_run = dry_run
         return super().run(prompt, conn=conn)
 
