@@ -35,7 +35,7 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 | Max hold days | `MAX_HOLD_DAYS` | 5 | [1, 30] |
 | Min reward:risk ratio | `RR_RATIO_MIN` | 2.0 | [1.0, 5.0] |
 | Stop distance (× ATR) | `ATR_STOP_MULTIPLIER` | 1.5 | [0.5, 5.0] |
-| Daily drawdown limit | _(hardcoded)_ | 3% | — |
+| Daily drawdown limit | `DAILY_DRAWDOWN_LIMIT` | 3% | [0.5%, 20%] |
 | Trading kill switch | `TRADING_PAUSED` | `false` | `true` halts new entries; monitor still runs |
 
 ## Setup
