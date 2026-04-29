@@ -76,6 +76,7 @@ Respond with JSON:
     def _get_tool_functions(self) -> list:
         from tools.broker import place_market_order, close_position as broker_close_position
         from tools.broker import get_current_price, get_alpaca_positions, get_portfolio_value
+        from tools.broker import BrokerSubmitError
         from tools.database import insert_trade, get_open_trades, close_trade
         from tools.risk import check_exposure_for_new_order, validate_bracket_params
         from tools.notifications import notify_order_rejected
@@ -151,13 +152,19 @@ Respond with JSON:
                     notify_order_rejected(ticker, shares, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
-            order_result = place_market_order(
-                ticker,
-                shares,
-                side,
-                stop_price=bracket_stop,
-                take_profit_price=bracket_target,
-            )
+            try:
+                order_result = place_market_order(
+                    ticker,
+                    shares,
+                    side,
+                    stop_price=bracket_stop,
+                    take_profit_price=bracket_target,
+                )
+            except BrokerSubmitError as e:
+                reason = f"broker rejected: {e}"
+                print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
+                notify_order_rejected(ticker, shares, reason)
+                return {"order_id": None, "status": "rejected", "reason": reason}
             order_id = order_result["order_id"]
             if side == "buy":
                 entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # Alpaca fills async; fill_price may be None on paper — pre-order quote is the fallback
