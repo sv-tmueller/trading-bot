@@ -184,7 +184,7 @@ def run_position_monitor():
         print(f"=== Position monitor — {date.today()} {now} ===")
         conn = get_db()
         actions = run_monitor(conn)
-        closed = [a for a in actions if a.action == "close"]
+        closed = [a for a in actions if a.action in ("close", "reconciled")]
         print(f"Checked {len(actions)} positions. Closed: {len(closed)}")
         notify_monitor(date.today().isoformat(), now, len(actions), closed)
     except Exception as e:
