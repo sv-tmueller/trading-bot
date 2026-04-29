@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
-from tools.broker import place_market_order, close_position, get_portfolio_value, get_current_price
+from tools.broker import place_market_order, close_position, get_portfolio_value, get_current_price, BrokerSubmitError
 
 
 def test_place_market_order_buy():
@@ -150,6 +150,26 @@ def test_place_market_order_plain_when_no_bracket_params():
     assert request.order_class != OrderClass.BRACKET
     assert request.stop_loss is None
     assert request.take_profit is None
+
+
+def test_place_market_order_raises_broker_submit_error_on_plain_path():
+    """Plain (non-bracket) submit failure → BrokerSubmitError with original message embedded."""
+    mock_client = MagicMock()
+    mock_client.submit_order.side_effect = Exception("insufficient buying power")
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(BrokerSubmitError, match="insufficient buying power"):
+            place_market_order("AMD", 100, "buy")
+
+
+def test_place_market_order_raises_broker_submit_error_on_bracket_path():
+    """Bracket submit failure → BrokerSubmitError with original message embedded."""
+    mock_client = MagicMock()
+    mock_client.submit_order.side_effect = Exception("wash trade detected")
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(BrokerSubmitError, match="wash trade detected"):
+            place_market_order("AMD", 100, "buy", stop_price=145.0, take_profit_price=160.0)
 
 
 def test_place_market_order_partial_bracket_falls_back_to_plain():

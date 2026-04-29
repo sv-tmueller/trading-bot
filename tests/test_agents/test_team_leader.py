@@ -664,6 +664,48 @@ def test_place_order_happy_path_bracket_unchanged(db_conn):
     assert len(rows) == 1
 
 
+def test_place_order_handles_broker_submit_error_gracefully(db_conn):
+    """Issue #81: BrokerSubmitError → notify_order_rejected called once, no DB row, agent run completes."""
+    from tools.broker import BrokerSubmitError
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_be1", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "broker rejected"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order",
+               side_effect=BrokerSubmitError("insufficient buying power")) as mock_place, \
+         patch("tools.notifications.notify_order_rejected") as mock_notify:
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+        )
+
+    # Broker was called (submit attempted), then raised — agent must continue.
+    assert mock_place.call_count == 1
+    # Notification fired with broker rejection reason embedded.
+    mock_notify.assert_called_once()
+    notify_args, _ = mock_notify.call_args
+    assert notify_args[0] == "AMD"
+    assert notify_args[1] == 100
+    assert "broker rejected" in notify_args[2]
+    assert "insufficient buying power" in notify_args[2]
+    # No DB row inserted on rejection.
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert rows == []
+    # Agent run completed (final response parsed).
+    assert result.get("summary") == "broker rejected"
+
+
 def test_sell_uses_plain_market_order_no_bracket(db_conn):
     """Sells (closes) must remain plain market orders — bracket params must be None."""
     tool_response = _make_tool_response(_make_place_order_tool_use("tu_s1", "AMD", 100, "sell"))

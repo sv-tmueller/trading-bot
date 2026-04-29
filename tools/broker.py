@@ -9,6 +9,11 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from config import settings
 
 
+class BrokerSubmitError(Exception):
+    """Raised when Alpaca rejects an order submission (insufficient BP, wash-trade, halted, etc.)."""
+    pass
+
+
 def get_trading_client() -> TradingClient:
     return TradingClient(
         settings.ALPACA_API_KEY,
@@ -50,7 +55,11 @@ def place_market_order(
             side=order_side,
             time_in_force=TimeInForce.DAY,
         )
-    order = client.submit_order(request)
+    try:
+        order = client.submit_order(request)
+    except Exception as e:
+        print(f"[place_market_order] ALPACA REJECTED {ticker} {side} {shares}: {e}")
+        raise BrokerSubmitError(str(e)) from e
     fill_price = float(order.filled_avg_price) if order.filled_avg_price is not None else None
     return {"order_id": str(order.id), "fill_price": fill_price}
 
