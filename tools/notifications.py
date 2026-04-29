@@ -77,6 +77,10 @@ def notify_error(context: str, error: str) -> None:
     _post(f"⚠️ **Bot Error — {context}**\n```{error[:500]}```")
 
 
+def notify_order_rejected(ticker: str, shares: int, reason: str) -> None:
+    _post(f"🛑 **Order rejected** — {ticker} {shares}sh\n{reason}")
+
+
 def notify_performance_summary(stats: dict) -> None:
     days = stats["days"]
     trade_count = stats["trade_count"]

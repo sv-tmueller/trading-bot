@@ -74,8 +74,11 @@ Respond with JSON:
 
     def _get_tool_functions(self) -> list:
         from tools.broker import place_market_order, close_position as broker_close_position
-        from tools.broker import get_current_price
+        from tools.broker import get_current_price, get_alpaca_positions, get_portfolio_value
         from tools.database import insert_trade, get_open_trades, close_trade
+        from tools.risk import check_exposure_for_new_order
+        from tools.notifications import notify_order_rejected
+        from config import settings
         conn = self._conn
         pending_stops = self._pending_stops
         pending_targets = self._pending_targets
@@ -86,6 +89,39 @@ Respond with JSON:
                 print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
                 return {"order_id": "dry-run", "status": "dry-run"}
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
+
+            # Deterministic exposure gate — runs on every buy. The LLM cannot
+            # bypass this; even if Team Leader hallucinates a clean portfolio
+            # we recompute current notional from broker truth here. Sells skip
+            # the gate because they reduce, not add, exposure.
+            if side == "buy":
+                try:
+                    portfolio_value = get_portfolio_value()
+                    open_positions = get_alpaca_positions()
+                    current_notional = sum(
+                        p["qty"] * p["avg_entry_price"] for p in open_positions
+                    )
+                except Exception as e:
+                    # Fail-closed: if we can't verify exposure, reject. Better
+                    # to skip a trade than over-deploy.
+                    reason = f"exposure check failed: {e}"
+                    print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
+                    notify_order_rejected(ticker, shares, reason)
+                    return {"order_id": None, "status": "rejected", "reason": reason}
+
+                candidate_notional = shares * price
+                gate = check_exposure_for_new_order(
+                    current_notional=current_notional,
+                    candidate_notional=candidate_notional,
+                    portfolio_value=portfolio_value,
+                    max_exposure=settings.MAX_PORTFOLIO_EXPOSURE,
+                )
+                if not gate["can_trade"]:
+                    reason = gate["reason"]
+                    print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
+                    notify_order_rejected(ticker, shares, reason)
+                    return {"order_id": None, "status": "rejected", "reason": reason}
+
             order_result = place_market_order(ticker, shares, side)
             order_id = order_result["order_id"]
             if side == "buy":
