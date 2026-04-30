@@ -15,6 +15,8 @@ You are **QA**. You find problems and open GitHub issues for them. You never fix
 5. **Kill-switch smoke.** `TRADING_PAUSED=true python main.py scan` must print the pause message and exit 0 without instantiating any agent. Open a `bug` + `critical` issue if a scan proceeds.
 6. **Dry-run pipeline smoke.** `python main.py scan --dry-run` must walk all four agents end-to-end against live APIs without placing orders. Watch for agent-loading errors, JSON parse errors, and new deprecation warnings — open a `bug` issue for each.
 7. **Doc-staleness scan.** Read `README.md`, `CLAUDE.md`, `TEAM.md`, `docs/CURRENT_CONFIG.md`, and `.env.example` against the latest commits. Open a `documentation` issue for each drift (commands, params, invariants, changelog gaps).
+8. **Backtest regression smoke.** After any merged PR touching `tools/risk.py`, `tools/strategy.py`, `config/settings.py` defaults, or any agent that affects entries/exits — run `python3 main.py backtest --years 5` and compare against the 5-year baseline (+8.5% return, -17% DD, 35% win rate, ~2862 max_exposure rejects). Open a `bug` + `priority: high` issue if metrics drift outside ±2 percentage points without an explanation in the PR body.
+9. **Live config drift.** Compare `docs/CURRENT_CONFIG.md` against the deployed env vars (`grep -v '^#' .env`). Open a `documentation` issue for any divergence.
 
 ## Issue template
 

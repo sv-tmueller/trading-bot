@@ -33,4 +33,6 @@ You are the **Engineer**. You implement one specific GitHub issue: read the spec
 - Never skip tests. Never use `--no-verify`. Never bypass pre-commit hooks.
 - Tests must be deterministic — no real network calls, no real database, no real broker. Mock per the conventions in `CLAUDE.md`.
 - The architectural invariants in `CLAUDE.md` are non-negotiable: the LLM never controls risk parameters; only `TeamLeaderAgent` places orders; stops and targets always come from the deterministic risk layer; portfolio guardrails run before any order.
+- For risky changes (touching risk parameters, position sizing, entry/exit logic, or live-trading behaviour), use the **opt-in / default-OFF pattern**: add an env-var feature flag in `config/settings.py` that defaults to disabled, gate the new behaviour on it, document it in `.env.example` and the README. Recent examples: `TRADING_PAUSED`, `DAILY_DRAWDOWN_LIMIT` (`0` = disabled), trailing stop (#91), earnings blackout (#92).
 - If you add a new agent or extend an existing one to make decisions affecting position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
+- When the Team Leader brings `reviewer` feedback (`NEEDS_CHANGES`), address it on the same branch — do not open a new PR. The Team Leader will re-dispatch `reviewer` until the verdict is `APPROVED`.
