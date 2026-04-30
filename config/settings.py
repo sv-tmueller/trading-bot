@@ -17,6 +17,13 @@ ALPACA_BASE_URL = (
     else "https://api.alpaca.markets"
 )
 
+# Execution-layer selection. Validated against the registry in
+# tools/brokers/__init__.py — keep both lists in sync when adding a broker.
+BROKER = os.getenv("BROKER", "alpaca").lower()
+_VALID_BROKERS = {"alpaca"}
+if BROKER not in _VALID_BROKERS:
+    raise ValueError(f"BROKER must be one of {sorted(_VALID_BROKERS)}, got: {BROKER!r}")
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
