@@ -17,7 +17,7 @@ python3 -m pytest tests/test_monitor.py::test_stop_loss_triggered -v
 # Run the morning scan manually
 python3 main.py scan
 
-# Dry-run scan — full agent pipeline, no orders placed or recorded
+# Dry-run scan: full agent pipeline, no orders placed or recorded
 python3 main.py scan --dry-run
 
 # Run the position monitor manually
@@ -39,17 +39,36 @@ python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-r
 
 ## Contribution workflow
 
-**Issue-first.** Every code change closes a GitHub Issue. The Issue is the spec; the PR is the implementation. Multiple contributors and fresh Claude sessions rely on the repo as the source of truth — chat transcripts are not durable.
+**Issue-first.** Every code change closes a GitHub Issue. The Issue is the spec; the PR is the implementation. Multiple contributors and fresh Claude sessions rely on the repo as the source of truth, not chat transcripts.
 
 1. **Open an Issue** describing *what* and *why*. Required sections: Context, Scope (with concrete file changes), Out of scope, Acceptance criteria. See #94, #95 for shape examples.
 2. **Develop on the assigned branch.** The harness assigns one per session (e.g. `claude/<slug>`). Never push to a different branch without explicit permission.
 3. **Open a draft PR** with `Closes #<N>` at the top of the body. Draft until tests pass and review is requested.
-4. **Run the full test suite locally before pushing.** Verify zero regressions — do not assume. If a pre-existing failure is unrelated, prove it (e.g. `git stash` and re-run on clean main) and note it in the PR body.
+4. **Run the full test suite locally before pushing.** Verify zero regressions, do not assume. If a pre-existing failure is unrelated, prove it (e.g. `git stash` and re-run on clean main) and note it in the PR body.
 5. **Keep PRs scoped.** One Issue, one PR. Docs that directly document the PR's shipped surface can ride along; unrelated docs go in a separate Issue/PR.
+
+### Session handovers
+
+`docs/handovers/` stores durable context from prior sessions. **At the start of any new session, read the most recent handover file plus `docs/handovers/README.md` before planning work.** That is where rejected paths, selection criteria, and constraints from earlier conversations live.
+
+**Write a handover** when:
+- The user asks to "document", "handover", "save context", or similar.
+- The session made a non-trivial architectural or strategic decision (especially when alternatives were rejected).
+- The session is ending after producing shipped or specced work.
+
+Filename: `docs/handovers/YYYY-MM-DD-<slug>.md`. Format and content rules in `docs/handovers/README.md`.
+
+## Style and constraints
+
+- **No em dashes anywhere.** Use commas, colons, semicolons, parentheses, or separate sentences. Applies to chat output, code comments, commit messages, PR/issue bodies, and all docs.
+- **Honest by default; escape hatches named explicitly.** Realistic mode is the default; diagnostic/legacy modes exist behind an explicit flag.
+- **No US ETFs in the strategy** (German tax: US ETFs lose Teilfreistellung, full 26.375% on gains). Individual equities only. The watchlist must reflect this.
+- **Idempotent everything.** Daemon restarts must not double-submit, double-count, or corrupt state. The morning scan idempotence guard (`_scan_already_ran`) is one example; broker order idempotency keys are a planned extension.
+- **Recalibration cutover, not regression.** When a measurement layer (frictions, fees, slippage) is added or changed, the new numbers are the only truth going forward. Do not maintain dual baselines.
 
 ## Python version
 
-Runtime is Python 3.9. **Every Python file must start with `from __future__ import annotations`** — this enables modern type hint syntax on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
+Runtime is Python 3.9. **Every Python file must start with `from __future__ import annotations`**. This enables modern type hint syntax on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
 
 ## Architecture
 
@@ -66,9 +85,9 @@ Each agent subclasses `BaseAgent` (`agents/base.py`) which handles the full Anth
 ### BaseAgent pattern
 
 Subclasses must implement three methods:
-- `get_tools()` — Anthropic tool definitions (JSON schema)
-- `_get_tool_functions()` — callables matching those tool names; use **deferred imports** inside this method so tools can be monkeypatched in tests
-- `parse_output(response)` — extract dict from Claude's text response, always include a JSON fallback
+- `get_tools()`: Anthropic tool definitions (JSON schema)
+- `_get_tool_functions()`: callables matching those tool names; use **deferred imports** inside this method so tools can be monkeypatched in tests
+- `parse_output(response)`: extract dict from Claude's text response, always include a JSON fallback
 
 Instance state used by tool closures (e.g. `self._conn`) must be:
 1. Initialised to `None` in `__init__`
@@ -93,10 +112,10 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 
 Two-file surface, two purposes:
 
-- `tools/broker.py` — **canonical Alpaca implementation.** Module-level functions (`place_market_order`, `close_position`, `get_alpaca_positions`, `get_portfolio_value`, `get_current_price`) plus `BrokerSubmitError`. All call sites (`agents/team_leader.py`, `monitor/position_monitor.py`, `main.py`) and >40 test patches reference this module directly.
-- `tools/brokers/` — **abstraction layer.** `BaseBroker` ABC + `AlpacaBroker` adapter + `get_broker()` factory. `AlpacaBroker` *delegates* into `tools/broker.py` rather than reimplementing the SDK calls.
+- `tools/broker.py`: **canonical Alpaca implementation.** Module-level functions (`place_market_order`, `close_position`, `get_alpaca_positions`, `get_portfolio_value`, `get_current_price`) plus `BrokerSubmitError`. All call sites (`agents/team_leader.py`, `monitor/position_monitor.py`, `main.py`) and >40 test patches reference this module directly.
+- `tools/brokers/`: **abstraction layer.** `BaseBroker` ABC + `AlpacaBroker` adapter + `get_broker()` factory. `AlpacaBroker` *delegates* into `tools/broker.py` rather than reimplementing the SDK calls.
 
-**Test-patch invariant — DO NOT VIOLATE:** Tests patch `tools.broker.<fn>` extensively across `test_tools_broker.py`, `test_team_leader.py`, `test_monitor.py`, `test_main.py`. Moving SDK logic out of `tools/broker.py` into `AlpacaBroker.<method>` would silently break every patched call site. Keep `tools/broker.py` as the single source of Alpaca SDK behaviour. Future brokers add `tools/brokers/<name>.py` as a sibling adapter — they do not touch `tools/broker.py`.
+**Test-patch invariant, DO NOT VIOLATE:** Tests patch `tools.broker.<fn>` extensively across `test_tools_broker.py`, `test_team_leader.py`, `test_monitor.py`, `test_main.py`. Moving SDK logic out of `tools/broker.py` into `AlpacaBroker.<method>` would silently break every patched call site. Keep `tools/broker.py` as the single source of Alpaca SDK behaviour. Future brokers add `tools/brokers/<name>.py` as a sibling adapter; they do not touch `tools/broker.py`.
 
 `BROKER` env var (default `alpaca`) selects the active broker. Validated against the registry at import time in `config/settings.py`.
 
@@ -108,7 +127,7 @@ Two-file surface, two purposes:
 
 ### Notifications
 
-`tools/notifications.py` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` env var) which forwards to Discord. Uses only stdlib `urllib` — no extra dependency. Silently skips if the env var is unset or the request fails, so a notification outage never crashes the bot. Use `http://localhost:5678` not the public n8n URL (Cloudflare Access blocks unauthenticated external requests).
+`tools/notifications.py` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` env var) which forwards to Discord. Uses only stdlib `urllib`, no extra dependency. Silently skips if the env var is unset or the request fails, so a notification outage never crashes the bot. Use `http://localhost:5678` not the public n8n URL (Cloudflare Access blocks unauthenticated external requests).
 
 ### Position monitor
 
@@ -125,15 +144,15 @@ Two-file surface, two purposes:
 - Mock broker calls with `patch("tools.broker.place_market_order", ...)` etc.
 - Helper function for mock responses must be named `make_mock_claude_response`
 - All agent tests cover: happy path (with value assertions), name check, JSON fallback path
-- `stop_reason = "end_turn"` in mocks — tool-use loop is not exercised in unit tests
+- `stop_reason = "end_turn"` in mocks; tool-use loop is not exercised in unit tests
 
 ## Key constraints
 
-- `MAX_HOLD_DAYS`, `RISK_PER_TRADE`, `MAX_POSITIONS` are validated at startup — invalid values raise immediately
-- Stop-loss priority: `stop_loss → take_profit → max_hold → hold` — order matters
-- `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
+- `MAX_HOLD_DAYS`, `RISK_PER_TRADE`, `MAX_POSITIONS` are validated at startup; invalid values raise immediately
+- Stop-loss priority: `stop_loss → take_profit → max_hold → hold` (order matters)
+- `place_market_order` validates `side` is exactly `"buy"` or `"sell"`; raises `ValueError` otherwise
 - `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
-- Morning scan is idempotent: `main.py scan` sets `_scan_already_ran = True` after the first successful run and skips subsequent calls within the same process — prevents double-firing if cron overlaps
+- Morning scan is idempotent: `main.py scan` sets `_scan_already_ran = True` after the first successful run and skips subsequent calls within the same process; prevents double-firing if cron overlaps
 - Morning scan must run **pre-market** (cron at `25 13 * * 1-5` UTC, 5 min before NYSE open). Signals are computed on daily bars in `tools/market_data.py`; running after 13:30 UTC means the last bar is still forming and `volume_ratio` collapses to ~0, killing every entry. Yesterday's closed bar is the input; orders fill at today's open.
 
 ## Architectural invariants
@@ -141,26 +160,26 @@ Two-file surface, two purposes:
 **The LLM must never control risk parameters directly.** This is non-negotiable.
 
 Specifically:
-- Stop-loss and take-profit values are always calculated by `tools/risk.py` (ATR-based, deterministic). The LLM receives them as inputs — it cannot set or override them.
+- Stop-loss and take-profit values are always calculated by `tools/risk.py` (ATR-based, deterministic). The LLM receives them as inputs; it cannot set or override them.
 - Position monitor exit logic in `monitor/position_monitor.py` is rule-based only. No LLM call is made during exits.
 - Portfolio guardrails (`check_portfolio_guardrails` in `tools/risk.py`) run deterministically before any order is placed. The LLM cannot bypass them.
 - The order-placement path has a deterministic exposure gate inside `team_leader.place_order` that calls `tools/risk.py::check_exposure_for_new_order` against broker truth (`get_alpaca_positions`) before submission. It fails closed on broker outage and cannot be bypassed by the LLM (the gate lives in the tool implementation, not the prompt).
-- Only `TeamLeaderAgent` places orders, and only with stop/target values that come from `pending_stops`/`pending_targets` — pre-approved by the risk layer.
-- Stops and take-profits execute server-side via Alpaca **bracket orders** (entry + take_profit + stop_loss legs submitted in one call). The `position_monitor` soft-stop check is defense-in-depth, not the primary mechanism — exits fire regardless of monitor process or data-API reachability.
+- Only `TeamLeaderAgent` places orders, and only with stop/target values that come from `pending_stops`/`pending_targets` (pre-approved by the risk layer).
+- Stops and take-profits execute server-side via Alpaca **bracket orders** (entry + take_profit + stop_loss legs submitted in one call). The `position_monitor` soft-stop check is defense-in-depth, not the primary mechanism; exits fire regardless of monitor process or data-API reachability.
 - ATR is plumbed `risk_review` → `main.py` → `team_leader` so brackets are anchored to a **fresh quote at submission**, not the LLM's stale prior-close estimate. This keeps the realised R:R within ±5% of `RR_RATIO_MIN` under typical fill drift.
-- Operational kill switch: `TRADING_PAUSED=true` in `.env` halts new entries — `main.py scan` exits immediately, no agents run. The position monitor is unaffected and continues exit handling.
+- Operational kill switch: `TRADING_PAUSED=true` in `.env` halts new entries; `main.py scan` exits immediately, no agents run. The position monitor is unaffected and continues exit handling.
 
-**Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
+**Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances, stop and add a deterministic validation layer first.
 
 _Rationale: LLM outputs are non-deterministic and can behave unexpectedly under novel market conditions. The deterministic rules engine is the safety net that makes the system auditable and prevents runaway losses._
 
 ## Team
 
-The main session always acts as **Team Leader** — it orchestrates Lead, Engineer, QA, and Docs as subagents. You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
+The main session always acts as **Team Leader**: it orchestrates Lead, Engineer, QA, and Docs as subagents. You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
 
 | Tell the Team Leader | It will dispatch… |
 |---|---|
-| `Triage open issues` | Lead — label, prioritize, set status:ready |
+| `Triage open issues` | Lead: label, prioritize, set status:ready |
 | `Work on the issues` | Lead then Engineer per issue, with reviews |
-| `Run QA` | QA — discover bugs, open issues |
-| `Update docs` | Docs — sync README and CLAUDE.md |
+| `Run QA` | QA: discover bugs, open issues |
+| `Update docs` | Docs: sync README and CLAUDE.md |
