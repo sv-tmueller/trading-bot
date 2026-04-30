@@ -1,6 +1,6 @@
 # GitHub Trading-Bot Projects — Survey
 
-**Scope.** Survey of public GitHub repositories adjacent to this codebase (Python swing-trading bots, Alpaca integrations, LLM-augmented bots, larger frameworks) to identify patterns worth borrowing and red flags to avoid. Methodology: WebSearch + WebFetch on README pages only — no source-tree inspection. Where stars/dates are listed, they were extracted from the rendered repo page; "unknown" means the field was not visible. **Date: 2026-04-30.** **This is a partial scan, not exhaustive** — eight repos chosen for diversity over volume; many obvious candidates (vectorbt, backtrader proper, quantconnect/Lean) were not fetched. Treat findings as directional, not authoritative.
+**Scope.** Survey of public GitHub repositories adjacent to this codebase (Python swing-trading bots, Alpaca integrations, LLM-augmented bots, larger frameworks) to identify patterns worth borrowing and red flags to avoid. Methodology: `gh api repos/<owner>/<repo>` for stars / license / `pushed_at`; WebFetch for README content. **Date: 2026-04-30.** **This is a partial scan, not exhaustive** — eight repos chosen for diversity over volume; many obvious candidates (vectorbt, backtrader proper, quantconnect/Lean) were not fetched. Treat findings as directional, not authoritative.
 
 ## Summary table
 
@@ -18,7 +18,7 @@
 ## Detailed entries
 
 ### 1. Lumiwealth/lumibot — `https://github.com/Lumiwealth/lumibot`
-- **Stars / last commit / license**: 1.4k / Apr 2026 (v4.5.9) / GPL-3.0 (PyPI badge says MIT in one section — inconsistency).
+- **Stars / last commit / license**: 1,374 / 2026-04-30 / GPL-3.0 (per GitHub API; a PyPI dependency badge in the README references MIT, which is unrelated to the project's own license).
 - **Stack**: Broker-agnostic framework supporting Alpaca, IBKR, Tradier, Schwab, CCXT. Python 3.x. No single SDK wrapped.
 - **Strategy focus**: Generic — stocks, options, crypto, futures, forex; 25+ example strategies. Strategy lifecycle hook is `on_trading_iteration()`.
 - **Risk handling**: Order placement via `create_order()` / `submit_order()`; bracket support not surfaced in README. Risk is per-strategy responsibility, not framework-enforced.
@@ -28,10 +28,10 @@
   - **DuckDB-for-context pattern**: stop putting raw bars in prompts; load them into a queryable store and let the agent run SQL via tools. Directly applicable to our `MarketIntelligenceAgent`.
   - **Deterministic agent replay in backtests**: cache LLM responses by `(prompt_hash, market_state_hash)` so backtests don't re-bill or drift between runs.
   - **Strategy lifecycle hook** (`on_trading_iteration`) is a cleaner interface than our ad-hoc agent pipeline if we ever extend to intraday.
-- **Avoid**: License inconsistency (GPL vs MIT) is a red flag for any code lifted directly. Framework lock-in: lumibot is opinionated and hard to retrofit; our agent-pipeline + ATR risk layer is closer to a custom system than a strategy plugin.
+- **Avoid**: GPL-3.0 means any direct code lift propagates the licence to our project — design ideas only. Framework lock-in: lumibot is opinionated and hard to retrofit; our agent-pipeline + ATR risk layer is closer to a custom system than a strategy plugin.
 
 ### 2. mathesco-git/alpaca-trading-bot — `https://github.com/mathesco-git/alpaca-trading-bot`
-- **Stars / last commit / license**: 2 / unknown / not specified.
+- **Stars / last commit / license**: 2 / 2026-03-16 / no licence file (per GitHub API).
 - **Stack**: `alpaca-py >= 0.21`, Python 3.10+ (built on 3.14), APScheduler `BackgroundScheduler` (US/Eastern), SQLAlchemy 2.0 + SQLite, FastAPI dashboard, Jinja2.
 - **Strategy focus**: Two strategies running concurrently. Day: VWAP breakout + volume surge + RSI(14) > 55 on 5-min bars. Swing: Golden Cross (50 SMA over 200) OR RSI < 30 in uptrend on daily bars; exit on Death Cross with 2.0× ATR trailing stop.
 - **Risk handling**: Position size = `equity * 2% * allocation% / (ATR * stop_multiplier)`. Pre-trade gate enforces (a) max positions (5 day / 10 swing), (b) allocation-vs-buying-power, (c) single-trade risk cap. Day trades use fixed 1.5× ATR stop + 2.0× ATR target. Swing uses ratchet-only trailing stop, no fixed take-profit. `ENABLE_TRADING` flag = monitor-only kill switch. **Brackets not visible** — stops are monitored every 60s by a price-loop, not server-side.
@@ -45,7 +45,7 @@
 - **Avoid**: No bracket orders — relies on a 60s monitoring loop for stops. That's the exact pattern our CLAUDE.md calls out as defense-in-depth, not primary. If the monitor goes down, exits don't fire. Our bracket-order design is strictly safer.
 
 ### 3. gr8monk3ys/trading-bot — `https://github.com/gr8monk3ys/trading-bot`
-- **Stars / last commit / license**: 3 / unknown (207 commits on main) / GPL-3.0.
+- **Stars / last commit / license**: 3 / 2026-04-28 / GPL-3.0 (207 commits on main).
 - **Stack**: Alpaca, `uv` package manager, FastAPI dashboard, pytest with `.coveragerc`. Python version pinned via `.python-version`.
 - **Strategy focus**: `MomentumStrategy`, `AdaptiveStrategy`, plus a regime detector under `factors/`. Strategies live in `strategies/`, broker glue in `brokers/`, execution in `execution/`.
 - **Risk handling**: Dedicated `scripts/kill_switch.py` with `--cancel-orders` and `--liquidate` flags. `utils/` contains "risk, reconciliation, audit" helpers. Pre-flight `go_live_precheck_summary.json`. Specific stop/bracket mechanics not visible in README.
@@ -58,7 +58,7 @@
 - **Avoid**: Low stars and unverified production use; treat as inspiration, not prior art. GPL-3.0 means no copy-paste without re-licensing implications.
 
 ### 4. abzdel/Swing-Trading-Stock-Bot — `https://github.com/abzdel/Swing-Trading-Stock-Bot`
-- **Stars / last commit / license**: 48 / unknown / not specified.
+- **Stars / last commit / license**: 48 / **2020-12-15 (5+ years stale)** / no licence file (per GitHub API).
 - **Stack**: Python 3.7 (!), legacy `tradeapi` (alpaca-trade-api), btalib + talib, raw `requests`/`json`. CSV for state.
 - **Strategy focus**: SMA crossovers, RSI, pivot/support/resistance levels on daily bars.
 - **Risk handling**: Single `equity_limit` for allocation. **No stops, no brackets, no sizing formula**. Author states "paper only until bugs eliminated."
@@ -68,10 +68,10 @@
 - **Avoid**:
   - **CSV-as-state**: race conditions, no transactions. Our SQLite + foreign keys is the right call.
   - **No risk layer**: live-trading this would be reckless. Reaffirms why our deterministic risk module is the architectural invariant it is.
-  - **Python 3.7 + legacy SDK**: don't borrow patterns from a stack 5+ years out of date.
+  - **Python 3.7 + legacy SDK + last push 2020-12-15**: a stack and a repo both effectively abandoned. Don't borrow patterns from it.
 
 ### 5. TraderAlice/OpenAlice — `https://github.com/TraderAlice/OpenAlice`
-- **Stars / last commit / license**: 3.8k / unknown (649 commits on master) / AGPL-3.0.
+- **Stars / last commit / license**: 3,805 / 2026-04-30 / AGPL-3.0 (649 commits on master).
 - **Stack**: TypeScript 81% + Python 18.8%, Node 22+, pnpm, Turborepo. Brokers: CCXT, Alpaca, IBKR (via TWS/Gateway with `RequestBridge`).
 - **Strategy focus**: Generic agent-driven — equities, crypto, commodities, forex, macro. Strategy is whatever the LLM decides, gated by guards.
 - **Risk handling**: **"Guard pipeline"** runs pre-execution: max position size, cooldown between trades, symbol whitelist. **"Trading-as-Git"**: orders are *staged*, *committed* with a message, and require explicit *push* approval before execution — gives a literal audit trail. Account snapshots + equity curve.
@@ -84,7 +84,7 @@
 - **Avoid**: TypeScript-first means we can't lift code directly. AGPL is restrictive — design ideas are fine but copying source has reciprocal-license consequences. The 3.8k stars in <1 year suggest some hype/velocity risk; production maturity unverified.
 
 ### 6. huygiatrng/AlpacaTradingAgent — `https://github.com/huygiatrng/AlpacaTradingAgent`
-- **Stars / last commit / license**: 183 / unknown / Apache-2.0.
+- **Stars / last commit / license**: 183 / 2026-04-17 / Apache-2.0.
 - **Stack**: LangGraph, Alpaca (paper + live), Finnhub, FRED, CoinDesk, optional Twitter sentiment. Python version not stated.
 - **Strategy focus**: Multi-agent LLM synthesis rather than a fixed indicator strategy. Agents debate; the trader agent acts on the synthesis.
 - **Risk handling**: README mentions "margin trading controls and risk management" plus margin requirement evaluation, but **no specific stop-loss, sizing formula, kill switch, or bracket details visible**. This is a red flag for a 183-star repo using real broker access.
@@ -99,7 +99,7 @@
   - LangGraph adds heavy framework dependencies; our `BaseAgent` loop is simpler and gives us the same affordances.
 
 ### 7. alpacahq/alpaca-mcp-server — `https://github.com/alpacahq/alpaca-mcp-server`
-- **Stars / last commit / license**: 687 / unknown / MIT.
+- **Stars / last commit / license**: 687 / 2026-04-17 / MIT.
 - **Stack**: Python 3.10+, official Alpaca MCP server. Wraps both trading and market-data APIs via JSON specs (`specs/trading-api.json`, `specs/market-data-api.json`).
 - **Strategy focus**: N/A — this is the broker tool surface, not a strategy.
 - **Risk handling**: No risk tools per se. Brackets *are* exposed as a supported order type ("market, limit, stop, stop-limit, trailing-stop, brackets"). Disclaimers note insights are not advice.
@@ -112,7 +112,7 @@
 - **Avoid**: This is a broker server, not a bot. Don't try to make our bot consume it — we already have direct `alpaca-py` calls and adding an MCP layer would just add latency and a process. Consider it a *reference* for tool ergonomics only.
 
 ### 8. rvanhezel/automated_alpaca_execution — `https://github.com/rvanhezel/automated_alpaca_execution`
-- **Stars / last commit / license**: 0 / unknown / not specified.
+- **Stars / last commit / license**: 0 / 2025-03-10 (>1 year stale) / no licence file (per GitHub API).
 - **Stack**: Python 3.12+, Alpaca + TwelveData. `.env` for secrets, `run.cfg` for config, `main.py` entry. Minimal.
 - **Strategy focus**: Predefined stocks, fixed bracket orders. Not a signal generator.
 - **Risk handling**: Bracket orders with stop-loss + take-profit are the entire risk model. No sizing, kill switch, or backtest.
