@@ -37,6 +37,16 @@ python3 main.py backtest --years 3 --rsi-lower 35 --rsi-upper 70
 python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-ratio 2.5
 ```
 
+## Contribution workflow
+
+**Issue-first.** Every code change closes a GitHub Issue. The Issue is the spec; the PR is the implementation. Multiple contributors and fresh Claude sessions rely on the repo as the source of truth — chat transcripts are not durable.
+
+1. **Open an Issue** describing *what* and *why*. Required sections: Context, Scope (with concrete file changes), Out of scope, Acceptance criteria. See #94, #95 for shape examples.
+2. **Develop on the assigned branch.** The harness assigns one per session (e.g. `claude/<slug>`). Never push to a different branch without explicit permission.
+3. **Open a draft PR** with `Closes #<N>` at the top of the body. Draft until tests pass and review is requested.
+4. **Run the full test suite locally before pushing.** Verify zero regressions — do not assume. If a pre-existing failure is unrelated, prove it (e.g. `git stash` and re-run on clean main) and note it in the PR body.
+5. **Keep PRs scoped.** One Issue, one PR. Docs that directly document the PR's shipped surface can ride along; unrelated docs go in a separate Issue/PR.
+
 ## Python version
 
 Runtime is Python 3.9. **Every Python file must start with `from __future__ import annotations`** — this enables modern type hint syntax on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
@@ -78,6 +88,23 @@ The `agent_logs` table tracks every agent run with input/output token counts for
 ### Data feed
 
 Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataFeed.SIP`. Controlled via `DATA_FEED` env var (default: `iex`). Both `tools/market_data.py` and `tools/broker.py` read `settings.DATA_FEED`.
+
+### Broker layer
+
+Two-file surface, two purposes:
+
+- `tools/broker.py` — **canonical Alpaca implementation.** Module-level functions (`place_market_order`, `close_position`, `get_alpaca_positions`, `get_portfolio_value`, `get_current_price`) plus `BrokerSubmitError`. All call sites (`agents/team_leader.py`, `monitor/position_monitor.py`, `main.py`) and >40 test patches reference this module directly.
+- `tools/brokers/` — **abstraction layer.** `BaseBroker` ABC + `AlpacaBroker` adapter + `get_broker()` factory. `AlpacaBroker` *delegates* into `tools/broker.py` rather than reimplementing the SDK calls.
+
+**Test-patch invariant — DO NOT VIOLATE:** Tests patch `tools.broker.<fn>` extensively across `test_tools_broker.py`, `test_team_leader.py`, `test_monitor.py`, `test_main.py`. Moving SDK logic out of `tools/broker.py` into `AlpacaBroker.<method>` would silently break every patched call site. Keep `tools/broker.py` as the single source of Alpaca SDK behaviour. Future brokers add `tools/brokers/<name>.py` as a sibling adapter — they do not touch `tools/broker.py`.
+
+`BROKER` env var (default `alpaca`) selects the active broker. Validated against the registry at import time in `config/settings.py`.
+
+**Adding a new broker:**
+1. Subclass `BaseBroker` in `tools/brokers/<name>.py`. The ABC docstring (`tools/brokers/base.py`) defines the contract (bracket support, GTC for brackets, fail-closed on rejection, etc.).
+2. Register the name in `tools/brokers/__init__.py::_BROKERS`.
+3. Add the name to `_VALID_BROKERS` in `config/settings.py`.
+4. Add `tests/test_brokers_<name>.py`.
 
 ### Notifications
 
