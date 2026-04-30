@@ -2,6 +2,39 @@
 
 A self-reflecting, multi-agent LLM-powered swing trading bot for US equities. Four Claude AI agents collaborate each morning to scan the market, propose trades, review risk, and execute orders — all on Alpaca paper trading by default.
 
+## Quick Start — daily session on the VPS
+
+The bot runs unattended via cron. You only need to log in when you want to inspect logs, debug, vibe-code, or push changes. Every session starts the same way:
+
+```bash
+# 1. SSH in (the -L port-forward lets the OAuth callback land on the VPS
+#    but open in your laptop browser — needed for first-time Claude Code auth).
+#    Most cloud VPS providers (Hetzner, IONOS, DigitalOcean) give you root by
+#    default; a non-root sudo user works equally well — step 2 works from either.
+ssh -L 54545:localhost:54545 root@your-vps-ip     # or: your-sudo-user@your-vps-ip
+
+# 2. Become the `trader` user
+#    /opt/trading-bot is owned by trader, and Claude Code refuses to start
+#    as root because bypassPermissions is on in .claude/settings.json.
+#    `sudo -u trader -i` works without a password whether you're root or a sudo user.
+sudo -u trader -i
+
+# 3. Go to the project
+cd /opt/trading-bot
+
+# 4. Resume your last Claude Code session
+claude --continue
+```
+
+Variants of step 4:
+- `claude --resume` — pick from a list of recent sessions
+- `claude` — start a brand-new session
+- `claude --help` — full flag reference
+
+If a long-running command (backtest, scan) was in flight when SSH dropped, it was killed with the session. Check with `ps -u trader | grep python` and re-invoke if needed. For commands that need to survive disconnects, prefix with `nohup ... &` or run inside `tmux`.
+
+> **First time on this VPS?** Jump to [Setting up a new VPS](#setting-up-a-new-vps) for the one-time install. Once that's done, daily access is the four steps above.
+
 ## How It Works
 
 Each trading day the bot runs a sequential four-agent pipeline:
@@ -161,25 +194,44 @@ Runs the EMA crossover strategy against each watchlist ticker using `yfinance` d
 
 Set `TRADING_PAUSED=true` in `.env` to halt new entries: the next `main.py scan` exits immediately (one Discord ping, no agents run, no orders placed). The position monitor is unaffected, so existing positions still get stop-loss, take-profit, and max-hold handling. Use this to wind down safely while a bug is investigated, instead of editing the root crontab under pressure.
 
-## VPS Deployment
+## Setting up a new VPS
 
-### 1. SSH in and install dependencies
+A fresh Ubuntu 22.04+ box, end-to-end, takes about 15 minutes. Steps run as either root (the default on Hetzner / IONOS / DigitalOcean / most cloud VPS providers) or a non-root sudo user — drop the `sudo` prefix from the commands below if you're logged in as root. Steps that must run as the dedicated bot user are explicitly marked **(as trader)**.
+
+### 1. SSH in and install OS packages
 
 ```bash
-ssh user@your-vps-ip
-sudo apt update && sudo apt install -y python3 python3-pip python3-venv git gh
+ssh root@your-vps-ip                              # or: your-sudo-user@your-vps-ip
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv git gh curl
 ```
 
-`gh` (GitHub CLI) is optional but recommended — it lets you open/merge PRs directly from the VPS. After install, run `gh auth login` once and pick "Login with a web browser".
+`gh` (GitHub CLI) is optional but recommended — it lets you open/merge PRs from the VPS. After install: `gh auth login` once, pick "Login with a web browser".
 
-### 2. Clone the repo
+### 2. Create the `trader` user and own the project directory
+
+The bot runs as a dedicated `trader` user so cron, the bot, and Claude Code all share the same UID. Claude Code refuses to start as root when `bypassPermissions` is set in `.claude/settings.json` (it is, in this repo).
 
 ```bash
+sudo adduser --disabled-password --gecos "" trader
+sudo mkdir -p /opt/trading-bot
+sudo chown trader:trader /opt/trading-bot
+```
+
+### 3. Clone the repo **(as trader)**
+
+```bash
+sudo -u trader -i
 git clone https://github.com/sv-tmueller/trading-bot /opt/trading-bot
 cd /opt/trading-bot
 ```
 
-### 3. Set up Python environment
+> **Private repo?** GitHub no longer accepts passwords for git. Create a Personal Access Token at **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**, give it the `repo` scope, then embed it in the remote URL once:
+> ```bash
+> git remote set-url origin https://sv-tmueller:<YOUR_TOKEN>@github.com/sv-tmueller/trading-bot.git
+> ```
+
+### 4. Set up the Python environment **(as trader)**
 
 ```bash
 python3 -m venv venv
@@ -187,53 +239,99 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Create your `.env` file on the VPS
+### 5. Create the `.env` file **(as trader)**
 
 ```bash
 nano /opt/trading-bot/.env
 ```
 
+Paste in:
+
 ```env
 TRADING_MODE=paper
+TRADING_PAUSED=false
 DATA_FEED=iex
+
 ALPACA_API_KEY=your_alpaca_key
 ALPACA_SECRET_KEY=your_alpaca_secret
+
 ANTHROPIC_API_KEY=your_anthropic_key
 CLAUDE_MODEL=claude-sonnet-4-6
 ```
 
-Save with `Ctrl+O`, exit with `Ctrl+X`.
+Save with `Ctrl+O` (Enter), exit with `Ctrl+X`.
 
-> **For production parity** — this minimal `.env` uses baseline strategy defaults. To match the current live bot (which runs backtest-tuned parameters), also copy the strategy block from [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md) into your `.env`. Backtesting showed the baseline produces ~5 trades over 3 years; the tuned config produces ~470 with +8.7% aggregate return.
+> **For production parity** — this minimal `.env` runs the baseline strategy. To match the current live bot's backtest-tuned parameters, also copy the strategy block from [`docs/CURRENT_CONFIG.md`](docs/CURRENT_CONFIG.md). Baseline produces ~5 trades over 3 years; the tuned config produces ~470 with +8.7% aggregate return.
 
-### 5. Initialise the database
+### 6. Initialise the database **(as trader)**
 
 ```bash
-cd /opt/trading-bot
-source venv/bin/activate
 python3 -c "from storage.init_db import init_db; init_db()"
 ```
 
-### 6. Create the log directory
+### 7. Create the log directory
+
+Drop back out of the trader shell — `/var/log` needs root to create:
 
 ```bash
+exit                                    # leaves the trader shell
 sudo mkdir -p /var/log/trading-bot
-sudo chown $USER /var/log/trading-bot
+sudo chown trader /var/log/trading-bot
 ```
 
-### 7. Test manually before scheduling
+### 8. Smoke-test the pipeline **(as trader)**
 
 ```bash
-python3 main.py scan
+sudo -u trader -i
+cd /opt/trading-bot
+source venv/bin/activate
+python3 main.py scan --dry-run
 ```
 
-### 8. Set up cron
+`--dry-run` runs the full four-agent pipeline without placing orders or writing to the DB. If it completes without errors and prints `[DRY RUN] would buy/sell ...` lines (or "no candidates"), you're good.
+
+### 9. Install Claude Code **(as trader)**
 
 ```bash
-crontab -e
+curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-If prompted to choose an editor, select **1** (nano). You'll see an empty file — scroll to the bottom and add these lines (all times UTC):
+The binary lands at `~/.local/bin/claude`. The installer adds `~/.local/bin` to your PATH; if `claude --version` doesn't work in a new shell, add this to `~/.bashrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+> **Alternative — npm install (needs root):**
+> ```bash
+> curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+> sudo apt install -y nodejs
+> sudo npm install -g @anthropic-ai/claude-code
+> ```
+
+**First-run auth on a headless VPS** — two options:
+
+- **Easiest: reuse your laptop's Claude account.** Re-SSH with a port-forward so the OAuth callback opens in your laptop browser:
+  ```bash
+  ssh -L 54545:localhost:54545 root@your-vps-ip
+  ```
+  Then run `claude` on the VPS and click the URL it prints. The browser opens on your laptop, completes the OAuth dance, and Claude Code on the VPS picks up the credentials.
+
+- **Fallback: API key.** Console-billed only (not Pro/Max plans). Add to `~/.bashrc`:
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  ```
+
+### 10. Set up cron
+
+The bot scripts run via root's crontab — they use absolute paths (`/opt/trading-bot/venv/bin/python ...`) so the cron user doesn't matter, and root's crontab survives any user-level changes.
+
+```bash
+exit                  # back to your sudo user
+sudo crontab -e
+```
+
+Pick **1** (nano) if prompted, then add (all times UTC):
 
 ```
 25 13 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
@@ -247,132 +345,24 @@ If prompted to choose an editor, select **1** (nano). You'll see an empty file �
 | Monitor | :00 14–19 | 10:00–15:00 | 16:00–21:00 | Hourly position check |
 | Pre-close | 19:55 | 15:55 | 21:55 | Final check 5 min before NYSE close |
 
-> **Why pre-market, not after the open?** Signals are computed on **daily** bars
-> (`EMA20/EMA50`, `RSI(14)`, `volume vs 20-day average`). If the scan runs after
-> 13:30 UTC, today's daily bar is still being formed — `volume_ratio` collapses
-> toward zero (a few minutes of trading vs a 20-day full-day average) and every
-> ticker fails the volume gate. Running before the open means the strategy uses
-> yesterday's fully-closed bar and Team Leader places market orders that fill at
-> today's open.
+Save: `Ctrl+O` → Enter → `Ctrl+X`. You should see `crontab: installing new crontab`.
 
-Save and exit: `Ctrl+O` → Enter → `Ctrl+X`. You should see `crontab: installing new crontab` confirming it worked.
+> **Why pre-market, not after the open?** Signals are computed on **daily** bars (`EMA20/EMA50`, `RSI(14)`, `volume vs 20-day average`). Running after 13:30 UTC means today's daily bar is still forming — `volume_ratio` collapses toward zero (a few minutes of trading vs a 20-day full-day average) and every ticker fails the volume gate. Running before the open uses yesterday's fully-closed bar and orders fill at today's open.
 
-### Updating the bot
+### 11. Discord notifications (optional)
 
-When you push code changes to GitHub, on the VPS run:
+See [Discord Notifications (via n8n)](#discord-notifications-via-n8n) below.
+
+### Updating the bot after deploy
+
+When you push code changes to GitHub, on the VPS:
 
 ```bash
+sudo -u trader -i
 cd /opt/trading-bot && git pull
 ```
 
-No restart needed — cron picks up the latest code on each run.
-
-### Running Claude Code on the VPS
-
-> **Run as a non-root user.** Claude Code refuses to start under `root` when the project has `bypassPermissions` enabled (it does, in `.claude/settings.json`). Create a dedicated user the first time:
-> ```bash
-> # As root, once:
-> adduser --disabled-password --gecos "" trader
-> chown -R trader:trader /opt/trading-bot
->
-> # Switch to that user for all bot work
-> su - trader
-> ```
-> Also move cron to this user: `crontab -u trader -e`.
-
-To inspect scan history, DB state, or logs interactively on the VPS, install Claude Code (the `npm install` below needs root, the rest runs as `trader`):
-
-```bash
-# 1. Install Node 20+ (required by claude-code) — run as root
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# 2. Install the Claude Code CLI globally — run as root
-sudo npm install -g @anthropic-ai/claude-code
-
-# 3. Launch from the repo — run as trader
-cd /opt/trading-bot
-claude
-```
-
-**Auth on a headless VPS** — two options:
-
-- **Easiest: reuse your laptop login.** SSH in with a port forward so the OAuth callback lands on the VPS but opens in your laptop browser:
-  ```bash
-  ssh -L 54545:localhost:54545 user@your-vps
-  ```
-  Then run `claude` on the VPS and follow the URL it prints.
-
-- **Fallback: API key.** Console-billed only (not Pro/Max). Add to `~/.bashrc`:
-  ```bash
-  export ANTHROPIC_API_KEY=sk-ant-...
-  ```
-
-### Reconnecting after a dropped SSH session
-
-If your internet blinks or you close the terminal by accident, here's the exact sequence to get back to a working Claude Code session — copy-paste line by line.
-
-**1. SSH back into the VPS**
-
-Open a new terminal and run your usual ssh command. If you use the port-forwarded form from the Auth section above, re-use it:
-
-```bash
-ssh -L 54545:localhost:54545 user@your-vps
-```
-
-**2. Switch to the `trader` user**
-
-You'll land as your own user (the one your SSH key is for). Claude Code needs to run as `trader` — the user that owns `/opt/trading-bot`. Two ways to switch:
-
-```bash
-# Recommended — uses your sudo password, not trader's:
-sudo -u trader -i
-
-# Alternative, requires trader's password:
-su - trader
-```
-
-If `sudo -u trader -i` complains about missing permissions, see the "Run as a non-root user" box above for the one-time setup.
-
-**3. Go into the bot folder**
-
-```bash
-cd /opt/trading-bot
-```
-
-**4. Resume your previous Claude Code session**
-
-```bash
-claude --continue
-```
-
-`--continue` picks the most recent session in the current directory and replays the full conversation history so you land back exactly where you left off. If you want to see a list of recent sessions and pick one, use `claude --resume` instead (opens a session picker).
-
-If there was no previous session — or Claude Code doesn't find one — just run `claude` to start a fresh session. No harm done; previous sessions aren't deleted, they're just not selected.
-
-**5. If your screen was showing something running**
-
-If a long-running command (backtest, scan, deploy) was in-flight when you disconnected, it may have been killed with the SSH session. Check with:
-
-```bash
-ps -u trader | grep -E "python|claude"
-```
-
-If nothing is running and you need that command again, just re-invoke it. For commands you want to survive disconnects, prefix with `nohup ... &` or use `tmux` / `screen`.
-
-### Private repository authentication
-
-GitHub no longer accepts passwords for git operations. If the repo is private, create a **Personal Access Token (PAT)**:
-
-1. GitHub → **Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)**
-2. Select the **`repo`** scope, set an expiration, and generate
-3. Embed the token in the remote URL on the VPS (do this once):
-
-```bash
-git remote set-url origin https://sv-tmueller:<YOUR_TOKEN>@github.com/sv-tmueller/trading-bot.git
-```
-
-Future `git pull` calls will work without any prompt.
+No restart — cron picks up the latest code on the next run.
 
 ## Discord Notifications (via n8n)
 
