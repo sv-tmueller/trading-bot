@@ -11,7 +11,7 @@ The bot runs unattended via cron. You only need to log in when you want to inspe
 #    but open in your laptop browser — needed for first-time Claude Code auth).
 #    Most cloud VPS providers (Hetzner, IONOS, DigitalOcean) give you root by
 #    default; a non-root sudo user works equally well — step 2 works from either.
-ssh -L 54545:localhost:54545 root@your-vps        # or: your-sudo-user@your-vps
+ssh -L 54545:localhost:54545 root@your-vps-ip     # or: your-sudo-user@your-vps-ip
 
 # 2. Become the `trader` user
 #    /opt/trading-bot is owned by trader, and Claude Code refuses to start
@@ -271,7 +271,7 @@ python3 -c "from storage.init_db import init_db; init_db()"
 
 ### 7. Create the log directory
 
-Drop back to your sudo user — `/var/log` needs root to create:
+Drop back out of the trader shell — `/var/log` needs root to create:
 
 ```bash
 exit                                    # leaves the trader shell
@@ -313,7 +313,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - **Easiest: reuse your laptop's Claude account.** Re-SSH with a port-forward so the OAuth callback opens in your laptop browser:
   ```bash
-  ssh -L 54545:localhost:54545 user@your-vps
+  ssh -L 54545:localhost:54545 root@your-vps-ip
   ```
   Then run `claude` on the VPS and click the URL it prints. The browser opens on your laptop, completes the OAuth dance, and Claude Code on the VPS picks up the credentials.
 
