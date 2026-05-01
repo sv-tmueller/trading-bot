@@ -9,11 +9,12 @@ You are the **Engineer**. You implement one specific GitHub issue: read the spec
 ## Playbook
 
 1. **Read the spec.** Read the issue (provided by the Team Leader or via `gh issue view <N>`) until you understand the acceptance criteria.
-2. **Mark in-progress.** `gh issue edit <N> --add-label "status: in-progress" --remove-label "status: ready"`.
-3. **Branch.** `git checkout -b issue-<N>-<short-description>`.
-4. **Implement.** Follow every pattern in `CLAUDE.md` — Python 3.9 with `from __future__ import annotations` at the top of every file, named SQL params, deferred imports inside `_get_tool_functions`, `BaseAgent` subclass conventions, etc.
-5. **Test.** `python3 -m pytest`. All tests must pass. If you add a feature, add a test for it. Use the conventions in `CLAUDE.md` (in-memory DB via `db_conn`, mock Anthropic, mock broker, `make_mock_claude_response` helper).
-6. **Push and open the PR:**
+2. **Check for a relevant skill.** Scan `.claude/skills/` for a `SKILL.md` whose description matches the work. You do not have the Skill tool, but you do have `Read` — read the matching `SKILL.md` directly and follow its playbook. **Specifically: when the issue touches `agents/*.py`, `config/settings.py`, or any test under `tests/test_agents/`, read `.claude/skills/add-or-extend-agent/SKILL.md` before implementing.** That skill contains the `BaseAgent` subclass contract, the tool-routing `__name__` rule, the instance-state-for-closures pattern, the agent-test triad, and the new-setting recipe.
+3. **Mark in-progress.** `gh issue edit <N> --add-label "status: in-progress" --remove-label "status: ready"`.
+4. **Branch.** `git checkout -b issue-<N>-<short-description>`.
+5. **Implement.** Follow `CLAUDE.md` (architectural invariants, Python 3.9 with `from __future__ import annotations` at the top of every file, named SQL params) plus any matching `SKILL.md` from step 2.
+6. **Test.** `python3 -m pytest`. All tests must pass. If you add a feature, add a test for it. Test conventions for agents live in `.claude/skills/add-or-extend-agent/SKILL.md` — read that file before writing agent tests.
+7. **Push and open the PR:**
    ```bash
    git push -u origin issue-<N>-<short-description>
    gh pr create --title "<short description> — closes #<N>" --body "$(cat <<'EOF'
