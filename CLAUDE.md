@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Working in this repo
+
+Before starting any task, check the available skills list (printed in your system-reminder context) and the contents of `.claude/skills/` for a workflow that matches the user's request. If one matches, invoke it via the Skill tool (main session) or read its `SKILL.md` directly (subagents — Read tool only). Skills hold the procedural how-tos; this file holds the standing rules and architectural invariants. Both are required reading.
+
+Current skills relevant to engineering work:
+- **`add-or-extend-agent`** — authoring or modifying `agents/*.py`, wiring new tools, writing agent tests, adding a new env-driven setting.
+- **`handover`** — writing a session handover doc so a future session can resume cold.
+- **`research-bundle`** — multi-agent research surveys for product-direction decisions.
+
 ## Commands
 
 ```bash
@@ -53,21 +62,9 @@ MarketIntelligenceAgent → StrategyAgent → RiskReviewAgent → TeamLeaderAgen
 
 Each agent subclasses `BaseAgent` (`agents/base.py`) which handles the full Anthropic tool-use loop, token accumulation across turns, and DB logging. Agents return plain dicts. The Team Leader is the **only agent that places orders**.
 
-### BaseAgent pattern
+### BaseAgent pattern, tool routing
 
-Subclasses must implement three methods:
-- `get_tools()` — Anthropic tool definitions (JSON schema)
-- `_get_tool_functions()` — callables matching those tool names; use **deferred imports** inside this method so tools can be monkeypatched in tests
-- `parse_output(response)` — extract dict from Claude's text response, always include a JSON fallback
-
-Instance state used by tool closures (e.g. `self._conn`) must be:
-1. Initialised to `None` in `__init__`
-2. Set in `run()` before calling `super().run()`
-3. Captured as a local variable before defining closures: `conn = self._conn`
-
-### Tool routing
-
-`_handle_tool_calls` routes by `fn.__name__`. If you import a function and wrap it under a different name, set `wrapper.__name__ = "tool_name"` to match the tool definition, or import with an alias and name the inner function correctly.
+Authoring playbook (`BaseAgent` subclass contract, instance-state-for-closures rule, tool-routing `__name__` rule): see [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md). Read it before adding a new agent or wiring a new tool into an existing one.
 
 ### Database
 
@@ -89,16 +86,11 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 
 ### Settings
 
-`config/settings.py` validates env vars at import time and raises `ValueError` for out-of-range values. Adding a new setting: add `os.getenv()` call with a safe default, add validation if needed, document in `.env.example` and README.
+`config/settings.py` validates env vars at import time and raises `ValueError` for out-of-range values. The recipe for adding a new setting (env read, validation, `.env.example`, README, opt-in/default-OFF pattern for risky changes) is in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md).
 
 ## Testing conventions
 
-- Tests use an in-memory SQLite DB via the `db_conn` fixture in `tests/conftest.py`
-- Mock Anthropic with `patch("agents.base.anthropic.Anthropic", return_value=mock_client)`
-- Mock broker calls with `patch("tools.broker.place_market_order", ...)` etc.
-- Helper function for mock responses must be named `make_mock_claude_response`
-- All agent tests cover: happy path (with value assertions), name check, JSON fallback path
-- `stop_reason = "end_turn"` in mocks — tool-use loop is not exercised in unit tests
+Mock idioms, fixtures, helper-function naming, and the agent-test triad (happy path / name check / JSON fallback) are documented in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md). Read it before writing or modifying agent tests.
 
 ## Key constraints
 
