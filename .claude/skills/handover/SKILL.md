@@ -54,6 +54,21 @@ Single pass, written by the main session — no subagent dispatch. The document 
 4. Open a **draft PR** with title `Handover: <slug> (<date>)`. Body lists the key next-step prompts so a reviewer can sanity-check the actionability.
 5. Leave the PR as draft. The user reviews and flips to ready themselves; the handover is meant to be a personal artefact and the user decides when (or whether) it lands on `main`.
 
+## Session wrap-up message
+
+After the PR is opened (or merged, if the user authorised the merge in the same turn), post a short session-tally summary directly in chat. Distinct from the handover doc: the doc is for the *next* session; the wrap-up is for the *current* user, confirming what landed in this session.
+
+Keep it under five lines. Cover:
+
+- **PRs merged this session** — numbers and squashed SHAs, one bullet per PR.
+- **What is now live** — features / skills / docs that landed, in 1–4 words each.
+- **Branches still open** — any draft PRs still waiting on the user, with PR number.
+- **Bot code touched / untouched** — explicit reassurance for docs- or skill-only sessions; for code sessions, a one-line summary of which modules changed.
+
+Do not restate the handover doc's content. Do not include "next steps" — those live in the doc. The wrap-up is purely a sit-confirmation.
+
+If the session ran long enough to merge multiple PRs, the wrap-up may grow to ~8 lines, but resist further. A wrap-up that reproduces the handover is wasted output.
+
 ## When to invoke
 
 - Explicit `/handover` from the user.

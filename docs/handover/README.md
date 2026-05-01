@@ -111,7 +111,7 @@ Order them by priority — the first prompt is the one the user should paste fir
 
 ## Producing a handover
 
-Use the `handover` skill: `/handover [<slug>]`. The skill captures live git / PR / issue state, reads `CLAUDE.md` and `TEAM.md` for invariants and role boundaries, writes the document against this contract, commits it on a dedicated `handover/<slug>-<date>` branch, and opens a draft PR.
+Use the `handover` skill: `/handover [<slug>]`. The skill captures live git / PR / issue state, reads `CLAUDE.md` and `TEAM.md` for invariants and role boundaries, writes the document against this contract, commits it on a dedicated `handover/<slug>-<date>` branch, opens a draft PR, and posts a short session-tally wrap-up in chat (PRs merged, what is now live, branches still open, bot code touched / untouched). The wrap-up is for the current user; the doc is for the next session.
 
 Skill location: [`.claude/skills/handover/SKILL.md`](../../.claude/skills/handover/SKILL.md).
 
