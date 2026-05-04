@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import date, timedelta
 import pytest
 from unittest.mock import MagicMock, patch
 from agents.strategy import StrategyAgent
@@ -70,7 +71,7 @@ def test_strategy_tool_blocks_entry_when_in_earnings_blackout():
          patch("tools.market_data.compute_signals", return_value=dict(fake_signals)), \
          patch("tools.market_data.is_entry_signal", return_value=True), \
          patch("tools.earnings.is_in_blackout_window", return_value=True), \
-         patch("tools.earnings.get_next_earnings_date", return_value=__import__("datetime").date(2026, 5, 1)), \
+         patch("tools.earnings.get_next_earnings_date", return_value=date.today() + timedelta(days=1)), \
          patch("tools.earnings.get_last_earnings_date", return_value=None), \
          patch("config.settings.EARNINGS_BLACKOUT_DAYS", 5):
         agent = StrategyAgent()
