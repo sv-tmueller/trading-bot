@@ -50,6 +50,57 @@ def test_notify_scan_complete_includes_date_and_decisions(mocker):
     assert "0.0042" in msg
 
 
+def test_notify_scan_complete_dry_run_marks_header(mocker):
+    """When dry_run=True the posted header must carry the 🧪 marker and the words 'DRY RUN'."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_scan_complete
+
+    notify_scan_complete(
+        date="2026-05-04",
+        market_context="bullish",
+        tldr="AMD crossover",
+        approved=1,
+        rejected=0,
+        decisions=[{"action": "buy", "ticker": "AMD", "shares": 41}],
+        cost_usd=0.1521,
+        dry_run=True,
+    )
+
+    mock_urlopen.assert_called_once()
+    req = mock_urlopen.call_args[0][0]
+    import json
+    posted = json.loads(req.data.decode())["message"]
+    assert "🧪" in posted
+    assert "DRY RUN" in posted
+    assert "2026-05-04" in posted
+
+
+def test_notify_scan_complete_default_has_no_dry_run_marker(mocker):
+    """With dry_run omitted (default False) the message must remain the live-scan format."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_scan_complete
+
+    notify_scan_complete(
+        date="2026-05-04",
+        market_context="bullish",
+        tldr="AMD crossover",
+        approved=1,
+        rejected=0,
+        decisions=[{"action": "buy", "ticker": "AMD", "shares": 41}],
+        cost_usd=0.1521,
+    )
+
+    mock_urlopen.assert_called_once()
+    req = mock_urlopen.call_args[0][0]
+    import json
+    posted = json.loads(req.data.decode())["message"]
+    assert "🧪" not in posted
+    assert "DRY RUN" not in posted
+    assert "🤖" in posted
+
+
 def test_notify_no_candidates_includes_tldr(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_no_candidates

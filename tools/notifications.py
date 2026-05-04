@@ -30,8 +30,12 @@ def notify_scan_complete(
     rejected: int,
     decisions: list,
     cost_usd: float,
+    dry_run: bool = False,
 ) -> None:
-    lines = [f"🤖 **Morning Scan — {date}**"]
+    if dry_run:
+        lines = [f"🧪 **Morning Scan (DRY RUN) — {date}**"]
+    else:
+        lines = [f"🤖 **Morning Scan — {date}**"]
     lines.append(f"📈 {tldr or market_context}")
     for d in decisions:
         action = d.get("action", "").upper()
