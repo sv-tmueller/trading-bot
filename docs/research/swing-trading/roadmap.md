@@ -384,6 +384,7 @@
 
 ### 9.1 `main.py panic` command with `--cancel-orders --liquidate`
 
+- **Status** — **Shipped in v1.13.0 (PR [#128](https://github.com/sv-tmueller/trading-bot/pull/128), closes [#103](https://github.com/sv-tmueller/trading-bot/issues/103)).** All four sub-features delivered: `--cancel-orders`, `--liquidate --confirm`, `--pause`, Discord 🛑 alert. `--confirm` gate satisfies the destructive-action concern in *Cons*; `agent_logs` audit row written before broker call addresses the partial-recovery concern.
 - **Description** — New CLI subcommand that (1) cancels all open orders, (2) optionally market-closes all positions, (3) writes `TRADING_PAUSED=true` to `.env`, (4) posts a Discord alert. Operationally cleaner than the env-only kill switch we have today.
 - **Source** — github-projects.md gr8monk3ys `kill_switch.py` (direct lift of pattern).
 - **Pros**
