@@ -7,11 +7,9 @@ A self-reflecting, multi-agent LLM-powered swing trading bot for US equities. Fo
 The bot runs unattended via cron. You only need to log in when you want to inspect logs, debug, vibe-code, or push changes. Every session starts the same way:
 
 ```bash
-# 1. SSH in (the -L port-forward lets the OAuth callback land on the VPS
-#    but open in your laptop browser — needed for first-time Claude Code auth).
-#    Most cloud VPS providers (Hetzner, IONOS, DigitalOcean) give you root by
-#    default; a non-root sudo user works equally well — step 2 works from either.
-ssh -L 54545:localhost:54545 root@your-vps-ip     # or: your-sudo-user@your-vps-ip
+# 1. SSH in. (Need first-time Claude Code OAuth? Use the port-forward
+#    variant from the install guide instead — see "First-run auth" below.)
+ssh root@87.106.90.139
 
 # 2. Become the `trader` user
 #    /opt/trading-bot is owned by trader, and Claude Code refuses to start
