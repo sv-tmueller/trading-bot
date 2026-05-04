@@ -174,10 +174,18 @@ def test_dry_run_skips_place_order(db_conn):
     mock_client.messages.create.side_effect = [tool_response, final_response]
 
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
          patch("tools.broker.place_market_order") as mock_place, \
          patch("tools.database.insert_trade") as mock_insert:
         agent = TeamLeaderAgent()
-        result = agent.run("Approved: AMD 100 shares", conn=db_conn, dry_run=True)
+        result = agent.run(
+            "Approved: AMD 100 shares",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            dry_run=True,
+        )
 
     mock_place.assert_not_called()
     mock_insert.assert_not_called()
@@ -206,6 +214,9 @@ def test_dry_run_skips_place_order_sell_side(db_conn):
     mock_client.messages.create.side_effect = [tool_response, final_response]
 
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
          patch("tools.broker.place_market_order") as mock_place, \
          patch("tools.database.insert_trade") as mock_insert:
         agent = TeamLeaderAgent()
@@ -214,6 +225,144 @@ def test_dry_run_skips_place_order_sell_side(db_conn):
     mock_place.assert_not_called()
     mock_insert.assert_not_called()
     assert "dry-run" in str(result)
+
+
+def test_dry_run_still_runs_exposure_gate_and_rejects_over_cap(db_conn):
+    """Issue #123 / PR #127 review: dry-run must exercise the deterministic exposure gate.
+
+    Locks in the property that `--dry-run` is a true smoke test of the safety stack: a
+    candidate that would breach MAX_PORTFOLIO_EXPOSURE returns a `rejected` payload, NOT
+    the `dry_run_simulated` one. Otherwise dry-run gives a false-positive smoke test.
+    """
+    import ast
+    captured_tool_results: list = []
+
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_dry_gate"
+    tool_use_block.name = "place_order"
+    tool_use_block.input = {"ticker": "SHEL", "shares": 200, "side": "buy"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "rejected by exposure gate"}'
+    )
+
+    mock_client = MagicMock()
+
+    def capture_create(**kwargs):
+        for msg in kwargs.get("messages", []):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        captured_tool_results.append(block.get("content"))
+        if mock_client.messages.create.call_count == 1:
+            return tool_response
+        return final_response
+
+    mock_client.messages.create.side_effect = capture_create
+
+    # 200 * $150 = $30k = 30% of $100k → exceeds the 20% MAX_PORTFOLIO_EXPOSURE cap.
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.database.insert_trade") as mock_insert, \
+         patch("tools.notifications.notify_order_rejected") as mock_notify:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: SHEL 200 shares",
+            conn=db_conn,
+            pending_atrs={"SHEL": 2.0},
+            dry_run=True,
+        )
+
+    # Broker SUBMIT and DB INSERT must still be skipped (dry-run invariant).
+    mock_place.assert_not_called()
+    mock_insert.assert_not_called()
+    # The deterministic gate must have rejected and notified — proving dry-run runs it.
+    mock_notify.assert_called_once()
+    notify_args, _ = mock_notify.call_args
+    assert notify_args[0] == "SHEL"
+    # Tool result fed back to the LLM must be the rejection payload, NOT dry_run_simulated.
+    assert captured_tool_results, "expected at least one tool_result block sent back to the LLM"
+    payload = ast.literal_eval(captured_tool_results[0])
+    assert payload["status"] == "rejected"
+    assert payload["status"] != "dry_run_simulated"
+    assert payload["order_id"] is None
+    assert "reason" in payload
+
+
+def test_dry_run_place_order_returns_dry_run_simulated_payload(db_conn):
+    """Issue #123: dry-run place_order must return a payload that signals dryness to the LLM."""
+    import ast
+    captured_tool_results: list = []
+
+    tool_use_block = MagicMock()
+    tool_use_block.type = "tool_use"
+    tool_use_block.id = "tu_dry_payload"
+    tool_use_block.name = "place_order"
+    tool_use_block.input = {"ticker": "AMD", "shares": 100, "side": "buy"}
+
+    tool_response = MagicMock()
+    tool_response.stop_reason = "tool_use"
+    tool_response.content = [tool_use_block]
+    tool_response.usage.input_tokens = 100
+    tool_response.usage.output_tokens = 50
+
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "would have"}], "summary": "would have bought AMD"}'
+    )
+
+    mock_client = MagicMock()
+
+    def capture_create(**kwargs):
+        for msg in kwargs.get("messages", []):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        captured_tool_results.append(block.get("content"))
+        if mock_client.messages.create.call_count == 1:
+            return tool_response
+        return final_response
+
+    mock_client.messages.create.side_effect = capture_create
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100 shares",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            dry_run=True,
+        )
+
+    assert captured_tool_results, "expected at least one tool_result block sent back to the LLM"
+    payload = ast.literal_eval(captured_tool_results[0])
+    assert payload["status"] == "dry_run_simulated"
+    assert payload["order_id"] == "DRY_RUN"
+    assert payload["fill_price"] is None
+    assert "note" in payload
+
+
+def test_system_prompt_instructs_conditional_language_for_dry_run():
+    """Issue #123: the system prompt must tell the LLM to use conditional tense for dry-run results."""
+    with patch("agents.base.anthropic.Anthropic"):
+        agent = TeamLeaderAgent()
+    prompt = agent.system_prompt
+    assert "dry_run_simulated" in prompt
+    assert "would have" in prompt
 
 
 def _make_place_order_tool_use(tool_id: str, ticker: str, shares: int, side: str = "buy") -> MagicMock:

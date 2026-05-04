@@ -23,6 +23,8 @@ Your job:
 
 You are the only agent authorised to place or close orders.
 
+If a place_order tool result has `status: "dry_run_simulated"`, describe the outcome in conditional/future tense (e.g. 'would have bought' rather than 'bought'). Do NOT say the order was executed.
+
 Respond with JSON:
 {
   "decisions": [
@@ -88,15 +90,12 @@ Respond with JSON:
         dry_run = self._dry_run
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
-            if dry_run:
-                print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
-                return {"order_id": "dry-run", "status": "dry-run"}
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
 
-            # Deterministic exposure gate — runs on every buy. The LLM cannot
-            # bypass this; even if Team Leader hallucinates a clean portfolio
-            # we recompute current notional from broker truth here. Sells skip
-            # the gate because they reduce, not add, exposure.
+            # Deterministic exposure gate — runs on every buy, including dry-run.
+            # The LLM cannot bypass this; even if Team Leader hallucinates a clean
+            # portfolio we recompute current notional from broker truth here. Sells
+            # skip the gate because they reduce, not add, exposure.
             if side == "buy":
                 try:
                     portfolio_value = get_portfolio_value()
@@ -151,6 +150,18 @@ Respond with JSON:
                     print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
                     notify_order_rejected(ticker, shares, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
+
+            # Dry-run skips ONLY the broker SUBMIT and DB INSERT — all
+            # deterministic checks above ran the same as a live run, so a
+            # `--dry-run` smoke test exercises the full safety stack.
+            if dry_run:
+                print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
+                return {
+                    "order_id": "DRY_RUN",
+                    "fill_price": None,
+                    "status": "dry_run_simulated",
+                    "note": "no order was placed; this is a dry run",
+                }
 
             try:
                 order_result = place_market_order(
