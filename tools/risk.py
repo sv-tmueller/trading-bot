@@ -11,6 +11,14 @@ def calculate_position(
     atr_stop_multiplier: float = 1.5,
     rr_ratio_min: float = 2.0,
 ) -> dict:
+    if atr is None or atr <= 0:
+        raise ValueError(f"atr must be > 0 (got {atr})")
+    if entry_price is None or entry_price <= 0:
+        raise ValueError(f"entry_price must be > 0 (got {entry_price})")
+    if portfolio_value is None or portfolio_value <= 0:
+        raise ValueError(f"portfolio_value must be > 0 (got {portfolio_value})")
+    if risk_pct is None or risk_pct <= 0:
+        raise ValueError(f"risk_pct must be > 0 (got {risk_pct})")
     risk_dollars = portfolio_value * risk_pct
     stop_distance = atr * atr_stop_multiplier
     shares = math.floor(risk_dollars / stop_distance)

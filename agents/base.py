@@ -91,13 +91,26 @@ class BaseAgent(ABC):
         for block in response.content:
             if block.type == "tool_use":
                 fn = tool_map.get(block.name)
-                if fn is not None:
+                if fn is None:
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"unknown tool: {block.name}",
+                        "is_error": True,
+                    })
+                    continue
+                try:
                     output = fn(**block.input)
-                else:
-                    output = {"error": f"unknown tool: {block.name}"}
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": str(output),
-                })
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": str(output),
+                    })
+                except Exception as e:
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"{type(e).__name__}: {e}",
+                        "is_error": True,
+                    })
         return results
