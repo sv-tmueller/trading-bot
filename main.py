@@ -22,6 +22,7 @@ from tools.notifications import (
     notify_monitor,
     notify_error,
     notify_paused,
+    notify_panic,
 )
 
 
@@ -200,6 +201,176 @@ def run_position_monitor():
             conn.close()
 
 
+def _pause_trading_in_env(env_path: Path = None) -> bool:
+    """Atomically write `TRADING_PAUSED=true` to .env (replace if present, append otherwise).
+
+    Uses a temp-file + os.replace pattern so a crash mid-write can never leave
+    a partially rewritten .env on disk. Returns True if the file changed,
+    False if `TRADING_PAUSED=true` was already present (no-op / idempotent).
+    """
+    import os
+    env_path = env_path or Path(".env")
+    if env_path.exists():
+        original = env_path.read_text()
+    else:
+        original = ""
+    lines = original.splitlines()
+    new_lines = []
+    found = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("TRADING_PAUSED="):
+            found = True
+            new_lines.append("TRADING_PAUSED=true")
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append("TRADING_PAUSED=true")
+    new_content = "\n".join(new_lines)
+    if original.endswith("\n") or not original:
+        new_content += "\n"
+    if new_content == original:
+        return False  # already paused — idempotent no-op
+    tmp_path = env_path.with_suffix(env_path.suffix + ".tmp")
+    tmp_path.write_text(new_content)
+    os.replace(str(tmp_path), str(env_path))
+    return True
+
+
+def run_panic(
+    cancel_orders: bool = False,
+    liquidate: bool = False,
+    pause: bool = False,
+    confirm: bool = False,
+) -> int:
+    """Deterministic incident-response CLI — see `main.py panic --help`.
+
+    Returns a Unix-style exit code (0 = success, non-zero = error). No LLM
+    calls anywhere in this path: the CLI **is** the deterministic safety net
+    referenced in the architectural invariants. Order of operations when both
+    --cancel-orders and --liquidate are set: cancel orders FIRST so any
+    unfilled bracket entries don't race the liquidation.
+    """
+    from tools.broker import cancel_all_orders, liquidate_all_positions
+    from tools.database import log_agent_output
+
+    # `--liquidate` without `--confirm` must NOT touch the broker. Print a dry
+    # preview, post a dry-run Discord alert, and exit non-zero so a script
+    # invoking us catches the missing flag.
+    if liquidate and not confirm:
+        print("DRY RUN — would liquidate all positions. Re-run with --confirm to execute.")
+        try:
+            from tools.broker import get_alpaca_positions
+            positions = get_alpaca_positions()
+        except Exception as e:
+            print(f"[panic] could not list positions for dry preview: {e}")
+            positions = []
+        for p in positions:
+            print(f"  would close: {p['ticker']} qty={p['qty']} avg_entry={p['avg_entry_price']}")
+        try:
+            notify_panic("liquidate", positions, dry_run=True)
+        except Exception as e:
+            print(f"[panic] notify_panic failed: {e}")
+        return 2
+
+    if not (cancel_orders or liquidate or pause):
+        print("Usage: python main.py panic [--cancel-orders] [--liquidate --confirm] [--pause]")
+        return 1
+
+    flags = []
+    if cancel_orders:
+        flags.append("--cancel-orders")
+    if liquidate:
+        flags.append("--liquidate")
+    if pause:
+        flags.append("--pause")
+    if confirm:
+        flags.append("--confirm")
+    intent = "cancel_orders=" + str(cancel_orders) + " liquidate=" + str(liquidate) + " pause=" + str(pause)
+
+    # Audit log BEFORE any broker call — so even a partial run is recoverable from DB.
+    conn = None
+    try:
+        conn = get_db()
+        log_agent_output(conn, {
+            "cycle_date": date.today().isoformat(),
+            "agent_name": "panic",
+            "input_summary": " ".join(flags),
+            "output_summary": intent,
+            "full_reasoning": "deterministic CLI; no LLM",
+            "tokens_used": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        })
+    except Exception as e:
+        print(f"[panic] audit log write failed: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+    exit_code = 0
+    actions_taken = []
+
+    # 1. Cancel orders FIRST so unfilled bracket entries don't race the liquidation.
+    if cancel_orders:
+        try:
+            cancelled = cancel_all_orders()
+            print(f"[panic] cancelled {len(cancelled)} order(s)")
+            actions_taken.append("cancel-orders")
+            try:
+                notify_panic("cancel-orders", cancelled)
+            except Exception as e:
+                print(f"[panic] notify_panic failed: {e}")
+        except Exception as e:
+            print(f"[panic] cancel_all_orders failed: {e}")
+            try:
+                notify_error("panic", f"cancel_all_orders failed: {e}")
+            except Exception:
+                pass
+            exit_code = 1
+
+    # 2. Liquidate positions. Alpaca's close_all_positions(cancel_orders=True)
+    # also cancels protective bracket-child legs on each position before issuing
+    # the market-close, so we don't need a separate sweep for them here.
+    if liquidate and confirm:
+        try:
+            closed = liquidate_all_positions()
+            print(f"[panic] liquidated {len(closed)} position(s)")
+            actions_taken.append("liquidate")
+            try:
+                notify_panic("liquidate", closed)
+            except Exception as e:
+                print(f"[panic] notify_panic failed: {e}")
+        except Exception as e:
+            print(f"[panic] liquidate_all_positions failed: {e}")
+            try:
+                notify_error("panic", f"liquidate_all_positions failed: {e}")
+            except Exception:
+                pass
+            exit_code = 1
+
+    # 3. Pause new entries (idempotent — no-op if already paused).
+    if pause:
+        try:
+            changed = _pause_trading_in_env()
+            msg = "TRADING_PAUSED=true written to .env" if changed else "TRADING_PAUSED=true already set (no-op)"
+            print(f"[panic] {msg}")
+            actions_taken.append("pause")
+            try:
+                notify_panic("pause", [{"status": msg}])
+            except Exception as e:
+                print(f"[panic] notify_panic failed: {e}")
+        except Exception as e:
+            print(f"[panic] pause failed: {e}")
+            try:
+                notify_error("panic", f"pause failed: {e}")
+            except Exception:
+                pass
+            exit_code = 1
+
+    return exit_code
+
+
 if __name__ == "__main__":
     import sys
     mode = sys.argv[1] if len(sys.argv) > 1 else "scan"
@@ -254,5 +425,26 @@ if __name__ == "__main__":
         finally:
             if conn:
                 conn.close()
+    elif mode == "panic":
+        import argparse
+        parser = argparse.ArgumentParser(
+            prog="main.py panic",
+            description="Deterministic incident-response CLI: cancel orders, liquidate positions, pause new entries.",
+        )
+        parser.add_argument("--cancel-orders", action="store_true", dest="cancel_orders",
+                            help="Cancel every open order at the broker (parent + bracket children).")
+        parser.add_argument("--liquidate", action="store_true", dest="liquidate",
+                            help="Market-close every open position. REQUIRES --confirm to actually run.")
+        parser.add_argument("--pause", action="store_true", dest="pause",
+                            help="Set TRADING_PAUSED=true in .env (atomic) so the next scan exits before placing entries.")
+        parser.add_argument("--confirm", action="store_true", dest="confirm",
+                            help="Mandatory companion to --liquidate. Without it, --liquidate prints a dry preview and exits non-zero.")
+        args = parser.parse_args(sys.argv[2:])
+        sys.exit(run_panic(
+            cancel_orders=args.cancel_orders,
+            liquidate=args.liquidate,
+            pause=args.pause,
+            confirm=args.confirm,
+        ))
     else:
-        print(f"Unknown mode: {mode}. Use 'scan', 'monitor', 'backtest', or 'summary'")
+        print(f"Unknown mode: {mode}. Use 'scan', 'monitor', 'backtest', 'summary', or 'panic'")

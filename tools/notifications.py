@@ -96,6 +96,30 @@ def notify_order_rejected(ticker: str, shares: int, reason: str) -> None:
     _post(f"🛑 **Order rejected** — {ticker} {shares}sh\n{reason}")
 
 
+def notify_panic(action: str, results: list, dry_run: bool = False) -> None:
+    """Post a Discord alert summarising a `main.py panic` invocation.
+
+    `action` is the human-readable headline ("cancel-orders", "liquidate",
+    "pause", or a composite). `results` is a list of dicts (typically the
+    return values of `cancel_all_orders` / `liquidate_all_positions`); each
+    row is rendered as a single line. `dry_run=True` flags the alert as a
+    preview — used by `--liquidate` without `--confirm`.
+    """
+    suffix = " (DRY RUN)" if dry_run else ""
+    lines = [f"🛑 **PANIC — {action}**{suffix}"]
+    if not results:
+        lines.append("📭 nothing to do")
+    else:
+        lines.append(f"📊 {len(results)} item{'s' if len(results) != 1 else ''}:")
+        for r in results:
+            symbol = r.get("symbol") or r.get("ticker") or ""
+            order_id = r.get("order_id") or r.get("id") or ""
+            status = r.get("status")
+            descriptor = " ".join(p for p in [symbol, str(order_id) if order_id else "", f"[{status}]" if status is not None else ""] if p)
+            lines.append(f"• {descriptor or r}")
+    _post("\n".join(lines))
+
+
 def notify_performance_summary(stats: dict) -> None:
     days = stats["days"]
     trade_count = stats["trade_count"]

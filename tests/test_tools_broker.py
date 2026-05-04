@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import MagicMock, patch
-from tools.broker import place_market_order, close_position, get_portfolio_value, get_current_price, BrokerSubmitError
+from tools.broker import (
+    place_market_order,
+    close_position,
+    get_portfolio_value,
+    get_current_price,
+    cancel_all_orders,
+    liquidate_all_positions,
+    BrokerSubmitError,
+)
 
 
 def test_place_market_order_buy():
@@ -189,3 +197,81 @@ def test_place_market_order_partial_bracket_falls_back_to_plain():
     request = args[0]
     assert request.time_in_force == TimeInForce.DAY
     assert request.order_class != OrderClass.BRACKET
+
+
+# --- Panic CLI primitives (issue #103) ---
+
+
+def test_cancel_all_orders_calls_client_and_returns_summaries():
+    """cancel_all_orders must delegate to client.cancel_orders and shape the response."""
+    mock_client = MagicMock()
+    resp_a = MagicMock()
+    resp_a.id = "ord-1"
+    resp_a.status = 207
+    resp_b = MagicMock()
+    resp_b.id = "ord-2"
+    resp_b.status = 207
+    mock_client.cancel_orders.return_value = [resp_a, resp_b]
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        out = cancel_all_orders()
+
+    mock_client.cancel_orders.assert_called_once_with()
+    assert out == [
+        {"order_id": "ord-1", "status": 207},
+        {"order_id": "ord-2", "status": 207},
+    ]
+
+
+def test_cancel_all_orders_returns_empty_list_when_none_open():
+    """No open orders → client returns empty/None → we return []."""
+    mock_client = MagicMock()
+    mock_client.cancel_orders.return_value = []
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        assert cancel_all_orders() == []
+
+
+def test_cancel_all_orders_propagates_broker_error():
+    """A broker failure must NOT be swallowed — panic CLI relies on the exception to exit non-zero."""
+    mock_client = MagicMock()
+    mock_client.cancel_orders.side_effect = RuntimeError("alpaca 503")
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="alpaca 503"):
+            cancel_all_orders()
+
+
+def test_liquidate_all_positions_calls_client_with_cancel_orders_true():
+    """liquidate_all_positions must call client.close_all_positions(cancel_orders=True)."""
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.symbol = "AMD"
+    resp.order_id = "close-1"
+    resp.status = 207
+    mock_client.close_all_positions.return_value = [resp]
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        out = liquidate_all_positions()
+
+    mock_client.close_all_positions.assert_called_once_with(cancel_orders=True)
+    assert out == [{"symbol": "AMD", "order_id": "close-1", "status": 207}]
+
+
+def test_liquidate_all_positions_handles_none_response():
+    """Some Alpaca SDK paths can return None — must coerce to []."""
+    mock_client = MagicMock()
+    mock_client.close_all_positions.return_value = None
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        assert liquidate_all_positions() == []
+
+
+def test_liquidate_all_positions_propagates_broker_error():
+    """Errors must propagate so panic CLI exits non-zero and Discord shows the failure."""
+    mock_client = MagicMock()
+    mock_client.close_all_positions.side_effect = RuntimeError("alpaca 500")
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(RuntimeError, match="alpaca 500"):
+            liquidate_all_positions()

@@ -226,6 +226,55 @@ def test_notify_order_rejected_includes_ticker_and_reason(mocker):
     assert "exposure cap breached" in msg
 
 
+def test_notify_panic_includes_action_and_results(mocker):
+    """notify_panic posts a 🛑 alert with the action name and a per-row summary."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_panic
+    results = [
+        {"symbol": "AMD", "order_id": "close-1", "status": 207},
+        {"symbol": "NVDA", "order_id": "close-2", "status": 207},
+    ]
+    notify_panic("liquidate", results)
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "PANIC" in msg
+    assert "liquidate" in msg
+    assert "AMD" in msg
+    assert "NVDA" in msg
+    assert "DRY RUN" not in msg
+
+
+def test_notify_panic_dry_run_marker(mocker):
+    """When dry_run=True the headline must include DRY RUN."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_panic
+    notify_panic("liquidate", [{"ticker": "AMD"}], dry_run=True)
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "DRY RUN" in msg
+    assert "AMD" in msg
+
+
+def test_notify_panic_empty_results_renders_nothing_to_do(mocker):
+    """No work items must still produce a single ping (so the operator gets confirmation)."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_panic
+    notify_panic("cancel-orders", [])
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "PANIC" in msg
+    assert "cancel-orders" in msg
+    assert "nothing to do" in msg
+
+
+def test_notify_panic_swallows_post_errors(mocker):
+    """notify_panic must not raise even if the webhook call fails (matches other helpers)."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mocker.patch("tools.notifications.urllib.request.urlopen", side_effect=Exception("timeout"))
+    from tools.notifications import notify_panic
+    notify_panic("pause", [{"status": "ok"}])  # must not raise
+
+
 def test_notify_performance_summary_calls_post(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_performance_summary

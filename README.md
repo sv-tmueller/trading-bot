@@ -194,6 +194,25 @@ Runs the EMA crossover strategy against each watchlist ticker using `yfinance` d
 
 Set `TRADING_PAUSED=true` in `.env` to halt new entries: the next `main.py scan` exits immediately (one Discord ping, no agents run, no orders placed). The position monitor is unaffected, so existing positions still get stop-loss, take-profit, and max-hold handling. Use this to wind down safely while a bug is investigated, instead of editing the root crontab under pressure.
 
+### Panic CLI (incident response)
+
+For incidents where editing `.env` by hand is too slow, `python main.py panic` is a deterministic kill button — no LLM in the path, just direct broker calls.
+
+```bash
+python3 main.py panic --cancel-orders                       # cancel all open orders (parent + bracket children)
+python3 main.py panic --liquidate                           # DRY RUN — prints what would be closed, exits non-zero
+python3 main.py panic --liquidate --confirm                 # actually market-close every position
+python3 main.py panic --pause                               # write TRADING_PAUSED=true to .env (atomic)
+python3 main.py panic --cancel-orders --liquidate --pause --confirm   # full stop
+```
+
+Notes:
+- `--liquidate` mandatorily requires `--confirm`. Without it, it's a dry preview that exits non-zero.
+- Order of operations: `--cancel-orders` runs **before** `--liquidate` so unfilled bracket entries don't race the liquidation. `liquidate_all_positions` already passes `cancel_orders=True` to Alpaca, which sweeps the protective bracket-child legs (take-profit + stop-loss) before each market-close.
+- Idempotent — safe to re-run. Cancelling already-cancelled orders, liquidating zero positions, and pausing already-paused are all no-ops.
+- Every invocation writes an `agent_logs` row (`agent_name="panic"`) **before** any broker call so a partial run is recoverable from the DB.
+- Every action posts a Discord 🛑 alert via the existing webhook.
+
 ## Setting up a new VPS
 
 A fresh Ubuntu 22.04+ box, end-to-end, takes about 15 minutes. Steps run as either root (the default on Hetzner / IONOS / DigitalOcean / most cloud VPS providers) or a non-root sudo user — drop the `sudo` prefix from the commands below if you're logged in as root. Steps that must run as the dedicated bot user are explicitly marked **(as trader)**.
