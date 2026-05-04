@@ -8,7 +8,7 @@ Pinned snapshot of the live trading bot configuration. Update this file whenever
 
 ## Last updated
 
-**2026-05-04** — v1.12.1 reliability patch (exception isolation in `BaseAgent`, `run_monitor`, and `notify_error`). No setting or env-var change; the runtime config below is unchanged from v1.10/v1.11. See the *Change Log* section below.
+**2026-05-04** — v1.13.0 ships the `main.py panic` incident-response CLI and turns `--dry-run` into a real safety-stack smoke test. No env-var or settings change — runtime config below is unchanged from v1.10/v1.11. See the *Change Log* section below.
 
 ---
 
@@ -134,6 +134,14 @@ The first scan after `13:35 UTC` should produce trade candidates if market condi
 ## Change log
 
 Keep this section chronological, newest entry on top. Each entry should fit in 1-5 lines.
+
+### 2026-05-04 — v1.13.0 panic CLI + honest dry-run
+
+- New `python main.py panic` deterministic incident-response CLI: `--cancel-orders`, `--liquidate --confirm`, `--pause` (atomic write to `/opt/trading-bot/.env`, anchored to repo root via `Path(__file__).resolve().parent`). No LLM in the path. Single `agent_logs` row per invocation, written before broker call and updated in `finally` with per-action result. Discord 🛑 alert on every action; tracebacks captured on exception (#128, closes #103). Closes roadmap candidate 9.1 from `docs/research/swing-trading/roadmap.md`.
+- `team_leader.place_order(dry_run=True)` now runs the deterministic safety stack (`check_exposure_for_new_order` against broker truth, `validate_bracket_params`) — only the broker SUBMIT and DB INSERT are skipped. `--dry-run` is now a true smoke test: an over-cap or malformed candidate is rejected the same as live (#127, closes #123).
+- Discord scan-complete header swaps to `🧪 **Morning Scan (DRY RUN) — {date}**` for dry-run scans; live output unchanged (#126, closes #122).
+- Test fixture for earnings blackout relativized to `date.today() + timedelta(days=1)` so it survives wall-clock drift; production logic unchanged (#125, closes #120).
+- No env-var or settings change. Live `.env` and watchlist unchanged.
 
 ### 2026-05-04 — v1.12.1 reliability patch
 

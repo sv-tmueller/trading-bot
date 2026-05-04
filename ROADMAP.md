@@ -18,7 +18,7 @@ For currently deployed configuration and parameters, see [`docs/CURRENT_CONFIG.m
 
 The bot is in paper trading on the v1.10/v1.11 safety stack as of 2026-04-30. Work in this milestone is scoped to:
 
-- Stability and safety-stack hardening (already shipped: deterministic exposure cap, bracket orders with fresh-quote pricing, kill switch, monitor reconciliation)
+- Stability and safety-stack hardening (already shipped: deterministic exposure cap, bracket orders with fresh-quote pricing, kill switch, monitor reconciliation, panic CLI — `docs/research/swing-trading/roadmap.md` candidate 9.1, shipped in v1.13.0 / [#128](https://github.com/sv-tmueller/trading-bot/pull/128))
 - Backtest realism (slippage, ADV cap, gap fills — see [#94](https://github.com/sv-tmueller/trading-bot/issues/94))
 - Risk-parameter tuning (sector concentration, exposure cap, parameter sweeps — see [#61](https://github.com/sv-tmueller/trading-bot/issues/61), [#63](https://github.com/sv-tmueller/trading-bot/issues/63), [#65](https://github.com/sv-tmueller/trading-bot/issues/65))
 - Architecture cleanup that doesn't change strategy direction (broker abstraction — see [#95](https://github.com/sv-tmueller/trading-bot/issues/95), [#96](https://github.com/sv-tmueller/trading-bot/issues/96))

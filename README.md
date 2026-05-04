@@ -163,6 +163,8 @@ python3 main.py scan
 python3 main.py scan --dry-run
 ```
 
+`--dry-run` runs the deterministic safety stack identically to a live scan (exposure gate against broker truth, bracket-leg validation, fail-closed on broker outage) — only the broker SUBMIT and DB INSERT are skipped. An over-cap or malformed candidate is rejected in dry-run too, so the smoke test reflects what the live path would actually do. The Discord scan-complete alert is prefixed `🧪 **Morning Scan (DRY RUN)**` and the Team Leader narrates outcomes in conditional tense ("would have bought") whenever it sees `status: "dry_run_simulated"` in a tool result.
+
 ### Hourly position monitor
 
 ```bash
@@ -194,6 +196,8 @@ Runs the EMA crossover strategy against each watchlist ticker using `yfinance` d
 
 Set `TRADING_PAUSED=true` in `.env` to halt new entries: the next `main.py scan` exits immediately (one Discord ping, no agents run, no orders placed). The position monitor is unaffected, so existing positions still get stop-loss, take-profit, and max-hold handling. Use this to wind down safely while a bug is investigated, instead of editing the root crontab under pressure.
 
+For faster incident response (cancelling open orders, liquidating positions, atomically writing the pause flag without `nano`), see the [Panic CLI](#panic-cli-incident-response) below.
+
 ### Panic CLI (incident response)
 
 For incidents where editing `.env` by hand is too slow, `python main.py panic` is a deterministic kill button — no LLM in the path, just direct broker calls.
@@ -210,8 +214,9 @@ Notes:
 - `--liquidate` mandatorily requires `--confirm`. Without it, it's a dry preview that exits non-zero.
 - Order of operations: `--cancel-orders` runs **before** `--liquidate` so unfilled bracket entries don't race the liquidation. `liquidate_all_positions` already passes `cancel_orders=True` to Alpaca, which sweeps the protective bracket-child legs (take-profit + stop-loss) before each market-close.
 - Idempotent — safe to re-run. Cancelling already-cancelled orders, liquidating zero positions, and pausing already-paused are all no-ops.
-- Every invocation writes an `agent_logs` row (`agent_name="panic"`) **before** any broker call so a partial run is recoverable from the DB.
-- Every action posts a Discord 🛑 alert via the existing webhook.
+- Every invocation writes an `agent_logs` row (`agent_name="panic"`) **before** any broker call so a partial run is recoverable from the DB; the row is updated in a `finally` block with the per-action result (`cancel-orders=ok(N)`, `liquidate=fail(BrokerError)`, etc.).
+- `--pause` writes to `/opt/trading-bot/.env` regardless of the caller's cwd — the path is anchored to the repo root via `Path(__file__).resolve().parent`, so invocations from cron, monitoring scripts, or a stray shell all touch the same file.
+- Every action posts a Discord 🛑 alert via the existing webhook; on exception, a full `traceback.format_exc()` is included so the Discord cutoff (head/tail slicing in `notify_error`) preserves the actual stack.
 
 ## Setting up a new VPS
 
@@ -514,6 +519,24 @@ python3 -m pytest tests/test_monitor.py -v
 ```
 
 ## Changelog
+
+### v1.13.0 (2026-05-04)
+
+**Incident-response CLI + dry-run smoke test that actually tests the safety stack.**
+
+Operational:
+- `python main.py panic` — deterministic incident-response CLI. No LLM in the path. `--cancel-orders` cancels every open Alpaca order (parent + bracket children); `--liquidate --confirm` market-closes all positions (`--confirm` mandatory; without it, dry preview that exits non-zero); `--pause` atomically writes `TRADING_PAUSED=true` to `/opt/trading-bot/.env`. Flags compose; cancel runs before liquidate when both are passed. Single `agent_logs` row per invocation written before broker call and updated in `finally` with per-action result. Discord 🛑 alert on every action; exceptions include `traceback.format_exc()` for post-mortem. `--pause` path anchors `.env` to the repo root via `Path(__file__).resolve().parent`, so cron / arbitrary cwd invocations all touch the same file (#103, #128)
+
+Quality (dry-run is now a real smoke test):
+- `team_leader.place_order(dry_run=True)` now runs the full deterministic safety stack (`check_exposure_for_new_order` against broker truth, `validate_bracket_params`) before returning. Only `place_market_order` (broker SUBMIT) and `insert_trade` (DB INSERT) are skipped. Over-cap or malformed candidates are rejected in dry-run too — previously the dry-run path short-circuited the gate, so `--dry-run` could green-light orders the live path would reject. Dry-run payload is `{"order_id": "DRY_RUN", "fill_price": None, "status": "dry_run_simulated", "note": ...}` and the system prompt instructs the LLM to narrate in conditional tense ("would have bought") whenever it sees that status (#123, #127)
+- `notify_scan_complete` accepts `dry_run: bool`; when True the Discord header swaps to `🧪 **Morning Scan (DRY RUN) — {date}**` instead of `🤖 **Morning Scan**`. Live-scan output is byte-identical (#122, #126)
+
+Test fixture:
+- `tests/test_agents/test_strategy.py` earnings-blackout fixture switched from a hardcoded `date(2026, 5, 1)` to `date.today() + timedelta(days=1)` so it always falls inside any reasonable blackout window. Test-only; production earnings logic unchanged. Restores the full-suite green baseline (#120, #125)
+
+**Tests:** 231 → 260 passing (+29).
+
+---
 
 ### v1.12.1 (2026-05-04)
 
