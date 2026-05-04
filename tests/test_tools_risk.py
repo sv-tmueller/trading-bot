@@ -37,6 +37,46 @@ def test_position_size_scales_with_portfolio():
     assert large["shares"] == small["shares"] * 4
 
 
+def test_calculate_position_rejects_zero_atr():
+    with pytest.raises(ValueError, match="atr"):
+        calculate_position(100_000, 0.01, 150.0, 0.0)
+
+
+def test_calculate_position_rejects_negative_atr():
+    with pytest.raises(ValueError, match="atr"):
+        calculate_position(100_000, 0.01, 150.0, -1.0)
+
+
+def test_calculate_position_rejects_zero_entry_price():
+    with pytest.raises(ValueError, match="entry_price"):
+        calculate_position(100_000, 0.01, 0.0, 3.0)
+
+
+def test_calculate_position_rejects_negative_entry_price():
+    with pytest.raises(ValueError, match="entry_price"):
+        calculate_position(100_000, 0.01, -5.0, 3.0)
+
+
+def test_calculate_position_rejects_zero_portfolio_value():
+    with pytest.raises(ValueError, match="portfolio_value"):
+        calculate_position(0.0, 0.01, 150.0, 3.0)
+
+
+def test_calculate_position_rejects_negative_portfolio_value():
+    with pytest.raises(ValueError, match="portfolio_value"):
+        calculate_position(-100.0, 0.01, 150.0, 3.0)
+
+
+def test_calculate_position_rejects_zero_risk_pct():
+    with pytest.raises(ValueError, match="risk_pct"):
+        calculate_position(100_000, 0.0, 150.0, 3.0)
+
+
+def test_calculate_position_rejects_negative_risk_pct():
+    with pytest.raises(ValueError, match="risk_pct"):
+        calculate_position(100_000, -0.01, 150.0, 3.0)
+
+
 def test_guardrails_pass():
     result = check_portfolio_guardrails(
         open_positions=2,
