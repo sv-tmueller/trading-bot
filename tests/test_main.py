@@ -325,11 +325,11 @@ def test_run_panic_liquidate_with_confirm_calls_broker(db_conn):
 
 
 def test_run_panic_pause_writes_env_var(tmp_path, db_conn, monkeypatch):
-    """--pause must atomically write TRADING_PAUSED=true to .env."""
+    """--pause must atomically write TRADING_PAUSED=true to .env (anchored to repo root)."""
     env_file = tmp_path / ".env"
     env_file.write_text("TRADING_MODE=paper\nTRADING_PAUSED=false\nMAX_POSITIONS=5\n")
-    # Run with the temp dir as cwd so _pause_trading_in_env(default Path(".env")) hits our fixture
-    monkeypatch.chdir(tmp_path)
+    # Override the repo-root anchor so we hit our fixture path, not the live repo .env.
+    monkeypatch.setattr("main._REPO_ROOT", tmp_path)
 
     with patch("main.notify_panic"), \
          patch("main.get_db", return_value=db_conn):
@@ -340,6 +340,38 @@ def test_run_panic_pause_writes_env_var(tmp_path, db_conn, monkeypatch):
     after = env_file.read_text()
     assert "TRADING_PAUSED=true" in after
     assert "TRADING_PAUSED=false" not in after
+
+
+def test_pause_trading_in_env_anchors_to_repo_root_not_cwd(tmp_path, monkeypatch):
+    """Regression: default env_path must anchor to repo root, NOT the caller's cwd.
+
+    Bug report: invoking `python /opt/trading-bot/main.py panic --pause` from any cwd
+    other than /opt/trading-bot wrote a stray .env to that cwd and the live bot kept
+    scanning unpaused. Silent failure during incident response is unacceptable.
+    """
+    # Stage a fake repo root with a real .env we'll inspect after the call.
+    fake_repo_root = tmp_path / "repo"
+    fake_repo_root.mkdir()
+    repo_env = fake_repo_root / ".env"
+    repo_env.write_text("TRADING_PAUSED=false\n")
+    # And a separate cwd that is NOT the repo root.
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    # Anchor the function to our fake repo root.
+    monkeypatch.setattr("main._REPO_ROOT", fake_repo_root)
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env()  # no env_path arg — must use the anchor
+
+    assert changed is True
+    # Repo-root .env was modified.
+    assert "TRADING_PAUSED=true" in repo_env.read_text()
+    # And no stray .env was written to the cwd.
+    assert not (other_cwd / ".env").exists(), (
+        "FOOTGUN: _pause_trading_in_env wrote a .env to the cwd instead of the repo root. "
+        "Live bot would keep scanning unpaused."
+    )
 
 
 def test_pause_trading_in_env_appends_when_missing(tmp_path):
