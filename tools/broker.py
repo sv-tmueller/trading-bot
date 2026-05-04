@@ -70,6 +70,48 @@ def close_position(ticker: str) -> str:
     return str(order.id)
 
 
+def cancel_all_orders() -> list[dict]:
+    """Cancel every open order at the broker (parent + bracket children).
+
+    Used by `main.py panic --cancel-orders`. Returns a list of cancelled order
+    summaries — one row per order Alpaca attempted to cancel — so the panic CLI
+    can report exactly what happened in the audit log and Discord ping. Raises
+    on broker error so the panic command exits non-zero (the operator must see
+    failures, never a silent swallow).
+    """
+    client = get_trading_client()
+    responses = client.cancel_orders()
+    return [
+        {
+            "order_id": str(getattr(r, "id", "")),
+            "status": getattr(r, "status", None),
+        }
+        for r in (responses or [])
+    ]
+
+
+def liquidate_all_positions() -> list[dict]:
+    """Market-close every open position and cancel any open orders.
+
+    Used by `main.py panic --liquidate --confirm`. Calls
+    `client.close_all_positions(cancel_orders=True)` so Alpaca takes care of
+    cancelling the protective bracket child legs (take_profit + stop_loss)
+    before issuing the market-close orders for each position. Returns a list of
+    close-order summaries. Raises on broker error so the panic command exits
+    non-zero.
+    """
+    client = get_trading_client()
+    responses = client.close_all_positions(cancel_orders=True)
+    return [
+        {
+            "symbol": getattr(r, "symbol", None),
+            "order_id": str(getattr(r, "order_id", "") or ""),
+            "status": getattr(r, "status", None),
+        }
+        for r in (responses or [])
+    ]
+
+
 def get_portfolio_value() -> float:
     client = get_trading_client()
     account = client.get_account()

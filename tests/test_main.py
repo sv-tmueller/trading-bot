@@ -266,6 +266,256 @@ def test_reconcile_phantom_db_entry(db_conn):
     assert "phantom" in message.lower() and "AMD" in message
 
 
+# --- Panic CLI (issue #103) ---
+
+
+def test_run_panic_liquidate_without_confirm_is_dry_run(db_conn):
+    """--liquidate without --confirm must NOT touch the broker and must exit non-zero."""
+    with patch("tools.broker.cancel_all_orders") as mock_cancel, \
+         patch("tools.broker.liquidate_all_positions") as mock_liquidate, \
+         patch("tools.broker.get_alpaca_positions", return_value=[{"ticker": "AMD", "qty": 10, "avg_entry_price": 150.0}]), \
+         patch("main.notify_panic") as mock_notify, \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(liquidate=True, confirm=False)
+
+    assert rc != 0
+    mock_cancel.assert_not_called()
+    mock_liquidate.assert_not_called()
+    # Dry-run alert was posted
+    mock_notify.assert_called_once()
+    args, kwargs = mock_notify.call_args
+    assert kwargs.get("dry_run") is True or (len(args) >= 3 and args[2] is True)
+
+
+def test_run_panic_cancel_orders_calls_broker_and_notifies(db_conn):
+    """--cancel-orders must call cancel_all_orders and post a Discord alert."""
+    cancelled = [{"order_id": "ord-1", "status": 207}]
+    with patch("tools.broker.cancel_all_orders", return_value=cancelled) as mock_cancel, \
+         patch("tools.broker.liquidate_all_positions") as mock_liquidate, \
+         patch("main.notify_panic") as mock_notify, \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(cancel_orders=True)
+
+    assert rc == 0
+    mock_cancel.assert_called_once()
+    mock_liquidate.assert_not_called()
+    mock_notify.assert_called_once()
+    headline_arg = mock_notify.call_args[0][0]
+    assert "cancel" in headline_arg
+
+
+def test_run_panic_liquidate_with_confirm_calls_broker(db_conn):
+    """--liquidate --confirm must call liquidate_all_positions on the broker."""
+    closed = [{"symbol": "AMD", "order_id": "close-1", "status": 207}]
+    with patch("tools.broker.cancel_all_orders") as mock_cancel, \
+         patch("tools.broker.liquidate_all_positions", return_value=closed) as mock_liquidate, \
+         patch("main.notify_panic") as mock_notify, \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(liquidate=True, confirm=True)
+
+    assert rc == 0
+    mock_cancel.assert_not_called()
+    mock_liquidate.assert_called_once()
+    mock_notify.assert_called_once()
+    headline_arg = mock_notify.call_args[0][0]
+    assert "liquidate" in headline_arg
+
+
+def test_run_panic_pause_writes_env_var(tmp_path, db_conn, monkeypatch):
+    """--pause must atomically write TRADING_PAUSED=true to .env (anchored to repo root)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TRADING_MODE=paper\nTRADING_PAUSED=false\nMAX_POSITIONS=5\n")
+    # Override the repo-root anchor so we hit our fixture path, not the live repo .env.
+    monkeypatch.setattr("main._REPO_ROOT", tmp_path)
+
+    with patch("main.notify_panic"), \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(pause=True)
+
+    assert rc == 0
+    after = env_file.read_text()
+    assert "TRADING_PAUSED=true" in after
+    assert "TRADING_PAUSED=false" not in after
+
+
+def test_pause_trading_in_env_anchors_to_repo_root_not_cwd(tmp_path, monkeypatch):
+    """Regression: default env_path must anchor to repo root, NOT the caller's cwd.
+
+    Bug report: invoking `python /opt/trading-bot/main.py panic --pause` from any cwd
+    other than /opt/trading-bot wrote a stray .env to that cwd and the live bot kept
+    scanning unpaused. Silent failure during incident response is unacceptable.
+    """
+    # Stage a fake repo root with a real .env we'll inspect after the call.
+    fake_repo_root = tmp_path / "repo"
+    fake_repo_root.mkdir()
+    repo_env = fake_repo_root / ".env"
+    repo_env.write_text("TRADING_PAUSED=false\n")
+    # And a separate cwd that is NOT the repo root.
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+    # Anchor the function to our fake repo root.
+    monkeypatch.setattr("main._REPO_ROOT", fake_repo_root)
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env()  # no env_path arg — must use the anchor
+
+    assert changed is True
+    # Repo-root .env was modified.
+    assert "TRADING_PAUSED=true" in repo_env.read_text()
+    # And no stray .env was written to the cwd.
+    assert not (other_cwd / ".env").exists(), (
+        "FOOTGUN: _pause_trading_in_env wrote a .env to the cwd instead of the repo root. "
+        "Live bot would keep scanning unpaused."
+    )
+
+
+def test_pause_trading_in_env_appends_when_missing(tmp_path):
+    """If TRADING_PAUSED is not present, _pause_trading_in_env must append it."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TRADING_MODE=paper\nMAX_POSITIONS=5\n")
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env(env_path=env_file)
+
+    assert changed is True
+    after = env_file.read_text()
+    assert "TRADING_PAUSED=true" in after
+    # Existing keys preserved
+    assert "TRADING_MODE=paper" in after
+    assert "MAX_POSITIONS=5" in after
+
+
+def test_pause_trading_in_env_replaces_when_false(tmp_path):
+    """If TRADING_PAUSED=false, it must be flipped to true (not duplicated)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TRADING_PAUSED=false\nMAX_POSITIONS=5\n")
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env(env_path=env_file)
+
+    assert changed is True
+    after = env_file.read_text()
+    assert "TRADING_PAUSED=true" in after
+    assert "TRADING_PAUSED=false" not in after
+    # Should appear exactly once
+    assert after.count("TRADING_PAUSED=") == 1
+
+
+def test_pause_trading_in_env_idempotent_when_already_true(tmp_path):
+    """If TRADING_PAUSED=true is already present, the function must report no-op (False)."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TRADING_PAUSED=true\nMAX_POSITIONS=5\n")
+    before = env_file.read_text()
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env(env_path=env_file)
+
+    assert changed is False
+    assert env_file.read_text() == before
+
+
+def test_pause_trading_in_env_creates_missing_file(tmp_path):
+    """If .env does not exist, _pause_trading_in_env must create it with TRADING_PAUSED=true."""
+    env_file = tmp_path / ".env"
+    assert not env_file.exists()
+
+    from main import _pause_trading_in_env
+    changed = _pause_trading_in_env(env_path=env_file)
+
+    assert changed is True
+    assert env_file.exists()
+    assert "TRADING_PAUSED=true" in env_file.read_text()
+
+
+def test_run_panic_audit_log_written_before_broker_call(db_conn):
+    """The agent_logs row must be written BEFORE the broker call so a partial failure is recoverable."""
+    from datetime import date
+
+    # Wrap db_conn so run_panic's close() doesn't close our fixture (it stays usable from the test)
+    conn_wrapper = MagicMock(wraps=db_conn)
+    conn_wrapper.close = MagicMock()  # no-op so the test can keep querying the in-memory DB
+
+    audit_seen_when_called = {"value": False}
+
+    def _check_audit(*args, **kwargs):
+        # When this broker call fires, the audit row must already exist
+        rows = db_conn.execute(
+            "SELECT * FROM agent_logs WHERE agent_name = 'panic' AND cycle_date = ?",
+            (date.today().isoformat(),),
+        ).fetchall()
+        audit_seen_when_called["value"] = len(rows) >= 1
+        return [{"order_id": "ord-1", "status": 207}]
+
+    with patch("tools.broker.cancel_all_orders", side_effect=_check_audit), \
+         patch("main.notify_panic"), \
+         patch("main.get_db", return_value=conn_wrapper):
+        from main import run_panic
+        rc = run_panic(cancel_orders=True)
+
+    assert rc == 0
+    assert audit_seen_when_called["value"], "audit_log row was NOT present when broker was called"
+
+
+def test_run_panic_no_flags_exits_non_zero(db_conn):
+    """Calling panic with no actionable flag must exit non-zero with usage text."""
+    with patch("tools.broker.cancel_all_orders") as mock_cancel, \
+         patch("tools.broker.liquidate_all_positions") as mock_liquidate, \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic()
+
+    assert rc != 0
+    mock_cancel.assert_not_called()
+    mock_liquidate.assert_not_called()
+
+
+def test_run_panic_cancel_first_then_liquidate(db_conn):
+    """When both --cancel-orders and --liquidate --confirm are set, cancel runs FIRST."""
+    call_order = []
+
+    def _record_cancel():
+        call_order.append("cancel")
+        return []
+
+    def _record_liquidate():
+        call_order.append("liquidate")
+        return []
+
+    with patch("tools.broker.cancel_all_orders", side_effect=_record_cancel), \
+         patch("tools.broker.liquidate_all_positions", side_effect=_record_liquidate), \
+         patch("main.notify_panic"), \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(cancel_orders=True, liquidate=True, confirm=True)
+
+    assert rc == 0
+    assert call_order == ["cancel", "liquidate"], (
+        "cancel_all_orders must run before liquidate_all_positions so unfilled "
+        "bracket entries don't race the liquidation"
+    )
+
+
+def test_run_panic_broker_failure_returns_nonzero_and_notifies(db_conn):
+    """Broker failure must propagate to a non-zero exit code AND fire notify_error."""
+    with patch("tools.broker.cancel_all_orders", side_effect=RuntimeError("alpaca 503")), \
+         patch("main.notify_panic"), \
+         patch("main.notify_error") as mock_err, \
+         patch("main.get_db", return_value=db_conn):
+        from main import run_panic
+        rc = run_panic(cancel_orders=True)
+
+    assert rc != 0
+    mock_err.assert_called_once()
+    context, message = mock_err.call_args[0]
+    assert context == "panic"
+    assert "alpaca 503" in message
+
+
 def test_reconcile_failure_does_not_block_scan(db_conn):
     """get_alpaca_positions raises — scan still runs (notify_error called but agents proceed)."""
     market_briefing = {
