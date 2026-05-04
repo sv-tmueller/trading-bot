@@ -82,7 +82,7 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 
 ### Position monitor
 
-`monitor/position_monitor.py` is **rule-based only** (no LLM). Runs hourly via cron. Checks stop-loss → take-profit → max-hold in that priority order. Imports are at module level (not inside functions) so they can be patched in tests.
+`monitor/position_monitor.py` is **rule-based only** (no LLM). Runs hourly via cron. Checks stop-loss → take-profit → max-hold in that priority order. Imports are at module level (not inside functions) so they can be patched in tests. Each per-trade iteration in `run_monitor` is wrapped in try/except — a transient broker/network blip on one ticker fires `notify_error` and records a `hold/skipped_error` `MonitorAction`, but the loop continues so the rest of the book still gets its soft-stop check.
 
 ### Settings
 
@@ -114,6 +114,7 @@ Specifically:
 - Stops and take-profits execute server-side via Alpaca **bracket orders** (entry + take_profit + stop_loss legs submitted in one call). The `position_monitor` soft-stop check is defense-in-depth, not the primary mechanism — exits fire regardless of monitor process or data-API reachability.
 - ATR is plumbed `risk_review` → `main.py` → `team_leader` so brackets are anchored to a **fresh quote at submission**, not the LLM's stale prior-close estimate. This keeps the realised R:R within ±5% of `RR_RATIO_MIN` under typical fill drift.
 - Operational kill switch: `TRADING_PAUSED=true` in `.env` halts new entries — `main.py scan` exits immediately, no agents run. The position monitor is unaffected and continues exit handling.
+- Tool exceptions cannot crash the scan: `BaseAgent._handle_tool_calls` returns failures (and the unknown-tool branch) as `tool_result` blocks with `is_error: True` so the LLM can react instead of the morning pipeline aborting mid-loop.
 
 **Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
 

@@ -8,7 +8,7 @@ Pinned snapshot of the live trading bot configuration. Update this file whenever
 
 ## Last updated
 
-**2026-04-29** — v1.10 risk hardening (deterministic exposure gate, bracket orders, `TRADING_PAUSED` kill switch) and v1.11 promotion of `DAILY_DRAWDOWN_LIMIT` to env-driven. Strategy params and watchlist unchanged from the E3 tune. See the *Change Log* section below.
+**2026-05-04** — v1.12.1 reliability patch (exception isolation in `BaseAgent`, `run_monitor`, and `notify_error`). No setting or env-var change; the runtime config below is unchanged from v1.10/v1.11. See the *Change Log* section below.
 
 ---
 
@@ -134,6 +134,13 @@ The first scan after `13:35 UTC` should produce trade candidates if market condi
 ## Change log
 
 Keep this section chronological, newest entry on top. Each entry should fit in 1-5 lines.
+
+### 2026-05-04 — v1.12.1 reliability patch
+
+- `BaseAgent._handle_tool_calls` wraps tool calls in try/except — failures (and unknown tools) return as `tool_result` with `is_error: True` instead of crashing the scan (#119, closes #113). Defensive validation in `tools/risk.calculate_position` rejects non-positive inputs with a clear `ValueError` instead of `ZeroDivisionError`.
+- `run_monitor` isolates each per-trade iteration: a transient broker/network blip on one ticker fires `notify_error` and records a `hold/skipped_error` action; the loop continues so the rest of the book still gets its soft-stop check (#118, closes #115).
+- `notify_error` keeps both ends of long tracebacks (`head[:240] + "\n...\n" + tail[-240:]`) so the exception type and message survive the Discord cutoff (#117, closes #114).
+- No env-var or settings change. Live `.env` and watchlist unchanged.
 
 ### 2026-04-29 — v1.10/v1.11 risk hardening
 
