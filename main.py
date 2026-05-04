@@ -168,6 +168,7 @@ def run_morning_scan(dry_run: bool = False):
             rejected=len(reviewed.get("rejected", [])),
             decisions=decisions.get("decisions", []),
             cost_usd=costs["cost_usd"],
+            dry_run=dry_run,
         )
 
     except Exception as e:
