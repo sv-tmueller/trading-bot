@@ -123,6 +123,47 @@ def test_notify_error_includes_context(mocker):
     assert "something went wrong" in msg
 
 
+def test_notify_error_long_traceback_keeps_head_and_tail(mocker):
+    """Long tracebacks must show both the entry frame (head) and the exception line (tail)."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_error
+
+    head_marker = "Traceback (most recent call last):\n  File \"/opt/trading-bot/main.py\", line 136, in run_morning_scan"
+    filler = "\n".join(
+        f"  File \"/opt/trading-bot/agents/frame_{i}.py\", line {i}, in some_function"
+        for i in range(80)
+    )
+    tail_marker = "ZeroDivisionError: float division by zero"
+    long_traceback = head_marker + "\n" + filler + "\n" + tail_marker
+    assert len(long_traceback) > 1500
+
+    notify_error("morning_scan", long_traceback)
+
+    mock_urlopen.assert_called_once()
+    req = mock_urlopen.call_args[0][0]
+    import json
+    posted = json.loads(req.data.decode())["message"]
+    assert "morning_scan" in posted
+    assert "run_morning_scan" in posted
+    assert tail_marker in posted
+    assert "\n...\n" in posted
+
+
+def test_notify_error_long_traceback_total_length_bounded(mocker):
+    """Posted message length must stay bounded even for very large tracebacks."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_error
+
+    notify_error("morning_scan", "X" * 5000)
+
+    req = mock_urlopen.call_args[0][0]
+    import json
+    posted = json.loads(req.data.decode())["message"]
+    assert len(posted) <= 525
+
+
 def test_notify_order_rejected_includes_ticker_and_reason(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_order_rejected
