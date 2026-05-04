@@ -9,7 +9,7 @@ The bot runs unattended via cron. You only need to log in when you want to inspe
 ```bash
 # 1. SSH in. (Need first-time Claude Code OAuth? Use the port-forward
 #    variant from the install guide instead — see "First-run auth" below.)
-ssh root@87.106.90.139
+ssh root@your-vps-ip
 
 # 2. Become the `trader` user
 #    /opt/trading-bot is owned by trader, and Claude Code refuses to start
