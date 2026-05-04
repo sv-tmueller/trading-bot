@@ -377,7 +377,7 @@ The bot sends trade summaries and alerts to a Discord channel through an n8n web
 | No trades approved | Risk review rejection summary |
 | Position monitor (hourly) | Heartbeat with position count; closures listed if any |
 | Performance summary (`main.py summary`) | Trailing-30d win rate, PnL, avg R-multiple |
-| *(errors)* | Stack trace excerpt |
+| *(errors)* | Stack trace excerpt — short errors verbatim, long errors keep head + tail (240/.../240) so the exception line is never truncated |
 
 ### Setup
 
@@ -495,6 +495,17 @@ python3 -m pytest tests/test_monitor.py -v
 ```
 
 ## Changelog
+
+### v1.12.1 (2026-05-04)
+
+**Reliability patch — three exception-isolation fixes from the post-v1.12 audit:**
+- `BaseAgent._handle_tool_calls` now wraps tool invocation in try/except. A failing tool returns as a `tool_result` block with `is_error: True` (matching Anthropic's tool-use protocol) so the LLM can retry, skip, or explain in its final JSON instead of aborting the morning scan. Unknown-tool branch uses the same shape. Defensive validation added to `tools/risk.calculate_position` (rejects non-positive `atr`/`entry_price`/`portfolio_value`/`risk_pct` with `ValueError` rather than letting `ZeroDivisionError` surface) (#113, #119)
+- `monitor/position_monitor.run_monitor` now isolates each per-trade iteration in try/except. A transient broker/network blip on one ticker no longer aborts the cycle: the failure is reported via `notify_error` with the failing ticker, the trade is recorded as a `hold/skipped_error` `MonitorAction` so accounting stays honest, and the loop continues. The next cycle re-evaluates from scratch. The reconcile step was already wrapped — unchanged (#115, #118)
+- `tools/notifications.notify_error` now preserves both ends of long tracebacks: short errors (≤500 chars) are unchanged; longer errors are sliced as `head[:240] + "\n...\n" + tail[-240:]` so the exception type and message — the line that actually identifies the failure — survive the Discord cutoff (#114, #117)
+
+**Tests:** 218 → 231 passing (+13 across the three PRs).
+
+---
 
 ### v1.12.0 (2026-04-29)
 
