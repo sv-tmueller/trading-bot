@@ -81,7 +81,11 @@ def notify_monitor(date: str, time: str, checked: int, closed: list) -> None:
 
 
 def notify_error(context: str, error: str) -> None:
-    _post(f"⚠️ **Bot Error — {context}**\n```{error[:500]}```")
+    if len(error) <= 500:
+        snippet = error
+    else:
+        snippet = error[:240] + "\n...\n" + error[-240:]
+    _post(f"⚠️ **Bot Error — {context}**\n```{snippet}```")
 
 
 def notify_order_rejected(ticker: str, shares: int, reason: str) -> None:
