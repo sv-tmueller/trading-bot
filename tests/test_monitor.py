@@ -371,3 +371,72 @@ def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
     assert actions[0].reason == "stop_loss"
     mock_broker_close.assert_called_once_with("AMD")
     assert get_open_trades(db_conn) == []
+
+
+# --- Per-trade exception isolation tests (issue #115) ---
+
+
+def test_run_monitor_isolates_per_trade_failure(db_conn):
+    """A transient broker error on one ticker must not abort the cycle —
+    subsequent trades must still be evaluated and notify_error must fire once
+    with the failing ticker name in the message."""
+    from tools.database import insert_trade, get_open_trades
+
+    # Two open trades: AMD (will fail on get_current_price) and NVDA (normal).
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+    insert_trade(db_conn, {
+        "ticker": "NVDA",
+        "entry_date": "2026-04-21",
+        "entry_price": 800.0,
+        "shares": 10,
+        "stop_loss": 780.0,
+        "take_profit": 840.0,
+    })
+
+    alpaca_open = [
+        {"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0},
+        {"ticker": "NVDA", "qty": 10, "avg_entry_price": 800.0},
+    ]
+
+    def price_side_effect(ticker: str) -> float:
+        if ticker == "AMD":
+            raise ConnectionError("urllib3 connection blip")
+        if ticker == "NVDA":
+            return 810.0
+        raise AssertionError(f"unexpected ticker {ticker}")
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_current_price", side_effect=price_side_effect), \
+         patch("monitor.position_monitor.broker_close"), \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
+        actions = run_monitor(db_conn, today="2026-04-22")
+
+    # Both trades must appear in the actions list.
+    assert len(actions) == 2
+    by_ticker = {a.ticker: a for a in actions}
+    assert set(by_ticker) == {"AMD", "NVDA"}
+
+    # AMD failed → marked hold/skipped_error (cycle accounting honest).
+    assert by_ticker["AMD"].action == "hold"
+    assert by_ticker["AMD"].reason == "skipped_error"
+
+    # NVDA evaluated normally → in range, holding.
+    assert by_ticker["NVDA"].action == "hold"
+    assert by_ticker["NVDA"].reason == ""
+
+    # notify_error called exactly once, with AMD ticker in message.
+    assert mock_notify_error.call_count == 1
+    call_args = mock_notify_error.call_args
+    assert call_args.args[0] == "position_monitor"
+    assert "AMD" in call_args.args[1]
+
+    # Both trades remain open in the DB (AMD was skipped, NVDA was holding).
+    open_now = {row["ticker"] for row in get_open_trades(db_conn)}
+    assert open_now == {"AMD", "NVDA"}

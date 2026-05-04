@@ -5,6 +5,7 @@ from datetime import date as date_cls, datetime
 from config import settings
 from tools.database import get_open_trades, close_trade
 from tools.broker import get_current_price, close_position as broker_close, get_alpaca_positions
+from tools.notifications import notify_error
 
 
 @dataclass
@@ -154,31 +155,40 @@ def run_monitor(conn, today: str = None) -> list:
     actions: list = list(reconciled)
 
     # Step 2 & 3: evaluate stop/target/max-hold for everything still open.
+    # Each iteration is isolated: a transient broker/network error on one
+    # ticker must not skip the soft-stop defense-in-depth for the rest.
     for trade in trades:
-        price = get_current_price(trade["ticker"])
-        # Apply trailing-stop ratchet (no-op when TRAILING_STOP_ENABLED is false).
-        trade = _apply_trailing_stop(conn, trade, price)
-        action = evaluate_position(trade, price, today)
+        try:
+            price = get_current_price(trade["ticker"])
+            # Apply trailing-stop ratchet (no-op when TRAILING_STOP_ENABLED is false).
+            trade = _apply_trailing_stop(conn, trade, price)
+            action = evaluate_position(trade, price, today)
 
-        if action.action == "close":
-            broker_close(trade["ticker"])
-            entry_price = trade["entry_price"]
-            stop_distance = entry_price - trade["stop_loss"]
-            r_multiple = (price - entry_price) / stop_distance if stop_distance != 0 else 0.0
-            pnl_dollars = (price - entry_price) * trade["shares"]
-            entry_date = datetime.strptime(trade["entry_date"], "%Y-%m-%d").date()
-            today_date = datetime.strptime(today, "%Y-%m-%d").date()
-            hold_days = (today_date - entry_date).days
-            close_trade(conn, trade["id"], {
-                "exit_date": today,
-                "exit_price": price,
-                "exit_reason": action.reason,
-                "pnl_dollars": round(pnl_dollars, 2),
-                "pnl_pct": round(pnl_dollars / (entry_price * trade["shares"]), 4),
-                "hold_days": hold_days,
-                "r_multiple": round(r_multiple, 3),
-            })
+            if action.action == "close":
+                broker_close(trade["ticker"])
+                entry_price = trade["entry_price"]
+                stop_distance = entry_price - trade["stop_loss"]
+                r_multiple = (price - entry_price) / stop_distance if stop_distance != 0 else 0.0
+                pnl_dollars = (price - entry_price) * trade["shares"]
+                entry_date = datetime.strptime(trade["entry_date"], "%Y-%m-%d").date()
+                today_date = datetime.strptime(today, "%Y-%m-%d").date()
+                hold_days = (today_date - entry_date).days
+                close_trade(conn, trade["id"], {
+                    "exit_date": today,
+                    "exit_price": price,
+                    "exit_reason": action.reason,
+                    "pnl_dollars": round(pnl_dollars, 2),
+                    "pnl_pct": round(pnl_dollars / (entry_price * trade["shares"]), 4),
+                    "hold_days": hold_days,
+                    "r_multiple": round(r_multiple, 3),
+                })
 
-        actions.append(action)
+            actions.append(action)
+        except Exception as e:
+            notify_error(
+                "position_monitor",
+                f"Skipping {trade['ticker']} (id={trade['id']}): {type(e).__name__}: {e}",
+            )
+            actions.append(MonitorAction(trade["id"], trade["ticker"], "hold", "skipped_error", 0.0))
 
     return actions
