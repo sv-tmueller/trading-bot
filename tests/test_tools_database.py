@@ -138,6 +138,78 @@ def test_get_closed_trade_stats_filters_old_trades(db_conn):
     assert stats["trade_count"] == 0
 
 
+def test_insert_signal_full_row_round_trip(db_conn):
+    """Issue #136: a fully-populated signal row round-trips and lastrowid is returned."""
+    trade_id = insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-05-05",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.0,
+        "take_profit": 160.0,
+    })
+    row_id = insert_signal(db_conn, {
+        "trade_id": trade_id,
+        "ticker": "AMD",
+        "date": "2026-05-05",
+        "ema_fast": 152.3,
+        "ema_slow": 148.1,
+        "rsi": 55.0,
+        "volume_ratio": 1.8,
+        "signal_score": 0.85,
+        "triggered_entry": 1,
+    })
+    assert isinstance(row_id, int) and row_id > 0
+    row = db_conn.execute("SELECT * FROM signals WHERE id = ?", (row_id,)).fetchone()
+    assert row["trade_id"] == trade_id
+    assert row["ticker"] == "AMD"
+    assert row["date"] == "2026-05-05"
+    assert row["ema_fast"] == pytest.approx(152.3)
+    assert row["ema_slow"] == pytest.approx(148.1)
+    assert row["rsi"] == pytest.approx(55.0)
+    assert row["volume_ratio"] == pytest.approx(1.8)
+    assert row["signal_score"] == pytest.approx(0.85)
+    assert row["triggered_entry"] == 1
+
+
+def test_insert_signal_rejection_row_with_null_trade_id(db_conn):
+    """Issue #136: a rejected candidate writes triggered_entry=0 with trade_id=NULL."""
+    row_id = insert_signal(db_conn, {
+        "trade_id": None,
+        "ticker": "SHEL",
+        "date": "2026-05-05",
+        "rsi": 48.2,
+        "volume_ratio": 1.6,
+        "signal_score": 0.62,
+        "triggered_entry": 0,
+    })
+    row = db_conn.execute("SELECT * FROM signals WHERE id = ?", (row_id,)).fetchone()
+    assert row["trade_id"] is None
+    assert row["ticker"] == "SHEL"
+    assert row["triggered_entry"] == 0
+    # ema_fast/ema_slow are optional — caller didn't supply them, so they are NULL.
+    assert row["ema_fast"] is None
+    assert row["ema_slow"] is None
+    assert row["rsi"] == pytest.approx(48.2)
+
+
+def test_insert_signal_returns_lastrowid_for_symmetry(db_conn):
+    """Issue #136: insert_signal returns lastrowid (matches insert_trade / insert_monitor_action)."""
+    row_id_1 = insert_signal(db_conn, {
+        "ticker": "AMD",
+        "date": "2026-05-05",
+        "triggered_entry": 0,
+    })
+    row_id_2 = insert_signal(db_conn, {
+        "ticker": "NVDA",
+        "date": "2026-05-05",
+        "triggered_entry": 0,
+    })
+    assert isinstance(row_id_1, int)
+    assert isinstance(row_id_2, int)
+    assert row_id_2 == row_id_1 + 1
+
+
 def test_insert_and_get_parameters(db_conn):
     insert_parameters(db_conn, {
         "applied_date": "2026-04-22",

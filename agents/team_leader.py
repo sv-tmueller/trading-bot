@@ -40,6 +40,7 @@ Respond with JSON:
         self._pending_stops: dict = {}
         self._pending_targets: dict = {}
         self._pending_atrs: dict = {}
+        self._pending_indicators: dict = {}
         self._dry_run: bool = False
 
     def get_tools(self) -> list:
@@ -79,15 +80,45 @@ Respond with JSON:
         from tools.broker import place_market_order, close_position as broker_close_position
         from tools.broker import get_current_price, get_alpaca_positions, get_portfolio_value
         from tools.broker import BrokerSubmitError
-        from tools.database import insert_trade, get_open_trades, close_trade
+        from tools.database import insert_trade, get_open_trades, close_trade, insert_signal
         from tools.risk import check_exposure_for_new_order, validate_bracket_params
-        from tools.notifications import notify_order_rejected
+        from tools.notifications import notify_order_rejected, notify_error
         from config import settings
         conn = self._conn
         pending_stops = self._pending_stops
         pending_targets = self._pending_targets
         pending_atrs = self._pending_atrs
+        pending_indicators = self._pending_indicators
         dry_run = self._dry_run
+
+        def _persist_signal_row(ticker: str, trade_id, triggered_entry: int) -> None:
+            """Write one signals row, swallowing DB errors so the order path continues.
+
+            Per issue #136: this is purely observability — the order has already been
+            placed (or rejected) by the time we get here. Losing the audit row must
+            never crash the scan or undo the trade. Mirrors the failure-isolation
+            pattern in `_persist_action_row` from PR #140.
+            """
+            indicators = pending_indicators.get(ticker, {})
+            try:
+                insert_signal(conn, {
+                    "trade_id": trade_id,
+                    "ticker": ticker,
+                    "date": date.today().isoformat(),
+                    "ema_fast": indicators.get("ema_fast"),
+                    "ema_slow": indicators.get("ema_slow"),
+                    "rsi": indicators.get("rsi"),
+                    "volume_ratio": indicators.get("volume_ratio"),
+                    "signal_score": indicators.get("signal_score"),
+                    "triggered_entry": triggered_entry,
+                })
+            except Exception as e:
+                notify_error(
+                    "team_leader",
+                    f"insert_signal failed for {ticker} "
+                    f"(trade_id={trade_id}, triggered_entry={triggered_entry}): "
+                    f"{type(e).__name__}: {e}",
+                )
 
         def place_order(ticker: str, shares: int, side: str) -> dict:
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
@@ -109,6 +140,8 @@ Respond with JSON:
                     reason = f"exposure check failed: {e}"
                     print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
                     notify_order_rejected(ticker, shares, reason)
+                    if not dry_run:
+                        _persist_signal_row(ticker, None, 0)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
                 candidate_notional = shares * price
@@ -122,6 +155,8 @@ Respond with JSON:
                     reason = gate["reason"]
                     print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
                     notify_order_rejected(ticker, shares, reason)
+                    if not dry_run:
+                        _persist_signal_row(ticker, None, 0)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
             # Bracket pricing: recompute stop/target locally from the fresh
@@ -149,6 +184,8 @@ Respond with JSON:
                     reason = f"invalid bracket: {bracket_check['reason']}"
                     print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
                     notify_order_rejected(ticker, shares, reason)
+                    if not dry_run:
+                        _persist_signal_row(ticker, None, 0)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
             # Dry-run skips ONLY the broker SUBMIT and DB INSERT — all
@@ -175,11 +212,14 @@ Respond with JSON:
                 reason = f"broker rejected: {e}"
                 print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
                 notify_order_rejected(ticker, shares, reason)
+                if side == "buy":
+                    _persist_signal_row(ticker, None, 0)
                 return {"order_id": None, "status": "rejected", "reason": reason}
             order_id = order_result["order_id"]
+            trade_id = None
             if side == "buy":
                 entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # Alpaca fills async; fill_price may be None on paper — pre-order quote is the fallback
-                insert_trade(conn, {
+                trade_id = insert_trade(conn, {
                     "ticker": ticker,
                     "entry_date": date.today().isoformat(),
                     "entry_price": entry_price,
@@ -187,6 +227,7 @@ Respond with JSON:
                     "stop_loss": bracket_stop if bracket_stop is not None else (pending_stops.get(ticker, entry_price * 0.97)),
                     "take_profit": bracket_target if bracket_target is not None else (pending_targets.get(ticker, entry_price * 1.06)),
                 })
+                _persist_signal_row(ticker, trade_id, 1)
             return {"order_id": order_id, "status": "submitted"}
 
         def close_position(ticker: str, reason: str = "manual") -> dict:
@@ -219,11 +260,12 @@ Respond with JSON:
 
         return [place_order, close_position]
 
-    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None, pending_atrs: dict = None, dry_run: bool = False) -> dict:
+    def run(self, prompt: str, conn=None, pending_stops: dict = None, pending_targets: dict = None, pending_atrs: dict = None, pending_indicators: dict = None, dry_run: bool = False) -> dict:
         self._conn = conn
         self._pending_stops = pending_stops or {}
         self._pending_targets = pending_targets or {}
         self._pending_atrs = pending_atrs or {}
+        self._pending_indicators = pending_indicators or {}
         self._dry_run = dry_run
         return super().run(prompt, conn=conn)
 
