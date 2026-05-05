@@ -94,8 +94,35 @@ CREATE TABLE IF NOT EXISTS parameters (
     r_ratio_min REAL NOT NULL
 );
 
+-- Per-iteration audit trail for the hourly position monitor (issue #131).
+-- One row per evaluated trade per cycle. Lets analysts reconstruct what the
+-- monitor saw and decided without grepping /var/log/trading-bot/monitor.log.
+-- action_type values:
+--   stop_loss / take_profit / max_hold — soft-stop check fired and the
+--     monitor closed the position locally (broker_close was called).
+--   reconciled — Alpaca had already closed the position server-side
+--     (bracket child fired between cycles); the monitor reconciled the DB.
+--   hold — in-range, no action.
+--   skipped_error — per-iteration try/except caught a transient failure
+--     (broker/network blip); loop continued to the next ticker.
+CREATE TABLE IF NOT EXISTS monitor_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL,
+    action_time TEXT NOT NULL,
+    action_type TEXT NOT NULL CHECK (action_type IN (
+        'stop_loss', 'take_profit', 'max_hold', 'reconciled', 'hold', 'skipped_error'
+    )),
+    reason TEXT,
+    current_price REAL,
+    stop_price REAL,
+    take_profit_price REAL
+);
+
 -- Indexes for frequent query patterns
 CREATE INDEX IF NOT EXISTS idx_trades_open ON trades (exit_date) WHERE exit_date IS NULL;
 CREATE INDEX IF NOT EXISTS idx_trades_exit_date ON trades (exit_date);
 CREATE INDEX IF NOT EXISTS idx_signals_ticker_date ON signals (ticker, date);
 CREATE INDEX IF NOT EXISTS idx_agent_logs_cycle_date ON agent_logs (cycle_date);
+CREATE INDEX IF NOT EXISTS idx_monitor_actions_trade_id ON monitor_actions (trade_id);
+CREATE INDEX IF NOT EXISTS idx_monitor_actions_action_time ON monitor_actions (action_time);

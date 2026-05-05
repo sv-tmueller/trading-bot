@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import pytest
 from unittest.mock import patch, MagicMock
 from monitor.position_monitor import evaluate_position, MonitorAction, run_monitor
@@ -440,3 +441,272 @@ def test_run_monitor_isolates_per_trade_failure(db_conn):
     # Both trades remain open in the DB (AMD was skipped, NVDA was holding).
     open_now = {row["ticker"] for row in get_open_trades(db_conn)}
     assert open_now == {"AMD", "NVDA"}
+
+
+# --- monitor_actions persistence tests (issue #131) ---
+
+
+def _fetch_actions_rows(conn) -> list:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM monitor_actions ORDER BY id"
+    ).fetchall()]
+
+
+def test_run_monitor_persists_stop_loss_row(db_conn):
+    """Soft-stop close writes one monitor_actions row with action_type='stop_loss'."""
+    from tools.database import insert_trade
+
+    trade_id = insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-20",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=145.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close", return_value="order-1"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = _fetch_actions_rows(db_conn)
+    assert len(rows) == 1
+    assert rows[0]["trade_id"] == trade_id
+    assert rows[0]["ticker"] == "AMD"
+    assert rows[0]["action_type"] == "stop_loss"
+    assert rows[0]["reason"] == "stop_loss"
+    assert rows[0]["current_price"] == 145.0
+    assert rows[0]["stop_price"] == 145.5
+    assert rows[0]["take_profit_price"] == 159.0
+    # action_time must be a non-empty ISO-8601-ish UTC string with tz offset.
+    assert rows[0]["action_time"]
+    assert "T" in rows[0]["action_time"]
+
+
+def test_run_monitor_persists_take_profit_row(db_conn):
+    """Soft-target close writes a 'take_profit' row."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-20",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=160.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close", return_value="order-1"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = _fetch_actions_rows(db_conn)
+    assert len(rows) == 1
+    assert rows[0]["action_type"] == "take_profit"
+    assert rows[0]["reason"] == "take_profit"
+    assert rows[0]["current_price"] == 160.0
+
+
+def test_run_monitor_persists_max_hold_row(db_conn, monkeypatch):
+    """Max-hold close writes a 'max_hold' row."""
+    from tools.database import insert_trade
+    from config import settings as _s
+
+    monkeypatch.setattr(_s, "MAX_HOLD_DAYS", 5)
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-15",   # 7 days before "today"
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    # Price in range (no stop, no target) → only max_hold can fire.
+    with patch("monitor.position_monitor.get_current_price", return_value=152.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close", return_value="order-1"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = _fetch_actions_rows(db_conn)
+    assert len(rows) == 1
+    assert rows[0]["action_type"] == "max_hold"
+    assert rows[0]["reason"] == "max_hold"
+
+
+def test_run_monitor_persists_hold_row(db_conn):
+    """Hold path still writes one 'hold' row per evaluated trade."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = _fetch_actions_rows(db_conn)
+    assert len(rows) == 1
+    assert rows[0]["action_type"] == "hold"
+    # In-memory hold has reason="" — persisted as NULL (helper coerces falsy → None).
+    assert rows[0]["reason"] is None
+    assert rows[0]["current_price"] == 153.0
+
+
+def test_run_monitor_persists_reconciled_row(db_conn):
+    """Phantom-close reconciliation writes a 'reconciled' row."""
+    from tools.database import insert_trade
+
+    trade_id = insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    # Alpaca has nothing open — bracket child closed it server-side.
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=146.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = _fetch_actions_rows(db_conn)
+    assert len(rows) == 1
+    assert rows[0]["trade_id"] == trade_id
+    assert rows[0]["action_type"] == "reconciled"
+    assert rows[0]["reason"] == "broker_closed"
+    assert rows[0]["current_price"] == 146.0
+
+
+def test_run_monitor_persists_skipped_error_row_and_continues(db_conn):
+    """A transient broker exception writes a 'skipped_error' row AND the loop continues."""
+    from tools.database import insert_trade, get_open_trades
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",   # will fail on get_current_price
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+    insert_trade(db_conn, {
+        "ticker": "NVDA",  # will hold normally
+        "entry_date": "2026-04-21",
+        "entry_price": 800.0,
+        "shares": 10,
+        "stop_loss": 780.0,
+        "take_profit": 840.0,
+    })
+
+    alpaca_open = [
+        {"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0},
+        {"ticker": "NVDA", "qty": 10, "avg_entry_price": 800.0},
+    ]
+
+    def price_side_effect(ticker: str) -> float:
+        if ticker == "AMD":
+            raise ConnectionError("urllib3 connection blip")
+        return 810.0
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_current_price", side_effect=price_side_effect), \
+         patch("monitor.position_monitor.broker_close"), \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
+        actions = run_monitor(db_conn, today="2026-04-22")
+
+    # Loop continued — both trades evaluated.
+    assert len(actions) == 2
+    by_ticker = {a.ticker: a for a in actions}
+    assert by_ticker["AMD"].reason == "skipped_error"
+    assert by_ticker["NVDA"].action == "hold"
+
+    # Two monitor_actions rows: one skipped_error (AMD), one hold (NVDA).
+    rows_by_ticker = {r["ticker"]: r for r in _fetch_actions_rows(db_conn)}
+    assert set(rows_by_ticker) == {"AMD", "NVDA"}
+    assert rows_by_ticker["AMD"]["action_type"] == "skipped_error"
+    assert rows_by_ticker["AMD"]["reason"] == "skipped_error"
+    # AMD's price is unknown — current_price snapshot is 0.0 from the in-memory MonitorAction.
+    assert rows_by_ticker["AMD"]["current_price"] == 0.0
+    assert rows_by_ticker["NVDA"]["action_type"] == "hold"
+    assert rows_by_ticker["NVDA"]["current_price"] == 810.0
+
+    # The original notify_error from the broker blip fired once. The audit-trail
+    # write succeeded so it didn't add a second notify_error.
+    assert mock_notify_error.call_count == 1
+    assert "AMD" in mock_notify_error.call_args.args[1]
+
+    # Both trades remain open (AMD skipped, NVDA holding).
+    open_now = {row["ticker"] for row in get_open_trades(db_conn)}
+    assert open_now == {"AMD", "NVDA"}
+
+
+def test_run_monitor_db_write_failure_does_not_abort_loop(db_conn):
+    """If insert_monitor_action raises on one ticker, notify_error fires and the loop continues."""
+    from tools.database import insert_trade, insert_monitor_action as real_insert
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+    insert_trade(db_conn, {
+        "ticker": "NVDA",
+        "entry_date": "2026-04-21",
+        "entry_price": 800.0,
+        "shares": 10,
+        "stop_loss": 780.0,
+        "take_profit": 840.0,
+    })
+
+    alpaca_open = [
+        {"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0},
+        {"ticker": "NVDA", "qty": 10, "avg_entry_price": 800.0},
+    ]
+
+    def flaky_insert(conn, action):
+        if action["ticker"] == "AMD":
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_insert(conn, action)
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.broker_close"), \
+         patch("monitor.position_monitor.insert_monitor_action", side_effect=flaky_insert) as mock_insert, \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
+        actions = run_monitor(db_conn, today="2026-04-22")
+
+    # Loop must complete — both in-memory actions still produced.
+    assert len(actions) == 2
+    # insert_monitor_action was attempted for both trades.
+    assert mock_insert.call_count == 2
+
+    # NVDA row landed; AMD row didn't (insert raised).
+    rows = _fetch_actions_rows(db_conn)
+    tickers = {r["ticker"] for r in rows}
+    assert tickers == {"NVDA"}
+
+    # notify_error fired for the failed audit-trail write, with AMD in the message.
+    assert mock_notify_error.call_count == 1
+    msg = mock_notify_error.call_args.args[1]
+    assert "insert_monitor_action failed" in msg
+    assert "AMD" in msg
