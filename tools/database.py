@@ -61,6 +61,38 @@ def log_agent_output(conn: sqlite3.Connection, log: dict) -> None:
     conn.commit()
 
 
+def insert_monitor_action(conn: sqlite3.Connection, action: dict) -> int:
+    """Persist one row to monitor_actions for the per-trade audit trail (issue #131).
+
+    Required keys: trade_id, ticker, action_time (ISO8601 UTC), action_type
+    (one of 'stop_loss', 'take_profit', 'max_hold', 'reconciled', 'hold',
+    'skipped_error'). Optional keys: reason, current_price, stop_price,
+    take_profit_price — passed as None when not available so the row stays
+    self-describing.
+    """
+    payload = {
+        "trade_id": action["trade_id"],
+        "ticker": action["ticker"],
+        "action_time": action["action_time"],
+        "action_type": action["action_type"],
+        "reason": action.get("reason"),
+        "current_price": action.get("current_price"),
+        "stop_price": action.get("stop_price"),
+        "take_profit_price": action.get("take_profit_price"),
+    }
+    cur = conn.execute(
+        """INSERT INTO monitor_actions
+               (trade_id, ticker, action_time, action_type, reason,
+                current_price, stop_price, take_profit_price)
+           VALUES
+               (:trade_id, :ticker, :action_time, :action_type, :reason,
+                :current_price, :stop_price, :take_profit_price)""",
+        payload,
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
 def get_daily_token_costs(conn: sqlite3.Connection, cycle_date: str) -> dict:
     row = conn.execute(
         """SELECT

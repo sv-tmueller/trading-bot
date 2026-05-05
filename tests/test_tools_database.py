@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+import sqlite3
 from tools.database import (
     insert_trade,
     get_open_trades,
@@ -11,6 +12,7 @@ from tools.database import (
     insert_parameters,
     get_daily_token_costs,
     get_closed_trade_stats,
+    insert_monitor_action,
 )
 
 
@@ -151,3 +153,93 @@ def test_insert_and_get_parameters(db_conn):
     params = get_active_parameters(db_conn)
     assert params["rsi_lower"] == 40.0
     assert params["ema_fast"] == 20
+
+
+# --- insert_monitor_action helper tests (issue #131) ---
+
+
+def _seed_open_trade(conn) -> int:
+    return insert_trade(conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-22",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+
+def test_insert_monitor_action_persists_full_row(db_conn):
+    """Every documented column round-trips through insert_monitor_action."""
+    trade_id = _seed_open_trade(db_conn)
+    new_id = insert_monitor_action(db_conn, {
+        "trade_id": trade_id,
+        "ticker": "AMD",
+        "action_time": "2026-04-22T14:00:00+00:00",
+        "action_type": "stop_loss",
+        "reason": "stop_loss",
+        "current_price": 144.9,
+        "stop_price": 145.5,
+        "take_profit_price": 159.0,
+    })
+    assert isinstance(new_id, int) and new_id > 0
+
+    row = db_conn.execute(
+        "SELECT * FROM monitor_actions WHERE id = ?", (new_id,)
+    ).fetchone()
+    assert row["trade_id"] == trade_id
+    assert row["ticker"] == "AMD"
+    assert row["action_time"] == "2026-04-22T14:00:00+00:00"
+    assert row["action_type"] == "stop_loss"
+    assert row["reason"] == "stop_loss"
+    assert row["current_price"] == 144.9
+    assert row["stop_price"] == 145.5
+    assert row["take_profit_price"] == 159.0
+
+
+def test_insert_monitor_action_optional_fields_default_to_null(db_conn):
+    """Optional keys (reason, prices) are persisted as NULL when not provided."""
+    trade_id = _seed_open_trade(db_conn)
+    insert_monitor_action(db_conn, {
+        "trade_id": trade_id,
+        "ticker": "AMD",
+        "action_time": "2026-04-22T15:00:00+00:00",
+        "action_type": "hold",
+    })
+    row = db_conn.execute(
+        "SELECT reason, current_price, stop_price, take_profit_price FROM monitor_actions"
+    ).fetchone()
+    assert row["reason"] is None
+    assert row["current_price"] is None
+    assert row["stop_price"] is None
+    assert row["take_profit_price"] is None
+
+
+def test_insert_monitor_action_rejects_unknown_action_type(db_conn):
+    """The CHECK constraint blocks action_type values outside the documented enum."""
+    trade_id = _seed_open_trade(db_conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_monitor_action(db_conn, {
+            "trade_id": trade_id,
+            "ticker": "AMD",
+            "action_time": "2026-04-22T16:00:00+00:00",
+            "action_type": "panic",   # not in the enum
+        })
+
+
+def test_insert_monitor_action_accepts_every_enum_value(db_conn):
+    """Every documented action_type round-trips without an IntegrityError."""
+    trade_id = _seed_open_trade(db_conn)
+    for at in ("stop_loss", "take_profit", "max_hold", "reconciled", "hold", "skipped_error"):
+        insert_monitor_action(db_conn, {
+            "trade_id": trade_id,
+            "ticker": "AMD",
+            "action_time": f"2026-04-22T17:00:00+00:00#{at}",
+            "action_type": at,
+        })
+    rows = db_conn.execute(
+        "SELECT action_type FROM monitor_actions ORDER BY id"
+    ).fetchall()
+    assert {r["action_type"] for r in rows} == {
+        "stop_loss", "take_profit", "max_hold", "reconciled", "hold", "skipped_error"
+    }

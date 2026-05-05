@@ -13,6 +13,19 @@ EXPECTED_TABLES = {
     "weekly_stats",
     "suggestions",
     "parameters",
+    "monitor_actions",
+}
+
+EXPECTED_MONITOR_ACTIONS_COLUMNS = {
+    "id",
+    "trade_id",
+    "ticker",
+    "action_time",
+    "action_type",
+    "reason",
+    "current_price",
+    "stop_price",
+    "take_profit_price",
 }
 
 EXPECTED_TRADES_COLUMNS = {
@@ -118,3 +131,37 @@ def test_trades_table_columns_match_expectations(tmp_path):
         f"Schema drift on trades: missing={EXPECTED_TRADES_COLUMNS - cols} "
         f"extra={cols - EXPECTED_TRADES_COLUMNS}"
     )
+
+
+def test_monitor_actions_table_columns_match_expectations(tmp_path):
+    """monitor_actions table schema matches expected columns (issue #131)."""
+    db_path = tmp_path / "schema.db"
+    init_db(str(db_path))
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("PRAGMA table_info(monitor_actions)").fetchall()
+    finally:
+        conn.close()
+
+    cols = {row[1] for row in rows}
+    assert cols == EXPECTED_MONITOR_ACTIONS_COLUMNS, (
+        f"Schema drift on monitor_actions: "
+        f"missing={EXPECTED_MONITOR_ACTIONS_COLUMNS - cols} "
+        f"extra={cols - EXPECTED_MONITOR_ACTIONS_COLUMNS}"
+    )
+
+
+def test_monitor_actions_indexes_present(tmp_path):
+    """monitor_actions has the trade_id and action_time indexes for analyst queries."""
+    db_path = tmp_path / "idx.db"
+    init_db(str(db_path))
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        indexes = _list_indexes(conn)
+    finally:
+        conn.close()
+
+    assert "idx_monitor_actions_trade_id" in indexes
+    assert "idx_monitor_actions_action_time" in indexes

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime
+from datetime import date as date_cls, datetime, timezone
 from config import settings
-from tools.database import get_open_trades, close_trade
+from tools.database import get_open_trades, close_trade, insert_monitor_action
 from tools.broker import get_current_price, close_position as broker_close, get_alpaca_positions
 from tools.notifications import notify_error
 
@@ -15,6 +15,58 @@ class MonitorAction:
     action: str   # "hold" | "close" | "reconciled"
     reason: str   # "" | "stop_loss" | "take_profit" | "max_hold" | "broker_closed"
     current_price: float
+
+
+def _action_type_for_row(action: MonitorAction) -> str:
+    """Map the in-memory MonitorAction onto the persisted action_type enum.
+
+    The schema enum is the authoritative set: stop_loss / take_profit /
+    max_hold / reconciled / hold / skipped_error. close+<reason> collapses
+    to the reason itself (so a stop_loss close becomes 'stop_loss', not
+    'close'). Reconciled rows keep 'reconciled'. Hold + skipped_error reason
+    becomes 'skipped_error' so analysts can filter transient failures.
+    """
+    if action.action == "reconciled":
+        return "reconciled"
+    if action.action == "close":
+        return action.reason   # "stop_loss" | "take_profit" | "max_hold"
+    if action.action == "hold" and action.reason == "skipped_error":
+        return "skipped_error"
+    return "hold"
+
+
+def _persist_action_row(
+    conn,
+    action: MonitorAction,
+    trade: dict,
+    action_time: str,
+) -> None:
+    """Insert one monitor_actions row, swallowing DB errors so the loop continues.
+
+    Per the issue (#131) the audit-trail write must NOT break the existing
+    per-trade isolation guarantee in run_monitor — a DB write failure on one
+    iteration fires notify_error and keeps the rest of the book moving. The
+    snapshot uses post-trail values for stop_price (so a row written after
+    _apply_trailing_stop reflects the just-ratcheted stop, matching what the
+    monitor actually decided against).
+    """
+    try:
+        insert_monitor_action(conn, {
+            "trade_id": action.trade_id,
+            "ticker": action.ticker,
+            "action_time": action_time,
+            "action_type": _action_type_for_row(action),
+            "reason": action.reason or None,
+            "current_price": action.current_price,
+            "stop_price": trade.get("stop_loss"),
+            "take_profit_price": trade.get("take_profit"),
+        })
+    except Exception as e:
+        notify_error(
+            "position_monitor",
+            f"insert_monitor_action failed for {action.ticker} "
+            f"(trade_id={action.trade_id}): {type(e).__name__}: {e}",
+        )
 
 
 def evaluate_position(
@@ -83,7 +135,9 @@ def _reconcile_phantom_closes(conn, open_trades: list, today: str) -> tuple[list
                 "hold_days": hold_days,
                 "r_multiple": round(r_multiple, 3),
             })
-            reconciled.append(MonitorAction(trade["id"], trade["ticker"], "reconciled", "broker_closed", price))
+            action = MonitorAction(trade["id"], trade["ticker"], "reconciled", "broker_closed", price)
+            _persist_action_row(conn, action, trade, datetime.now(timezone.utc).isoformat())
+            reconciled.append(action)
         else:
             still_open.append(trade)
     return still_open, reconciled
@@ -157,7 +211,11 @@ def run_monitor(conn, today: str = None) -> list:
     # Step 2 & 3: evaluate stop/target/max-hold for everything still open.
     # Each iteration is isolated: a transient broker/network error on one
     # ticker must not skip the soft-stop defense-in-depth for the rest.
+    # Every iteration also writes exactly one monitor_actions row (issue #131)
+    # — including the skipped_error branch so the cycle accounting is honest
+    # even when the underlying broker call failed.
     for trade in trades:
+        action_time = datetime.now(timezone.utc).isoformat()
         try:
             price = get_current_price(trade["ticker"])
             # Apply trailing-stop ratchet (no-op when TRAILING_STOP_ENABLED is false).
@@ -183,12 +241,15 @@ def run_monitor(conn, today: str = None) -> list:
                     "r_multiple": round(r_multiple, 3),
                 })
 
+            _persist_action_row(conn, action, trade, action_time)
             actions.append(action)
         except Exception as e:
             notify_error(
                 "position_monitor",
                 f"Skipping {trade['ticker']} (id={trade['id']}): {type(e).__name__}: {e}",
             )
-            actions.append(MonitorAction(trade["id"], trade["ticker"], "hold", "skipped_error", 0.0))
+            skipped = MonitorAction(trade["id"], trade["ticker"], "hold", "skipped_error", 0.0)
+            _persist_action_row(conn, skipped, trade, action_time)
+            actions.append(skipped)
 
     return actions
