@@ -4,7 +4,7 @@
 
 ## 1. Sit-rep
 
-The bot is on `main` at `d602ad1` (v1.13.0), deployed to the VPS. Today's 13:25 UTC cron produced the **first live fill since the v1.10–v1.13 safety stack landed** — AMD 41 sh @ $350.47 with full bracket legs live on the broker. Two other risk_review-approved candidates (AAPL, SHEL) were correctly rejected by the deterministic exposure cap (28.1% / 32.3% NAV vs 20% cap). The user explicitly chose to **soak** today rather than ship optimisations, so no code merged this session — only a QA validation pass that filed four low-priority follow-up issues (#131–#134) against gaps it found in our load-bearing claims about the new stack. AMD is the only open position; portfolio was flat at session start (META was liquidated yesterday via the new panic CLI). Tomorrow's 13:25 UTC cron will run normally.
+The bot is on `main` at `d602ad1` (v1.13.0), deployed to the VPS. Today's 13:25 UTC cron produced the **first live fill since the v1.10–v1.13 safety stack landed** — AMD 41 sh @ $350.47 with full bracket legs live on the broker. Two other risk_review-approved candidates (AAPL, SHEL) were correctly rejected by the deterministic exposure cap (28.1% / 32.3% NAV vs 20% cap). The user explicitly chose to **soak** today rather than ship optimisations, so no code merged this session — only a QA validation pass and an end-of-day DB check that together filed six low-priority follow-up issues (#131–#134, #136, #137) against gaps in our load-bearing claims and observability tables. AMD is the only open position. **Important correction to yesterday's narrative**: META did NOT exit via the panic CLI on 2026-05-04. The DB shows META hit its $581.62 stop and the soft-stop monitor closed it at 20:00 UTC with `exit_reason=stop_loss`, R=-1.146 (small overshoot, normal slippage). The only `panic` row in `agent_logs` is a `--pause` invocation. So the safety stack already has its first proven live exit. Tomorrow's 13:25 UTC cron will run normally.
 
 ## 2. In-flight branches & PRs
 
@@ -39,6 +39,10 @@ Issues this session opened (all from the QA validation pass — none live-affect
   - **Next move** — Either tighten code (re-anchor brackets after fill — non-trivial; Alpaca bracket legs are submitted with parent so amend would be required) or relax doc wording. Defer until #132 is in flight; same root cause.
 - **`#134` — `MONITOR ERROR` aborts whole hourly cycle on Alpaca network blip — per-iteration try/except only covers inner loop** — `bug, priority: low`. Defense-in-depth only — server-side bracket legs still fire regardless. Three historical aborts already in monitor.log.
   - **Next move** — Lead triage; small-scope Engineer task. Wrap the outer fetch (`get_alpaca_positions`) in its own try/except and skip cleanly with notify_error.
+- **`#136` — signals table never populated — `insert_signal` helper has no caller** — `bug, priority: low`. Filed late in session after end-of-day DB check. `tools/database.py:40` defines the helper, no production caller exists. Schema comment at `storage/schema.sql:20` confirms design intent was wired but never completed. Pure observability gap.
+  - **Next move** — Lead triage; Engineer task. Open question in the issue: write rows for every watchlist ticker (high volume) or only those passing the strategy gate.
+- **`#137` — `daily_stats` / `weekly_stats` tables never populated — no writer in production code** — `bug, priority: low`. Filed late in session after end-of-day DB check. Unlike #136, these tables have no writer function at all in `tools/database.py`. `summary` command reads/computes but never writes back. Pure observability gap; doesn't affect risk gating today.
+  - **Next move** — Lead triage; Engineer task. Open design question in the issue: write at end-of-day monitor pass vs dedicated `daily_close` cron.
 
 Older issues that survived from yesterday's "next steps" (untouched today):
 
