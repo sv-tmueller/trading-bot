@@ -150,6 +150,23 @@ def run_morning_scan(dry_run: bool = False):
         pending_stops = {t["ticker"]: t["stop_loss"] for t in reviewed["approved"]}
         pending_targets = {t["ticker"]: t["take_profit"] for t in reviewed["approved"]}
         pending_atrs = {t["ticker"]: t["atr"] for t in reviewed["approved"] if t.get("atr") is not None}
+        # Indicator snapshot for the signals-table audit row written from
+        # team_leader.place_order (issue #136). Built from the strategy agent's
+        # candidate dict (which carries rsi/volume_ratio/score from the
+        # deterministic compute_ticker_signals tool), keyed by ticker so each
+        # place_order tool call can look up its own indicators. Indicators the
+        # strategy candidate doesn't surface (ema_fast/ema_slow numeric values)
+        # land as NULL in the row and that's fine — the schema permits it.
+        pending_indicators = {
+            c["ticker"]: {
+                "ema_fast": c.get("ema_fast"),
+                "ema_slow": c.get("ema_slow"),
+                "rsi": c.get("rsi"),
+                "volume_ratio": c.get("volume_ratio"),
+                "signal_score": c.get("score"),
+            }
+            for c in candidates.get("candidates", [])
+        }
         leader_agent = TeamLeaderAgent()
         decisions = leader_agent.run(
             json.dumps(reviewed),
@@ -157,6 +174,7 @@ def run_morning_scan(dry_run: bool = False):
             pending_stops=pending_stops,
             pending_targets=pending_targets,
             pending_atrs=pending_atrs,
+            pending_indicators=pending_indicators,
             dry_run=dry_run,
         )
         print(f"Session summary: {decisions.get('summary')}")

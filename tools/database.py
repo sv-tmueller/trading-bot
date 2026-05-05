@@ -37,15 +37,34 @@ def close_trade(conn: sqlite3.Connection, trade_id: int, close_data: dict) -> No
     conn.commit()
 
 
-def insert_signal(conn: sqlite3.Connection, signal: dict) -> None:
-    conn.execute(
+def insert_signal(conn: sqlite3.Connection, signal: dict) -> int:
+    """Persist one row to signals for the per-scan indicator audit trail (issue #136).
+
+    Required keys: ticker, date, triggered_entry. Optional keys (passed as None
+    when the upstream agent didn't surface them): trade_id, ema_fast, ema_slow,
+    rsi, volume_ratio, signal_score. Returns lastrowid for symmetry with the
+    other dict-in INSERT helpers (insert_trade, insert_monitor_action).
+    """
+    payload = {
+        "trade_id": signal.get("trade_id"),
+        "ticker": signal["ticker"],
+        "date": signal["date"],
+        "ema_fast": signal.get("ema_fast"),
+        "ema_slow": signal.get("ema_slow"),
+        "rsi": signal.get("rsi"),
+        "volume_ratio": signal.get("volume_ratio"),
+        "signal_score": signal.get("signal_score"),
+        "triggered_entry": signal["triggered_entry"],
+    }
+    cur = conn.execute(
         """INSERT INTO signals
                (trade_id, ticker, date, ema_fast, ema_slow, rsi, volume_ratio, signal_score, triggered_entry)
            VALUES
                (:trade_id, :ticker, :date, :ema_fast, :ema_slow, :rsi, :volume_ratio, :signal_score, :triggered_entry)""",
-        signal,
+        payload,
     )
     conn.commit()
+    return cur.lastrowid
 
 
 def log_agent_output(conn: sqlite3.Connection, log: dict) -> None:

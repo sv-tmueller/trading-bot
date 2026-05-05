@@ -878,3 +878,234 @@ def test_sell_uses_plain_market_order_no_bracket(db_conn):
     _, kwargs = mock_place.call_args
     assert kwargs.get("stop_price") is None
     assert kwargs.get("take_profit_price") is None
+
+
+# --- Signal-row audit-trail tests (issue #136) ---
+
+
+def test_place_order_fill_writes_signal_row_with_trade_id_and_triggered_entry_1(db_conn):
+    """Issue #136: a successful buy writes one signals row with the new trade_id and triggered_entry=1."""
+    from datetime import date as _date
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_fill", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-sig-1", "fill_price": 150.0}):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            pending_indicators={"AMD": {
+                "ema_fast": 152.3,
+                "ema_slow": 148.1,
+                "rsi": 55.0,
+                "volume_ratio": 1.8,
+                "signal_score": 0.85,
+            }},
+        )
+
+    rows = db_conn.execute("SELECT * FROM signals").fetchall()
+    assert len(rows) == 1
+    sig = rows[0]
+    assert sig["ticker"] == "AMD"
+    assert sig["date"] == _date.today().isoformat()
+    assert sig["triggered_entry"] == 1
+    # trade_id must point at the newly inserted trade.
+    trade_row = db_conn.execute("SELECT id FROM trades WHERE ticker = 'AMD'").fetchone()
+    assert sig["trade_id"] == trade_row["id"]
+    # Indicators from pending_indicators must round-trip to the row.
+    assert sig["ema_fast"] == pytest.approx(152.3)
+    assert sig["ema_slow"] == pytest.approx(148.1)
+    assert sig["rsi"] == pytest.approx(55.0)
+    assert sig["volume_ratio"] == pytest.approx(1.8)
+    assert sig["signal_score"] == pytest.approx(0.85)
+
+
+def test_place_order_exposure_gate_rejection_writes_signal_row_with_triggered_entry_0(db_conn):
+    """Issue #136: an exposure-gate-rejected buy writes one signals row with trade_id=NULL and triggered_entry=0."""
+    from datetime import date as _date
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_rej", "SHEL", 200, "buy"))
+    final_response = make_mock_claude_response('{"decisions": [], "summary": "rejected"}')
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    # 200 * $150 = $30k = 30% of $100k → over the 20% MAX_PORTFOLIO_EXPOSURE cap.
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: SHEL 200",
+            conn=db_conn,
+            pending_indicators={"SHEL": {
+                "ema_fast": None,
+                "ema_slow": None,
+                "rsi": 48.2,
+                "volume_ratio": 1.6,
+                "signal_score": 0.62,
+            }},
+        )
+
+    # Broker not called (exposure gate fired); no trades row inserted.
+    mock_place.assert_not_called()
+    assert db_conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+    # Exactly one signals row, audit-trailing the rejection.
+    rows = db_conn.execute("SELECT * FROM signals").fetchall()
+    assert len(rows) == 1
+    sig = rows[0]
+    assert sig["ticker"] == "SHEL"
+    assert sig["date"] == _date.today().isoformat()
+    assert sig["triggered_entry"] == 0
+    assert sig["trade_id"] is None
+    assert sig["rsi"] == pytest.approx(48.2)
+    assert sig["volume_ratio"] == pytest.approx(1.6)
+    assert sig["signal_score"] == pytest.approx(0.62)
+
+
+def test_place_order_broker_error_writes_signal_row_with_triggered_entry_0(db_conn):
+    """Issue #136: a BrokerSubmitError-rejected buy still writes one signals row (trade_id=NULL, triggered_entry=0)."""
+    from tools.broker import BrokerSubmitError
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_brk", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response('{"decisions": [], "summary": "broker rejected"}')
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order",
+               side_effect=BrokerSubmitError("insufficient buying power")), \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            pending_indicators={"AMD": {
+                "rsi": 50.0,
+                "volume_ratio": 1.7,
+                "signal_score": 0.7,
+            }},
+        )
+
+    # No trade row.
+    assert db_conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+    # One signals row marking the broker rejection.
+    rows = db_conn.execute("SELECT * FROM signals").fetchall()
+    assert len(rows) == 1
+    sig = rows[0]
+    assert sig["ticker"] == "AMD"
+    assert sig["triggered_entry"] == 0
+    assert sig["trade_id"] is None
+    assert sig["rsi"] == pytest.approx(50.0)
+
+
+def test_place_order_signal_insert_failure_does_not_crash_run(db_conn):
+    """Issue #136: if insert_signal raises, the order still completes and notify_error fires."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_fail", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    # insert_signal raises; the order INSERT still happens, agent still finishes.
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-sig-fail", "fill_price": 150.0}) as mock_place, \
+         patch("tools.database.insert_signal", side_effect=RuntimeError("simulated DB write failure")) as mock_insert_signal, \
+         patch("tools.notifications.notify_error") as mock_notify_error:
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            pending_indicators={"AMD": {"rsi": 55.0}},
+        )
+
+    # Order still placed and trade still inserted — observability cost only.
+    assert mock_place.call_count == 1
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AMD"
+    # insert_signal was called (and raised); notify_error fired with "team_leader" + ticker context.
+    mock_insert_signal.assert_called_once()
+    mock_notify_error.assert_called()
+    err_args, _ = mock_notify_error.call_args
+    assert err_args[0] == "team_leader"
+    assert "AMD" in err_args[1]
+    assert "insert_signal failed" in err_args[1]
+    # Agent run completed (final response parsed).
+    assert result.get("summary") == "1 placed"
+
+
+def test_place_order_dry_run_does_not_write_signal_row(db_conn):
+    """Issue #136: dry-run skips DB writes (existing convention) — no signals row written."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_dry", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "would have"}], "summary": "dry run"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order") as mock_place:
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            pending_indicators={"AMD": {"rsi": 55.0}},
+            dry_run=True,
+        )
+
+    # Existing dry-run invariant.
+    mock_place.assert_not_called()
+    # Signal row must NOT be written in dry-run — matches the comment in place_order
+    # ("Dry-run skips ONLY the broker SUBMIT and DB INSERT").
+    rows = db_conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+    assert rows == 0
+
+
+def test_place_order_sell_does_not_write_signal_row(db_conn):
+    """Issue #136: sells aren't entries — no signals row written for them."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_sig_sell", "AMD", 100, "sell"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 100, "reasoning": "trim"}], "summary": "sold"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.place_market_order", return_value={"order_id": "ord-sell-sig", "fill_price": 150.0}):
+        agent = TeamLeaderAgent()
+        agent.run("Sell: AMD 100", conn=db_conn,
+                  pending_indicators={"AMD": {"rsi": 55.0}})
+
+    # Sells reduce exposure — they're not signal events.
+    rows = db_conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+    assert rows == 0
