@@ -3,8 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timezone
 from config import settings
-from tools.database import get_open_trades, close_trade, insert_monitor_action
-from tools.broker import get_current_price, close_position as broker_close, get_alpaca_positions
+from tools.database import (
+    get_open_trades,
+    close_trade,
+    insert_monitor_action,
+    compute_daily_stat,
+    upsert_daily_stat,
+)
+from tools.broker import (
+    get_current_price,
+    close_position as broker_close,
+    get_alpaca_positions,
+    get_portfolio_value,
+)
 from tools.notifications import notify_error
 
 
@@ -189,6 +200,44 @@ def _apply_trailing_stop(conn, trade: dict, current_price: float) -> dict:
     return trade
 
 
+def _write_daily_stat(conn, today: str) -> None:
+    """Upsert today's daily_stats row at the end of every monitor pass (issue #137).
+
+    Called on every pass (not just the last cron of the day) because:
+      1. ON CONFLICT(date) DO UPDATE makes repeated writes idempotent — each
+         pass overwrites with the latest snapshot, so duplicates are harmless.
+      2. End-of-pass is more robust than "only the last pass" — cron timing
+         can shift (DST, queue delays) and we'd rather have a stat row that
+         updates throughout the day than a missed write.
+
+    Failure isolation: a daily-stats write failure must NEVER abort the
+    monitor cron. Wrapped in its own try/except — fires notify_error and
+    returns. Broker NAV failure is handled in two layers: get_portfolio_value
+    fail -> portfolio_value=None (row still written); upsert fail ->
+    notify_error and continue.
+    """
+    try:
+        try:
+            portfolio_value = get_portfolio_value()
+        except Exception as e:
+            # Broker outage: still write the row, just with NULL portfolio_value
+            # (the trade-aggregation columns are local DB reads and don't need
+            # the broker). Fail-soft per #137 punch list.
+            notify_error(
+                "position_monitor",
+                f"get_portfolio_value failed during daily_stats upsert: "
+                f"{type(e).__name__}: {e}",
+            )
+            portfolio_value = None
+        stat = compute_daily_stat(conn, today, portfolio_value=portfolio_value)
+        upsert_daily_stat(conn, stat)
+    except Exception as e:
+        notify_error(
+            "position_monitor",
+            f"daily_stats upsert failed for {today}: {type(e).__name__}: {e}",
+        )
+
+
 def run_monitor(conn, today: str = None) -> list:
     """Hourly check on open positions.
 
@@ -251,5 +300,11 @@ def run_monitor(conn, today: str = None) -> list:
             skipped = MonitorAction(trade["id"], trade["ticker"], "hold", "skipped_error", 0.0)
             _persist_action_row(conn, skipped, trade, action_time)
             actions.append(skipped)
+
+    # End-of-pass: upsert today's daily_stats row (issue #137). Idempotent
+    # over the day — each pass overwrites the same row with the latest
+    # snapshot. Wrapped in its own helper so a write failure here does NOT
+    # abort the monitor cron (mirrors the per-trade isolation pattern).
+    _write_daily_stat(conn, today)
 
     return actions

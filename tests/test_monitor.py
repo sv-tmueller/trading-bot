@@ -80,6 +80,7 @@ def test_run_monitor_closes_stop_loss_position(db_conn):
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=145.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-1"):
         actions = run_monitor(db_conn, today="2026-04-22")
 
@@ -105,6 +106,7 @@ def test_run_monitor_holds_position_in_range(db_conn):
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-1"):
         actions = run_monitor(db_conn, today="2026-04-22")
 
@@ -133,6 +135,7 @@ def test_run_monitor_reconciles_broker_closed_position(db_conn):
     # Alpaca has nothing open — bracket child closed it server-side.
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
          patch("monitor.position_monitor.get_current_price", return_value=146.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close") as mock_broker_close:
         actions = run_monitor(db_conn, today="2026-04-22")
 
@@ -163,6 +166,7 @@ def test_run_monitor_reconciles_phantom_close_near_stop(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
          patch("monitor.position_monitor.get_current_price", return_value=145.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -185,6 +189,7 @@ def test_run_monitor_reconciles_phantom_close_near_target(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
          patch("monitor.position_monitor.get_current_price", return_value=158.5), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -207,6 +212,7 @@ def test_run_monitor_reconciles_phantom_close_mid_range(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
          patch("monitor.position_monitor.get_current_price", return_value=152.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -242,6 +248,7 @@ def test_trailing_off_does_not_mutate_stop_or_trailing_high(db_conn, monkeypatch
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -270,6 +277,7 @@ def test_trailing_on_ratchets_stop_up_on_new_high(db_conn, monkeypatch):
     # Price rallies to 158 — new trailing high. Expect stop = 158 - 4.5 = 153.5.
     with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -299,12 +307,14 @@ def test_trailing_on_does_not_ratchet_down_on_pullback(db_conn, monkeypatch):
     # First pass: price 158 — stop ratchets to 153.5, trailing_high=158.
     with patch("monitor.position_monitor.get_current_price", return_value=158.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
     # Second pass: price pulls back to 155 — must not lower stop or HWM.
     with patch("monitor.position_monitor.get_current_price", return_value=155.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-23")
 
@@ -334,12 +344,14 @@ def test_trailing_on_stop_hit_closes_position(db_conn, monkeypatch):
     # Pass 1: rally to 160 — trailing stop becomes 155.5.
     with patch("monitor.position_monitor.get_current_price", return_value=160.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
     # Pass 2: drop to 155 — below new trailed stop 155.5 → close.
     with patch("monitor.position_monitor.get_current_price", return_value=155.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-trail") as mock_close:
         actions = run_monitor(db_conn, today="2026-04-23")
 
@@ -363,6 +375,7 @@ def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", side_effect=ConnectionError("alpaca down")), \
          patch("monitor.position_monitor.get_current_price", return_value=145.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-soft") as mock_broker_close:
         actions = run_monitor(db_conn, today="2026-04-22")
 
@@ -415,6 +428,7 @@ def test_run_monitor_isolates_per_trade_failure(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
          patch("monitor.position_monitor.get_current_price", side_effect=price_side_effect), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"), \
          patch("monitor.position_monitor.notify_error") as mock_notify_error:
         actions = run_monitor(db_conn, today="2026-04-22")
@@ -468,6 +482,7 @@ def test_run_monitor_persists_stop_loss_row(db_conn):
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=145.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-1"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -501,6 +516,7 @@ def test_run_monitor_persists_take_profit_row(db_conn):
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=160.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-1"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -531,6 +547,7 @@ def test_run_monitor_persists_max_hold_row(db_conn, monkeypatch):
     # Price in range (no stop, no target) → only max_hold can fire.
     with patch("monitor.position_monitor.get_current_price", return_value=152.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close", return_value="order-1"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -556,6 +573,7 @@ def test_run_monitor_persists_hold_row(db_conn):
     alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
     with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
          patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -583,6 +601,7 @@ def test_run_monitor_persists_reconciled_row(db_conn):
     # Alpaca has nothing open — bracket child closed it server-side.
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
          patch("monitor.position_monitor.get_current_price", return_value=146.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"):
         run_monitor(db_conn, today="2026-04-22")
 
@@ -627,6 +646,7 @@ def test_run_monitor_persists_skipped_error_row_and_continues(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
          patch("monitor.position_monitor.get_current_price", side_effect=price_side_effect), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"), \
          patch("monitor.position_monitor.notify_error") as mock_notify_error:
         actions = run_monitor(db_conn, today="2026-04-22")
@@ -690,6 +710,7 @@ def test_run_monitor_db_write_failure_does_not_abort_loop(db_conn):
 
     with patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
          patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
          patch("monitor.position_monitor.broker_close"), \
          patch("monitor.position_monitor.insert_monitor_action", side_effect=flaky_insert) as mock_insert, \
          patch("monitor.position_monitor.notify_error") as mock_notify_error:
@@ -710,3 +731,211 @@ def test_run_monitor_db_write_failure_does_not_abort_loop(db_conn):
     msg = mock_notify_error.call_args.args[1]
     assert "insert_monitor_action failed" in msg
     assert "AMD" in msg
+
+
+# --- daily_stats writer tests (issue #137) ---
+
+
+def _fetch_daily_stat(conn, today: str) -> dict:
+    row = conn.execute(
+        "SELECT * FROM daily_stats WHERE date = :d",
+        {"d": today},
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def test_run_monitor_writes_daily_stats_row_per_pass(db_conn):
+    """Every monitor pass writes (or upserts) one daily_stats row for today."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-22",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = _fetch_daily_stat(db_conn, "2026-04-22")
+    assert row is not None
+    assert row["date"] == "2026-04-22"
+    assert row["trades_opened"] == 1
+    assert row["trades_closed"] == 0
+    assert row["portfolio_value"] == 100_000.0
+
+
+def test_run_monitor_daily_stats_upsert_is_idempotent(db_conn):
+    """Two monitor passes on the same date must produce exactly one row, with the latest snapshot."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-22",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+
+    # Pass 1: NAV 100k.
+    with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    # Pass 2 same day: NAV 101k — must overwrite, not insert a duplicate.
+    with patch("monitor.position_monitor.get_current_price", return_value=154.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=101_000.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    rows = db_conn.execute(
+        "SELECT * FROM daily_stats WHERE date = :d", {"d": "2026-04-22"}
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["portfolio_value"] == 101_000.0
+
+
+def test_run_monitor_daily_stats_writes_zero_row_when_no_activity(db_conn):
+    """No open trades, no closes today — the row still gets written with zeros."""
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=0.0), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = _fetch_daily_stat(db_conn, "2026-04-22")
+    assert row is not None
+    assert row["trades_opened"] == 0
+    assert row["trades_closed"] == 0
+    assert row["win_count"] == 0
+    assert row["loss_count"] == 0
+    assert row["portfolio_value"] == 100_000.0
+    assert row["daily_pnl"] == 0.0
+
+
+def test_run_monitor_daily_stats_broker_failure_writes_null_portfolio_value(db_conn):
+    """If get_portfolio_value raises, the row still lands with NULL portfolio_value."""
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[]), \
+         patch("monitor.position_monitor.get_current_price", return_value=0.0), \
+         patch("monitor.position_monitor.get_portfolio_value", side_effect=ConnectionError("alpaca down")), \
+         patch("monitor.position_monitor.broker_close"), \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = _fetch_daily_stat(db_conn, "2026-04-22")
+    assert row is not None
+    assert row["portfolio_value"] is None
+    # The trade-aggregation columns are still present (DB-only inputs).
+    assert row["trades_opened"] == 0
+    assert row["trades_closed"] == 0
+    # notify_error fires once for the broker NAV failure.
+    assert mock_notify_error.call_count == 1
+    assert "get_portfolio_value" in mock_notify_error.call_args.args[1]
+
+
+def test_run_monitor_daily_stats_db_failure_does_not_abort_loop(db_conn):
+    """A failure inside upsert_daily_stat must NOT crash run_monitor — fires notify_error instead."""
+    from tools.database import insert_trade, get_open_trades
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-21",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    alpaca_open = [{"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0}]
+    with patch("monitor.position_monitor.get_current_price", return_value=153.0), \
+         patch("monitor.position_monitor.get_alpaca_positions", return_value=alpaca_open), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
+         patch("monitor.position_monitor.upsert_daily_stat",
+               side_effect=sqlite3.OperationalError("disk I/O error")), \
+         patch("monitor.position_monitor.broker_close"), \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
+        actions = run_monitor(db_conn, today="2026-04-22")
+
+    # The per-trade loop completed — AMD was evaluated.
+    assert len(actions) == 1
+    # DB row for the position is still open (no exit fired).
+    assert len(get_open_trades(db_conn)) == 1
+    # The daily_stats failure surfaced via notify_error.
+    msgs = [c.args[1] for c in mock_notify_error.call_args_list]
+    assert any("daily_stats upsert failed" in m for m in msgs)
+
+
+def test_run_monitor_daily_stats_counts_opens_and_closes_for_today(db_conn):
+    """trades_opened reflects today's entries; trades_closed reflects today's exits with win/loss math."""
+    # Two trades opened today.
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("AMD", "2026-04-22", None, 150.0, None, 100, 145.5, 159.0, None, None, None, None, None),
+    )
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("NVDA", "2026-04-22", None, 800.0, None, 5, 780.0, 840.0, None, None, None, None, None),
+    )
+    # One trade closed today as a win, one as a loss.
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("META", "2026-04-15", "2026-04-22", 500.0, 520.0, 10, 490.0, 530.0, "take_profit", 200.0, 0.04, 7, 2.0),
+    )
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TSLA", "2026-04-15", "2026-04-22", 200.0, 195.0, 20, 195.0, 210.0, "stop_loss", -100.0, -0.025, 7, -1.0),
+    )
+    db_conn.commit()
+
+    # AMD and NVDA stay in range so the loop holds (no extra closes that
+    # would skew the daily_pnl) — broker shows both open, monitor sees both
+    # in the in-DB open set, and the price is mid-bracket for each.
+    def price_in_range(ticker: str) -> float:
+        if ticker == "AMD":
+            return 151.0
+        if ticker == "NVDA":
+            return 810.0
+        raise AssertionError(f"unexpected ticker {ticker}")
+
+    with patch("monitor.position_monitor.get_alpaca_positions", return_value=[
+            {"ticker": "AMD", "qty": 100, "avg_entry_price": 150.0},
+            {"ticker": "NVDA", "qty": 5, "avg_entry_price": 800.0},
+         ]), \
+         patch("monitor.position_monitor.get_current_price", side_effect=price_in_range), \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=125_000.0), \
+         patch("monitor.position_monitor.broker_close"):
+        run_monitor(db_conn, today="2026-04-22")
+
+    row = _fetch_daily_stat(db_conn, "2026-04-22")
+    assert row is not None
+    assert row["trades_opened"] == 2
+    assert row["trades_closed"] == 2
+    assert row["win_count"] == 1
+    assert row["loss_count"] == 1
+    assert row["win_rate"] == pytest.approx(0.5)
+    assert row["avg_r_multiple"] == pytest.approx(0.5)
+    assert row["daily_pnl"] == pytest.approx(100.0)
+    assert row["portfolio_value"] == 125_000.0
+    # drawdown is left None for now (follow-up work).
+    assert row["drawdown"] is None
