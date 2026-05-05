@@ -13,6 +13,8 @@ from tools.database import (
     get_daily_token_costs,
     get_closed_trade_stats,
     insert_monitor_action,
+    compute_daily_stat,
+    upsert_daily_stat,
 )
 
 
@@ -315,3 +317,152 @@ def test_insert_monitor_action_accepts_every_enum_value(db_conn):
     assert {r["action_type"] for r in rows} == {
         "stop_loss", "take_profit", "max_hold", "reconciled", "hold", "skipped_error"
     }
+
+
+# --- daily_stats helpers (issue #137) ---
+
+
+def test_upsert_daily_stat_inserts_fresh_row(db_conn):
+    """A first-time upsert lands every column."""
+    new_id = upsert_daily_stat(db_conn, {
+        "date": "2026-04-22",
+        "trades_opened": 2,
+        "trades_closed": 1,
+        "win_count": 1,
+        "loss_count": 0,
+        "win_rate": 1.0,
+        "avg_r_multiple": 2.0,
+        "portfolio_value": 100_000.0,
+        "daily_pnl": 250.0,
+        "drawdown": None,
+    })
+    assert isinstance(new_id, int)
+    row = db_conn.execute(
+        "SELECT * FROM daily_stats WHERE date = ?", ("2026-04-22",)
+    ).fetchone()
+    assert row["trades_opened"] == 2
+    assert row["trades_closed"] == 1
+    assert row["win_count"] == 1
+    assert row["loss_count"] == 0
+    assert row["win_rate"] == pytest.approx(1.0)
+    assert row["avg_r_multiple"] == pytest.approx(2.0)
+    assert row["portfolio_value"] == 100_000.0
+    assert row["daily_pnl"] == 250.0
+    assert row["drawdown"] is None
+
+
+def test_upsert_daily_stat_updates_existing_row(db_conn):
+    """Second upsert on the same date overwrites — exactly one row remains."""
+    upsert_daily_stat(db_conn, {
+        "date": "2026-04-22",
+        "trades_opened": 1,
+        "trades_closed": 0,
+        "portfolio_value": 99_000.0,
+        "daily_pnl": 0.0,
+    })
+    upsert_daily_stat(db_conn, {
+        "date": "2026-04-22",
+        "trades_opened": 3,
+        "trades_closed": 1,
+        "win_count": 1,
+        "loss_count": 0,
+        "win_rate": 1.0,
+        "avg_r_multiple": 1.5,
+        "portfolio_value": 101_000.0,
+        "daily_pnl": 200.0,
+    })
+    rows = db_conn.execute(
+        "SELECT * FROM daily_stats WHERE date = ?", ("2026-04-22",)
+    ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["trades_opened"] == 3
+    assert row["trades_closed"] == 1
+    assert row["portfolio_value"] == 101_000.0
+    assert row["daily_pnl"] == 200.0
+
+
+def test_upsert_daily_stat_handles_null_portfolio_value(db_conn):
+    """Broker outage path: portfolio_value=None still writes a valid row."""
+    upsert_daily_stat(db_conn, {
+        "date": "2026-04-22",
+        "trades_opened": 0,
+        "trades_closed": 0,
+        "portfolio_value": None,
+        "daily_pnl": 0.0,
+    })
+    row = db_conn.execute(
+        "SELECT * FROM daily_stats WHERE date = ?", ("2026-04-22",)
+    ).fetchone()
+    assert row is not None
+    assert row["portfolio_value"] is None
+
+
+def test_compute_daily_stat_no_activity(db_conn):
+    """No open or closed trades — counts are zero, win_rate/avg_r are None."""
+    stat = compute_daily_stat(db_conn, "2026-04-22", portfolio_value=100_000.0)
+    assert stat["date"] == "2026-04-22"
+    assert stat["trades_opened"] == 0
+    assert stat["trades_closed"] == 0
+    assert stat["win_count"] == 0
+    assert stat["loss_count"] == 0
+    assert stat["win_rate"] is None
+    assert stat["avg_r_multiple"] is None
+    assert stat["portfolio_value"] == 100_000.0
+    assert stat["daily_pnl"] == 0.0
+    assert stat["drawdown"] is None
+
+
+def test_compute_daily_stat_counts_opens_and_closes_for_today(db_conn):
+    """trades_opened, trades_closed, win/loss aggregation all scoped to today."""
+    # Trade opened today, still open.
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("AMD", "2026-04-22", None, 150.0, None, 100, 145.0, 160.0),
+    )
+    # Closed today (win).
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("META", "2026-04-15", "2026-04-22", 500.0, 520.0, 10, 490.0, 530.0,
+         "take_profit", 200.0, 0.04, 7, 2.0),
+    )
+    # Closed today (loss).
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("TSLA", "2026-04-15", "2026-04-22", 200.0, 195.0, 20, 195.0, 210.0,
+         "stop_loss", -100.0, -0.025, 7, -1.0),
+    )
+    # Closed yesterday — must NOT be counted in today's row.
+    db_conn.execute(
+        """INSERT INTO trades (ticker, entry_date, exit_date, entry_price, exit_price,
+               shares, stop_loss, take_profit, exit_reason, pnl_dollars, pnl_pct, hold_days, r_multiple)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("NVDA", "2026-04-14", "2026-04-21", 800.0, 820.0, 5, 780.0, 840.0,
+         "take_profit", 100.0, 0.025, 7, 1.0),
+    )
+    db_conn.commit()
+
+    stat = compute_daily_stat(db_conn, "2026-04-22", portfolio_value=125_000.0)
+    assert stat["trades_opened"] == 1   # only AMD (NVDA opened 2026-04-14)
+    assert stat["trades_closed"] == 2   # META + TSLA (NVDA closed 2026-04-21)
+    assert stat["win_count"] == 1
+    assert stat["loss_count"] == 1
+    assert stat["win_rate"] == pytest.approx(0.5)
+    assert stat["avg_r_multiple"] == pytest.approx(0.5)
+    assert stat["daily_pnl"] == pytest.approx(100.0)
+    assert stat["portfolio_value"] == 125_000.0
+
+
+def test_compute_daily_stat_passes_through_null_portfolio_value(db_conn):
+    """When the caller passes portfolio_value=None (broker outage), it round-trips."""
+    stat = compute_daily_stat(db_conn, "2026-04-22", portfolio_value=None)
+    assert stat["portfolio_value"] is None
+    # Other columns still computed from the local DB.
+    assert stat["trades_opened"] == 0
+    assert stat["trades_closed"] == 0

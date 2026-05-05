@@ -189,3 +189,106 @@ def get_closed_trade_stats(conn: sqlite3.Connection, days: int = 30) -> dict:
         "total_pnl_dollars": total_pnl,
         "avg_r_multiple": avg_r,
     }
+
+
+def compute_daily_stat(
+    conn: sqlite3.Connection,
+    today: str,
+    portfolio_value: float = None,
+) -> dict:
+    """Aggregate today's trade activity into a daily_stats-shaped dict.
+
+    Counts trades_opened by entry_date == today and trades_closed by
+    exit_date == today. Win rate and avg_r_multiple are computed across
+    today's closed trades only (mirrors the aggregation logic in
+    get_closed_trade_stats but scoped to a single day rather than a trailing
+    window — kept inline rather than refactored so get_closed_trade_stats's
+    signature stays stable for the summary command).
+
+    portfolio_value is passed in (broker NAV) rather than read from the DB so
+    the caller controls the failure mode (issue #137: broker outage writes
+    NULL portfolio_value but still writes the row). drawdown is left None for
+    now — wiring a real equity-curve drawdown is follow-up work; the
+    DAILY_DRAWDOWN_LIMIT circuit reads its baseline elsewhere so this gap
+    does not affect risk gating today.
+    """
+    opened_row = conn.execute(
+        "SELECT COUNT(*) AS n FROM trades WHERE entry_date = :d",
+        {"d": today},
+    ).fetchone()
+    trades_opened = opened_row["n"] if opened_row else 0
+
+    closed_rows = conn.execute(
+        """SELECT pnl_dollars, r_multiple
+           FROM trades
+           WHERE exit_date = :d""",
+        {"d": today},
+    ).fetchall()
+    trades_closed = len(closed_rows)
+    win_count = sum(
+        1 for r in closed_rows if r["pnl_dollars"] is not None and r["pnl_dollars"] > 0
+    )
+    loss_count = trades_closed - win_count
+    win_rate = (win_count / trades_closed) if trades_closed else None
+    daily_pnl = sum(r["pnl_dollars"] or 0.0 for r in closed_rows) if closed_rows else 0.0
+    r_multiples = [r["r_multiple"] for r in closed_rows if r["r_multiple"] is not None]
+    avg_r = (sum(r_multiples) / len(r_multiples)) if r_multiples else None
+
+    return {
+        "date": today,
+        "trades_opened": trades_opened,
+        "trades_closed": trades_closed,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "win_rate": win_rate,
+        "avg_r_multiple": avg_r,
+        "portfolio_value": portfolio_value,
+        "daily_pnl": round(daily_pnl, 2) if trades_closed else 0.0,
+        "drawdown": None,
+    }
+
+
+def upsert_daily_stat(conn: sqlite3.Connection, stat: dict) -> int:
+    """Insert or update one row in daily_stats keyed on `date` (issue #137).
+
+    Required key: date. All other columns default to None when omitted, so a
+    minimal stat dict still produces a valid row. Uses ON CONFLICT(date) so
+    the writer is idempotent across multiple monitor passes within a single
+    trading day — every hourly cron pass overwrites the same row with the
+    latest snapshot. Returns lastrowid (rowid of the inserted/updated row)
+    for symmetry with the other dict-in INSERT helpers (insert_trade,
+    insert_signal, insert_monitor_action).
+    """
+    payload = {
+        "date": stat["date"],
+        "trades_opened": stat.get("trades_opened", 0),
+        "trades_closed": stat.get("trades_closed", 0),
+        "win_count": stat.get("win_count", 0),
+        "loss_count": stat.get("loss_count", 0),
+        "win_rate": stat.get("win_rate"),
+        "avg_r_multiple": stat.get("avg_r_multiple"),
+        "portfolio_value": stat.get("portfolio_value"),
+        "daily_pnl": stat.get("daily_pnl"),
+        "drawdown": stat.get("drawdown"),
+    }
+    cur = conn.execute(
+        """INSERT INTO daily_stats
+               (date, trades_opened, trades_closed, win_count, loss_count,
+                win_rate, avg_r_multiple, portfolio_value, daily_pnl, drawdown)
+           VALUES
+               (:date, :trades_opened, :trades_closed, :win_count, :loss_count,
+                :win_rate, :avg_r_multiple, :portfolio_value, :daily_pnl, :drawdown)
+           ON CONFLICT(date) DO UPDATE SET
+               trades_opened   = excluded.trades_opened,
+               trades_closed   = excluded.trades_closed,
+               win_count       = excluded.win_count,
+               loss_count      = excluded.loss_count,
+               win_rate        = excluded.win_rate,
+               avg_r_multiple  = excluded.avg_r_multiple,
+               portfolio_value = excluded.portfolio_value,
+               daily_pnl       = excluded.daily_pnl,
+               drawdown        = excluded.drawdown""",
+        payload,
+    )
+    conn.commit()
+    return cur.lastrowid
