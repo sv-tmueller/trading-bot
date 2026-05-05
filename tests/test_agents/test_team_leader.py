@@ -880,6 +880,140 @@ def test_sell_uses_plain_market_order_no_bracket(db_conn):
     assert kwargs.get("take_profit_price") is None
 
 
+# --- Issue #132: trades.entry_price is the broker fill, not the pre-order quote ---
+
+
+def test_entry_price_uses_broker_fill_price_not_pre_order_quote(db_conn):
+    """Issue #132: trades.entry_price must reflect the broker's filled_avg_price, not the
+    pre-order mid-quote that was used for the exposure gate.
+
+    Scenario mirrors the AMD example in the issue: pre-order quote 349.76, broker fills
+    at 350.47. The DB row must store 350.47 so PnL/R-multiple math is anchored to truth.
+    """
+    pre_order_quote = 349.76
+    actual_fill = 350.47
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_132a", "AMD", 41, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 41, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=pre_order_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order",
+               return_value={"order_id": "ord-amd", "fill_price": actual_fill}):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 41",
+            conn=db_conn,
+            pending_atrs={"AMD": 5.0},
+        )
+
+    row = db_conn.execute("SELECT entry_price FROM trades WHERE ticker='AMD'").fetchone()
+    assert row is not None
+    assert row["entry_price"] == pytest.approx(actual_fill)
+    assert row["entry_price"] != pytest.approx(pre_order_quote)
+
+
+def test_entry_price_falls_back_to_pre_order_quote_when_fill_price_none(db_conn):
+    """Issue #132: when place_market_order can't determine the fill (poll timeout), it
+    returns fill_price=None. The trade row must still exist, with the pre-order quote as
+    a best-effort entry_price — never lose the row.
+    """
+    pre_order_quote = 200.00
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_132b", "AMD", 50, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=pre_order_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order",
+               return_value={"order_id": "ord-fallback", "fill_price": None}):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 50",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+        )
+
+    row = db_conn.execute("SELECT entry_price FROM trades WHERE ticker='AMD'").fetchone()
+    assert row is not None
+    assert row["entry_price"] == pytest.approx(pre_order_quote)
+
+
+def test_entry_price_uses_fill_even_when_significantly_above_quote(db_conn):
+    """The fill price wins even on adverse drift — we want truth in the DB. Caller's
+    bracket math (pending_atrs path) is anchored to the pre-order quote separately and
+    is unaffected by this PR (#133 will tackle bracket-anchor parity).
+    """
+    pre_order_quote = 100.00
+    actual_fill = 102.00      # 2% slippage — paper-account gap-up scenario
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_132c", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=pre_order_quote), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order",
+               return_value={"order_id": "ord-slip", "fill_price": actual_fill}):
+        agent = TeamLeaderAgent()
+        agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 1.0},
+        )
+
+    row = db_conn.execute("SELECT entry_price FROM trades WHERE ticker='AMD'").fetchone()
+    assert row["entry_price"] == pytest.approx(actual_fill)
+
+
+def test_exposure_gate_still_uses_pre_order_quote_not_fill(db_conn):
+    """Architectural invariant: the deterministic exposure gate in team_leader.place_order
+    must run BEFORE order submission, against the pre-order quote — NOT against the
+    (yet-unknown) fill price. This test pins that down so a future "fix" doesn't
+    accidentally weaken the gate by waiting for the fill before checking the cap.
+    """
+    # 200 * $150 = $30k = 30% of $100k → over the 20% cap.
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_132d", "SHEL", 200, "buy"))
+    final_response = make_mock_claude_response('{"decisions": [], "summary": "rejected"}')
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_market_order") as mock_place, \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        agent.run("Approved: SHEL 200", conn=db_conn)
+
+    # Gate rejected → broker never called → no chance for a fill price to enter the picture.
+    mock_place.assert_not_called()
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert rows == []
+
+
 # --- Signal-row audit-trail tests (issue #136) ---
 
 

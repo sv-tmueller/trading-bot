@@ -56,13 +56,24 @@ def test_place_market_order_fill_price_zero_when_zero_filled():
 
 
 def test_place_market_order_fill_price_none_when_not_filled():
+    """Issue #132: submit returns no avg_price → poll → poll never sees a terminal status
+    within the timeout → returns fill_price=None so the caller can fall back to the pre-order quote.
+    """
     mock_client = MagicMock()
     mock_order = MagicMock()
     mock_order.id = "order-456"
     mock_order.filled_avg_price = None
     mock_client.submit_order.return_value = mock_order
 
-    with patch("tools.broker.get_trading_client", return_value=mock_client):
+    # Polling sees a non-terminal "new" status forever; the short timeout cuts the loop.
+    polled = MagicMock()
+    polled.status = "new"
+    polled.filled_avg_price = None
+    mock_client.get_order_by_id.return_value = polled
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 0.1), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.05):
         result = place_market_order("AMD", 100, "buy")
 
     assert result["order_id"] == "order-456"
@@ -275,3 +286,197 @@ def test_liquidate_all_positions_propagates_broker_error():
     with patch("tools.broker.get_trading_client", return_value=mock_client):
         with pytest.raises(RuntimeError, match="alpaca 500"):
             liquidate_all_positions()
+
+
+# --- Fill-polling tests (issue #132) ---
+
+
+def test_place_market_order_polls_for_fill_when_submit_avg_price_none():
+    """Submit returns avg_price=None → poll → first poll reports filled with avg_price.
+
+    Mirrors the real Alpaca flow: submit_order accepts immediately, the actual fill
+    confirmation arrives on a subsequent get_order_by_id call. The returned fill_price
+    must be the broker's filled_avg_price, not None.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-fill-1"
+    submitted.filled_avg_price = None  # not yet filled when submit returns
+    mock_client.submit_order.return_value = submitted
+
+    # First poll already reports filled with the actual broker fill.
+    polled = MagicMock()
+    polled.status = "filled"
+    polled.filled_avg_price = "350.47"   # AMD example from #132
+    mock_client.get_order_by_id.return_value = polled
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        result = place_market_order("AMD", 41, "buy")
+
+    mock_client.get_order_by_id.assert_called()
+    assert result["order_id"] == "order-fill-1"
+    assert result["fill_price"] == pytest.approx(350.47)
+
+
+def test_place_market_order_polls_through_pending_then_filled():
+    """Polls a few "new"/"accepted" ticks before reporting "filled" — common on busy paper."""
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-fill-2"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    pending = MagicMock()
+    pending.status = "accepted"
+    pending.filled_avg_price = None
+
+    filled = MagicMock()
+    filled.status = "filled"
+    filled.filled_avg_price = "151.23"
+
+    mock_client.get_order_by_id.side_effect = [pending, pending, filled]
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert mock_client.get_order_by_id.call_count == 3
+    assert result["fill_price"] == pytest.approx(151.23)
+
+
+def test_place_market_order_partial_fill_returns_partial_avg_price():
+    """A partial fill IS a fill — return the broker's filled_avg_price for the shares we got.
+
+    Documented behaviour (#132): partial_filled is treated as terminal-fill, not as
+    rejection, because we want the trade row to exist with the actual partial-fill price
+    rather than be lost. The position monitor will manage the partial position from there.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-partial"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    partial = MagicMock()
+    partial.status = "partially_filled"
+    partial.filled_avg_price = "200.10"
+    mock_client.get_order_by_id.return_value = partial
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert result["fill_price"] == pytest.approx(200.10)
+
+
+def test_place_market_order_terminal_rejection_raises_broker_submit_error():
+    """If polling reveals a terminal non-fill status (canceled/expired/rejected/...),
+    raise BrokerSubmitError so the existing rejection path in team_leader fires.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-rej"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    rejected = MagicMock()
+    rejected.status = "rejected"
+    rejected.filled_avg_price = None
+    mock_client.get_order_by_id.return_value = rejected
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        with pytest.raises(BrokerSubmitError, match="rejected"):
+            place_market_order("AMD", 100, "buy")
+
+
+def test_place_market_order_canceled_status_raises_broker_submit_error():
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-can"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    canceled = MagicMock()
+    canceled.status = "canceled"
+    canceled.filled_avg_price = None
+    mock_client.get_order_by_id.return_value = canceled
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        with pytest.raises(BrokerSubmitError, match="canceled"):
+            place_market_order("AMD", 100, "buy")
+
+
+def test_place_market_order_handles_alpaca_orderstatus_enum_value():
+    """The Alpaca SDK returns an OrderStatus enum, not a raw string — _order_status_str must
+    coerce both. Use the actual enum to lock in the behaviour against SDK changes.
+    """
+    from alpaca.trading.enums import OrderStatus
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-enum"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    polled = MagicMock()
+    polled.status = OrderStatus.FILLED   # enum, like the real SDK
+    polled.filled_avg_price = "175.55"
+    mock_client.get_order_by_id.return_value = polled
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert result["fill_price"] == pytest.approx(175.55)
+
+
+def test_place_market_order_poll_transient_error_then_recovers():
+    """A transient `get_order_by_id` exception mid-loop must NOT crash the order — the
+    loop swallows it, sleeps, and tries again. (We already submitted; we want to know the fill.)
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-flaky"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+
+    filled = MagicMock()
+    filled.status = "filled"
+    filled.filled_avg_price = "99.99"
+    mock_client.get_order_by_id.side_effect = [
+        ConnectionError("temporary"),
+        filled,
+    ]
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 1.0), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.01):
+        result = place_market_order("AMD", 100, "buy")
+
+    assert mock_client.get_order_by_id.call_count == 2
+    assert result["fill_price"] == pytest.approx(99.99)
+
+
+def test_place_market_order_skip_poll_when_submit_already_has_avg_price():
+    """If Alpaca populates filled_avg_price on the submit response (rare on paper, common
+    enough on live), don't bother polling — just use it.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "order-fast"
+    submitted.filled_avg_price = "150.05"   # already populated
+    mock_client.submit_order.return_value = submitted
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        result = place_market_order("AMD", 100, "buy")
+
+    mock_client.get_order_by_id.assert_not_called()
+    assert result["fill_price"] == pytest.approx(150.05)
