@@ -6,7 +6,12 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
+from alpaca.trading.requests import (
+    MarketOrderRequest,
+    LimitOrderRequest,
+    TakeProfitRequest,
+    StopLossRequest,
+)
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from config import settings
 
@@ -17,6 +22,17 @@ class BrokerSubmitError(Exception):
     Also raised post-submit if the broker reports a terminal non-fill status
     (canceled / expired / rejected / suspended / stopped) so the caller's existing
     rejection path fires (notify, no DB row).
+    """
+    pass
+
+
+class BrokerOcoSubmitError(Exception):
+    """Raised when the post-fill OCO bracket submission fails (#133).
+
+    The parent market order has already filled — the position is open without
+    server-side protection. Caller (team_leader.place_order) catches this,
+    notifies, and relies on the position monitor's soft-stop as the recovery
+    path. The trade row is still written so the monitor can act on it.
     """
     pass
 
@@ -84,43 +100,34 @@ def get_trading_client() -> TradingClient:
     )
 
 
-def place_market_order(
-    ticker: str,
-    shares: int,
-    side: str,
-    stop_price: float = None,
-    take_profit_price: float = None,
-) -> dict:
-    """Submit a market order. If both stop_price and take_profit_price are given, submit as a bracket order so stops/targets live broker-side."""
+def place_parent_market_order(ticker: str, shares: int, side: str) -> dict:
+    """Submit a plain (non-bracket) market order and poll for the fill.
+
+    Returns ``{"order_id": str, "fill_price": float | None}``. On terminal
+    non-fill status raises ``BrokerSubmitError`` — same contract as the legacy
+    ``place_market_order`` non-bracket path. On poll timeout, ``fill_price`` is
+    None and the caller is expected to fall back to a pre-order quote.
+
+    This is the parent leg of the new (#133) two-step bracket flow:
+    parent → poll → OCO bracket re-anchored to the actual fill price. Atomic
+    Alpaca brackets are not used because they commit children to the
+    pre-order quote at submission, breaking the realised-R:R invariant.
+    """
     if side not in ("buy", "sell"):
         raise ValueError(f"Invalid order side: {side!r}. Must be 'buy' or 'sell'.")
     client = get_trading_client()
     order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
 
-    is_bracket = stop_price is not None and take_profit_price is not None
-    if is_bracket:
-        # Bracket orders need GTC because parent + child legs persist across days
-        # until take_profit or stop_loss fires; DAY would cancel children at close.
-        request = MarketOrderRequest(
-            symbol=ticker,
-            qty=shares,
-            side=order_side,
-            time_in_force=TimeInForce.GTC,
-            order_class=OrderClass.BRACKET,
-            take_profit=TakeProfitRequest(limit_price=round(take_profit_price, 2)),
-            stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
-        )
-    else:
-        request = MarketOrderRequest(
-            symbol=ticker,
-            qty=shares,
-            side=order_side,
-            time_in_force=TimeInForce.DAY,
-        )
+    request = MarketOrderRequest(
+        symbol=ticker,
+        qty=shares,
+        side=order_side,
+        time_in_force=TimeInForce.DAY,
+    )
     try:
         order = client.submit_order(request)
     except Exception as e:
-        print(f"[place_market_order] ALPACA REJECTED {ticker} {side} {shares}: {e}")
+        print(f"[place_parent_market_order] ALPACA REJECTED {ticker} {side} {shares}: {e}")
         raise BrokerSubmitError(str(e)) from e
 
     order_id = str(order.id)
@@ -139,7 +146,7 @@ def place_market_order(
         # Order will never fill → surface to caller as a broker-rejection so
         # the existing notify/no-DB-row path runs.
         msg = f"order {order_id} terminal status={terminal_status!r} (no fill)"
-        print(f"[place_market_order] ALPACA NON-FILL {ticker} {side} {shares}: {msg}")
+        print(f"[place_parent_market_order] ALPACA NON-FILL {ticker} {side} {shares}: {msg}")
         raise BrokerSubmitError(msg)
 
     if fill_price is None:
@@ -148,12 +155,125 @@ def place_market_order(
         # trade row to exist with a best-effort fill_price (None → caller
         # falls back to pre-order quote and logs).
         print(
-            f"[place_market_order] FILL POLL TIMEOUT {ticker} {side} {shares} "
+            f"[place_parent_market_order] FILL POLL TIMEOUT {ticker} {side} {shares} "
             f"order_id={order_id} last_status={terminal_status!r} after "
             f"{settings.FILL_POLL_TIMEOUT_S}s — caller will fall back to pre-order quote"
         )
 
     return {"order_id": order_id, "fill_price": fill_price}
+
+
+def place_oco_brackets(
+    ticker: str,
+    shares: int,
+    parent_side: str,
+    take_profit_price: float,
+    stop_price: float,
+) -> dict:
+    """Submit an OCO (one-cancels-other) bracket pair against an EXISTING position.
+
+    Used post-fill (#133) so the take-profit limit and stop-loss are anchored
+    to the actual filled price — not the pre-order quote — keeping realised
+    R:R within ±5% of `RR_RATIO_MIN` regardless of fill drift.
+
+    `parent_side` is the side of the parent (entry) order. The OCO is the
+    OPPOSITE side: a long entry (`parent_side="buy"`) needs a sell-side OCO
+    to close the position; a short entry needs a buy-side OCO to cover.
+
+    Time-in-force is GTC so the protective legs survive across sessions until
+    one fires (and cancels the other) — DAY would expire them at close.
+
+    Raises `BrokerOcoSubmitError` if Alpaca rejects the OCO submission. The
+    parent has already filled at this point, so the caller is responsible for
+    surfacing the failure (notify_error) and recording the trade so the
+    position monitor's soft-stop can act as the recovery layer.
+    """
+    if parent_side not in ("buy", "sell"):
+        raise ValueError(f"Invalid parent_side: {parent_side!r}. Must be 'buy' or 'sell'.")
+    if shares <= 0:
+        raise ValueError(f"shares must be > 0 (got {shares})")
+    if stop_price is None or stop_price <= 0:
+        raise ValueError(f"stop_price must be > 0 (got {stop_price})")
+    if take_profit_price is None or take_profit_price <= 0:
+        raise ValueError(f"take_profit_price must be > 0 (got {take_profit_price})")
+
+    client = get_trading_client()
+    # Closing side is the opposite of the entry side.
+    oco_side = OrderSide.SELL if parent_side == "buy" else OrderSide.BUY
+
+    # Alpaca's OCO order_class requires a LimitOrderRequest envelope; the
+    # take_profit leg's limit_price IS the parent limit_price (same value),
+    # and the stop_loss leg holds the stop_price. Both legs share the same
+    # qty as the parent fill.
+    request = LimitOrderRequest(
+        symbol=ticker,
+        qty=shares,
+        side=oco_side,
+        time_in_force=TimeInForce.GTC,
+        order_class=OrderClass.OCO,
+        limit_price=round(take_profit_price, 2),
+        take_profit=TakeProfitRequest(limit_price=round(take_profit_price, 2)),
+        stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+    )
+    try:
+        order = client.submit_order(request)
+    except Exception as e:
+        print(
+            f"[place_oco_brackets] ALPACA REJECTED OCO {ticker} {oco_side} {shares} "
+            f"stop={stop_price} target={take_profit_price}: {e}"
+        )
+        raise BrokerOcoSubmitError(str(e)) from e
+
+    return {"order_id": str(order.id), "status": "submitted"}
+
+
+def place_market_order(
+    ticker: str,
+    shares: int,
+    side: str,
+    stop_price: float = None,
+    take_profit_price: float = None,
+) -> dict:
+    """Backwards-compatible wrapper around the new parent + OCO flow (#133).
+
+    When both `stop_price` and `take_profit_price` are passed, this used to
+    submit a single atomic Alpaca BRACKET order with the children anchored to
+    the pre-order quote. That broke the realised-R:R invariant under fill
+    drift (#133). The new flow:
+
+    1. Submit just the parent market order via `place_parent_market_order`.
+    2. Poll for the actual fill.
+    3. If both bracket params were supplied, submit a separate OCO pair via
+       `place_oco_brackets` using the SAME stop/target the caller passed in.
+       Re-anchoring those values to the fill price is the caller's job
+       (`agents/team_leader.place_order` does this so it keeps the bracket
+       math in one place with the validation gate).
+
+    If the OCO submission fails after a successful parent fill, raises
+    `BrokerOcoSubmitError`. The return value still includes the parent
+    `order_id` and `fill_price` so the caller can record the trade and let
+    the position monitor's soft-stop act as the recovery layer.
+
+    The shape of the return value is unchanged from #132:
+    ``{"order_id": str, "fill_price": float | None}``.
+    """
+    parent = place_parent_market_order(ticker, shares, side)
+
+    is_bracket = stop_price is not None and take_profit_price is not None
+    if is_bracket and side == "buy" and parent.get("fill_price") is not None:
+        # Submit OCO with the values the caller computed. team_leader is
+        # expected to have re-anchored stop/target to `parent["fill_price"]`
+        # before calling — the legacy code path that anchored against the
+        # pre-order quote is what #133 specifically closes.
+        place_oco_brackets(
+            ticker=ticker,
+            shares=shares,
+            parent_side=side,
+            take_profit_price=take_profit_price,
+            stop_price=stop_price,
+        )
+
+    return parent
 
 
 def close_position(ticker: str) -> str:

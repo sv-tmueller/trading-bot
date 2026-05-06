@@ -4,12 +4,15 @@ import pytest
 from unittest.mock import MagicMock, patch
 from tools.broker import (
     place_market_order,
+    place_parent_market_order,
+    place_oco_brackets,
     close_position,
     get_portfolio_value,
     get_current_price,
     cancel_all_orders,
     liquidate_all_positions,
     BrokerSubmitError,
+    BrokerOcoSubmitError,
 )
 
 
@@ -123,30 +126,57 @@ def test_get_current_price_raises_on_zero_quote():
 
 
 def test_place_market_order_bracket_request_shape():
-    """When both stop_price and take_profit_price are given, submit as a BRACKET order."""
-    from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
-    from alpaca.trading.enums import OrderClass, TimeInForce
+    """Issue #133: bracket params are no longer submitted atomically with the parent.
+
+    `place_market_order(..., stop_price=..., take_profit_price=...)` is now a thin
+    orchestrator that submits the parent as a plain market order, polls for fill,
+    then submits a separate OCO bracket pair. Two `submit_order` calls expected:
+    (1) MarketOrderRequest (DAY, no bracket fields), (2) LimitOrderRequest (OCO, GTC).
+    """
+    from alpaca.trading.requests import (
+        MarketOrderRequest,
+        LimitOrderRequest,
+        TakeProfitRequest,
+        StopLossRequest,
+    )
+    from alpaca.trading.enums import OrderClass, TimeInForce, OrderSide
 
     mock_client = MagicMock()
-    mock_order = MagicMock()
-    mock_order.id = "ord-bracket-1"
-    mock_order.filled_avg_price = "150.05"
-    mock_client.submit_order.return_value = mock_order
+    parent_order = MagicMock()
+    parent_order.id = "ord-parent-1"
+    parent_order.filled_avg_price = "150.05"   # already filled — skip poll
+    oco_order = MagicMock()
+    oco_order.id = "ord-oco-1"
+    mock_client.submit_order.side_effect = [parent_order, oco_order]
 
     with patch("tools.broker.get_trading_client", return_value=mock_client):
         result = place_market_order("AMD", 100, "buy", stop_price=145.50, take_profit_price=160.00)
 
-    assert result["order_id"] == "ord-bracket-1"
+    assert result["order_id"] == "ord-parent-1"   # parent order_id, not OCO's
     assert result["fill_price"] == pytest.approx(150.05)
-    args, _ = mock_client.submit_order.call_args
-    request = args[0]
-    assert isinstance(request, MarketOrderRequest)
-    assert request.order_class == OrderClass.BRACKET
-    assert request.time_in_force == TimeInForce.GTC
-    assert isinstance(request.stop_loss, StopLossRequest)
-    assert isinstance(request.take_profit, TakeProfitRequest)
-    assert float(request.stop_loss.stop_price) == pytest.approx(145.50)
-    assert float(request.take_profit.limit_price) == pytest.approx(160.00)
+
+    # Two broker calls: parent then OCO.
+    assert mock_client.submit_order.call_count == 2
+    parent_req = mock_client.submit_order.call_args_list[0].args[0]
+    oco_req = mock_client.submit_order.call_args_list[1].args[0]
+
+    # Parent: plain DAY market order, no bracket fields.
+    assert isinstance(parent_req, MarketOrderRequest)
+    assert parent_req.order_class != OrderClass.BRACKET
+    assert parent_req.time_in_force == TimeInForce.DAY
+    assert parent_req.stop_loss is None
+    assert parent_req.take_profit is None
+
+    # OCO: SELL-side limit order with both legs, GTC so the protective pair survives sessions.
+    assert isinstance(oco_req, LimitOrderRequest)
+    assert oco_req.order_class == OrderClass.OCO
+    assert oco_req.side == OrderSide.SELL   # closes a long
+    assert oco_req.time_in_force == TimeInForce.GTC
+    assert isinstance(oco_req.stop_loss, StopLossRequest)
+    assert isinstance(oco_req.take_profit, TakeProfitRequest)
+    assert float(oco_req.stop_loss.stop_price) == pytest.approx(145.50)
+    assert float(oco_req.take_profit.limit_price) == pytest.approx(160.00)
+    assert int(oco_req.qty) == 100   # OCO sized to parent qty
 
 
 def test_place_market_order_plain_when_no_bracket_params():
@@ -182,7 +212,12 @@ def test_place_market_order_raises_broker_submit_error_on_plain_path():
 
 
 def test_place_market_order_raises_broker_submit_error_on_bracket_path():
-    """Bracket submit failure → BrokerSubmitError with original message embedded."""
+    """Issue #133: parent submit failure on the bracket path → BrokerSubmitError with original message.
+
+    The parent is now a plain market order (the OCO is a separate submission post-fill),
+    so a parent rejection still raises BrokerSubmitError. OCO-side failures are covered
+    by `test_place_market_order_raises_oco_submit_error_when_oco_leg_fails`.
+    """
     mock_client = MagicMock()
     mock_client.submit_order.side_effect = Exception("wash trade detected")
 
@@ -480,3 +515,273 @@ def test_place_market_order_skip_poll_when_submit_already_has_avg_price():
 
     mock_client.get_order_by_id.assert_not_called()
     assert result["fill_price"] == pytest.approx(150.05)
+
+
+# --- place_parent_market_order helper tests (issue #133) ---
+
+
+def test_place_parent_market_order_returns_order_id_and_fill_price():
+    """The new (#133) parent-only helper submits a plain DAY market order, polls for fill,
+    and returns `{"order_id", "fill_price"}` — same shape as the legacy place_market_order
+    plain path. No bracket fields on the request.
+    """
+    from alpaca.trading.requests import MarketOrderRequest
+    from alpaca.trading.enums import OrderClass, TimeInForce
+
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "ord-parent-only"
+    submitted.filled_avg_price = "150.10"
+    mock_client.submit_order.return_value = submitted
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        result = place_parent_market_order("AMD", 100, "buy")
+
+    assert result["order_id"] == "ord-parent-only"
+    assert result["fill_price"] == pytest.approx(150.10)
+    args, _ = mock_client.submit_order.call_args
+    request = args[0]
+    assert isinstance(request, MarketOrderRequest)
+    assert request.time_in_force == TimeInForce.DAY
+    assert request.order_class != OrderClass.BRACKET
+    assert request.stop_loss is None
+    assert request.take_profit is None
+
+
+def test_place_parent_market_order_invalid_side_raises():
+    with pytest.raises(ValueError, match="Invalid order side"):
+        place_parent_market_order("AMD", 100, "BUY")
+
+
+def test_place_parent_market_order_raises_broker_submit_error_on_failure():
+    """Parent submit failure → BrokerSubmitError, same as legacy plain path."""
+    mock_client = MagicMock()
+    mock_client.submit_order.side_effect = Exception("insufficient buying power")
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(BrokerSubmitError, match="insufficient buying power"):
+            place_parent_market_order("AMD", 100, "buy")
+
+
+# --- place_oco_brackets helper tests (issue #133) ---
+
+
+def test_place_oco_brackets_submits_sell_oco_for_long_entry():
+    """For a long entry (parent_side='buy'), the OCO is a SELL-side LimitOrderRequest with
+    OCO order_class, GTC time-in-force, and both legs (take_profit + stop_loss). The OCO
+    qty matches the parent fill size, so the protective pair covers the whole position.
+    """
+    from alpaca.trading.requests import LimitOrderRequest, TakeProfitRequest, StopLossRequest
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+
+    mock_client = MagicMock()
+    oco = MagicMock()
+    oco.id = "ord-oco-long"
+    mock_client.submit_order.return_value = oco
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        result = place_oco_brackets(
+            ticker="AMD",
+            shares=100,
+            parent_side="buy",
+            take_profit_price=160.50,
+            stop_price=145.25,
+        )
+
+    assert result["order_id"] == "ord-oco-long"
+    assert result["status"] == "submitted"
+    args, _ = mock_client.submit_order.call_args
+    request = args[0]
+    assert isinstance(request, LimitOrderRequest)
+    assert request.order_class == OrderClass.OCO
+    assert request.side == OrderSide.SELL
+    assert request.time_in_force == TimeInForce.GTC
+    assert int(request.qty) == 100
+    assert isinstance(request.take_profit, TakeProfitRequest)
+    assert isinstance(request.stop_loss, StopLossRequest)
+    assert float(request.take_profit.limit_price) == pytest.approx(160.50)
+    assert float(request.stop_loss.stop_price) == pytest.approx(145.25)
+
+
+def test_place_oco_brackets_submits_buy_oco_for_short_entry():
+    """For a short entry (parent_side='sell'), the OCO is a BUY-side cover order. We don't
+    currently short, but the helper supports both shapes so a future short entry doesn't
+    silently mis-submit a sell-side OCO that closes nothing.
+    """
+    from alpaca.trading.enums import OrderSide
+
+    mock_client = MagicMock()
+    oco = MagicMock()
+    oco.id = "ord-oco-short"
+    mock_client.submit_order.return_value = oco
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=50,
+            parent_side="sell",
+            take_profit_price=140.0,
+            stop_price=155.0,
+        )
+
+    args, _ = mock_client.submit_order.call_args
+    request = args[0]
+    assert request.side == OrderSide.BUY
+
+
+def test_place_oco_brackets_invalid_parent_side_raises():
+    with pytest.raises(ValueError, match="Invalid parent_side"):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=100,
+            parent_side="long",   # not "buy" or "sell"
+            take_profit_price=160.0,
+            stop_price=145.0,
+        )
+
+
+def test_place_oco_brackets_zero_shares_raises():
+    with pytest.raises(ValueError, match="shares must be > 0"):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=0,
+            parent_side="buy",
+            take_profit_price=160.0,
+            stop_price=145.0,
+        )
+
+
+def test_place_oco_brackets_non_positive_stop_raises():
+    with pytest.raises(ValueError, match="stop_price must be > 0"):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=100,
+            parent_side="buy",
+            take_profit_price=160.0,
+            stop_price=0.0,
+        )
+
+
+def test_place_oco_brackets_non_positive_target_raises():
+    with pytest.raises(ValueError, match="take_profit_price must be > 0"):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=100,
+            parent_side="buy",
+            take_profit_price=-1.0,
+            stop_price=145.0,
+        )
+
+
+def test_place_oco_brackets_raises_broker_oco_submit_error_on_alpaca_failure():
+    """Alpaca rejection (insufficient qty, no position, etc.) → BrokerOcoSubmitError so
+    the caller can distinguish OCO-side failure from parent-side failure and route to
+    the correct recovery path (notify_error + position monitor as fallback, NOT the
+    notify_order_rejected path which assumes the parent never opened).
+    """
+    mock_client = MagicMock()
+    mock_client.submit_order.side_effect = Exception(
+        '{"available":"0","existing_qty":"100","message":"insufficient qty available"}'
+    )
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(BrokerOcoSubmitError, match="insufficient qty"):
+            place_oco_brackets(
+                ticker="AMD",
+                shares=100,
+                parent_side="buy",
+                take_profit_price=160.0,
+                stop_price=145.0,
+            )
+
+
+def test_place_oco_brackets_rounds_prices_to_2dp():
+    """Alpaca rejects sub-penny prices for non-penny stocks. The helper must round legs
+    to 2 decimal places before submission.
+    """
+    mock_client = MagicMock()
+    oco = MagicMock()
+    oco.id = "ord-oco-round"
+    mock_client.submit_order.return_value = oco
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        place_oco_brackets(
+            ticker="AMD",
+            shares=100,
+            parent_side="buy",
+            take_profit_price=160.5678,   # would be rejected by Alpaca
+            stop_price=145.1234,
+        )
+
+    args, _ = mock_client.submit_order.call_args
+    request = args[0]
+    # Both legs and the parent limit_price must be 2dp.
+    assert float(request.take_profit.limit_price) == pytest.approx(160.57)
+    assert float(request.stop_loss.stop_price) == pytest.approx(145.12)
+    assert float(request.limit_price) == pytest.approx(160.57)
+
+
+# --- place_market_order new orchestrator tests (issue #133) ---
+
+
+def test_place_market_order_skips_oco_when_fill_price_none():
+    """If the parent fills but the poll returns no fill_price (timeout fallback path),
+    the orchestrator wrapper does NOT submit an OCO — it has nothing to anchor to.
+    Only the parent submit_order call is made.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "ord-no-fill-px"
+    submitted.filled_avg_price = None
+    mock_client.submit_order.return_value = submitted
+    # Polling returns "new" forever; short timeout cuts the loop.
+    polled = MagicMock()
+    polled.status = "new"
+    polled.filled_avg_price = None
+    mock_client.get_order_by_id.return_value = polled
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client), \
+         patch("config.settings.FILL_POLL_TIMEOUT_S", 0.1), \
+         patch("config.settings.FILL_POLL_INTERVAL_S", 0.05):
+        result = place_market_order("AMD", 100, "buy", stop_price=145.0, take_profit_price=160.0)
+
+    # Only the parent submit; no OCO follow-up because we don't have a fill anchor.
+    assert mock_client.submit_order.call_count == 1
+    assert result["order_id"] == "ord-no-fill-px"
+    assert result["fill_price"] is None
+
+
+def test_place_market_order_skips_oco_when_no_bracket_params():
+    """A plain (no bracket params) call must submit ONLY the parent — no OCO follow-up.
+    Preserves the existing legacy plain-market behaviour for sells / closes.
+    """
+    mock_client = MagicMock()
+    submitted = MagicMock()
+    submitted.id = "ord-plain"
+    submitted.filled_avg_price = "150.0"
+    mock_client.submit_order.return_value = submitted
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        place_market_order("AMD", 100, "sell")   # no stop/target
+
+    assert mock_client.submit_order.call_count == 1
+
+
+def test_place_market_order_oco_failure_propagates():
+    """If the OCO submission fails after a successful parent fill, the orchestrator
+    raises BrokerOcoSubmitError so the caller (team_leader) can route to the
+    OCO-failure recovery path.
+    """
+    mock_client = MagicMock()
+    parent = MagicMock()
+    parent.id = "ord-parent-then-oco-fails"
+    parent.filled_avg_price = "150.0"
+    # First submit (parent) succeeds; second submit (OCO) raises.
+    mock_client.submit_order.side_effect = [parent, Exception("alpaca 503")]
+
+    with patch("tools.broker.get_trading_client", return_value=mock_client):
+        with pytest.raises(BrokerOcoSubmitError, match="alpaca 503"):
+            place_market_order("AMD", 100, "buy", stop_price=145.0, take_profit_price=160.0)
+
+    # Both submit_order calls must have been attempted.
+    assert mock_client.submit_order.call_count == 2
