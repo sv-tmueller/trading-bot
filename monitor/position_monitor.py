@@ -100,19 +100,31 @@ def evaluate_position(
     return MonitorAction(position["id"], position["ticker"], "hold", "", current_price)
 
 
-def _reconcile_phantom_closes(conn, open_trades: list, today: str) -> tuple[list, list]:
+def _reconcile_phantom_closes(
+    conn,
+    open_trades: list,
+    today: str,
+    live_positions: list = None,
+) -> tuple[list, list]:
     """Detect trades the broker already closed (bracket child fired) and update DB.
 
     Bracket stops/targets execute server-side at Alpaca, so the broker may
     close a position between monitor runs. The DB still shows it open until we
     reconcile here. Returns (still_open_trades, reconciled_actions).
+
+    `live_positions` (issue #134): callers that have already fetched broker
+    positions for the cycle pass them in here so we don't double-call Alpaca.
+    When None we fall back to fetching ourselves with the original fail-open
+    semantics — kept as a second defense layer in case a future caller
+    forgets to pre-fetch.
     """
-    try:
-        live_positions = get_alpaca_positions()
-    except Exception:
-        # Fail-open on reconciliation: better to run soft-stop on stale data
-        # than skip the entire monitor cycle when Alpaca is unreachable.
-        return open_trades, []
+    if live_positions is None:
+        try:
+            live_positions = get_alpaca_positions()
+        except Exception:
+            # Fail-open on reconciliation: better to run soft-stop on stale data
+            # than skip the entire monitor cycle when Alpaca is unreachable.
+            return open_trades, []
 
     live_tickers = {p["ticker"] for p in live_positions}
     still_open: list = []
@@ -249,12 +261,41 @@ def run_monitor(conn, today: str = None) -> list:
       3. Soft stop/target check kept as defense-in-depth: if Alpaca's bracket
          leg fails to fill (broker outage, halted symbol), this is the backup.
          Keep redundant — costs nothing on the happy path.
+
+    Top-of-loop broker fetch (issue #134): the FIRST broker call of the cycle
+    is wrapped in its own try/except so a transient connection-reset / timeout
+    aborts only THIS cycle, not the cron schedule. On failure we fire
+    notify_error, return an empty action list, and skip the daily_stats upsert
+    (which depends on broker NAV plus trade aggregation). The next hourly cron
+    fire is the retry path — we explicitly do NOT retry inline. Historical
+    evidence: monitor.log line "MONITOR ERROR: ('Connection aborted.',
+    ConnectionResetError(104, 'Connection reset by peer'))" on 2026-05-04
+    15:00 UTC — exactly the failure mode this guard addresses.
     """
     today = today or date_cls.today().isoformat()
     trades = get_open_trades(conn)
 
+    # Step 0 (issue #134): pre-fetch broker positions ONCE at the top of the
+    # cycle, isolated from the rest of the work. A failure here means we have
+    # no broker truth for either the phantom-close reconciliation or any other
+    # downstream check — there is nothing useful left to do this hour, so skip
+    # the cycle cleanly. notify_error has its own rate-limit shape so a
+    # sustained outage won't turn into a spam storm.
+    try:
+        live_positions = get_alpaca_positions()
+    except Exception as exc:
+        notify_error(
+            "monitor",
+            f"top-of-cycle broker fetch failed: {type(exc).__name__}: {exc}; "
+            f"cycle skipped, retry next hour",
+        )
+        return []
+
     # Step 1: reconcile broker-side closures so we don't act on phantom rows.
-    trades, reconciled = _reconcile_phantom_closes(conn, trades, today)
+    # Pass the pre-fetched positions in so we don't double-call Alpaca.
+    trades, reconciled = _reconcile_phantom_closes(
+        conn, trades, today, live_positions=live_positions
+    )
     actions: list = list(reconciled)
 
     # Step 2 & 3: evaluate stop/target/max-hold for everything still open.
