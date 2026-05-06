@@ -360,8 +360,16 @@ def test_trailing_on_stop_hit_closes_position(db_conn, monkeypatch):
     assert get_open_trades(db_conn) == []
 
 
-def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
-    """If get_alpaca_positions raises, the monitor must still run the soft stop check (defense-in-depth)."""
+def test_run_monitor_top_of_loop_fetch_failure_skips_cycle(db_conn):
+    """If get_alpaca_positions raises at the top of the loop (issue #134), the
+    monitor must skip the cycle cleanly: no per-iteration work, no daily_stats
+    write, no broker_close calls, fires notify_error('monitor', ...) once.
+
+    This supersedes the old fail-open behavior tested before #134 — without
+    broker truth at the top of the cycle we cannot safely distinguish a
+    phantom-closed position from one that's still open, so issuing a
+    duplicate broker_close on a soft-stop hit risks a double exit. Cron
+    fires next hour as the retry path."""
     from tools.database import insert_trade, get_open_trades
 
     insert_trade(db_conn, {
@@ -373,18 +381,57 @@ def test_run_monitor_reconcile_failure_does_not_block_soft_stop(db_conn):
         "take_profit": 159.0,
     })
 
-    with patch("monitor.position_monitor.get_alpaca_positions", side_effect=ConnectionError("alpaca down")), \
-         patch("monitor.position_monitor.get_current_price", return_value=145.0), \
-         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0), \
-         patch("monitor.position_monitor.broker_close", return_value="order-soft") as mock_broker_close:
+    with patch("monitor.position_monitor.get_alpaca_positions",
+               side_effect=ConnectionError("Connection reset by peer")), \
+         patch("monitor.position_monitor.get_current_price", return_value=145.0) as mock_price, \
+         patch("monitor.position_monitor.get_portfolio_value", return_value=100_000.0) as mock_nav, \
+         patch("monitor.position_monitor.upsert_daily_stat") as mock_upsert, \
+         patch("monitor.position_monitor.broker_close") as mock_broker_close, \
+         patch("monitor.position_monitor.notify_error") as mock_notify_error:
         actions = run_monitor(db_conn, today="2026-04-22")
 
-    # Soft stop fires because price <= stop_loss.
-    assert len(actions) == 1
-    assert actions[0].action == "close"
-    assert actions[0].reason == "stop_loss"
-    mock_broker_close.assert_called_once_with("AMD")
-    assert get_open_trades(db_conn) == []
+    # Cycle skipped — no actions returned.
+    assert actions == []
+    # Per-iteration code path was never entered.
+    mock_price.assert_not_called()
+    mock_broker_close.assert_not_called()
+    # daily_stats write was skipped — no broker NAV fetch and no upsert.
+    mock_nav.assert_not_called()
+    mock_upsert.assert_not_called()
+    # The trade is still open in the DB — nothing was closed.
+    assert len(get_open_trades(db_conn)) == 1
+    # Exactly one notify_error fired with the new "monitor"/cycle-skip shape.
+    assert mock_notify_error.call_count == 1
+    assert mock_notify_error.call_args.args[0] == "monitor"
+    msg = mock_notify_error.call_args.args[1]
+    assert "top-of-cycle broker fetch failed" in msg
+    assert "ConnectionError" in msg
+    assert "Connection reset by peer" in msg
+    assert "retry next hour" in msg
+
+
+def test_run_monitor_top_of_loop_fetch_failure_does_not_raise(db_conn):
+    """The cycle-skip path must not propagate the broker exception — main.py's
+    run_position_monitor needs run_monitor to return cleanly so the process
+    exits 0 and cron's next fire is the only retry path."""
+    from tools.database import insert_trade
+
+    insert_trade(db_conn, {
+        "ticker": "AMD",
+        "entry_date": "2026-04-20",
+        "entry_price": 150.0,
+        "shares": 100,
+        "stop_loss": 145.5,
+        "take_profit": 159.0,
+    })
+
+    with patch("monitor.position_monitor.get_alpaca_positions",
+               side_effect=ConnectionError("alpaca down")), \
+         patch("monitor.position_monitor.notify_error"):
+        # Must not raise — return value is the empty action list.
+        result = run_monitor(db_conn, today="2026-04-22")
+
+    assert result == []
 
 
 # --- Per-trade exception isolation tests (issue #115) ---
