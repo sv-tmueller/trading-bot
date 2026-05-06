@@ -522,6 +522,27 @@ python3 -m pytest tests/test_monitor.py -v
 
 ## Changelog
 
+### v1.14.0 (2026-05-06)
+
+**Observability + accuracy sprint — six PRs that turn the analytical tables on, anchor brackets to broker truth, and make the Discord summary deterministic.**
+
+Observability (DB tables that were specced in v1.5.0 but never written are now populated):
+- `monitor_actions` — every `position_monitor` per-trade outcome (`stop_loss`, `take_profit`, `max_hold`, `reconciled`, `hold`, `skipped_error`) now writes one row via `record_monitor_action()`. Per-iteration failure-isolated so a DB hiccup on one ticker cannot abort the sweep. **Operator deploy step:** run `python -c "from storage.init_db import init_db; init_db()"` once on the VPS to materialise the new table — `init_db()` is idempotent and leaves the existing tables alone (#131, #140)
+- `signals` — `team_leader.place_order` now calls `insert_signal()` on every fill *and* every rejection, with `triggered_entry=1/0` so the post-mortem table reflects what was actually proposed vs. what got through the safety stack (#136, #141)
+- `daily_stats` — written end-of-pass by `position_monitor` via `upsert_daily_stat()`. `ON CONFLICT(date) DO UPDATE` so repeated monitor passes within a day refresh the row in place. Skipped if the top-of-loop broker fetch fails (see monitor change below). `weekly_stats` is intentionally deferred — no writer yet (#137, #142)
+
+Accuracy (entry pricing and bracket anchoring):
+- `trades.entry_price` is now the broker's `filled_avg_price`, not the pre-order quote. New env vars `FILL_POLL_TIMEOUT_S` (default `10`) and `FILL_POLL_INTERVAL_S` (default `0.5`) control the `_poll_for_fill` loop. Falls back to the pre-order quote on poll timeout with a `[place_order] WARN ...` log line so operators see it (#132, #143)
+- **Behaviour change** — bracket flow is now parent-fill-then-OCO instead of atomic. `place_market_order` submits the parent market order, polls for the broker fill, then submits a separate sell-side `OrderClass.OCO` LimitOrderRequest with both legs anchored to `filled_avg_price`. The atomic Alpaca BRACKET class commits children to the pre-order quote, drifting realised R:R by the slippage fraction; the new flow keeps R:R within ±1% of `RR_RATIO_MIN` regardless of fill drift. There is a brief fill-to-OCO unprotected window (typically <1s under normal load); the `position_monitor` soft-stop check is the recovery layer if the OCO submit fails — `trades.stop_loss` is still written (anchored to the actual fill) so the soft-stop has the right reference (#133, #144)
+
+Reliability + reporting fidelity:
+- `position_monitor.run_monitor` now wraps the top-of-loop `get_alpaca_positions()` call in its own try/except. A transient broker outage on the very first call **fail-CLOSED**: the cycle returns an empty action list, the `daily_stats` write is skipped, `notify_error` fires, and the next hourly cron fire retries from scratch. Per-iteration isolation from #118 is preserved unchanged (#134, #145)
+- Team Leader Discord summary line and `agent_logs.output_summary` are now derived deterministically from `place_order` tool_results (a per-run `_order_outcomes` ledger), not from LLM prose. Two named regression tests lock the 2026-05-04 ("executed" with no trade) and 2026-05-05 ("0 rejected" when 2 were rejected) bugs (#139, #146)
+
+**Tests:** 260 → 343 passing (+83 across the six PRs).
+
+---
+
 ### v1.13.0 (2026-05-04)
 
 **Incident-response CLI + dry-run smoke test that actually tests the safety stack.**
