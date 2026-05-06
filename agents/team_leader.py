@@ -25,6 +25,8 @@ You are the only agent authorised to place or close orders.
 
 If a place_order tool result has `status: "dry_run_simulated"`, describe the outcome in conditional/future tense (e.g. 'would have bought' rather than 'bought'). Do NOT say the order was executed.
 
+If a place_order tool result has `status: "rejected"`, the order was NOT placed — describe it as rejected and include the reason. Never count a rejected ticker as bought or executed.
+
 Respond with JSON:
 {
   "decisions": [
@@ -42,6 +44,25 @@ Respond with JSON:
         self._pending_atrs: dict = {}
         self._pending_indicators: dict = {}
         self._dry_run: bool = False
+        # Issue #139: deterministic per-ticker outcome counts. The LLM's prose
+        # summary cannot be trusted (it has misreported successes/rejections in
+        # the live path — see issue #139 evidence for 2026-05-04 and 2026-05-05).
+        # Each call to the place_order tool appends to this dict from inside the
+        # tool closure, so the count reflects what the deterministic safety stack
+        # actually did, not what the LLM said happened. The dict is rebuilt at
+        # the top of each `run()` so re-using a TeamLeaderAgent instance across
+        # cycles does not double-count.
+        self._order_outcomes: dict = self._fresh_outcomes()
+
+    @staticmethod
+    def _fresh_outcomes() -> dict:
+        """Empty per-cycle outcome bucket. Categories are flat lists, never None."""
+        return {
+            "buy": [],
+            "sell": [],
+            "rejected": [],
+            "dry_run": [],
+        }
 
     def get_tools(self) -> list:
         return [
@@ -95,6 +116,11 @@ Respond with JSON:
         pending_atrs = self._pending_atrs
         pending_indicators = self._pending_indicators
         dry_run = self._dry_run
+        # Issue #139: capture the outcome dict as a local so the closure binds to
+        # the same dict the parent run() will read after super().run() returns.
+        # Closing over `self._order_outcomes` directly would break the test idiom
+        # of swapping instance state per-test (see SKILL.md instance-state rule).
+        outcomes = self._order_outcomes
 
         def _persist_signal_row(ticker: str, trade_id, triggered_entry: int) -> None:
             """Write one signals row, swallowing DB errors so the order path continues.
@@ -125,6 +151,22 @@ Respond with JSON:
                     f"{type(e).__name__}: {e}",
                 )
 
+        def _record_rejected(ticker: str, shares: int, side: str, reason: str) -> None:
+            """Append a rejection row to the deterministic outcome ledger (issue #139).
+
+            Called for every place_order code-path that returns status=rejected:
+            exposure-check failure, exposure-cap breach, malformed bracket,
+            BrokerSubmitError. The downstream Discord summary and agent_logs
+            row both read from `outcomes` so the operator-facing count cannot
+            disagree with what the safety stack actually did.
+            """
+            outcomes["rejected"].append({
+                "ticker": ticker,
+                "shares": shares,
+                "side": side,
+                "reason": reason,
+            })
+
         def place_order(ticker: str, shares: int, side: str) -> dict:
             price = get_current_price(ticker)   # fetch BEFORE broker — no ghost risk
 
@@ -147,6 +189,7 @@ Respond with JSON:
                     notify_order_rejected(ticker, shares, reason)
                     if not dry_run:
                         _persist_signal_row(ticker, None, 0)
+                    _record_rejected(ticker, shares, side, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
                 candidate_notional = shares * price
@@ -162,6 +205,7 @@ Respond with JSON:
                     notify_order_rejected(ticker, shares, reason)
                     if not dry_run:
                         _persist_signal_row(ticker, None, 0)
+                    _record_rejected(ticker, shares, side, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
             # Pre-fill bracket sanity check — runs against the pre-order quote
@@ -191,6 +235,7 @@ Respond with JSON:
                     notify_order_rejected(ticker, shares, reason)
                     if not dry_run:
                         _persist_signal_row(ticker, None, 0)
+                    _record_rejected(ticker, shares, side, reason)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
             # Dry-run skips ONLY the broker SUBMIT and DB INSERT — all
@@ -198,6 +243,7 @@ Respond with JSON:
             # `--dry-run` smoke test exercises the full safety stack.
             if dry_run:
                 print(f"[DRY RUN] would {side} {shares} shares of {ticker}")
+                outcomes["dry_run"].append({"ticker": ticker, "shares": shares, "side": side})
                 return {
                     "order_id": "DRY_RUN",
                     "fill_price": None,
@@ -221,6 +267,7 @@ Respond with JSON:
                 notify_order_rejected(ticker, shares, reason)
                 if side == "buy":
                     _persist_signal_row(ticker, None, 0)
+                _record_rejected(ticker, shares, side, reason)
                 return {"order_id": None, "status": "rejected", "reason": reason}
             order_id = order_result["order_id"]
             trade_id = None
@@ -306,6 +353,9 @@ Respond with JSON:
                 # because the parent IS open — `oco_failed` is internal-only;
                 # the LLM does not need a different narration path. Operators
                 # see the failure via the notify_error Discord ping.
+                outcomes["buy"].append({"ticker": ticker, "shares": shares})
+            else:
+                outcomes["sell"].append({"ticker": ticker, "shares": shares})
             return {"order_id": order_id, "status": "submitted"}
 
         def close_position(ticker: str, reason: str = "manual") -> dict:
@@ -345,7 +395,20 @@ Respond with JSON:
         self._pending_atrs = pending_atrs or {}
         self._pending_indicators = pending_indicators or {}
         self._dry_run = dry_run
-        return super().run(prompt, conn=conn)
+        # Issue #139: rebuild a fresh outcome ledger per cycle. Reusing the same
+        # TeamLeaderAgent instance across runs would otherwise accumulate counts
+        # from prior days. The closure inside _get_tool_functions captures THIS
+        # dict, so the assignment must happen before super().run() spins up the
+        # tool loop.
+        self._order_outcomes = self._fresh_outcomes()
+        result = super().run(prompt, conn=conn)
+        # Attach the deterministic per-ticker outcomes so callers (main.py,
+        # notify_scan_complete) can report what actually happened rather than
+        # parroting the LLM's prose summary. The LLM's reasoning paragraph is
+        # preserved in result["summary"] / agent_logs.full_reasoning for later
+        # retrospective analysis.
+        result["order_outcomes"] = dict(self._order_outcomes)
+        return result
 
     def parse_output(self, response) -> dict:
         text = self._extract_json_text(response.content[0].text)

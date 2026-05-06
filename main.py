@@ -181,15 +181,32 @@ def run_morning_scan(dry_run: bool = False):
 
         costs = get_daily_token_costs(conn, date.today().isoformat())
         print(f"Token usage — input: {costs['input_tokens']:,} | output: {costs['output_tokens']:,} | cost: ${costs['cost_usd']:.4f}")
+        # Issue #139: prefer the deterministic per-ticker outcome counts captured
+        # inside team_leader.place_order over the risk_review-level approved/rejected
+        # tally. risk_review's `approved` count means "passed risk review", not
+        # "order placed" — the exposure gate inside team_leader can still reject
+        # an approved candidate (live evidence: 2026-05-04 AMD, 2026-05-05
+        # AAPL/SHEL). The operator-facing summary line MUST reflect what the
+        # broker actually saw, not what the LLM said in prose.
+        order_outcomes = decisions.get("order_outcomes", {})
+        deterministic_buy_count = len(order_outcomes.get("buy", []))
+        deterministic_dry_run_count = len(order_outcomes.get("dry_run", []))
+        deterministic_rejected_count = len(order_outcomes.get("rejected", []))
+        # In dry-run we count "would have placed" as approved so the summary
+        # still reflects intent. In live, only actual fills count.
+        approved_for_summary = deterministic_buy_count + (
+            deterministic_dry_run_count if dry_run else 0
+        )
         notify_scan_complete(
             date=date.today().isoformat(),
             market_context=market_briefing.get("market_context", "unknown"),
             tldr=candidates.get("tldr", ""),
-            approved=len(reviewed.get("approved", [])),
-            rejected=len(reviewed.get("rejected", [])),
+            approved=approved_for_summary,
+            rejected=deterministic_rejected_count,
             decisions=decisions.get("decisions", []),
             cost_usd=costs["cost_usd"],
             dry_run=dry_run,
+            order_outcomes=order_outcomes,
         )
 
     except Exception as e:

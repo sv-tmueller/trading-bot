@@ -101,6 +101,120 @@ def test_notify_scan_complete_default_has_no_dry_run_marker(mocker):
     assert "🤖" in posted
 
 
+def test_notify_scan_complete_with_order_outcomes_renders_buys_and_sells(mocker):
+    """Issue #139: when order_outcomes is supplied, message body comes from the deterministic ledger."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_scan_complete
+
+    notify_scan_complete(
+        date="2026-05-05",
+        market_context="bullish",
+        tldr="3 candidates",
+        approved=2,
+        rejected=2,
+        decisions=[],   # LLM decisions list is now ignored when outcomes are supplied
+        cost_usd=0.1253,
+        order_outcomes={
+            "buy": [{"ticker": "AMD", "shares": 50}, {"ticker": "MSFT", "shares": 50}],
+            "sell": [],
+            "rejected": [
+                {"ticker": "AAPL", "shares": 101, "side": "buy", "reason": "exposure cap"},
+                {"ticker": "SHEL", "shares": 358, "side": "buy", "reason": "exposure cap"},
+            ],
+            "dry_run": [],
+        },
+    )
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "BUY AMD" in msg
+    assert "BUY MSFT" in msg
+    # Ground-truth count must reflect the deterministic outcomes — 2 approved / 2 rejected
+    # (matching what notify_order_rejected actually fired earlier in the scan).
+    assert "2 approved" in msg
+    assert "2 rejected" in msg
+
+
+def test_notify_scan_complete_with_order_outcomes_ignores_llm_decisions_list(mocker):
+    """Issue #139: even if the LLM hallucinates decisions, the body uses outcomes['buy']."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_scan_complete
+
+    # The 2026-05-04 hallucination shape: LLM says AMD was placed, but the
+    # deterministic safety stack rejected it.
+    hallucinated_decisions = [
+        {"ticker": "AMD", "action": "buy", "shares": 41, "reasoning": "Full go decision"},
+    ]
+    notify_scan_complete(
+        date="2026-05-04",
+        market_context="bullish",
+        tldr="AMD",
+        approved=0,
+        rejected=1,
+        decisions=hallucinated_decisions,
+        cost_usd=0.05,
+        order_outcomes={
+            "buy": [],   # ground truth
+            "sell": [],
+            "rejected": [{"ticker": "AMD", "shares": 41, "side": "buy", "reason": "exposure cap"}],
+            "dry_run": [],
+        },
+    )
+    msg = mock_post.call_args[0][0]
+    # AMD must NOT appear as a placed BUY (LLM lie was that it was bought).
+    assert "BUY AMD" not in msg
+    assert "0 approved" in msg
+    assert "1 rejected" in msg
+
+
+def test_notify_scan_complete_dry_run_outcomes_render_with_dry_run_marker(mocker):
+    """Dry-run outcomes are marked so the operator sees they're hypothetical."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_scan_complete
+
+    notify_scan_complete(
+        date="2026-05-06",
+        market_context="bullish",
+        tldr="dry-run candidate",
+        approved=1,
+        rejected=0,
+        decisions=[],
+        cost_usd=0.01,
+        dry_run=True,
+        order_outcomes={
+            "buy": [],
+            "sell": [],
+            "rejected": [],
+            "dry_run": [{"ticker": "AMD", "shares": 50, "side": "buy"}],
+        },
+    )
+    msg = mock_post.call_args[0][0]
+    assert "🧪" in msg
+    assert "DRY RUN" in msg
+    # The hypothetical AMD line is present and tagged.
+    assert "AMD" in msg
+
+
+def test_notify_scan_complete_legacy_path_still_works_without_outcomes(mocker):
+    """Backwards compatibility: callers that don't pass order_outcomes still get the old behaviour."""
+    mock_post = mocker.patch("tools.notifications._post")
+    from tools.notifications import notify_scan_complete
+
+    # No order_outcomes → falls back to rendering the LLM decisions list (legacy).
+    notify_scan_complete(
+        date="2026-04-24",
+        market_context="bullish",
+        tldr="legacy",
+        approved=1,
+        rejected=0,
+        decisions=[{"action": "buy", "ticker": "AMD", "shares": 10}],
+        cost_usd=0.001,
+    )
+    mock_post.assert_called_once()
+    msg = mock_post.call_args[0][0]
+    assert "BUY AMD" in msg
+    assert "10 shares" in msg
+
+
 def test_notify_no_candidates_includes_tldr(mocker):
     mock_post = mocker.patch("tools.notifications._post")
     from tools.notifications import notify_no_candidates
