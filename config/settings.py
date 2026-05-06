@@ -97,3 +97,27 @@ if not 1.0 <= FILL_POLL_TIMEOUT_S <= 60.0:
 FILL_POLL_INTERVAL_S: float = float(os.getenv("FILL_POLL_INTERVAL_S", "0.5"))
 if not 0.05 <= FILL_POLL_INTERVAL_S <= 5.0:
     raise ValueError(f"FILL_POLL_INTERVAL_S={FILL_POLL_INTERVAL_S} outside safe bounds [0.05, 5.0]")
+
+
+# Mechanical safety guard for agent-context broker calls (issue #168). When set,
+# every `tools/broker.py` submission helper raises `BrokerCallBlockedError` BEFORE
+# any Alpaca call. Production cron leaves this UNSET; pytest sets it via an
+# autouse conftest fixture so any forgotten mock fails fast instead of reaching
+# the live broker. We intentionally read this fresh on every call (see
+# `is_claude_agent_no_broker()` below) — the perf cost is negligible and it
+# means tests can flip the env var inside a test without reloading the module.
+def is_claude_agent_no_broker() -> bool:
+    """Return True if the agent-context broker guard (issue #168) is active.
+
+    Reads `os.environ` fresh on every call so pytest's `monkeypatch.setenv`
+    (and any test that intentionally clears it to exercise the guard-OFF path)
+    is honoured without a settings reload. The five `tools/broker.py`
+    submission helpers consult this at the very top of each function.
+    """
+    return os.environ.get("CLAUDE_AGENT_NO_BROKER", "").lower() in ("1", "true", "yes")
+
+
+# Snapshot at import time for any caller that wants the convenience. Live checks
+# inside `tools/broker.py` MUST use `is_claude_agent_no_broker()` so the guard
+# remains responsive to env changes within a process.
+CLAUDE_AGENT_NO_BROKER: bool = is_claude_agent_no_broker()

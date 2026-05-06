@@ -152,3 +152,35 @@ def test_trailing_stop_atr_mult_out_of_range_raises(monkeypatch):
     monkeypatch.setenv("TRAILING_STOP_ATR_MULT", "10.0")
     with pytest.raises(ValueError, match="TRAILING_STOP_ATR_MULT"):
         importlib.reload(s)
+
+
+# --- CLAUDE_AGENT_NO_BROKER (issue #168) -------------------------------------
+
+
+def test_claude_agent_no_broker_default_off(monkeypatch):
+    """Default (env var unset) must be OFF — production cron must not be impacted."""
+    monkeypatch.delenv("CLAUDE_AGENT_NO_BROKER", raising=False)
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.CLAUDE_AGENT_NO_BROKER is False
+    assert s.is_claude_agent_no_broker() is False
+
+
+def test_claude_agent_no_broker_truthy_values(monkeypatch):
+    """"1", "true", "yes" (case-insensitive) all activate the guard. Read fresh on
+    each `is_claude_agent_no_broker()` call so pytest's monkeypatch is honoured
+    without a settings reload — important so the suite-wide autouse fixture in
+    `tests/conftest.py` works."""
+    import config.settings as s
+    for val in ("1", "true", "TRUE", "yes", "YES", "True"):
+        monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", val)
+        assert s.is_claude_agent_no_broker() is True, f"failed for {val!r}"
+
+
+def test_claude_agent_no_broker_falsy_values(monkeypatch):
+    """Empty string / "0" / "false" / "no" / random text must NOT activate the guard."""
+    import config.settings as s
+    for val in ("", "0", "false", "FALSE", "no", "anything-else"):
+        monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", val)
+        assert s.is_claude_agent_no_broker() is False, f"failed for {val!r}"
