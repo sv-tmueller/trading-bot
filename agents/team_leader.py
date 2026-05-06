@@ -77,9 +77,14 @@ Respond with JSON:
         ]
 
     def _get_tool_functions(self) -> list:
-        from tools.broker import place_market_order, close_position as broker_close_position
+        from tools.broker import (
+            place_parent_market_order,
+            place_oco_brackets,
+            place_market_order,
+            close_position as broker_close_position,
+        )
         from tools.broker import get_current_price, get_alpaca_positions, get_portfolio_value
-        from tools.broker import BrokerSubmitError
+        from tools.broker import BrokerSubmitError, BrokerOcoSubmitError
         from tools.database import insert_trade, get_open_trades, close_trade, insert_signal
         from tools.risk import check_exposure_for_new_order, validate_bracket_params
         from tools.notifications import notify_order_rejected, notify_error
@@ -159,27 +164,27 @@ Respond with JSON:
                         _persist_signal_row(ticker, None, 0)
                     return {"order_id": None, "status": "rejected", "reason": reason}
 
-            # Bracket pricing: recompute stop/target locally from the fresh
-            # quote so the broker-side legs are anchored to a current price
-            # (not the LLM's stale prior-close). Falls back to the LLM-supplied
-            # values if no ATR was passed through (sells, missing data).
-            bracket_stop = None
-            bracket_target = None
+            # Pre-fill bracket sanity check — runs against the pre-order quote
+            # so a malformed `pending_stops` (e.g. stop above quote) is rejected
+            # BEFORE we hit the broker. This preserves the existing #79 / #85
+            # invariant. Post-fill we re-anchor and re-validate against the
+            # actual fill price (#133) before submitting the OCO bracket.
+            atr = pending_atrs.get(ticker) if side == "buy" else None
+            preflight_stop = None
+            preflight_target = None
             if side == "buy":
-                atr = pending_atrs.get(ticker)
                 if atr is not None and atr > 0:
                     stop_distance = atr * settings.ATR_STOP_MULTIPLIER
-                    bracket_stop = round(price - stop_distance, 4)
-                    bracket_target = round(price + stop_distance * settings.RR_RATIO_MIN, 4)
+                    preflight_stop = round(price - stop_distance, 4)
+                    preflight_target = round(price + stop_distance * settings.RR_RATIO_MIN, 4)
                 else:
-                    # Fallback: scale LLM-supplied prices to the fresh quote
-                    # so R:R math is at least roughly preserved.
-                    bracket_stop = pending_stops.get(ticker)
-                    bracket_target = pending_targets.get(ticker)
+                    # Fallback: use LLM-supplied stop/target (validated below).
+                    preflight_stop = pending_stops.get(ticker)
+                    preflight_target = pending_targets.get(ticker)
 
                 # Reject malformed brackets before they reach the broker — the
                 # Alpaca SDK does not validate stop/target ordering.
-                bracket_check = validate_bracket_params(price, bracket_stop, bracket_target)
+                bracket_check = validate_bracket_params(price, preflight_stop, preflight_target)
                 if not bracket_check["valid"]:
                     reason = f"invalid bracket: {bracket_check['reason']}"
                     print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
@@ -200,14 +205,16 @@ Respond with JSON:
                     "note": "no order was placed; this is a dry run",
                 }
 
+            # Issue #133: split the legacy atomic-bracket call into parent → poll
+            # → OCO so the protective legs are anchored to the actual fill price
+            # rather than the pre-order quote. For sells (closes) we keep using
+            # the legacy `place_market_order` thin wrapper because there are no
+            # bracket children to attach.
             try:
-                order_result = place_market_order(
-                    ticker,
-                    shares,
-                    side,
-                    stop_price=bracket_stop,
-                    take_profit_price=bracket_target,
-                )
+                if side == "buy":
+                    order_result = place_parent_market_order(ticker, shares, side)
+                else:
+                    order_result = place_market_order(ticker, shares, side)
             except BrokerSubmitError as e:
                 reason = f"broker rejected: {e}"
                 print(f"[place_order] REJECTED {ticker} {shares}sh — {reason}")
@@ -218,10 +225,10 @@ Respond with JSON:
             order_id = order_result["order_id"]
             trade_id = None
             if side == "buy":
-                # Issue #132: prefer the broker's actual filled_avg_price (now polled in
-                # tools.broker.place_market_order) so trades.entry_price reflects the real
-                # fill, not the pre-order quote. Fallback to the pre-order quote only on
-                # poll timeout (rare during regular hours) so the trade row is never lost.
+                # Issue #132: prefer the broker's actual filled_avg_price so
+                # trades.entry_price reflects the real fill, not the pre-order
+                # quote. Fallback to the pre-order quote only on poll timeout
+                # (rare during regular hours) so the trade row is never lost.
                 fill_price = order_result.get("fill_price")
                 if fill_price is not None:
                     entry_price = fill_price
@@ -231,15 +238,74 @@ Respond with JSON:
                         f"[place_order] WARN {ticker} {shares}sh — broker fill not reported within "
                         f"poll window; storing pre-order quote {price:.4f} as entry_price (#132)"
                     )
+
+                # Issue #133: re-anchor bracket stop/target to the actual fill
+                # price BEFORE writing the DB row and submitting the OCO. The
+                # ATR-based path keeps the realised R:R within ±5% of
+                # RR_RATIO_MIN regardless of fill drift, because the same
+                # stop_distance is applied to the actual entry. The fallback
+                # path (no ATR) preserves the LLM-supplied legs as best-effort.
+                if atr is not None and atr > 0:
+                    stop_distance = atr * settings.ATR_STOP_MULTIPLIER
+                    bracket_stop = round(entry_price - stop_distance, 4)
+                    bracket_target = round(
+                        entry_price + stop_distance * settings.RR_RATIO_MIN, 4
+                    )
+                else:
+                    bracket_stop = pending_stops.get(ticker, entry_price * 0.97)
+                    bracket_target = pending_targets.get(ticker, entry_price * 1.06)
+
+                # Defensive: re-validate against the actual fill (#133). Skip
+                # OCO submission if the post-fill bracket is malformed (rare —
+                # would require the fill to drift ABOVE the recomputed target,
+                # impossible for an ATR-anchored bracket). The trade row still
+                # gets written so the position monitor's soft-stop applies.
+                post_fill_check = validate_bracket_params(entry_price, bracket_stop, bracket_target)
+                oco_failed = False
+                if not post_fill_check["valid"]:
+                    msg = (
+                        f"post-fill bracket invalid for {ticker} (entry={entry_price}, "
+                        f"stop={bracket_stop}, target={bracket_target}): "
+                        f"{post_fill_check['reason']}; OCO not submitted, position monitor will catch"
+                    )
+                    print(f"[place_order] WARN {msg}")
+                    notify_error("team_leader", msg)
+                    oco_failed = True
+                else:
+                    # Submit the OCO bracket post-fill (#133). Failure here
+                    # leaves the position open without server-side protection —
+                    # we notify_error and rely on the position monitor's
+                    # soft-stop as the recovery layer (#133 design).
+                    try:
+                        place_oco_brackets(
+                            ticker=ticker,
+                            shares=shares,
+                            parent_side=side,
+                            take_profit_price=bracket_target,
+                            stop_price=bracket_stop,
+                        )
+                    except BrokerOcoSubmitError as e:
+                        oco_failed = True
+                        notify_error(
+                            "team_leader",
+                            f"OCO submit failed for {ticker} after parent fill "
+                            f"(parent_order_id={order_id}, fill_price={entry_price}): {e}; "
+                            f"position is unprotected — monitor will catch via soft-stop",
+                        )
+
                 trade_id = insert_trade(conn, {
                     "ticker": ticker,
                     "entry_date": date.today().isoformat(),
                     "entry_price": entry_price,
                     "shares": shares,
-                    "stop_loss": bracket_stop if bracket_stop is not None else (pending_stops.get(ticker, entry_price * 0.97)),
-                    "take_profit": bracket_target if bracket_target is not None else (pending_targets.get(ticker, entry_price * 1.06)),
+                    "stop_loss": bracket_stop,
+                    "take_profit": bracket_target,
                 })
                 _persist_signal_row(ticker, trade_id, 1)
+                # Note: we still report status="submitted" even when OCO failed
+                # because the parent IS open — `oco_failed` is internal-only;
+                # the LLM does not need a different narration path. Operators
+                # see the failure via the notify_error Discord ping.
             return {"order_id": order_id, "status": "submitted"}
 
         def close_position(ticker: str, reason: str = "manual") -> dict:
