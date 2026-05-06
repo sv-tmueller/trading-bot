@@ -200,6 +200,8 @@ Set `TRADING_PAUSED=true` in `.env` to halt new entries: the next `main.py scan`
 
 For faster incident response (cancelling open orders, liquidating positions, atomically writing the pause flag without `nano`), see the [Panic CLI](#panic-cli-incident-response) below.
 
+> **Agent-context broker calls are explicitly forbidden.** Engineer subagents inherit `/opt/trading-bot/.env` and would submit real orders to the live paper account from any worktree. All `tools/broker.py` submission helpers must be mocked in agent-spawned tests — see the architectural invariant in `CLAUDE.md` and incident [#149](https://github.com/sv-tmueller/trading-bot/issues/149).
+
 ### Panic CLI (incident response)
 
 For incidents where editing `.env` by hand is too slow, `python main.py panic` is a deterministic kill button — no LLM in the path, just direct broker calls.
