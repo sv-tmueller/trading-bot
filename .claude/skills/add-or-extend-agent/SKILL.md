@@ -102,6 +102,12 @@ Required when the agent needs a tunable parameter or feature flag. Recipe:
 
 Every agent test file lives under `tests/test_agents/` and follows these idioms.
 
+### Hard rule — never execute against the live Alpaca paper account (incident #149)
+
+Engineer subagents inherit `/opt/trading-bot/.env` via the parent shell. Any test, `python -c`, or `python main.py scan` invocation from a worktree submits real orders to the live paper account — there is currently no code-level guard. All `tools/broker.py` submission helpers (`place_market_order`, `place_parent_market_order`, `place_oco_brackets`, `cancel_all_orders`, `liquidate_all_positions`) MUST be mocked. If you need to verify against a real broker, use a separate sandbox account with explicitly-set env vars, NOT the inherited live keys. Team Leader briefs for any task touching `tools/broker.py`, `agents/team_leader.py::place_order`, or anything that calls them must restate this rule.
+
+_2026-05-06: six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT escaped from an Engineer worktree, draining buying power from $99k to $2,239. Surgically cancelled before market open. See issue #149 and the architectural invariant in `CLAUDE.md`._
+
 ### Fixtures and mocks
 
 - **In-memory SQLite via `db_conn`** — defined in `tests/conftest.py`. Always use this; never touch a real DB.
