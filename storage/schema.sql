@@ -16,10 +16,11 @@ CREATE TABLE IF NOT EXISTS trades (
     trailing_high REAL
 );
 
--- Future work: signals, daily_stats, weekly_stats, suggestions are defined but not yet
--- written to by the pipeline. signals should be populated at trade entry (insert_signal
--- in tools/database.py). daily_stats/weekly_stats are intended for performance tracking.
--- suggestions is for parameter-tuning feedback. Implement when reporting is prioritised.
+-- As of v1.14: signals (insert_signal called from team_leader.place_order on every
+-- fill and rejection), daily_stats (upsert_daily_stat from the monitor's end-of-pass),
+-- and monitor_actions (record_monitor_action per-iteration) are all populated. Still
+-- empty: weekly_stats (deferred until daily_stats has soak data to aggregate) and
+-- suggestions (for parameter-tuning feedback; needs an offline tuning loop first).
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
