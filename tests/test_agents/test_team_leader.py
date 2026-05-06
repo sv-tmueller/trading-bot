@@ -1177,11 +1177,18 @@ def test_place_order_broker_error_writes_signal_row_with_triggered_entry_0(db_co
     mock_client = MagicMock()
     mock_client.messages.create.side_effect = [tool_response, final_response]
 
+    # Mock BOTH `place_market_order` (legacy path, used for non-bracket sells)
+    # AND `place_parent_market_order` (the actual call site for buys post-#133).
+    # Pre-#168 only the legacy mock was present, so the live broker was reached
+    # for buy paths under this test — exactly the failure mode the
+    # CLAUDE_AGENT_NO_BROKER guard now intercepts.
     with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
          patch("tools.broker.get_current_price", return_value=150.0), \
          patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
          patch("tools.broker.get_alpaca_positions", return_value=[]), \
          patch("tools.broker.place_market_order",
+               side_effect=BrokerSubmitError("insufficient buying power")), \
+         patch("tools.broker.place_parent_market_order",
                side_effect=BrokerSubmitError("insufficient buying power")), \
          patch("tools.notifications.notify_order_rejected"):
         agent = TeamLeaderAgent()

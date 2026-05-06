@@ -37,6 +37,46 @@ class BrokerOcoSubmitError(Exception):
     pass
 
 
+class BrokerCallBlockedError(Exception):
+    """Raised when a `tools/broker.py` submission helper is called while the
+    agent-context safety guard (`CLAUDE_AGENT_NO_BROKER` env var, issue #168)
+    is active.
+
+    This is the mechanical guard that prevents agent-spawned `pytest`,
+    `python -c`, or `python main.py scan` invocations from reaching the live
+    Alpaca paper account. Production cron leaves the env var UNSET; the test
+    suite sets it via an autouse conftest fixture so any forgotten mock fails
+    fast instead of submitting a real order.
+
+    If you see this in production, an env var is set when it shouldn't be —
+    check `/opt/trading-bot/.env` and the systemd / cron environment. To use
+    the broker helpers legitimately from an interactive shell, unset the var:
+    `unset CLAUDE_AGENT_NO_BROKER`.
+    """
+    pass
+
+
+_BROKER_GUARD_ENV = "CLAUDE_AGENT_NO_BROKER"
+
+
+def _check_broker_guard(fn_name: str, detail: str = "") -> None:
+    """Guard helper — call FIRST in every broker submission helper.
+
+    Raises `BrokerCallBlockedError` with a message that names the function
+    and the env var, so an operator seeing the error knows exactly what
+    fired and how to disable it for legitimate use.
+    """
+    if settings.is_claude_agent_no_broker():
+        suffix = f" call: {detail}" if detail else ""
+        raise BrokerCallBlockedError(
+            f"{fn_name}{suffix} blocked: {_BROKER_GUARD_ENV} is set. "
+            f"This is the agent-context safety guard from issue #168. "
+            f"Production cron leaves {_BROKER_GUARD_ENV} unset; pytest "
+            f"sets it via an autouse fixture. To call the broker from an "
+            f"interactive shell, `unset {_BROKER_GUARD_ENV}`."
+        )
+
+
 # Alpaca order statuses that mean "this order is never going to fill" — terminal
 # non-fill outcomes that must surface to the caller as BrokerSubmitError so the
 # existing rejection path in team_leader.place_order kicks in.
@@ -113,6 +153,7 @@ def place_parent_market_order(ticker: str, shares: int, side: str) -> dict:
     Alpaca brackets are not used because they commit children to the
     pre-order quote at submission, breaking the realised-R:R invariant.
     """
+    _check_broker_guard("place_parent_market_order", f"({ticker}, {shares}, {side})")
     if side not in ("buy", "sell"):
         raise ValueError(f"Invalid order side: {side!r}. Must be 'buy' or 'sell'.")
     client = get_trading_client()
@@ -188,6 +229,10 @@ def place_oco_brackets(
     surfacing the failure (notify_error) and recording the trade so the
     position monitor's soft-stop can act as the recovery layer.
     """
+    _check_broker_guard(
+        "place_oco_brackets",
+        f"({ticker}, {shares}, parent_side={parent_side})",
+    )
     if parent_side not in ("buy", "sell"):
         raise ValueError(f"Invalid parent_side: {parent_side!r}. Must be 'buy' or 'sell'.")
     if shares <= 0:
@@ -257,6 +302,7 @@ def place_market_order(
     The shape of the return value is unchanged from #132:
     ``{"order_id": str, "fill_price": float | None}``.
     """
+    _check_broker_guard("place_market_order", f"({ticker}, {shares}, {side})")
     parent = place_parent_market_order(ticker, shares, side)
 
     is_bracket = stop_price is not None and take_profit_price is not None
@@ -291,6 +337,7 @@ def cancel_all_orders() -> list[dict]:
     on broker error so the panic command exits non-zero (the operator must see
     failures, never a silent swallow).
     """
+    _check_broker_guard("cancel_all_orders")
     client = get_trading_client()
     responses = client.cancel_orders()
     return [
@@ -312,6 +359,7 @@ def liquidate_all_positions() -> list[dict]:
     close-order summaries. Raises on broker error so the panic command exits
     non-zero.
     """
+    _check_broker_guard("liquidate_all_positions")
     client = get_trading_client()
     responses = client.close_all_positions(cancel_orders=True)
     return [

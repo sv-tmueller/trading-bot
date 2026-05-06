@@ -16,6 +16,20 @@ from tools.broker import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_agent_no_broker_for_helper_unit_tests(monkeypatch):
+    """Module-scoped opt-out from the suite-wide `CLAUDE_AGENT_NO_BROKER`
+    guard (issue #168). The tests in this file are unit tests for the
+    broker helpers themselves — every call mocks `get_trading_client`, so
+    no live broker is ever reached. The guard is for *escaped* callers
+    (forgotten mocks in other test files); the helper unit tests
+    intentionally exercise the full helper body.
+
+    The dedicated guard tests live in `test_broker_guard.py`.
+    """
+    monkeypatch.delenv("CLAUDE_AGENT_NO_BROKER", raising=False)
+
+
 def test_place_market_order_buy():
     mock_client = MagicMock()
     mock_order = MagicMock()

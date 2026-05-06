@@ -73,6 +73,7 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 | Trailing distance (× ATR) | `TRAILING_STOP_ATR_MULT` | 1.5 | [0.5, 5.0] |
 | Earnings blackout window | `EARNINGS_BLACKOUT_DAYS` | 0 (off) | [0, 14] — skip entries within N days of next/last earnings |
 | Trading kill switch | `TRADING_PAUSED` | `false` | `true` halts new entries; monitor still runs |
+| Agent-context broker guard | `CLAUDE_AGENT_NO_BROKER` | unset (off) | Set to `1` in Engineer/QA subagent contexts to mechanically block all `tools/broker.py` submission helpers (raises `BrokerCallBlockedError` instead of reaching live Alpaca). Production cron leaves UNSET; pytest sets it via an autouse conftest fixture. Defense-in-depth on top of the docs/skill rule from #150 (#168) |
 | Fill-poll timeout (s) | `FILL_POLL_TIMEOUT_S` | 10 | [1.0, 60.0] — how long `place_market_order` waits for the actual broker fill before storing the pre-order quote as `entry_price` (#132) |
 | Fill-poll interval (s) | `FILL_POLL_INTERVAL_S` | 0.5 | [0.05, 5.0] — cadence of `get_order_by_id` polls within the timeout window |
 
