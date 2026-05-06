@@ -557,3 +557,86 @@ def test_reconcile_failure_does_not_block_scan(db_conn):
     assert mock_notify_error.called
     # But agents still ran
     mi_mock.run.assert_called_once()
+
+
+def test_run_morning_scan_passes_deterministic_outcomes_to_notify(db_conn):
+    """Issue #139: main.py must use the leader's `order_outcomes`, not risk_review's `approved` count.
+
+    Reproduces the 2026-05-05 scenario where risk_review approved 3 candidates but the
+    exposure gate inside team_leader rejected 2 of them. The notify_scan_complete call
+    must reflect the deterministic outcome (1 approved / 2 rejected), not risk_review's
+    candidate-level approval count (which would say 3 approved / 0 rejected).
+    """
+    market_briefing = {
+        "market_context": "bullish",
+        "watchlist_summary": "3 movers",
+        "flagged_positions": [],
+        "top_movers": ["AMD", "AAPL", "SHEL"],
+    }
+    candidates = {
+        "candidates": [
+            {"ticker": "AMD", "score": 0.8},
+            {"ticker": "AAPL", "score": 0.7},
+            {"ticker": "SHEL", "score": 0.6},
+        ],
+        "tldr": "3 candidates",
+        "tickers_to_watch": [],
+    }
+    reviewed = {
+        "approved": [
+            {"ticker": "AMD", "shares": 50, "stop_loss": 140.0, "take_profit": 160.0, "atr": 2.0},
+            {"ticker": "AAPL", "shares": 101, "stop_loss": 140.0, "take_profit": 160.0, "atr": 2.0},
+            {"ticker": "SHEL", "shares": 358, "stop_loss": 140.0, "take_profit": 160.0, "atr": 2.0},
+        ],
+        "rejected": [],
+    }
+    # Leader: LLM prose claims everything was placed (the bug). Deterministic outcomes
+    # disagree: only AMD got through, AAPL and SHEL were exposure-gate rejected.
+    decisions = {
+        "decisions": [
+            {"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "go"},
+            {"ticker": "AAPL", "action": "buy", "shares": 101, "reasoning": "go"},
+            {"ticker": "SHEL", "action": "buy", "shares": 358, "reasoning": "go"},
+        ],
+        "summary": "all 3 placed (LLM hallucination)",
+        "order_outcomes": {
+            "buy": [{"ticker": "AMD", "shares": 50}],
+            "sell": [],
+            "rejected": [
+                {"ticker": "AAPL", "shares": 101, "side": "buy", "reason": "exposure cap"},
+                {"ticker": "SHEL", "shares": 358, "side": "buy", "reason": "exposure cap"},
+            ],
+            "dry_run": [],
+        },
+    }
+
+    mi_mock = _make_agent_mock(market_briefing)
+    strategy_mock = _make_agent_mock(candidates)
+    risk_mock = _make_agent_mock(reviewed)
+    leader_mock = _make_agent_mock(decisions)
+
+    with patch("main.is_trading_day", return_value=True), \
+         patch("main.get_db", return_value=db_conn), \
+         patch("main.MarketIntelligenceAgent", return_value=mi_mock), \
+         patch("main.StrategyAgent", return_value=strategy_mock), \
+         patch("main.RiskReviewAgent", return_value=risk_mock), \
+         patch("main.TeamLeaderAgent", return_value=leader_mock), \
+         patch("main.get_daily_token_costs", return_value={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.05}), \
+         patch("main.notify_scan_complete") as mock_notify, \
+         patch("main.notify_error"), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.database.get_open_trades", return_value=[]):
+        from main import run_morning_scan
+        run_morning_scan()
+
+    mock_notify.assert_called_once()
+    kwargs = mock_notify.call_args.kwargs
+    # The deterministic per-ticker outcome dict was forwarded.
+    assert "order_outcomes" in kwargs
+    assert kwargs["order_outcomes"]["buy"] == [{"ticker": "AMD", "shares": 50}]
+    rej_tickers = sorted(e["ticker"] for e in kwargs["order_outcomes"]["rejected"])
+    assert rej_tickers == ["AAPL", "SHEL"]
+    # The summary counts use the deterministic outcomes — NOT risk_review's
+    # candidate-level approval count of 3, NOT the LLM's hallucinated all-placed claim.
+    assert kwargs["approved"] == 1   # only AMD actually placed
+    assert kwargs["rejected"] == 2   # AAPL + SHEL deterministically rejected

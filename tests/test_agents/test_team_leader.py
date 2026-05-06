@@ -1602,3 +1602,446 @@ def test_oco_bracket_uses_post_fill_validation_skipped_if_invalid(db_conn):
     assert err_args[0] == "team_leader"
     assert "post-fill bracket invalid" in err_args[1]
     assert "AMD" in err_args[1]
+
+
+# --- Issue #139: deterministic per-ticker outcome counts ---
+#
+# Background: PR #127 / issue #123 fixed dry-run summary tense (the LLM was
+# saying "executed successfully" when no order was placed). Issue #139 is the
+# same family for the LIVE path:
+#   - 2026-05-04: LLM said AMD bought; AMD was actually rejected by exposure gate.
+#   - 2026-05-05: deterministic Discord alert said "Order rejected — AAPL/SHEL"
+#     (correct), but LLM trailing summary said "0 rejected" (wrong).
+# Fix (Option 2 from the issue): generate per-ticker BUY/REJECTED counts from
+# the place_order tool_results directly, in deterministic Python code. The LLM's
+# prose still appears in result["summary"] / agent_logs.full_reasoning but the
+# operator-facing structured counts come from result["order_outcomes"].
+
+
+def test_live_path_records_buy_outcome_when_order_accepted(db_conn):
+    """Single buy that passes the safety stack → outcomes['buy'] has the ticker."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_a", "AMD", 100, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 100, "reasoning": "go"}], "summary": "1 placed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_parent_market_order",
+               return_value={"order_id": "ord-139-a", "fill_price": 150.0}), \
+         patch("tools.broker.place_oco_brackets",
+               return_value={"order_id": "ord-oco-139-a", "status": "submitted"}):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+        )
+
+    outcomes = result["order_outcomes"]
+    assert outcomes["buy"] == [{"ticker": "AMD", "shares": 100}]
+    assert outcomes["rejected"] == []
+    assert outcomes["sell"] == []
+    assert outcomes["dry_run"] == []
+
+
+def test_live_path_records_rejection_when_exposure_gate_fires(db_conn):
+    """Single buy blocked by the exposure gate → outcomes['rejected'] has the ticker + reason."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_b", "SHEL", 200, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "blocked"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    # 200 * $150 = $30k = 30% of $100k → over 20% cap
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_parent_market_order") as mock_parent, \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: SHEL 200",
+            conn=db_conn,
+            pending_atrs={"SHEL": 2.0},
+        )
+
+    mock_parent.assert_not_called()
+    outcomes = result["order_outcomes"]
+    assert outcomes["buy"] == []
+    assert len(outcomes["rejected"]) == 1
+    rej = outcomes["rejected"][0]
+    assert rej["ticker"] == "SHEL"
+    assert rej["shares"] == 200
+    assert rej["side"] == "buy"
+    assert "exposure cap" in rej["reason"]
+
+
+def test_live_path_count_reflects_deterministic_rejections_not_llm_prose(db_conn):
+    """REGRESSION for 2026-05-05: LLM said '0 rejected' but 2 orders were rejected by the gate.
+
+    Mirrors PR #127's `test_dry_run_still_runs_exposure_gate_and_rejects_over_cap` for the
+    live path. Pinned by issue #139 evidence:
+      - Discord showed `🛑 Order rejected — AAPL 101sh` and `🛑 Order rejected — SHEL 358sh`
+      - LLM trailing summary line said `0 rejected`
+      - Operator-facing count was wrong because it came from LLM prose, not the safety stack.
+
+    Setup mirrors that day: 1 candidate fits the cap and gets placed, 2 candidates exceed
+    the remaining budget and get rejected. The LLM is given a deliberately-misleading prose
+    summary that claims everything was fine — the structured `order_outcomes` must contradict
+    it deterministically.
+    """
+    tool_response = _make_tool_response(
+        _make_place_order_tool_use("tu_139_c1", "AMD", 50, "buy"),    # 50*$150=$7.5k → 7.5% (fits)
+        _make_place_order_tool_use("tu_139_c2", "MSFT", 50, "buy"),   # +$7.5k → 15% (fits)
+        _make_place_order_tool_use("tu_139_c3", "AAPL", 100, "buy"),  # +$15k → 30% (REJECT)
+        _make_place_order_tool_use("tu_139_c4", "SHEL", 100, "buy"),  # +$15k → 30% (REJECT)
+    )
+    # Note the deliberately-wrong LLM prose: it says all 4 were placed and 0 rejected,
+    # exactly mirroring the 2026-05-05 hallucination pattern.
+    final_response = make_mock_claude_response(
+        '{"decisions": ['
+        '{"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "go"},'
+        '{"ticker": "MSFT", "action": "buy", "shares": 50, "reasoning": "go"},'
+        '{"ticker": "AAPL", "action": "buy", "shares": 100, "reasoning": "go"},'
+        '{"ticker": "SHEL", "action": "buy", "shares": 100, "reasoning": "go"}'
+        '], "summary": "all 4 orders placed successfully — 0 rejected"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    live_positions = []
+
+    def fake_get_positions():
+        return list(live_positions)
+
+    def fake_parent(ticker, shares, side):
+        live_positions.append({"ticker": ticker, "qty": shares, "avg_entry_price": 150.0})
+        return {"order_id": f"ord-{ticker}", "fill_price": 150.0}
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", side_effect=fake_get_positions), \
+         patch("tools.broker.place_parent_market_order", side_effect=fake_parent) as mock_parent, \
+         patch("tools.broker.place_oco_brackets",
+               return_value={"order_id": "ord-oco", "status": "submitted"}), \
+         patch("tools.notifications.notify_order_rejected") as mock_notify_rejected:
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: 4 candidates",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0, "MSFT": 2.0, "AAPL": 2.0, "SHEL": 2.0},
+        )
+
+    # The deterministic safety stack accepted 2 and rejected 2.
+    assert mock_parent.call_count == 2
+    assert mock_notify_rejected.call_count == 2
+
+    outcomes = result["order_outcomes"]
+    placed = sorted(e["ticker"] for e in outcomes["buy"])
+    rejected = sorted(e["ticker"] for e in outcomes["rejected"])
+    assert placed == ["AMD", "MSFT"]
+    assert rejected == ["AAPL", "SHEL"]
+    # Pin the bug: even though the LLM prose claims "0 rejected", the
+    # deterministic count says 2.
+    assert "0 rejected" in result["summary"]   # LLM still hallucinates
+    assert len(outcomes["rejected"]) == 2       # ground truth differs
+
+
+def test_live_path_zero_fills_one_rejection_locks_2026_05_04_bug(db_conn):
+    """REGRESSION for 2026-05-04: LLM said 'order placed / executed successfully' for AMD.
+
+    Reality on that day:
+      - META was at ~19% NAV (close to the 20% cap)
+      - AMD candidate alone would have pushed past 20%
+      - exposure gate returned `{"order_id": None, "status": "rejected", "reason": "exposure cap..."}`
+      - LLM prose said "Full go decision — order placed. A market buy order for 41 shares was executed successfully."
+      - `agent_logs.output_summary` row #41 cemented the false claim
+      - `trades` table had no AMD row for 2026-05-04 entry_date
+
+    Test reconstructs the scenario: 1 existing position close to the cap, 1 buy candidate
+    that breaches it. The LLM prose deliberately claims success. The structured outcomes
+    must say 0 buys, 1 rejection — operator/audit cannot be misled even if the LLM
+    hallucinates.
+    """
+    # META-style position: 19% of $100k = $19k notional
+    existing_meta = [{"ticker": "META", "qty": 100, "avg_entry_price": 190.0}]
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_d", "AMD", 41, "buy"))
+    # The exact hallucination pattern from 2026-05-04 agent_logs row #41:
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 41, "reasoning": "Full go decision"}],'
+        ' "summary": "Full go decision — order placed. A market buy order for 41 shares was executed successfully."}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    # 41 * $150 = $6.15k → +6% → 19%+6%=25% > 20% cap → REJECT
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=existing_meta), \
+         patch("tools.broker.place_parent_market_order") as mock_parent, \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 41",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+        )
+
+    # The deterministic gate must have blocked the order.
+    mock_parent.assert_not_called()
+    rows = db_conn.execute("SELECT ticker FROM trades").fetchall()
+    assert rows == []   # no AMD row, matching the actual 2026-05-04 DB state
+
+    outcomes = result["order_outcomes"]
+    # Ground truth: 0 buys, 1 rejection.
+    assert outcomes["buy"] == []
+    assert len(outcomes["rejected"]) == 1
+    assert outcomes["rejected"][0]["ticker"] == "AMD"
+    assert "exposure cap" in outcomes["rejected"][0]["reason"]
+    # The LLM prose still claims success (this is the bug we're regressing against —
+    # the prose IS allowed to be wrong, the deterministic count must NOT be).
+    assert "executed successfully" in result["summary"]
+    # The deterministic count contradicts the prose, which is the whole point.
+    assert len(outcomes["buy"]) == 0
+
+
+def test_dry_run_path_records_dry_run_outcome(db_conn):
+    """PR #127 dry-run contract is preserved: dry-run buys land in outcomes['dry_run']."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_e", "AMD", 50, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "would have"}],'
+        ' "summary": "would have bought AMD"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_parent_market_order") as mock_parent:
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 50",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+            dry_run=True,
+        )
+
+    # Dry-run skips the broker call (PR #127 invariant).
+    mock_parent.assert_not_called()
+    outcomes = result["order_outcomes"]
+    assert outcomes["dry_run"] == [{"ticker": "AMD", "shares": 50, "side": "buy"}]
+    assert outcomes["buy"] == []
+    assert outcomes["rejected"] == []
+
+
+def test_dry_run_over_cap_lands_in_rejected_not_dry_run(db_conn):
+    """PR #127 contract: dry-run still runs the exposure gate. Over-cap dry-run goes to rejected."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_f", "SHEL", 200, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "would have been blocked"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: SHEL 200",
+            conn=db_conn,
+            pending_atrs={"SHEL": 2.0},
+            dry_run=True,
+        )
+
+    outcomes = result["order_outcomes"]
+    assert outcomes["dry_run"] == []   # gate fired before dry-run sentinel
+    assert len(outcomes["rejected"]) == 1
+    assert outcomes["rejected"][0]["ticker"] == "SHEL"
+
+
+def test_broker_rejection_lands_in_rejected_outcome(db_conn):
+    """BrokerSubmitError → outcome bucket is `rejected`, same category as exposure-gate refusals."""
+    from tools.broker import BrokerSubmitError
+
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_g", "AMD", 50, "buy"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "broker said no"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_parent_market_order",
+               side_effect=BrokerSubmitError("insufficient buying power")), \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: AMD 50",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},
+        )
+
+    outcomes = result["order_outcomes"]
+    assert outcomes["buy"] == []
+    assert len(outcomes["rejected"]) == 1
+    rej = outcomes["rejected"][0]
+    assert rej["ticker"] == "AMD"
+    assert "broker rejected" in rej["reason"]
+    assert "insufficient buying power" in rej["reason"]
+
+
+def test_mixed_bag_one_buy_one_exposure_reject_one_broker_reject(db_conn):
+    """1 buy succeeds, 1 rejected by exposure gate, 1 rejected by broker → all categories populated correctly."""
+    from tools.broker import BrokerSubmitError
+
+    tool_response = _make_tool_response(
+        _make_place_order_tool_use("tu_139_h1", "AMD", 50, "buy"),    # 50*$150=$7.5k → 7.5% (fits)
+        _make_place_order_tool_use("tu_139_h2", "MSFT", 50, "buy"),   # broker will reject
+        _make_place_order_tool_use("tu_139_h3", "GOOG", 200, "buy"),  # exposure-gate reject (alone over cap)
+    )
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "go"}], "summary": "mixed"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    live_positions = []
+
+    def fake_get_positions():
+        return list(live_positions)
+
+    def fake_parent(ticker, shares, side):
+        if ticker == "MSFT":
+            raise BrokerSubmitError("synthetic broker outage")
+        live_positions.append({"ticker": ticker, "qty": shares, "avg_entry_price": 150.0})
+        return {"order_id": f"ord-{ticker}", "fill_price": 150.0}
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", side_effect=fake_get_positions), \
+         patch("tools.broker.place_parent_market_order", side_effect=fake_parent), \
+         patch("tools.broker.place_oco_brackets",
+               return_value={"order_id": "ord-oco", "status": "submitted"}), \
+         patch("tools.notifications.notify_order_rejected"):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Approved: 3 mixed candidates",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0, "MSFT": 2.0, "GOOG": 2.0},
+        )
+
+    outcomes = result["order_outcomes"]
+    assert [e["ticker"] for e in outcomes["buy"]] == ["AMD"]
+    rejected_tickers = sorted(e["ticker"] for e in outcomes["rejected"])
+    assert rejected_tickers == ["GOOG", "MSFT"]
+    # Reasons distinguish the two rejection sources for forensic clarity.
+    by_ticker = {e["ticker"]: e["reason"] for e in outcomes["rejected"]}
+    assert "broker rejected" in by_ticker["MSFT"]
+    assert "exposure cap" in by_ticker["GOOG"]
+
+
+def test_outcomes_reset_between_runs(db_conn):
+    """Re-using a TeamLeaderAgent instance must NOT accumulate outcomes across cycles."""
+    tool_response_first = _make_tool_response(_make_place_order_tool_use("tu_139_i1", "AMD", 50, "buy"))
+    final_response_first = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "buy", "shares": 50, "reasoning": "1"}], "summary": "first"}'
+    )
+    tool_response_second = _make_tool_response(_make_place_order_tool_use("tu_139_i2", "MSFT", 50, "buy"))
+    final_response_second = make_mock_claude_response(
+        '{"decisions": [{"ticker": "MSFT", "action": "buy", "shares": 50, "reasoning": "2"}], "summary": "second"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        tool_response_first, final_response_first,
+        tool_response_second, final_response_second,
+    ]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.get_portfolio_value", return_value=100_000.0), \
+         patch("tools.broker.get_alpaca_positions", return_value=[]), \
+         patch("tools.broker.place_parent_market_order",
+               return_value={"order_id": "ord-x", "fill_price": 150.0}), \
+         patch("tools.broker.place_oco_brackets",
+               return_value={"order_id": "ord-oco-x", "status": "submitted"}):
+        agent = TeamLeaderAgent()
+        result1 = agent.run("Approved: AMD 50", conn=db_conn, pending_atrs={"AMD": 2.0})
+        result2 = agent.run("Approved: MSFT 50", conn=db_conn, pending_atrs={"MSFT": 2.0})
+
+    # Each cycle reports only its own outcome — no leakage from cycle 1 into cycle 2.
+    assert [e["ticker"] for e in result1["order_outcomes"]["buy"]] == ["AMD"]
+    assert [e["ticker"] for e in result2["order_outcomes"]["buy"]] == ["MSFT"]
+
+
+def test_outcomes_present_on_no_tool_use_path(db_conn):
+    """When the LLM doesn't call any tools at all, outcomes is still present and empty."""
+    final_response = make_mock_claude_response(
+        '{"decisions": [], "summary": "no candidates worth placing"}'
+    )
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = final_response
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client):
+        agent = TeamLeaderAgent()
+        result = agent.run("Approved: nothing", conn=db_conn)
+
+    outcomes = result["order_outcomes"]
+    assert outcomes["buy"] == []
+    assert outcomes["rejected"] == []
+    assert outcomes["sell"] == []
+    assert outcomes["dry_run"] == []
+
+
+def test_sell_side_records_sell_outcome_and_skips_rejected(db_conn):
+    """A successful sell lands in outcomes['sell'], not buy or rejected."""
+    tool_response = _make_tool_response(_make_place_order_tool_use("tu_139_j", "AMD", 100, "sell"))
+    final_response = make_mock_claude_response(
+        '{"decisions": [{"ticker": "AMD", "action": "sell", "shares": 100, "reasoning": "trim"}], "summary": "sold"}'
+    )
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [tool_response, final_response]
+
+    with patch("agents.base.anthropic.Anthropic", return_value=mock_client), \
+         patch("tools.broker.get_current_price", return_value=150.0), \
+         patch("tools.broker.place_market_order",
+               return_value={"order_id": "ord-sell", "fill_price": 150.0}):
+        agent = TeamLeaderAgent()
+        result = agent.run(
+            "Sell: AMD 100",
+            conn=db_conn,
+            pending_atrs={"AMD": 2.0},   # ignored on sells
+        )
+
+    outcomes = result["order_outcomes"]
+    assert outcomes["sell"] == [{"ticker": "AMD", "shares": 100}]
+    assert outcomes["buy"] == []
+    assert outcomes["rejected"] == []

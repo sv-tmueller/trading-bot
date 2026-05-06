@@ -31,18 +31,44 @@ def notify_scan_complete(
     decisions: list,
     cost_usd: float,
     dry_run: bool = False,
+    order_outcomes: dict = None,
 ) -> None:
+    """Post the morning-scan summary to Discord.
+
+    `approved` and `rejected` are deterministic per-ticker counts (issue #139):
+    `approved` = orders the broker accepted (or "would accept" in dry-run);
+    `rejected` = orders blocked by the safety stack (exposure gate, invalid
+    bracket, broker submit error). `order_outcomes`, when provided, is the
+    per-ticker dict from `team_leader.run()` and unlocks per-ticker BUY/SELL
+    rendering anchored to the deterministic ledger rather than the LLM's prose
+    `decisions` list. Falls back to the legacy `decisions`-driven rendering
+    when `order_outcomes` is None so old callers (and tests) still work.
+    """
     if dry_run:
         lines = [f"🧪 **Morning Scan (DRY RUN) — {date}**"]
     else:
         lines = [f"🤖 **Morning Scan — {date}**"]
     lines.append(f"📈 {tldr or market_context}")
-    for d in decisions:
-        action = d.get("action", "").upper()
-        ticker = d.get("ticker", "")
-        shares = d.get("shares", "")
-        emoji = "🟢" if action == "BUY" else "🔴"
-        lines.append(f"{emoji} {action} {ticker} — {shares} shares")
+    if order_outcomes is not None:
+        # Deterministic rendering — one line per actual broker outcome.
+        for entry in order_outcomes.get("buy", []):
+            lines.append(f"🟢 BUY {entry['ticker']} — {entry['shares']} shares")
+        for entry in order_outcomes.get("sell", []):
+            lines.append(f"🔴 SELL {entry['ticker']} — {entry['shares']} shares")
+        if dry_run:
+            for entry in order_outcomes.get("dry_run", []):
+                action = entry.get("side", "buy").upper()
+                emoji = "🟢" if action == "BUY" else "🔴"
+                lines.append(f"{emoji} {action} {entry['ticker']} — {entry['shares']} shares (DRY RUN)")
+    else:
+        # Legacy path — reads the LLM's `decisions` list. Kept for backwards
+        # compatibility but considered untrusted (issue #139).
+        for d in decisions:
+            action = d.get("action", "").upper()
+            ticker = d.get("ticker", "")
+            shares = d.get("shares", "")
+            emoji = "🟢" if action == "BUY" else "🔴"
+            lines.append(f"{emoji} {action} {ticker} — {shares} shares")
     lines.append(f"✅ {approved} approved | ❌ {rejected} rejected | 💰 ${cost_usd:.4f}")
     _post("\n".join(lines))
 
