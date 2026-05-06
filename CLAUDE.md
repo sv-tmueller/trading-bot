@@ -72,6 +72,8 @@ SQLite via `storage/schema.sql`. All queries use named parameters (`:key` syntax
 
 The `agent_logs` table tracks every agent run with input/output token counts for cost tracking. `get_daily_token_costs()` in `tools/database.py` calculates USD cost using claude-sonnet-4-6 pricing ($3/M input, $15/M output).
 
+As of v1.14.0, `monitor_actions`, `signals`, and `daily_stats` are populated rows — written by `position_monitor` (`record_monitor_action`, `upsert_daily_stat`) and `team_leader.place_order` (`insert_signal`, on every fill *and* every rejection with `triggered_entry=1/0`). `weekly_stats` and `suggestions` remain empty pending future work. `trades.entry_price` is the broker's `filled_avg_price` (post-poll), not the pre-order quote.
+
 ### Data feed
 
 Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataFeed.SIP`. Controlled via `DATA_FEED` env var (default: `iex`). Both `tools/market_data.py` and `tools/broker.py` read `settings.DATA_FEED`.
@@ -82,7 +84,7 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 
 ### Position monitor
 
-`monitor/position_monitor.py` is **rule-based only** (no LLM). Runs hourly via cron. Checks stop-loss → take-profit → max-hold in that priority order. Imports are at module level (not inside functions) so they can be patched in tests. Each per-trade iteration in `run_monitor` is wrapped in try/except — a transient broker/network blip on one ticker fires `notify_error` and records a `hold/skipped_error` `MonitorAction`, but the loop continues so the rest of the book still gets its soft-stop check.
+`monitor/position_monitor.py` is **rule-based only** (no LLM). Runs hourly via cron. Checks stop-loss → take-profit → max-hold in that priority order. Imports are at module level (not inside functions) so they can be patched in tests. Each per-trade iteration in `run_monitor` is wrapped in try/except — a transient broker/network blip on one ticker fires `notify_error` and records a `hold/skipped_error` `MonitorAction`, but the loop continues so the rest of the book still gets its soft-stop check. The top-of-loop `get_alpaca_positions()` call has its own try/except wrapper (fail-CLOSED): a broker outage on the very first call skips the whole cycle, suppresses the `daily_stats` upsert, and waits for the next hourly cron fire (PR #145). Each per-trade outcome is persisted via `record_monitor_action()` to `monitor_actions`; the end-of-pass summary is upserted to `daily_stats` via `upsert_daily_stat()`.
 
 ### Settings
 
@@ -119,6 +121,8 @@ Specifically:
 - Panic CLI is the deterministic kill button: `main.py panic --cancel-orders | --liquidate --confirm | --pause` calls Alpaca and writes `.env` directly. No agents are imported, no `Anthropic()` is instantiated, no risk math runs. Audit row in `agent_logs` (`agent_name="panic"`) is written before the broker call and updated in `finally` with the per-action result, so a partial run is recoverable from the DB. `--pause` writes to `.env` anchored at the repo root, not cwd.
 - `team_leader.place_order` runs the deterministic safety stack — `check_exposure_for_new_order` against broker truth, `validate_bracket_params` — in **both** the live path and `dry_run=True`. Only the broker SUBMIT and DB INSERT are skipped in dry-run. This makes `python main.py scan --dry-run` an honest smoke test: an over-cap or malformed candidate is rejected the same way it would be live, instead of being green-lit and only failing under real cron.
 - Tool exceptions cannot crash the scan: `BaseAgent._handle_tool_calls` returns failures (and the unknown-tool branch) as `tool_result` blocks with `is_error: True` so the LLM can react instead of the morning pipeline aborting mid-loop.
+- Team Leader Discord summary counts and `agent_logs.output_summary` are derived deterministically from `place_order` tool_results (a per-run `_order_outcomes` ledger), not from LLM prose. The system-prompt instruction is belt-and-braces only — structured counts are the primary mechanism, so a hallucinated narrative cannot misreport what the safety stack actually decided (PR #146 / #139).
+- Position monitor's top-of-loop `get_alpaca_positions()` call is wrapped in its own try/except. A transient broker error fails CLOSED: the cycle returns an empty action list, the `daily_stats` upsert is skipped, `notify_error` fires, and the next hourly cron fire retries from scratch. Per-iteration isolation from #118 is preserved unchanged (PR #145 / #134).
 
 **Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
 
