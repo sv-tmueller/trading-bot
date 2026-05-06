@@ -84,3 +84,16 @@ if not 0.5 <= TRAILING_STOP_ATR_MULT <= 5.0:
 EARNINGS_BLACKOUT_DAYS: int = int(os.getenv("EARNINGS_BLACKOUT_DAYS", "0"))
 if not 0 <= EARNINGS_BLACKOUT_DAYS <= 14:
     raise ValueError(f"EARNINGS_BLACKOUT_DAYS={EARNINGS_BLACKOUT_DAYS} outside safe bounds [0, 14]")
+
+# How long `place_market_order` waits for the broker to confirm the parent fill
+# (see #132). Market orders during regular hours typically fill in <1s; the
+# small ceiling keeps the morning scan from blocking if Alpaca lags. On
+# timeout the call returns fill_price=None so the caller can fall back to the
+# pre-order quote and log a warning. Poll cadence keeps the loop responsive
+# without hammering the broker.
+FILL_POLL_TIMEOUT_S: float = float(os.getenv("FILL_POLL_TIMEOUT_S", "10"))
+if not 1.0 <= FILL_POLL_TIMEOUT_S <= 60.0:
+    raise ValueError(f"FILL_POLL_TIMEOUT_S={FILL_POLL_TIMEOUT_S} outside safe bounds [1.0, 60.0]")
+FILL_POLL_INTERVAL_S: float = float(os.getenv("FILL_POLL_INTERVAL_S", "0.5"))
+if not 0.05 <= FILL_POLL_INTERVAL_S <= 5.0:
+    raise ValueError(f"FILL_POLL_INTERVAL_S={FILL_POLL_INTERVAL_S} outside safe bounds [0.05, 5.0]")

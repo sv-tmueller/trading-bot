@@ -218,7 +218,19 @@ Respond with JSON:
             order_id = order_result["order_id"]
             trade_id = None
             if side == "buy":
-                entry_price = order_result["fill_price"] if order_result["fill_price"] is not None else price  # Alpaca fills async; fill_price may be None on paper — pre-order quote is the fallback
+                # Issue #132: prefer the broker's actual filled_avg_price (now polled in
+                # tools.broker.place_market_order) so trades.entry_price reflects the real
+                # fill, not the pre-order quote. Fallback to the pre-order quote only on
+                # poll timeout (rare during regular hours) so the trade row is never lost.
+                fill_price = order_result.get("fill_price")
+                if fill_price is not None:
+                    entry_price = fill_price
+                else:
+                    entry_price = price
+                    print(
+                        f"[place_order] WARN {ticker} {shares}sh — broker fill not reported within "
+                        f"poll window; storing pre-order quote {price:.4f} as entry_price (#132)"
+                    )
                 trade_id = insert_trade(conn, {
                     "ticker": ticker,
                     "entry_date": date.today().isoformat(),

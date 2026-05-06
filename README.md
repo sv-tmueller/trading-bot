@@ -73,6 +73,8 @@ All three thresholds are env-driven — see Configure below. The current tuned p
 | Trailing distance (× ATR) | `TRAILING_STOP_ATR_MULT` | 1.5 | [0.5, 5.0] |
 | Earnings blackout window | `EARNINGS_BLACKOUT_DAYS` | 0 (off) | [0, 14] — skip entries within N days of next/last earnings |
 | Trading kill switch | `TRADING_PAUSED` | `false` | `true` halts new entries; monitor still runs |
+| Fill-poll timeout (s) | `FILL_POLL_TIMEOUT_S` | 10 | [1.0, 60.0] — how long `place_market_order` waits for the actual broker fill before storing the pre-order quote as `entry_price` (#132) |
+| Fill-poll interval (s) | `FILL_POLL_INTERVAL_S` | 0.5 | [0.05, 5.0] — cadence of `get_order_by_id` polls within the timeout window |
 
 ## Setup
 

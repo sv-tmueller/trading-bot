@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.data.enums import DataFeed
@@ -10,8 +12,68 @@ from config import settings
 
 
 class BrokerSubmitError(Exception):
-    """Raised when Alpaca rejects an order submission (insufficient BP, wash-trade, halted, etc.)."""
+    """Raised when Alpaca rejects an order submission (insufficient BP, wash-trade, halted, etc.).
+
+    Also raised post-submit if the broker reports a terminal non-fill status
+    (canceled / expired / rejected / suspended / stopped) so the caller's existing
+    rejection path fires (notify, no DB row).
+    """
     pass
+
+
+# Alpaca order statuses that mean "this order is never going to fill" — terminal
+# non-fill outcomes that must surface to the caller as BrokerSubmitError so the
+# existing rejection path in team_leader.place_order kicks in.
+# `partially_filled` is intentionally NOT in this set: a partial fill IS a fill,
+# and the broker's `filled_avg_price` is meaningful for the shares we got.
+_TERMINAL_NON_FILL_STATUSES: frozenset = frozenset(
+    {"canceled", "expired", "rejected", "suspended", "stopped"}
+)
+_TERMINAL_FILL_STATUSES: frozenset = frozenset({"filled", "partially_filled"})
+
+
+def _order_status_str(order) -> str:
+    """Coerce Alpaca SDK status (enum or str) to its lower-case string value."""
+    status = getattr(order, "status", None)
+    if status is None:
+        return ""
+    # OrderStatus enum exposes `.value`; raw strings pass through.
+    val = getattr(status, "value", status)
+    return str(val).lower()
+
+
+def _poll_for_fill(client: TradingClient, order_id: str, ticker: str) -> tuple:
+    """Poll `client.get_order_by_id` until terminal status or timeout.
+
+    Returns (filled_avg_price_or_none, status_string). Caller handles the
+    decision tree: filled → use price, terminal non-fill → raise, timeout →
+    fall back to pre-order quote.
+
+    Polling is bounded by `settings.FILL_POLL_TIMEOUT_S` (default 10s) and
+    paced by `settings.FILL_POLL_INTERVAL_S` (default 0.5s). Market orders
+    during regular hours typically resolve in <1s. We do NOT raise on poll
+    errors mid-loop (transient broker hiccups shouldn't kill the order we
+    already submitted) — we treat them as "no info this tick" and try again,
+    falling back to timeout behaviour if the loop expires.
+    """
+    deadline = time.monotonic() + settings.FILL_POLL_TIMEOUT_S
+    interval = settings.FILL_POLL_INTERVAL_S
+    last_status = ""
+    while time.monotonic() < deadline:
+        try:
+            order = client.get_order_by_id(order_id)
+        except Exception as e:
+            print(f"[poll_for_fill] {ticker} {order_id} get_order_by_id transient error: {e}")
+            time.sleep(interval)
+            continue
+        last_status = _order_status_str(order)
+        if last_status in _TERMINAL_FILL_STATUSES:
+            avg = getattr(order, "filled_avg_price", None)
+            return (float(avg) if avg is not None else None), last_status
+        if last_status in _TERMINAL_NON_FILL_STATUSES:
+            return None, last_status
+        time.sleep(interval)
+    return None, last_status  # timeout — last_status is whatever the broker last reported
 
 
 def get_trading_client() -> TradingClient:
@@ -60,8 +122,38 @@ def place_market_order(
     except Exception as e:
         print(f"[place_market_order] ALPACA REJECTED {ticker} {side} {shares}: {e}")
         raise BrokerSubmitError(str(e)) from e
-    fill_price = float(order.filled_avg_price) if order.filled_avg_price is not None else None
-    return {"order_id": str(order.id), "fill_price": fill_price}
+
+    order_id = str(order.id)
+
+    # `submit_order` returns immediately; the fill confirmation comes async
+    # (see #132 — Alpaca paper accepts in ~1 RTT, fills in another). Use the
+    # response's filled_avg_price if Alpaca already populated it (rare on
+    # paper), otherwise poll get_order_by_id until terminal status / timeout.
+    initial_avg = getattr(order, "filled_avg_price", None)
+    if initial_avg is not None:
+        return {"order_id": order_id, "fill_price": float(initial_avg)}
+
+    fill_price, terminal_status = _poll_for_fill(client, order_id, ticker)
+
+    if terminal_status in _TERMINAL_NON_FILL_STATUSES:
+        # Order will never fill → surface to caller as a broker-rejection so
+        # the existing notify/no-DB-row path runs.
+        msg = f"order {order_id} terminal status={terminal_status!r} (no fill)"
+        print(f"[place_market_order] ALPACA NON-FILL {ticker} {side} {shares}: {msg}")
+        raise BrokerSubmitError(msg)
+
+    if fill_price is None:
+        # Timeout (or no `filled_avg_price` despite a fill status — defensive).
+        # Don't raise: the order may still fill seconds later; we want the
+        # trade row to exist with a best-effort fill_price (None → caller
+        # falls back to pre-order quote and logs).
+        print(
+            f"[place_market_order] FILL POLL TIMEOUT {ticker} {side} {shares} "
+            f"order_id={order_id} last_status={terminal_status!r} after "
+            f"{settings.FILL_POLL_TIMEOUT_S}s — caller will fall back to pre-order quote"
+        )
+
+    return {"order_id": order_id, "fill_price": fill_price}
 
 
 def close_position(ticker: str) -> str:
