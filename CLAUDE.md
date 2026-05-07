@@ -23,7 +23,7 @@ This project uses the [`superpowers`](https://github.com/obra/superpowers) plugi
 | Implementing a single task | _(implementer prompt)_ | `engineer` subagent ([`.claude/agents/engineer.md`](.claude/agents/engineer.md)) |
 | Pass-1 review (spec compliance) | _(spec-reviewer prompt)_ | `spec-reviewer` subagent ([`.claude/agents/spec-reviewer.md`](.claude/agents/spec-reviewer.md)) |
 | Pass-2 review (quality + architectural invariants) | _(code-quality-reviewer prompt — quotes the architectural invariants verbatim)_ | `code-quality-reviewer` subagent ([`.claude/agents/code-quality-reviewer.md`](.claude/agents/code-quality-reviewer.md)) |
-| Test-driven discipline | `superpowers:test-driven-development` (+ `testing-anti-patterns`) | engineer (referenced from `.claude/agents/engineer.md`) |
+| Test-driven discipline | `superpowers:test-driven-development` (see also `testing-anti-patterns.md` inside that skill's directory — sibling reference, not a standalone skill) | engineer (referenced from `.claude/agents/engineer.md`) |
 | Root-cause-first debugging | `superpowers:systematic-debugging` | qa (failed-test triage); engineer (general debugging) |
 | Verifying claims before completion | `superpowers:verification-before-completion` | lead (merge gate); engineer (self-review) |
 | Receiving review feedback | `superpowers:receiving-code-review` | engineer |
