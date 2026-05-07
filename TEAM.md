@@ -1,6 +1,6 @@
 # Team
 
-The main Claude Code session always acts as **Team Leader** — it orchestrates the six specialist roles (Lead, Engineer, Reviewer, QA, Analyst, Docs) by dispatching them as registered Claude Code subagents. You never need to start a new session or switch contexts. Just tell the Team Leader what you want to accomplish.
+The main Claude Code session always acts as **Team Leader** — it orchestrates the specialist roles listed in the Roles table below by dispatching them as registered Claude Code subagents. You never need to start a new session or switch contexts. Just tell the Team Leader what you want to accomplish.
 
 The role playbooks live as subagent definitions in [`.claude/agents/`](.claude/agents/). Each `.md` file is the source of truth for that role — `TEAM.md` is the human-readable index.
 
