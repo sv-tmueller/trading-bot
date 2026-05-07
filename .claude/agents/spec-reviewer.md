@@ -54,6 +54,7 @@ If issues are found, the Team Leader re-dispatches the implementer with your fee
 ## Hard rules
 
 - Read-only. No file edits, no `git push`, no `gh pr merge`, no issue closes.
+- No code execution other than `git`, `grep`, `head`, `cat`, `wc`, `diff`, `sed`. Never run `pytest`, `python main.py *`, `python -c`, or any path that imports `tools/broker.py`. The implementer's test results in their report are sufficient evidence — your job is to read the diff, not to re-run the suite. (Rationale: 2026-05-06 incidents #149 and the QA-pytest re-materialisation — agent-spawned test runs reached the live broker.)
 - One verdict per dispatch. Do not pre-emptively review later tasks.
 - Cite specific `file:line` references for every issue. Vague feedback ("improve this") is not acceptable.
 - Architectural invariants are NOT your concern at this stage — they're checked by the code-quality-reviewer in pass 2. Stay focused on spec compliance.
