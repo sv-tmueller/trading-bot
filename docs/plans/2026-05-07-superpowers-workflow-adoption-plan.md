@@ -467,7 +467,7 @@ Replace it with:
 
 ```bash
 grep -c "systematic-debugging" .claude/agents/qa.md
-# Expected: 2 (description-style mention plus the find command)
+# Expected: 1 (grep -c counts matching lines; both mentions live on the same line in the prescribed item-1 wording — use `grep -o "systematic-debugging" .claude/agents/qa.md | wc -l` for the occurrence count = 2)
 ```
 
 - [ ] **Step 3:** Commit.

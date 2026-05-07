@@ -104,9 +104,11 @@ Every agent test file lives under `tests/test_agents/` and follows these idioms.
 
 ### Hard rule — never execute against the live Alpaca paper account (incident #149)
 
-Engineer subagents inherit `/opt/trading-bot/.env` via the parent shell. Any test, `python -c`, or `python main.py scan` invocation from a worktree submits real orders to the live paper account — there is currently no code-level guard. All `tools/broker.py` submission helpers (`place_market_order`, `place_parent_market_order`, `place_oco_brackets`, `cancel_all_orders`, `liquidate_all_positions`) MUST be mocked. If you need to verify against a real broker, use a separate sandbox account with explicitly-set env vars, NOT the inherited live keys. Team Leader briefs for any task touching `tools/broker.py`, `agents/team_leader.py::place_order`, or anything that calls them must restate this rule.
+Engineer subagents inherit `/opt/trading-bot/.env` via the parent shell. Any `python -c` or `python main.py scan` invocation from a worktree submits real orders to the live paper account. **`pytest` is now backstopped by the `CLAUDE_AGENT_NO_BROKER` mechanical guard (PR #168) — the autouse conftest fixture sets it for the test session and any unmocked call raises `BrokerCallBlockedError` before reaching Alpaca.** All `tools/broker.py` submission helpers (`place_market_order`, `place_parent_market_order`, `place_oco_brackets`, `cancel_all_orders`, `liquidate_all_positions`) MUST be mocked. If you need to verify against a real broker, use a separate sandbox account with explicitly-set env vars, NOT the inherited live keys. Team Leader briefs for any task touching `tools/broker.py`, `agents/team_leader.py::place_order`, or anything that calls them must restate this rule.
 
 _2026-05-06: six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT escaped from an Engineer worktree, draining buying power from $99k to $2,239. Surgically cancelled before market open. See issue #149 and the architectural invariant in `CLAUDE.md`._
+
+**`BrokerCallBlockedError` is a debugging signal, not a bug to silence.** When a test raises `BrokerCallBlockedError`, the mechanical guard caught a missing mock — add the mock at the module path the caller imports from (typical patterns shown under "Fixtures and mocks" below). Do NOT unset `CLAUDE_AGENT_NO_BROKER` or set it to empty to make the failure go away; that defeats the safety net.
 
 ### Fixtures and mocks
 
