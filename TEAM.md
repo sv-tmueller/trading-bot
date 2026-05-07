@@ -45,7 +45,7 @@ The main session **is** the Team Leader. It is not a registered subagent — it 
 **What it does:**
 - Reads GitHub Issues and decides which role to invoke.
 - Dispatches each subagent with the exact context it needs (no shared session state).
-- Per-task: dispatches `engineer` (implementer) → `spec-reviewer` → `code-quality-reviewer`. Loops `engineer` ↔ each reviewer on `❌` verdicts until both return ✅ / Ready to merge.
+- Per-task: dispatches `engineer` (implementer) → `spec-reviewer` → `code-quality-reviewer`. Loops `engineer` ↔ each reviewer on `❌` verdicts until `spec-reviewer` returns `✅ Spec compliant` AND `code-quality-reviewer` returns `Ready to merge: Yes`.
 - After all tasks complete, runs `superpowers:finishing-a-development-branch` to assemble merge readiness, then dispatches `lead` to merge PRs once tests + spec-reviewer + code-quality-reviewer have all signed off.
 - Dispatches `docs` after production code merges.
 
@@ -117,6 +117,8 @@ Team Leader dispatches lead → 3-signal merge gate → squash merge
   ▼
 Team Leader dispatches docs → sync README / CLAUDE.md / CURRENT_CONFIG
 ```
+
+**Verdict-string note:** `NEEDS_CHANGES` in the diagram is shorthand for any `❌` outcome that triggers an engineer re-dispatch. The literal verdicts emitted by each reviewer are: `spec-reviewer` returns `✅ Spec compliant` or `❌ Issues found`; `code-quality-reviewer` returns `Ready to merge: Yes | No | With fixes`.
 
 **Every change goes through a PR.** No direct commits to `main`.
 
