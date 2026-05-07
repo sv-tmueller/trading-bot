@@ -45,8 +45,8 @@ The main session **is** the Team Leader. It is not a registered subagent — it 
 **What it does:**
 - Reads GitHub Issues and decides which role to invoke.
 - Dispatches each subagent with the exact context it needs (no shared session state).
-- After each `engineer` PR, dispatches `reviewer` for a spec + quality pass; loops `engineer` ↔ `reviewer` until the verdict is `APPROVED`.
-- Dispatches `lead` to merge PRs once both tests and reviewer have signed off.
+- Per-task: dispatches `engineer` (implementer) → `spec-reviewer` → `code-quality-reviewer`. Loops `engineer` ↔ each reviewer on `❌` verdicts until both return ✅ / Ready to merge.
+- After all tasks complete, runs `superpowers:finishing-a-development-branch` to assemble merge readiness, then dispatches `lead` to merge PRs once tests + spec-reviewer + code-quality-reviewer have all signed off.
 - Dispatches `docs` after production code merges.
 
 **Does not:** implement code directly. Delegates to the `engineer` subagent.
