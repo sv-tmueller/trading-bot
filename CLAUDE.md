@@ -156,7 +156,7 @@ _Rationale: LLM outputs are non-deterministic and can behave unexpectedly under 
 
 ## Team
 
-The main session always acts as **Team Leader** — it orchestrates Lead, Engineer, QA, and Docs as subagents. You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
+The main session always acts as **Team Leader** — it orchestrates the specialist subagents listed in [`TEAM.md`](TEAM.md). You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
 
 | Tell the Team Leader | It will dispatch… |
 |---|---|
