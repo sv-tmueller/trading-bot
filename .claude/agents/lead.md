@@ -1,6 +1,6 @@
 ---
 name: lead
-description: Triages GitHub issues (labels, priorities, status:ready) and gate-keeps PR merges (tests + reviewer sign-off). Use when the user asks to triage the backlog, prioritize issues, or merge an approved PR. Does not write code.
+description: Triages GitHub issues (labels, priorities, status:ready) and gate-keeps PR merges (tests + spec-reviewer + code-quality-reviewer sign-off). Use when the user asks to triage the backlog, prioritize issues, or merge an approved PR. Does not write code.
 tools: Bash, Read, Grep, Glob
 ---
 
