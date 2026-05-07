@@ -11,6 +11,31 @@ Current skills relevant to engineering work:
 - **`handover`** — writing a session handover doc so a future session can resume cold.
 - **`research-bundle`** — multi-agent research surveys for product-direction decisions.
 
+## Superpowers skills are the canonical playbooks
+
+This project uses the [`superpowers`](https://github.com/obra/superpowers) plugin (installed via `/plugin install superpowers@claude-plugins-official`). Where a `superpowers:` skill exists for a workflow, **it is the canonical playbook for this project**. The skills below are wired into the agents listed in [`TEAM.md`](TEAM.md).
+
+| Workflow | Skill | Wired into |
+|---|---|---|
+| Brainstorming a change (every change — HARD-GATE) | `superpowers:brainstorming` | Team Leader (main session) |
+| Writing an implementation plan | `superpowers:writing-plans` | Team Leader. Plans live in `docs/plans/<date>-<slug>-plan.md`. |
+| Executing a plan task-by-task | `superpowers:subagent-driven-development` | Team Leader. Dispatches engineer (implementer) + spec-reviewer + code-quality-reviewer per task. |
+| Implementing a single task | _(implementer prompt)_ | `engineer` subagent ([`.claude/agents/engineer.md`](.claude/agents/engineer.md)) |
+| Pass-1 review (spec compliance) | _(spec-reviewer prompt)_ | `spec-reviewer` subagent ([`.claude/agents/spec-reviewer.md`](.claude/agents/spec-reviewer.md)) |
+| Pass-2 review (quality + architectural invariants) | _(code-quality-reviewer prompt — quotes the architectural invariants verbatim)_ | `code-quality-reviewer` subagent ([`.claude/agents/code-quality-reviewer.md`](.claude/agents/code-quality-reviewer.md)) |
+| Test-driven discipline | `superpowers:test-driven-development` (+ `testing-anti-patterns`) | engineer (referenced from `.claude/agents/engineer.md`) |
+| Root-cause-first debugging | `superpowers:systematic-debugging` | qa (failed-test triage); engineer (general debugging) |
+| Verifying claims before completion | `superpowers:verification-before-completion` | lead (merge gate); engineer (self-review) |
+| Receiving review feedback | `superpowers:receiving-code-review` | engineer |
+| Wrapping up a branch | `superpowers:finishing-a-development-branch` | Team Leader (before dispatching lead for merge) |
+| Worktree-per-task isolation | `superpowers:using-git-worktrees` | All agents (reinforces the existing "always use worktrees" rule). |
+
+The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`) sit alongside the superpowers skills — they cover work the superpowers library does not (BaseAgent contract, session handover, multi-agent research surveys).
+
+**Where superpowers conflicts with older inline guidance in `CLAUDE.md` or in agent `.md` files, the superpowers playbook wins.** The architectural-invariants section below remains authoritative for the safety stack — it is preserved verbatim in `code-quality-reviewer.md` and is non-negotiable.
+
+**Subagents do not have the `Skill` tool.** They access skill content via `Read` on the SKILL.md file. To find a SKILL.md path: `find ~/.claude/plugins -name SKILL.md -path "*<skill-name>*"`.
+
 ## Commands
 
 ```bash
@@ -135,7 +160,7 @@ The main session always acts as **Team Leader** — it orchestrates Lead, Engine
 
 | Tell the Team Leader | It will dispatch… |
 |---|---|
-| `Triage open issues` | Lead — label, prioritize, set status:ready |
-| `Work on the issues` | Lead then Engineer per issue, with reviews |
-| `Run QA` | QA — discover bugs, open issues |
-| `Update docs` | Docs — sync README and CLAUDE.md |
+| `Triage open issues` | Lead — label, prioritize, set `status: ready` |
+| `Work on issue #N` | Brainstorm → plan → engineer + spec-reviewer + code-quality-reviewer per task → lead merges |
+| `Run QA` | QA — discover bugs, open issues (with `superpowers:systematic-debugging` triage) |
+| `Update docs` | Docs — sync README, CLAUDE.md, CURRENT_CONFIG |
