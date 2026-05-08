@@ -165,3 +165,46 @@ def place_market_order(
     raise OrderTimeoutError(
         f"{side} {qty} {symbol} did not fill within {fill_timeout_s}s; cancelled"
     )
+
+
+def liquidate(
+    ib: IB,
+    *,
+    symbol: str,
+    fill_timeout_s: float = 30.0,
+    poll_interval_s: float = 0.5,
+) -> Optional[dict]:
+    """Sell all of `symbol`. Returns fill dict on success, None if no position.
+
+    Wraps `place_market_order` with side=SELL and qty=current position.
+    """
+    _check_guard("liquidate")
+    qty = get_position(ib, symbol)
+    if qty <= 0:
+        return None
+    return place_market_order(
+        ib,
+        symbol=symbol,
+        side="SELL",
+        qty=qty,
+        fill_timeout_s=fill_timeout_s,
+        poll_interval_s=poll_interval_s,
+    )
+
+
+def cancel_all_orders(ib: IB) -> int:
+    """Cancel every open order. Returns count of successful cancellations.
+
+    Failed cancellations (e.g., broker connection drop mid-cancel) are
+    swallowed and excluded from the count — best-effort semantics.
+    """
+    _check_guard("cancel_all_orders")
+    open_trades = [t for t in ib.openTrades() if not t.isDone()]
+    n_ok = 0
+    for trade in open_trades:
+        try:
+            ib.cancelOrder(trade.order)
+            n_ok += 1
+        except Exception:  # noqa: BLE001
+            pass  # Best-effort
+    return n_ok
