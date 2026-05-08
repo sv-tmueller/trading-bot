@@ -1,17 +1,31 @@
-#!/bin/bash
-# Add these lines to crontab: crontab -e
-# All times UTC (NYSE opens 13:30 UTC during EDT, closes 20:00 UTC)
+#!/usr/bin/env bash
+set -euo pipefail
+# Install / update cron jobs for the rules-engine bot.
+# Run as the trader user (not root): bash scripts/cron_setup.sh
+#
+# Idempotent: re-running replaces the BEGIN/END trading-bot block.
+# Legacy v1.14 entries (main.py scan / main.py monitor / run_*.sh) are
+# stripped on first run.
 
-# Morning scan at 13:25 UTC (09:25 ET / 15:25 CEST) — 5 min BEFORE the open.
-# Must run pre-market so signals are computed on yesterday's fully-closed daily bar.
-# Running after 13:30 UTC reads an incomplete intraday bar — volume_ratio collapses to ~0.
-# 25 13 * * 1-5 /opt/trading-bot/scripts/run_scan.sh
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON="$REPO_ROOT/venv/bin/python"
 
-# Hourly position monitor 14:00–19:00 UTC (10:00–15:00 ET)
-# 0 14-19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+CRON_LINES=$(cat <<EOF
+# BEGIN trading-bot
+# Trading bot — rules-engine architecture (post-2026-05-07 pivot)
+30 22 * * 1-5 cd $REPO_ROOT && $PYTHON daily_check.py >> $REPO_ROOT/logs/daily_check.log 2>&1
+5 14-21 * * 1-5 cd $REPO_ROOT && $PYTHON -m monitor.kill_switch >> $REPO_ROOT/logs/kill_switch.log 2>&1
+# END trading-bot
+EOF
+)
 
-# Pre-close check at 19:55 UTC (15:55 ET — 5 min before NYSE close)
-# 55 19 * * 1-5 /opt/trading-bot/scripts/run_monitor.sh
+mkdir -p "$REPO_ROOT/logs"
 
-echo "Add the above cron entries with: crontab -e"
-echo "Create log dir: sudo mkdir -p /var/log/trading-bot && sudo chown \$USER /var/log/trading-bot"
+EXISTING=$(crontab -l 2>/dev/null || true)
+WITHOUT_BLOCK=$(echo "$EXISTING" | sed '/# BEGIN trading-bot/,/# END trading-bot/d')
+WITHOUT_LEGACY=$(echo "$WITHOUT_BLOCK" | grep -vE 'main\.py (scan|monitor)|run_(scan|monitor)\.sh' || true)
+
+(echo "$WITHOUT_LEGACY"; echo ""; echo "$CRON_LINES") | crontab -
+
+echo "Crontab updated:"
+crontab -l | grep -A4 "BEGIN trading-bot" || crontab -l
