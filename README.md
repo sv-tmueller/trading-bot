@@ -20,12 +20,12 @@ cron hourly market hours ->  monitor/kill_switch.py  ->  IBKR (liquidate on DD b
 
 **Decision rule.** `daily_check.py` fetches 2y of SPY daily bars from yfinance, computes the 200-day SMA, and asks `compute_target_state(spy_close, spy_sma200, current_state, kill_switch_active)`:
 
-- **LONG** when `spy_close > spy_sma200` and the kill switch is not active.
-- **CASH** otherwise.
+- **LONG** when `spy_close > spy_sma200` (the kill-switch flag, if set, is cleared on this transition).
+- **CASH** otherwise (when SPY is at or below the 200-DMA — the kill-switch flag, if set, is preserved).
 
 If `target_state != current_state`, the bot places a market order on `BOT_TICKER` (a 3x leveraged ETF such as `WSPL.DE` / 3USL UCITS on Xetra) — either a BUY for ~99% of account value, or a SELL of the entire position.
 
-**Kill switch.** `monitor/kill_switch.py` runs hourly during US market hours. If `BOT_TICKER` drawdown from its 30-trading-day rolling high exceeds `KILL_SWITCH_DRAWDOWN_PCT` (default 25%), it liquidates the position and sets `kill_switch_active=1` in `regime_state`. While the flag is active, `daily_check.py` keeps the bot in CASH regardless of the SPY signal.
+**Kill switch.** `monitor/kill_switch.py` runs hourly during US market hours. If `BOT_TICKER` drawdown from its 30-trading-day rolling high exceeds `KILL_SWITCH_DRAWDOWN_PCT` (default 25%), it liquidates the position and sets `kill_switch_active=1` in `regime_state`. While the flag is active **and SPY remains below the 200-DMA**, `daily_check.py` keeps the bot in CASH. The flag is cleared on the first day SPY closes back above the 200-DMA, at which point the bot re-enters LONG — so a single bad-week kill-switch fire does not lock the bot out of the next bull run.
 
 ## Starting the bot — Monday 2026-05-11
 
@@ -69,7 +69,7 @@ This is the runbook for the first soak run. The bot has been built and tested bu
    ```
    venv/bin/python -c "from ib_insync import IB; ib = IB(); ib.connect('127.0.0.1', 4002, clientId=99); print('connected:', ib.isConnected()); print('account:', ib.managedAccounts()); ib.disconnect()"
    ```
-   You want `connected: True` and a non-empty account list.
+   You want `connected: True` and a non-empty account list. We use `clientId=99` here so this diagnostic does not clash with cron's running connection (which uses `IBKR_CLIENT_ID`, default `1`). If TWS rejects the connection, your gateway is configured to allow only specific client IDs — see [`docs/operations/ibkr-vps-setup.md`](docs/operations/ibkr-vps-setup.md) for the API-config check, or substitute `clientId=settings.IBKR_CLIENT_ID + 99` to use the configured ID with an offset.
 
 6. Verify the test suite still passes:
    ```

@@ -97,9 +97,14 @@ def notify_regime_flip(
     hypothetical flip alert during the soak window without placing an order.
     """
     title_prefix = "[DRY-RUN] " if dry_run else ""
+    message = (
+        f"{title_prefix}Regime flip -> {target_state}: {ticker} qty={qty} "
+        f"@ ${fill_price:.2f} (SPY ${spy_close:.2f} vs 200-DMA ${spy_sma200:.2f})"
+    )
     _post({
         "event_type": "regime_flip",
         "title": f"{title_prefix}regime_flip {target_state}",
+        "message": message,
         "target_state": target_state,
         "spy_close": spy_close,
         "spy_sma200": spy_sma200,
@@ -124,8 +129,14 @@ def notify_kill_switch_fired(
     `drawdown_pct` is signed (negative for a loss); `ref_high` is the high-
     water mark used as the drawdown reference.
     """
+    message = (
+        f"Kill switch fired on {ticker}: drawdown {drawdown_pct:.1%} "
+        f"(ref high ${ref_high:.2f}, last ${last_price:.2f}), "
+        f"liquidated qty={qty} @ ${fill_price:.2f}"
+    )
     _post({
         "event_type": "kill_switch_fired",
+        "message": message,
         "ticker": ticker,
         "drawdown_pct": drawdown_pct,
         "ref_high": ref_high,
@@ -146,8 +157,10 @@ def notify_trade_failed(
     (or our pre-submit gate's) machine-readable code, e.g.
     ``"insufficient_buying_power"``.
     """
+    message = f"Trade failed: {side} {qty} {symbol} -- {reason}"
     _post({
         "event_type": "trade_failed",
+        "message": message,
         "symbol": symbol,
         "side": side,
         "qty": qty,
@@ -166,8 +179,12 @@ def notify_tws_disconnected(
     after `attempts` retries. `error_msg` is the last error string from the
     underlying client.
     """
+    message = (
+        f"TWS connection failed: {host}:{port} after {attempts} attempts -- {error_msg}"
+    )
     _post({
         "event_type": "tws_disconnected",
+        "message": message,
         "host": host,
         "port": port,
         "attempts": attempts,
@@ -186,8 +203,12 @@ def notify_state_desync(
     truth on reconciliation. `action_taken` describes the corrective step
     the bot performed (e.g. ``"DB updated to CASH"``).
     """
+    message = (
+        f"State desync on {symbol}: DB={db_state}, broker={broker_state}. {action_taken}"
+    )
     _post({
         "event_type": "state_desync",
+        "message": message,
         "db_state": db_state,
         "broker_state": broker_state,
         "symbol": symbol,
