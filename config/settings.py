@@ -61,8 +61,8 @@ if not 5 <= KILL_SWITCH_LOOKBACK_DAYS <= 252:
 
 
 # Mechanical safety guard for agent-context broker calls (issue #168). When set,
-# every `tools/broker.py` submission helper raises `BrokerCallBlockedError` BEFORE
-# any Alpaca call. Production cron leaves this UNSET; pytest sets it via an
+# every `tools/ibkr_broker.py` submission helper raises `BrokerCallBlockedError`
+# BEFORE any IBKR call. Production cron leaves this UNSET; pytest sets it via an
 # autouse conftest fixture so any forgotten mock fails fast instead of reaching
 # the live broker. We intentionally read this fresh on every call (see
 # `is_claude_agent_no_broker()` below) — the perf cost is negligible and it
@@ -72,13 +72,13 @@ def is_claude_agent_no_broker() -> bool:
 
     Reads `os.environ` fresh on every call so pytest's `monkeypatch.setenv`
     (and any test that intentionally clears it to exercise the guard-OFF path)
-    is honoured without a settings reload. The five `tools/broker.py`
+    is honoured without a settings reload. The `tools/ibkr_broker.py`
     submission helpers consult this at the very top of each function.
     """
     return os.environ.get("CLAUDE_AGENT_NO_BROKER", "").lower() in ("1", "true", "yes")
 
 
 # Snapshot at import time for any caller that wants the convenience. Live checks
-# inside `tools/broker.py` MUST use `is_claude_agent_no_broker()` so the guard
-# remains responsive to env changes within a process.
+# inside `tools/ibkr_broker.py` MUST use `is_claude_agent_no_broker()` so the
+# guard remains responsive to env changes within a process.
 CLAUDE_AGENT_NO_BROKER: bool = is_claude_agent_no_broker()
