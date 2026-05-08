@@ -131,3 +131,71 @@ def test_guard_blocks_connect(monkeypatch):
             connect_ibkr(host="127.0.0.1", port=4002, client_id=1)
         # The IB() class should never have been instantiated
         MockIB.assert_not_called()
+
+
+def _mock_filled_trade(price: float, qty: int, order_id: str = "ORD-1"):
+    trade = MagicMock()
+    trade.isDone.return_value = True
+    fill = MagicMock()
+    fill.execution.price = price
+    fill.execution.shares = qty
+    fill.execution.execId = "EXEC-1"
+    fill.time = "2026-05-07T14:30:01"
+    trade.fills = [fill]
+    trade.order.orderId = order_id
+    return trade
+
+
+def test_place_market_order_returns_fill_dict_on_buy():
+    mock_ib = MagicMock()
+    qualified = MagicMock(); qualified.symbol = "WSPL"
+    mock_ib.qualifyContracts.return_value = [qualified]
+    mock_ib.placeOrder.return_value = _mock_filled_trade(price=50.0, qty=100, order_id="42")
+    mock_ib.sleep = MagicMock()  # no real sleep
+
+    from tools.ibkr_broker import place_market_order
+    result = place_market_order(mock_ib, symbol="WSPL.DE", side="BUY", qty=100,
+                                 fill_timeout_s=5, poll_interval_s=0.01)
+    assert result["order_id"] == "42"
+    assert result["fill_price"] == 50.0
+    assert result["qty"] == 100
+    assert mock_ib.placeOrder.called
+
+
+def test_place_market_order_timeout_cancels_and_raises():
+    mock_ib = MagicMock()
+    qualified = MagicMock(); qualified.symbol = "WSPL"
+    mock_ib.qualifyContracts.return_value = [qualified]
+    pending = MagicMock(); pending.isDone.return_value = False
+    pending.fills = []
+    mock_ib.placeOrder.return_value = pending
+    mock_ib.sleep = MagicMock()
+
+    from tools.ibkr_broker import place_market_order, OrderTimeoutError
+    with pytest.raises(OrderTimeoutError):
+        place_market_order(mock_ib, symbol="WSPL.DE", side="BUY", qty=100,
+                           fill_timeout_s=0.05, poll_interval_s=0.01)
+    mock_ib.cancelOrder.assert_called_once()
+
+
+def test_place_market_order_validates_side():
+    mock_ib = MagicMock()
+    from tools.ibkr_broker import place_market_order
+    with pytest.raises(ValueError, match="side"):
+        place_market_order(mock_ib, symbol="WSPL.DE", side="HOLD", qty=100)
+
+
+def test_place_market_order_validates_qty():
+    mock_ib = MagicMock()
+    from tools.ibkr_broker import place_market_order
+    with pytest.raises(ValueError, match="qty"):
+        place_market_order(mock_ib, symbol="WSPL.DE", side="BUY", qty=0)
+
+
+def test_place_market_order_blocked_by_guard(monkeypatch):
+    monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", "true")
+    mock_ib = MagicMock()
+    from tools.ibkr_broker import place_market_order, BrokerCallBlockedError
+    with pytest.raises(BrokerCallBlockedError):
+        place_market_order(mock_ib, symbol="WSPL.DE", side="BUY", qty=100)
+    mock_ib.placeOrder.assert_not_called()
