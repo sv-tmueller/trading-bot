@@ -1,9 +1,13 @@
 """IBKR broker wrapper using `ib_insync`.
 
 This module owns all interaction with TWS / IB Gateway. It enforces the
-`CLAUDE_AGENT_NO_BROKER` guard at the top of every submission/connection
-helper so any forgotten mock in a test fails fast instead of reaching live
-broker (per the lessons in CLAUDE.md issues #149, #168).
+`CLAUDE_AGENT_NO_BROKER` guard at the top of the four mutating/connection
+helpers (`connect_ibkr`, `place_market_order`, `liquidate`,
+`cancel_all_orders`) so any forgotten mock in a test fails fast instead of
+reaching live broker (per the lessons in CLAUDE.md issues #149, #168). The
+two read-only helpers (`get_position`, `get_account_value`) operate on an
+existing `IB` instance and cannot be reached without first calling
+`connect_ibkr` (which is guarded), so the fail-fast property holds end-to-end.
 """
 from __future__ import annotations
 

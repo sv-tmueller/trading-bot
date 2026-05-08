@@ -104,29 +104,36 @@ This is the runbook for the first soak run. The bot has been built and tested bu
 
 10. Each weekday at any time after 22:30 UTC, repeat steps 7-9. Confirm the dry-run pipeline writes audit + regime_state rows and posts to Discord with `[DRY-RUN]` markers.
 
-11. Mid-soak (Wednesday 2026-05-13 ideally), do a kill-switch dry-run too:
+11. Mid-soak (Wednesday 2026-05-13 ideally), do a kill-switch smoke run. This is a real run, not a dry-run — `monitor/kill_switch.py` has no `--dry-run` mode — but it is a no-op when the bot is in CASH (it short-circuits before any broker action and ends with a `success:no_position` outcome in `audit_log`). If you happen to be in LONG and drawdown is small, it is also a no-op:
     ```
     venv/bin/python -m monitor.kill_switch
     ```
-    Expected: no-op when in CASH; if you happen to be in LONG and drawdown is small, also no-op. The cycle should complete in <5 seconds and write a row to `regime_state` (or update the existing one).
+    Expected: cycle completes in <5 seconds, writes a row to `regime_state` (or updates the existing one), and writes a `success:no_position` (CASH) or `success:within_threshold` (LONG, DD below threshold) row to `audit_log`.
 
 ### Going live (Monday 2026-05-18 onward — after a clean soak week)
 
 12. Flip the dry-run flag off:
     ```
-    sed -i 's/^DAILY_CHECK_DRY_RUN=true/DAILY_CHECK_DRY_RUN=false/' .env
-    grep '^DAILY_CHECK_DRY_RUN' .env
+    sed -i -E 's/^DAILY_CHECK_DRY_RUN=.*/DAILY_CHECK_DRY_RUN=false/' .env
+    grep '^DAILY_CHECK_DRY_RUN' .env   # confirm it now reads "false"
     ```
-    The grep should now show `DAILY_CHECK_DRY_RUN=false`.
+    The `-E` enables extended regex; `.*` matches whatever value (or trailing comment) was there. The grep should now show `DAILY_CHECK_DRY_RUN=false`.
 
-13. Install the crontab:
+13. **Disable any legacy root crontab entries** from the v1.14 era. The old bot ran from root's crontab; the new bot runs from trader's. Leaving both active causes conflicts:
+    ```
+    sudo crontab -l | grep -v trading-bot | grep -v "main\.py scan" | grep -v "main\.py monitor" | sudo crontab -
+    sudo crontab -l   # confirm trading-bot lines are gone from root
+    ```
+    (If `sudo crontab -l` says "no crontab for root", you're already clean — skip this step.)
+
+14. Install the crontab:
     ```
     bash scripts/cron_setup.sh
     sudo crontab -u trader -l | grep trading-bot
     ```
     Expected: two cron lines for `daily_check.py` (22:30 UTC weekdays) and `monitor.kill_switch` (hourly during US market hours).
 
-14. Watch the first live run on Monday 2026-05-18 evening:
+15. Watch the first live run on Monday 2026-05-18 evening:
     ```
     tail -f /opt/trading-bot/logs/daily_check.log
     ```

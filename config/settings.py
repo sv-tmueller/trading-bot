@@ -57,10 +57,14 @@ if not 5 <= KILL_SWITCH_LOOKBACK_DAYS <= 252:
 
 
 # Mechanical safety guard for agent-context broker calls (issue #168). When set,
-# every `tools/ibkr_broker.py` submission helper raises `BrokerCallBlockedError`
-# BEFORE any IBKR call. Production cron leaves this UNSET; pytest sets it via an
-# autouse conftest fixture so any forgotten mock fails fast instead of reaching
-# the live broker. We intentionally read this fresh on every call (see
+# the four guarded `tools/ibkr_broker.py` helpers (`connect_ibkr`,
+# `place_market_order`, `liquidate`, `cancel_all_orders`) raise
+# `BrokerCallBlockedError` BEFORE any IBKR call. The two read-only helpers
+# (`get_position`, `get_account_value`) operate on an existing `IB` instance
+# and cannot be reached without first calling `connect_ibkr`, so the fail-fast
+# property holds end-to-end. Production cron leaves this UNSET; pytest sets it
+# via an autouse conftest fixture so any forgotten mock fails fast instead of
+# reaching the live broker. We intentionally read this fresh on every call (see
 # `is_claude_agent_no_broker()` below) — the perf cost is negligible and it
 # means tests can flip the env var inside a test without reloading the module.
 def is_claude_agent_no_broker() -> bool:
@@ -68,8 +72,9 @@ def is_claude_agent_no_broker() -> bool:
 
     Reads `os.environ` fresh on every call so pytest's `monkeypatch.setenv`
     (and any test that intentionally clears it to exercise the guard-OFF path)
-    is honoured without a settings reload. The `tools/ibkr_broker.py`
-    submission helpers consult this at the very top of each function.
+    is honoured without a settings reload. The four guarded `tools/ibkr_broker.py`
+    helpers (`connect_ibkr`, `place_market_order`, `liquidate`,
+    `cancel_all_orders`) consult this at the very top of each function.
     """
     return os.environ.get("CLAUDE_AGENT_NO_BROKER", "").lower() in ("1", "true", "yes")
 
