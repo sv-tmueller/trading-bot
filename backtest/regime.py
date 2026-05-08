@@ -12,7 +12,6 @@ Simulation rules (matching the live bot's behaviour as closely as possible):
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
@@ -20,8 +19,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 @dataclass
@@ -75,7 +72,7 @@ def run_regime_backtest(
     is_bullish = (benchmark["Close"] > sma).fillna(False)
 
     # Trade at next open after the signal day
-    signal = is_bullish.shift(1).fillna(False)
+    signal = is_bullish.astype(bool).shift(1, fill_value=False)
 
     # Simulation
     equity_curve = []
@@ -135,6 +132,13 @@ def run_regime_backtest(
             return_pct=(execution_px / entry_price - 1),
             exit_reason="end_of_window",
         ))
+        qty = 0
+        # Reconcile last equity-curve point with the closed-out cash so
+        # ending_equity (derived from eq_series.iloc[-1]) reflects the same
+        # slippage/commission haircut as the trade ledger.
+        if len(equity_curve) > 0:
+            last_curve_ts = equity_curve[-1][0]
+            equity_curve[-1] = (last_curve_ts, cash)
 
     eq_series = pd.Series(dict(equity_curve))
     total_return = float(eq_series.iloc[-1] / starting_cash - 1)
