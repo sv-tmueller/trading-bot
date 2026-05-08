@@ -7,10 +7,6 @@ load_dotenv()
 
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
 
-DATA_FEED = os.getenv("DATA_FEED", "iex").lower()
-if DATA_FEED not in ("iex", "sip"):
-    raise ValueError(f"DATA_FEED must be 'iex' or 'sip', got: {DATA_FEED!r}")
-
 TRADING_PAUSED: bool = os.getenv("TRADING_PAUSED", "false").lower() == "true"
 
 

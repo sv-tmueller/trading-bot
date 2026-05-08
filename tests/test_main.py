@@ -6,13 +6,16 @@ position monitor, both of which are now deleted. The dispatcher returns 2
 with a deprecation message so any leftover cron entry pointing at
 ``main.py scan`` exits cleanly instead of raising ImportError.
 
-``panic`` mode tests live in ``tests/test_main_panic.py``. ``backtest`` is
-covered by ``tests/test_backtest_regime.py``.
+``panic`` mode tests live in ``tests/test_main_panic.py``. The
+``backtest`` regime engine itself is covered by
+``tests/test_backtest_regime.py``; the delegation from ``main.py backtest``
+into ``backtest.regime.main_cli`` (including the ``sys.argv`` save/restore)
+is covered below.
 """
 from __future__ import annotations
 
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def test_scan_mode_returns_deprecated(capsys):
@@ -77,3 +80,44 @@ def test_summary_mode_runs_via_simplified_query(capsys, db_conn, tmp_path, monke
     assert "Trailing 30d" in out
     assert "2 trades" in out
     assert "1 kill-switch" in out
+
+
+def test_backtest_mode_delegates_and_restores_argv():
+    """``main.py backtest`` must delegate to ``backtest.regime.main_cli`` and
+    restore ``sys.argv`` to its pre-call value — the ``_run_backtest`` helper
+    swaps ``sys.argv`` so the regime CLI's ``argparse`` sees the forwarded
+    args, and any callers (or other tests in the same process) MUST see the
+    original ``sys.argv`` after we return."""
+    fake_main_cli = MagicMock()
+    saved_argv_before = sys.argv  # capture the current list reference
+
+    with patch("backtest.regime.main_cli", fake_main_cli):
+        from main import main as run
+        rc = run(["backtest", "--years", "1"])
+
+    # 1. The CLI was invoked exactly once.
+    fake_main_cli.assert_called_once_with()
+    # 2. sys.argv was restored to the same list object we started with.
+    #    `is` check (not just `==`) — restoration must put the original list
+    #    back, not assign a copy. _run_backtest stores `saved_argv = sys.argv`
+    #    and restores `sys.argv = saved_argv` in finally, so identity must hold.
+    assert sys.argv is saved_argv_before
+    # 3. _run_backtest returns 0 on success.
+    assert rc == 0
+
+
+def test_backtest_mode_restores_argv_on_exception():
+    """If the regime CLI raises, ``_run_backtest``'s ``finally`` block must
+    still restore ``sys.argv``. Without this, a backtest crash would leak the
+    swapped argv into the rest of the process."""
+    fake_main_cli = MagicMock(side_effect=RuntimeError("boom"))
+    saved_argv_before = sys.argv
+
+    with patch("backtest.regime.main_cli", fake_main_cli):
+        from main import main as run
+        try:
+            run(["backtest", "--years", "1"])
+        except RuntimeError:
+            pass  # expected — we want to verify the finally fired
+
+    assert sys.argv is saved_argv_before
