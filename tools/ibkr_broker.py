@@ -94,3 +94,74 @@ def get_account_value(ib: IB, currency: str = "EUR") -> float:
         if av.tag == "NetLiquidation" and av.currency == currency:
             return float(av.value)
     raise RuntimeError(f"No NetLiquidation entry in {currency} found in accountSummary")
+
+
+class OrderTimeoutError(RuntimeError):
+    """Raised when a market order does not fill within the polling window."""
+
+
+def _qualify_contract(ib: IB, symbol: str):
+    """Resolve the IBKR contract for a given Xetra/SMART symbol."""
+    short = symbol.split(".")[0]
+    suffix = symbol.split(".")[1] if "." in symbol else ""
+    # Xetra-listed UCITS: exchange='IBIS', currency='EUR' (verify with TWS)
+    # Generic fallback: exchange='SMART'
+    if suffix.upper() == "DE":
+        contract = Stock(short, exchange="IBIS", currency="EUR")
+    else:
+        contract = Stock(short, exchange="SMART", currency="USD")
+    qualified = ib.qualifyContracts(contract)
+    if not qualified:
+        raise RuntimeError(f"Could not qualify contract for {symbol!r}")
+    return qualified[0]
+
+
+def place_market_order(
+    ib: IB,
+    *,
+    symbol: str,
+    side: str,
+    qty: int,
+    fill_timeout_s: float = 30.0,
+    poll_interval_s: float = 0.5,
+) -> dict:
+    """Submit a market order and wait for fill. Returns fill details on success.
+
+    Raises:
+        OrderTimeoutError: if the order doesn't fill within ``fill_timeout_s``.
+                          The order is cancelled before raising.
+        BrokerCallBlockedError: if the agent-context guard is active.
+        ValueError: if ``side`` is not BUY/SELL or ``qty`` <= 0.
+    """
+    _check_guard("place_market_order")
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"side must be 'BUY' or 'SELL', got {side!r}")
+    if qty <= 0:
+        raise ValueError(f"qty must be > 0, got {qty}")
+
+    contract = _qualify_contract(ib, symbol)
+    order = MarketOrder(side, qty)
+    trade = ib.placeOrder(contract, order)
+
+    # Poll for fill
+    waited = 0.0
+    while waited < fill_timeout_s:
+        if trade.isDone() and trade.fills:
+            fill = trade.fills[0]
+            return {
+                "order_id": str(trade.order.orderId),
+                "fill_price": float(fill.execution.price),
+                "qty": int(fill.execution.shares),
+                "fill_time": str(fill.time),
+            }
+        ib.sleep(poll_interval_s)
+        waited += poll_interval_s
+
+    # Timed out — cancel and raise
+    try:
+        ib.cancelOrder(order)
+    except Exception:  # noqa: BLE001
+        pass  # Best-effort cancel
+    raise OrderTimeoutError(
+        f"{side} {qty} {symbol} did not fill within {fill_timeout_s}s; cancelled"
+    )
