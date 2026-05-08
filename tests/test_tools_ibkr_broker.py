@@ -199,3 +199,60 @@ def test_place_market_order_blocked_by_guard(monkeypatch):
     with pytest.raises(BrokerCallBlockedError):
         place_market_order(mock_ib, symbol="WSPL.DE", side="BUY", qty=100)
     mock_ib.placeOrder.assert_not_called()
+
+
+def test_liquidate_sells_existing_position():
+    mock_ib = MagicMock()
+    qualified = MagicMock(); qualified.symbol = "WSPL"
+    mock_ib.qualifyContracts.return_value = [qualified]
+    pos = MagicMock(); pos.contract.symbol = "WSPL"; pos.position = 100
+    mock_ib.positions.return_value = [pos]
+    mock_ib.placeOrder.return_value = _mock_filled_trade(price=49.0, qty=100, order_id="L1")
+    mock_ib.sleep = MagicMock()
+
+    from tools.ibkr_broker import liquidate
+    result = liquidate(mock_ib, symbol="WSPL.DE", fill_timeout_s=5, poll_interval_s=0.01)
+    assert result["fill_price"] == 49.0
+    args, kwargs = mock_ib.placeOrder.call_args
+    submitted_order = args[1]
+    assert submitted_order.action == "SELL"
+    assert submitted_order.totalQuantity == 100
+
+
+def test_liquidate_no_position_returns_none():
+    mock_ib = MagicMock()
+    mock_ib.positions.return_value = []
+    from tools.ibkr_broker import liquidate
+    result = liquidate(mock_ib, symbol="WSPL.DE")
+    assert result is None
+    mock_ib.placeOrder.assert_not_called()
+
+
+def test_liquidate_blocked_by_guard(monkeypatch):
+    monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", "true")
+    mock_ib = MagicMock()
+    from tools.ibkr_broker import liquidate, BrokerCallBlockedError
+    with pytest.raises(BrokerCallBlockedError):
+        liquidate(mock_ib, symbol="WSPL.DE")
+
+
+def test_cancel_all_orders_calls_cancel_for_each_open():
+    mock_ib = MagicMock()
+    o1 = MagicMock(); o1.orderId = 1
+    o2 = MagicMock(); o2.orderId = 2
+    trade1 = MagicMock(); trade1.order = o1; trade1.isDone.return_value = False
+    trade2 = MagicMock(); trade2.order = o2; trade2.isDone.return_value = False
+    mock_ib.openTrades.return_value = [trade1, trade2]
+
+    from tools.ibkr_broker import cancel_all_orders
+    n = cancel_all_orders(mock_ib)
+    assert n == 2
+    assert mock_ib.cancelOrder.call_count == 2
+
+
+def test_cancel_all_orders_blocked_by_guard(monkeypatch):
+    monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", "true")
+    mock_ib = MagicMock()
+    from tools.ibkr_broker import cancel_all_orders, BrokerCallBlockedError
+    with pytest.raises(BrokerCallBlockedError):
+        cancel_all_orders(mock_ib)
