@@ -1,129 +1,37 @@
+-- Schema for rules-engine bot (post-2026-05-07 pivot).
+-- See docs/superpowers/specs/2026-05-07-rules-engine-pivot-design.md
+
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS regime_state (
+    date TEXT PRIMARY KEY,
+    spy_close REAL NOT NULL,
+    spy_sma200 REAL NOT NULL,
+    target_state TEXT NOT NULL CHECK(target_state IN ('LONG','CASH')),
+    current_state TEXT NOT NULL CHECK(current_state IN ('LONG','CASH')),
+    position_drawdown_pct REAL,
+    kill_switch_active INTEGER NOT NULL DEFAULT 0 CHECK(kill_switch_active IN (0,1)),
+    kill_switch_fired_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker TEXT NOT NULL,
-    entry_date TEXT NOT NULL,
-    exit_date TEXT,
-    entry_price REAL NOT NULL,
-    exit_price REAL,
-    shares REAL NOT NULL,
-    stop_loss REAL NOT NULL,
-    take_profit REAL NOT NULL,
-    exit_reason TEXT CHECK (exit_reason IN ('stop_loss', 'take_profit', 'trend_reversal', 'max_hold', 'manual')),
-    pnl_dollars REAL,
-    pnl_pct REAL,
-    hold_days INTEGER,
-    r_multiple REAL,
-    trailing_high REAL
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+    qty INTEGER NOT NULL,
+    fill_price REAL NOT NULL,
+    fill_time TEXT NOT NULL,
+    ibkr_order_id TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('regime_flip_long','regime_flip_cash','kill_switch','panic_cli')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- As of v1.14: signals (insert_signal called from team_leader.place_order on every
--- fill and rejection), daily_stats (upsert_daily_stat from the monitor's end-of-pass),
--- and monitor_actions (record_monitor_action per-iteration) are all populated. Still
--- empty: weekly_stats (deferred until daily_stats has soak data to aggregate) and
--- suggestions (for parameter-tuning feedback; needs an offline tuning loop first).
-CREATE TABLE IF NOT EXISTS signals (
+CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
-    ticker TEXT NOT NULL,
-    date TEXT NOT NULL,
-    ema_fast REAL,
-    ema_slow REAL,
-    rsi REAL,
-    volume_ratio REAL,
-    signal_score REAL,
-    triggered_entry INTEGER DEFAULT 0
+    script_name TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT,
+    notes TEXT
 );
-
-CREATE TABLE IF NOT EXISTS agent_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    cycle_date TEXT NOT NULL,
-    agent_name TEXT NOT NULL,
-    input_summary TEXT,
-    output_summary TEXT,
-    full_reasoning TEXT,
-    tokens_used INTEGER DEFAULT 0,
-    input_tokens INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS daily_stats (
-    date TEXT PRIMARY KEY,
-    trades_opened INTEGER DEFAULT 0,
-    trades_closed INTEGER DEFAULT 0,
-    win_count INTEGER DEFAULT 0,
-    loss_count INTEGER DEFAULT 0,
-    win_rate REAL,
-    avg_r_multiple REAL,
-    portfolio_value REAL,
-    daily_pnl REAL,
-    drawdown REAL
-);
-
-CREATE TABLE IF NOT EXISTS weekly_stats (
-    week_start TEXT PRIMARY KEY,
-    week_end TEXT NOT NULL,
-    total_trades INTEGER DEFAULT 0,
-    win_rate REAL,
-    avg_r_multiple REAL,
-    best_ticker TEXT,
-    worst_ticker TEXT,
-    portfolio_value REAL,
-    weekly_pnl REAL
-);
-
-CREATE TABLE IF NOT EXISTS suggestions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_date TEXT NOT NULL,
-    parameter TEXT NOT NULL,
-    current_value TEXT NOT NULL,
-    proposed_value TEXT NOT NULL,
-    evidence TEXT NOT NULL,
-    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-    applied_date TEXT
-);
-
-CREATE TABLE IF NOT EXISTS parameters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    applied_date TEXT NOT NULL,
-    rsi_lower REAL NOT NULL,
-    rsi_upper REAL NOT NULL,
-    ema_fast INTEGER NOT NULL,
-    ema_slow INTEGER NOT NULL,
-    volume_multiplier REAL NOT NULL,
-    risk_pct REAL NOT NULL,
-    max_positions INTEGER NOT NULL,
-    r_ratio_min REAL NOT NULL
-);
-
--- Per-iteration audit trail for the hourly position monitor (issue #131).
--- One row per evaluated trade per cycle. Lets analysts reconstruct what the
--- monitor saw and decided without grepping /var/log/trading-bot/monitor.log.
--- action_type values:
---   stop_loss / take_profit / max_hold — soft-stop check fired and the
---     monitor closed the position locally (broker_close was called).
---   reconciled — Alpaca had already closed the position server-side
---     (bracket child fired between cycles); the monitor reconciled the DB.
---   hold — in-range, no action.
---   skipped_error — per-iteration try/except caught a transient failure
---     (broker/network blip); loop continued to the next ticker.
-CREATE TABLE IF NOT EXISTS monitor_actions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trade_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
-    ticker TEXT NOT NULL,
-    action_time TEXT NOT NULL,
-    action_type TEXT NOT NULL CHECK (action_type IN (
-        'stop_loss', 'take_profit', 'max_hold', 'reconciled', 'hold', 'skipped_error'
-    )),
-    reason TEXT,
-    current_price REAL,
-    stop_price REAL,
-    take_profit_price REAL
-);
-
--- Indexes for frequent query patterns
-CREATE INDEX IF NOT EXISTS idx_trades_open ON trades (exit_date) WHERE exit_date IS NULL;
-CREATE INDEX IF NOT EXISTS idx_trades_exit_date ON trades (exit_date);
-CREATE INDEX IF NOT EXISTS idx_signals_ticker_date ON signals (ticker, date);
-CREATE INDEX IF NOT EXISTS idx_agent_logs_cycle_date ON agent_logs (cycle_date);
-CREATE INDEX IF NOT EXISTS idx_monitor_actions_trade_id ON monitor_actions (trade_id);
-CREATE INDEX IF NOT EXISTS idx_monitor_actions_action_time ON monitor_actions (action_time);

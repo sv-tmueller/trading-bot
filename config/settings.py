@@ -5,105 +5,66 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
-if TRADING_MODE not in ("paper", "live"):
-    raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got: {TRADING_MODE!r}")
-
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = (
-    "https://paper-api.alpaca.markets"
-    if TRADING_MODE == "paper"
-    else "https://api.alpaca.markets"
-)
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
-
-DATA_FEED = os.getenv("DATA_FEED", "iex").lower()
-if DATA_FEED not in ("iex", "sip"):
-    raise ValueError(f"DATA_FEED must be 'iex' or 'sip', got: {DATA_FEED!r}")
-
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
-if not 0.001 <= RISK_PER_TRADE <= 0.05:
-    raise ValueError(f"RISK_PER_TRADE={RISK_PER_TRADE} is outside safe bounds [0.001, 0.05]")
-
-MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
-if not 1 <= MAX_POSITIONS <= 20:
-    raise ValueError(f"MAX_POSITIONS={MAX_POSITIONS} is outside safe bounds [1, 20]")
-MAX_PORTFOLIO_EXPOSURE = float(os.getenv("MAX_PORTFOLIO_EXPOSURE", "0.20"))
-if not 0.05 <= MAX_PORTFOLIO_EXPOSURE <= 0.50:
-    raise ValueError(f"MAX_PORTFOLIO_EXPOSURE={MAX_PORTFOLIO_EXPOSURE} outside safe bounds [0.05, 0.50]")
-
-DAILY_DRAWDOWN_LIMIT = float(os.getenv("DAILY_DRAWDOWN_LIMIT", "0.03"))
-if not 0.005 <= DAILY_DRAWDOWN_LIMIT <= 0.20:
-    raise ValueError(f"DAILY_DRAWDOWN_LIMIT={DAILY_DRAWDOWN_LIMIT} outside safe bounds [0.005, 0.20]")
-
-MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5"))
-if not 1 <= MAX_HOLD_DAYS <= 30:
-    raise ValueError(f"MAX_HOLD_DAYS={MAX_HOLD_DAYS} outside safe bounds [1, 30]")
-
-RR_RATIO_MIN = float(os.getenv("RR_RATIO_MIN", "2.0"))
-if not 1.0 <= RR_RATIO_MIN <= 5.0:
-    raise ValueError(f"RR_RATIO_MIN={RR_RATIO_MIN} outside safe bounds [1.0, 5.0]")
-
-# Strategy parameters — also versioned in DB
-EMA_FAST = 20
-EMA_SLOW = 50
-RSI_PERIOD = 14
-
-RSI_LOWER = float(os.getenv("RSI_LOWER", "40"))
-if not 0 <= RSI_LOWER <= 50:
-    raise ValueError(f"RSI_LOWER={RSI_LOWER} outside safe bounds [0, 50]")
-RSI_UPPER = float(os.getenv("RSI_UPPER", "60"))
-if not 50 <= RSI_UPPER <= 100:
-    raise ValueError(f"RSI_UPPER={RSI_UPPER} outside safe bounds [50, 100]")
-if RSI_LOWER >= RSI_UPPER:
-    raise ValueError(f"RSI_LOWER ({RSI_LOWER}) must be < RSI_UPPER ({RSI_UPPER})")
-
-VOLUME_MULTIPLIER = float(os.getenv("VOLUME_MULTIPLIER", "1.5"))
-if not 0.5 <= VOLUME_MULTIPLIER <= 5.0:
-    raise ValueError(f"VOLUME_MULTIPLIER={VOLUME_MULTIPLIER} outside safe bounds [0.5, 5.0]")
-
-ATR_PERIOD = 14
-ATR_STOP_MULTIPLIER = float(os.getenv("ATR_STOP_MULTIPLIER", "1.5"))
-if not 0.5 <= ATR_STOP_MULTIPLIER <= 5.0:
-    raise ValueError(f"ATR_STOP_MULTIPLIER={ATR_STOP_MULTIPLIER} outside safe bounds [0.5, 5.0]")
-
-STRICT_CROSSOVER: bool = os.getenv("STRICT_CROSSOVER", "true").lower() == "true"
 
 TRADING_PAUSED: bool = os.getenv("TRADING_PAUSED", "false").lower() == "true"
 
-TRAILING_STOP_ENABLED: bool = os.getenv("TRAILING_STOP_ENABLED", "false").lower() == "true"
-TRAILING_STOP_ATR_MULT: float = float(os.getenv("TRAILING_STOP_ATR_MULT", "1.5"))
-if not 0.5 <= TRAILING_STOP_ATR_MULT <= 5.0:
-    raise ValueError(f"TRAILING_STOP_ATR_MULT={TRAILING_STOP_ATR_MULT} outside safe bounds [0.5, 5.0]")
 
-EARNINGS_BLACKOUT_DAYS: int = int(os.getenv("EARNINGS_BLACKOUT_DAYS", "0"))
-if not 0 <= EARNINGS_BLACKOUT_DAYS <= 14:
-    raise ValueError(f"EARNINGS_BLACKOUT_DAYS={EARNINGS_BLACKOUT_DAYS} outside safe bounds [0, 14]")
+def _parse_bool(raw: str) -> bool:
+    """Permissive bool parser — ``1``, ``true``, ``yes`` (case-insensitive) are
+    truthy; everything else (incl. empty string) is falsy. Mirrors the
+    ``_is_truthy`` helper that ``daily_check.py`` previously used inline so the
+    CLI/env semantics stay identical after the lift into settings.
+    """
+    return raw.strip().lower() in ("1", "true", "yes")
 
-# How long `place_market_order` waits for the broker to confirm the parent fill
-# (see #132). Market orders during regular hours typically fill in <1s; the
-# small ceiling keeps the morning scan from blocking if Alpaca lags. On
-# timeout the call returns fill_price=None so the caller can fall back to the
-# pre-order quote and log a warning. Poll cadence keeps the loop responsive
-# without hammering the broker.
-FILL_POLL_TIMEOUT_S: float = float(os.getenv("FILL_POLL_TIMEOUT_S", "10"))
-if not 1.0 <= FILL_POLL_TIMEOUT_S <= 60.0:
-    raise ValueError(f"FILL_POLL_TIMEOUT_S={FILL_POLL_TIMEOUT_S} outside safe bounds [1.0, 60.0]")
-FILL_POLL_INTERVAL_S: float = float(os.getenv("FILL_POLL_INTERVAL_S", "0.5"))
-if not 0.05 <= FILL_POLL_INTERVAL_S <= 5.0:
-    raise ValueError(f"FILL_POLL_INTERVAL_S={FILL_POLL_INTERVAL_S} outside safe bounds [0.05, 5.0]")
+
+# Soak-mode for `daily_check.py`: when truthy, the script runs the full
+# pipeline (regime compute, IBKR connect, audit_log writes) but skips every
+# broker mutation (place_market_order, liquidate) and the matching trades
+# INSERT, leaving current_state pinned. Used during the post-pivot soak week
+# before flipping cron live. CLI ``--dry-run`` still wins on conflict.
+DAILY_CHECK_DRY_RUN: bool = _parse_bool(os.getenv("DAILY_CHECK_DRY_RUN", "false"))
+
+# --- IBKR connection (replaces Alpaca) ----------------------------------
+IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
+IBKR_PORT = int(os.getenv("IBKR_PORT", "4002"))  # 4002=paper, 4001=live
+if not 1 <= IBKR_PORT <= 65535:
+    raise ValueError(f"IBKR_PORT={IBKR_PORT} outside valid TCP range [1, 65535]")
+IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
+if not 0 <= IBKR_CLIENT_ID <= 999:
+    raise ValueError(f"IBKR_CLIENT_ID={IBKR_CLIENT_ID} outside safe bounds [0, 999]")
+
+# --- Bot strategy parameters --------------------------------------------
+BOT_TICKER = os.getenv("BOT_TICKER", "WSPL.DE")  # 3USL UCITS on Xetra
+if not BOT_TICKER.strip():
+    raise ValueError("BOT_TICKER must be a non-empty ticker symbol")
+BOT_BENCHMARK = os.getenv("BOT_BENCHMARK", "SPY")  # regime-filter input
+if not BOT_BENCHMARK.strip():
+    raise ValueError("BOT_BENCHMARK must be a non-empty ticker symbol")
+
+REGIME_SMA_DAYS = int(os.getenv("REGIME_SMA_DAYS", "200"))
+if not 20 <= REGIME_SMA_DAYS <= 500:
+    raise ValueError(f"REGIME_SMA_DAYS={REGIME_SMA_DAYS} outside safe bounds [20, 500]")
+
+KILL_SWITCH_DRAWDOWN_PCT = float(os.getenv("KILL_SWITCH_DRAWDOWN_PCT", "0.25"))
+if not 0.05 <= KILL_SWITCH_DRAWDOWN_PCT <= 0.50:
+    raise ValueError(f"KILL_SWITCH_DRAWDOWN_PCT={KILL_SWITCH_DRAWDOWN_PCT} outside safe bounds [0.05, 0.50]")
+
+KILL_SWITCH_LOOKBACK_DAYS = int(os.getenv("KILL_SWITCH_LOOKBACK_DAYS", "30"))
+if not 5 <= KILL_SWITCH_LOOKBACK_DAYS <= 252:
+    raise ValueError(f"KILL_SWITCH_LOOKBACK_DAYS={KILL_SWITCH_LOOKBACK_DAYS} outside safe bounds [5, 252]")
 
 
 # Mechanical safety guard for agent-context broker calls (issue #168). When set,
-# every `tools/broker.py` submission helper raises `BrokerCallBlockedError` BEFORE
-# any Alpaca call. Production cron leaves this UNSET; pytest sets it via an
-# autouse conftest fixture so any forgotten mock fails fast instead of reaching
-# the live broker. We intentionally read this fresh on every call (see
+# the four guarded `tools/ibkr_broker.py` helpers (`connect_ibkr`,
+# `place_market_order`, `liquidate`, `cancel_all_orders`) raise
+# `BrokerCallBlockedError` BEFORE any IBKR call. The two read-only helpers
+# (`get_position`, `get_account_value`) operate on an existing `IB` instance
+# and cannot be reached without first calling `connect_ibkr`, so the fail-fast
+# property holds end-to-end. Production cron leaves this UNSET; pytest sets it
+# via an autouse conftest fixture so any forgotten mock fails fast instead of
+# reaching the live broker. We intentionally read this fresh on every call (see
 # `is_claude_agent_no_broker()` below) — the perf cost is negligible and it
 # means tests can flip the env var inside a test without reloading the module.
 def is_claude_agent_no_broker() -> bool:
@@ -111,13 +72,14 @@ def is_claude_agent_no_broker() -> bool:
 
     Reads `os.environ` fresh on every call so pytest's `monkeypatch.setenv`
     (and any test that intentionally clears it to exercise the guard-OFF path)
-    is honoured without a settings reload. The five `tools/broker.py`
-    submission helpers consult this at the very top of each function.
+    is honoured without a settings reload. The four guarded `tools/ibkr_broker.py`
+    helpers (`connect_ibkr`, `place_market_order`, `liquidate`,
+    `cancel_all_orders`) consult this at the very top of each function.
     """
     return os.environ.get("CLAUDE_AGENT_NO_BROKER", "").lower() in ("1", "true", "yes")
 
 
 # Snapshot at import time for any caller that wants the convenience. Live checks
-# inside `tools/broker.py` MUST use `is_claude_agent_no_broker()` so the guard
-# remains responsive to env changes within a process.
+# inside `tools/ibkr_broker.py` MUST use `is_claude_agent_no_broker()` so the
+# guard remains responsive to env changes within a process.
 CLAUDE_AGENT_NO_BROKER: bool = is_claude_agent_no_broker()
