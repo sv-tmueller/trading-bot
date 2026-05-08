@@ -76,6 +76,23 @@ STRICT_CROSSOVER: bool = os.getenv("STRICT_CROSSOVER", "true").lower() == "true"
 
 TRADING_PAUSED: bool = os.getenv("TRADING_PAUSED", "false").lower() == "true"
 
+
+def _parse_bool(raw: str) -> bool:
+    """Permissive bool parser — ``1``, ``true``, ``yes`` (case-insensitive) are
+    truthy; everything else (incl. empty string) is falsy. Mirrors the
+    ``_is_truthy`` helper that ``daily_check.py`` previously used inline so the
+    CLI/env semantics stay identical after the lift into settings.
+    """
+    return raw.strip().lower() in ("1", "true", "yes")
+
+
+# Soak-mode for `daily_check.py`: when truthy, the script runs the full
+# pipeline (regime compute, IBKR connect, audit_log writes) but skips every
+# broker mutation (place_market_order, liquidate) and the matching trades
+# INSERT, leaving current_state pinned. Used during the post-pivot soak week
+# before flipping cron live. CLI ``--dry-run`` still wins on conflict.
+DAILY_CHECK_DRY_RUN: bool = _parse_bool(os.getenv("DAILY_CHECK_DRY_RUN", "false"))
+
 TRAILING_STOP_ENABLED: bool = os.getenv("TRAILING_STOP_ENABLED", "false").lower() == "true"
 TRAILING_STOP_ATR_MULT: float = float(os.getenv("TRAILING_STOP_ATR_MULT", "1.5"))
 if not 0.5 <= TRAILING_STOP_ATR_MULT <= 5.0:

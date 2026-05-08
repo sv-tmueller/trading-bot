@@ -268,3 +268,38 @@ def test_bot_ticker_empty_rejected(monkeypatch):
     import config.settings as s
     with pytest.raises(ValueError, match="BOT_TICKER"):
         importlib.reload(s)
+
+
+# --- DAILY_CHECK_DRY_RUN (review #3 — lift inline env read into settings) ---
+
+
+def test_daily_check_dry_run_default_off(monkeypatch):
+    """Default is OFF — daily_check.py must place real orders when nothing
+    in the env or CLI says otherwise."""
+    monkeypatch.delenv("DAILY_CHECK_DRY_RUN", raising=False)
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.DAILY_CHECK_DRY_RUN is False
+
+
+def test_daily_check_dry_run_truthy_values(monkeypatch):
+    """"1", "true", "yes" (case-insensitive) all activate dry-run — same
+    semantics as the inline _is_truthy that previously lived in
+    daily_check.py."""
+    import importlib
+    import config.settings as s
+    for val in ("1", "true", "TRUE", "yes", "Yes"):
+        monkeypatch.setenv("DAILY_CHECK_DRY_RUN", val)
+        importlib.reload(s)
+        assert s.DAILY_CHECK_DRY_RUN is True, f"failed for {val!r}"
+
+
+def test_daily_check_dry_run_falsy_values(monkeypatch):
+    """Empty / 0 / false / no / arbitrary-text must NOT activate dry-run."""
+    import importlib
+    import config.settings as s
+    for val in ("", "0", "false", "no", "FALSE", "anything-else"):
+        monkeypatch.setenv("DAILY_CHECK_DRY_RUN", val)
+        importlib.reload(s)
+        assert s.DAILY_CHECK_DRY_RUN is False, f"failed for {val!r}"
