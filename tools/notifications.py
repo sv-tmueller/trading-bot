@@ -217,13 +217,21 @@ def notify_regime_flip(
     fill_price: float,
     qty: int,
     account_value: float,
+    dry_run: bool = False,
 ) -> None:
     """Emitted whenever the SPY/SMA200 regime filter flips state and we trade
     on it (LONG entry or CASH exit). Includes the SPY snapshot that drove the
     decision plus the resulting fill so downstream audit can reconcile.
+
+    When ``dry_run=True``, the payload includes ``dry_run: true`` and the
+    ``title`` field is prefixed with ``[DRY-RUN]`` so n8n / Discord templates
+    can branch on it. Used by ``daily_check.py --dry-run`` to publish a
+    hypothetical flip alert during the soak window without placing an order.
     """
+    title_prefix = "[DRY-RUN] " if dry_run else ""
     _post({
         "event_type": "regime_flip",
+        "title": f"{title_prefix}regime_flip {target_state}",
         "target_state": target_state,
         "spy_close": spy_close,
         "spy_sma200": spy_sma200,
@@ -231,6 +239,7 @@ def notify_regime_flip(
         "fill_price": fill_price,
         "qty": qty,
         "account_value": account_value,
+        "dry_run": dry_run,
     })
 
 

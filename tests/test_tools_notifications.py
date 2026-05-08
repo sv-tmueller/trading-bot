@@ -453,6 +453,53 @@ def test_notify_regime_flip_long_payload(mocker):
     assert payload["account_value"] == 10000.0
 
 
+def test_notify_regime_flip_dry_run_marks_payload(mocker):
+    """When dry_run=True the payload must carry dry_run: true and a [DRY-RUN] title prefix."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+        dry_run=True,
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "regime_flip"
+    assert payload["dry_run"] is True
+    assert payload.get("title", "").startswith("[DRY-RUN]")
+
+
+def test_notify_regime_flip_default_has_no_dry_run(mocker):
+    """With dry_run omitted (default False) the payload's dry_run field is False
+    and the title has no [DRY-RUN] prefix."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload.get("dry_run", False) is False
+    assert not payload.get("title", "").startswith("[DRY-RUN]")
+
+
 def test_notify_kill_switch_fired_payload(mocker):
     """notify_kill_switch_fired emits the drawdown context required for post-trade audit."""
     mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
