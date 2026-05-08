@@ -56,8 +56,11 @@ def connect_ibkr(
             last_err = ConnectionError("connect succeeded but isConnected() == False")
         except Exception as e:  # noqa: BLE001
             last_err = e
-            if attempt < max_retries:
-                time.sleep(backoff_s)
+        # Backoff applies to BOTH failure paths (raised exception OR isConnected==False)
+        # so a flaky TWS that returns isConnected()==False isn't hammered with
+        # back-to-back retries at full speed.
+        if attempt < max_retries:
+            time.sleep(backoff_s)
     raise IBKRConnectionError(
         f"Failed to connect to IBKR at {host}:{port} after {max_retries} attempts: {last_err}"
     )
@@ -69,6 +72,14 @@ def get_position(ib: IB, symbol: str) -> int:
     Matches by contract symbol prefix — Xetra symbols like ``WSPL.DE`` come
     back from IBKR as ``WSPL`` (no exchange suffix), so we strip the suffix
     when comparing.
+
+    .. warning::
+        This helper assumes any dot in ``symbol`` is a venue suffix (e.g.,
+        ``.DE``, ``.L``, ``.PA``). It is **not safe** for US class-share
+        tickers like ``BRK.B`` or ``BRK.A`` — those would be conflated. The
+        bot's current universe is single-vehicle UCITS (``WSPL.DE``), so the
+        limitation is latent. If extending the universe to US class shares,
+        switch to an exchange-suffix allowlist.
     """
     short = symbol.split(".")[0]
     for pos in ib.positions():

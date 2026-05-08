@@ -52,6 +52,38 @@ def test_connect_ibkr_raises_after_max_retries():
         assert mock_ib.connect.call_count == 2
 
 
+def test_connect_ibkr_sleeps_between_retries_not_after_final():
+    """Sleep must be called max_retries - 1 times, not max_retries."""
+    with patch("tools.ibkr_broker.IB") as MockIB, \
+         patch("tools.ibkr_broker.time.sleep") as mock_sleep:
+        mock_ib = MagicMock()
+        mock_ib.connect.side_effect = ConnectionError("nope")
+        MockIB.return_value = mock_ib
+
+        from tools.ibkr_broker import connect_ibkr, IBKRConnectionError
+        with pytest.raises(IBKRConnectionError):
+            connect_ibkr(host="127.0.0.1", port=4002, client_id=1,
+                         max_retries=3, backoff_s=0.5)
+        assert mock_sleep.call_count == 2  # 3 attempts → 2 sleeps between them
+        mock_sleep.assert_called_with(0.5)
+
+
+def test_connect_ibkr_sleeps_on_soft_failure_path():
+    """If isConnected() returns False, retry path must still sleep before re-attempting."""
+    with patch("tools.ibkr_broker.IB") as MockIB, \
+         patch("tools.ibkr_broker.time.sleep") as mock_sleep:
+        mock_ib = MagicMock()
+        mock_ib.connect.return_value = None  # connect succeeds (no exception)
+        mock_ib.isConnected.side_effect = [False, False, True]  # third attempt true
+        MockIB.return_value = mock_ib
+
+        from tools.ibkr_broker import connect_ibkr
+        ib = connect_ibkr(host="127.0.0.1", port=4002, client_id=1,
+                          max_retries=3, backoff_s=0.5)
+        assert ib is mock_ib
+        assert mock_sleep.call_count == 2  # 2 soft failures → 2 sleeps before 3rd attempt
+
+
 def test_get_position_returns_zero_when_no_positions():
     mock_ib = MagicMock()
     mock_ib.positions.return_value = []
