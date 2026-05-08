@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Before starting any task, check the available skills list (printed in your system-reminder context) and the contents of `.claude/skills/` for a workflow that matches the user's request. If one matches, invoke it via the Skill tool (main session) or read its `SKILL.md` directly (subagents — Read tool only). Skills hold the procedural how-tos; this file holds the standing rules and architectural invariants. Both are required reading.
 
 Current skills relevant to engineering work:
-- **`add-or-extend-agent`** — authoring or modifying `agents/*.py`, wiring new tools, writing agent tests, adding a new env-driven setting.
+- **`add-or-extend-agent`** — recipe for adding a new env-driven setting (env read, validation, `.env.example`, README, opt-in/default-OFF pattern). The historical "agent" content (BaseAgent contract, tool routing) is no longer applicable post-2026-05-07 pivot but the settings recipe is still canonical.
 - **`handover`** — writing a session handover doc so a future session can resume cold.
 - **`research-bundle`** — multi-agent research surveys for product-direction decisions.
 
@@ -30,7 +30,7 @@ This project uses the [`superpowers`](https://github.com/obra/superpowers) plugi
 | Wrapping up a branch | `superpowers:finishing-a-development-branch` | Team Leader (before dispatching lead for merge) |
 | Worktree-per-task isolation | `superpowers:using-git-worktrees` | All agents (reinforces the existing "always use worktrees" rule). |
 
-The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`) sit alongside the superpowers skills — they cover work the superpowers library does not (BaseAgent contract, session handover, multi-agent research surveys).
+The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`) sit alongside the superpowers skills — they cover work the superpowers library does not.
 
 **Where superpowers conflicts with older inline guidance in `CLAUDE.md` or in agent `.md` files, the superpowers playbook wins.** The architectural-invariants section below remains authoritative for the safety stack — it is preserved verbatim in `code-quality-reviewer.md` and is non-negotiable.
 
@@ -43,32 +43,31 @@ The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `resea
 python3 -m pytest
 
 # Run a single test file
-python3 -m pytest tests/test_monitor.py -v
+python3 -m pytest tests/test_daily_check.py -v
 
 # Run a single test
-python3 -m pytest tests/test_monitor.py::test_stop_loss_triggered -v
+python3 -m pytest tests/test_daily_check.py::test_bullish_first_run_buys -v
 
-# Run the morning scan manually
-python3 main.py scan
+# Run today's regime check + flip (cron does this automatically at 22:30 UTC)
+venv/bin/python daily_check.py
+venv/bin/python daily_check.py --dry-run    # full pipeline, no broker orders
 
-# Dry-run scan — full agent pipeline, no orders placed or recorded
-python3 main.py scan --dry-run
+# Hourly drawdown check (cron does this automatically during US market hours)
+venv/bin/python -m monitor.kill_switch
 
-# Run the position monitor manually
-python3 main.py monitor
+# Backtest the regime strategy
+venv/bin/python main.py backtest --years 5
 
-# Print trailing-30d performance summary (win rate, PnL, avg R) and post to Discord
-python3 main.py summary
+# Trailing 30-day trade summary
+venv/bin/python main.py summary
+
+# Kill button (deterministic, no LLM)
+venv/bin/python main.py panic --pause
+venv/bin/python main.py panic --cancel-orders
+venv/bin/python main.py panic --liquidate --confirm
 
 # Initialise the database (first time only)
 python3 -c "from storage.init_db import init_db; init_db()"
-
-# Run a backtest (defaults: 3 years, settings.py params)
-python3 main.py backtest
-
-# Backtest with custom parameters
-python3 main.py backtest --years 3 --rsi-lower 35 --rsi-upper 70
-python3 main.py backtest --ema-fast 10 --ema-slow 30 --atr-multiplier 2.0 --rr-ratio 2.5
 ```
 
 ## Python version
@@ -77,39 +76,33 @@ Runtime is Python 3.9. **Every Python file must start with `from __future__ impo
 
 ## Architecture
 
-### Agent pipeline (daily)
+### Daily flow
 
-`main.py` runs four Claude agents sequentially each morning:
+`daily_check.py` runs once per weekday (cron, post-US-close). It computes the 200-DMA regime
+filter on SPY, reconciles with IBKR, and flips between LONG (`BOT_TICKER`) and CASH if needed.
+Wraps the entire flow in an `audit_log` row; every exit path writes a deterministic `outcome`
+string (`success`, `dry_run:*`, `skipped:*`, `error:*`).
 
-```
-MarketIntelligenceAgent → StrategyAgent → RiskReviewAgent → TeamLeaderAgent
-```
+### Hourly kill-switch
 
-Each agent subclasses `BaseAgent` (`agents/base.py`) which handles the full Anthropic tool-use loop, token accumulation across turns, and DB logging. Agents return plain dicts. The Team Leader is the **only agent that places orders**.
-
-### BaseAgent pattern, tool routing
-
-Authoring playbook (`BaseAgent` subclass contract, instance-state-for-closures rule, tool-routing `__name__` rule): see [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md). Read it before adding a new agent or wiring a new tool into an existing one.
+`monitor/kill_switch.py` runs hourly during US market hours. If `BOT_TICKER` drawdown from its
+30-trading-day rolling high exceeds `KILL_SWITCH_DRAWDOWN_PCT`, it liquidates and sets
+`kill_switch_active=1` in `regime_state`.
 
 ### Database
 
 SQLite via `storage/schema.sql`. All queries use named parameters (`:key` syntax). `conn.row_factory = sqlite3.Row` is always set so rows behave like dicts. Foreign keys are enabled with `PRAGMA foreign_keys = ON`.
 
-The `agent_logs` table tracks every agent run with input/output token counts for cost tracking. `get_daily_token_costs()` in `tools/database.py` calculates USD cost using claude-sonnet-4-6 pricing ($3/M input, $15/M output).
-
-As of v1.14.0, `monitor_actions`, `signals`, and `daily_stats` are populated rows — written by `position_monitor` (`record_monitor_action`, `upsert_daily_stat`) and `team_leader.place_order` (`insert_signal`, on every fill *and* every rejection with `triggered_entry=1/0`). `weekly_stats` and `suggestions` remain empty pending future work. `trades.entry_price` is the broker's `filled_avg_price` (post-poll), not the pre-order quote.
-
-### Data feed
-
-Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataFeed.SIP`. Controlled via `DATA_FEED` env var (default: `iex`). Both `tools/market_data.py` and `tools/broker.py` read `settings.DATA_FEED`.
+The post-pivot tables are:
+- `regime_state` — one row per trading day with `spy_close`, `spy_sma200`, `target_state`, `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`.
+- `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`, `ibkr_order_id`, `reason`).
+- `audit_log` — one row per script invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`.
 
 ### Notifications
 
 `tools/notifications.py` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` env var) which forwards to Discord. Uses only stdlib `urllib` — no extra dependency. Silently skips if the env var is unset or the request fails, so a notification outage never crashes the bot. Use `http://localhost:5678` not the public n8n URL (Cloudflare Access blocks unauthenticated external requests).
 
-### Position monitor
-
-`monitor/position_monitor.py` is **rule-based only** (no LLM). Runs hourly via cron. Checks stop-loss → take-profit → max-hold in that priority order. Imports are at module level (not inside functions) so they can be patched in tests. Each per-trade iteration in `run_monitor` is wrapped in try/except — a transient broker/network blip on one ticker fires `notify_error` and records a `hold/skipped_error` `MonitorAction`, but the loop continues so the rest of the book still gets its soft-stop check. The top-of-loop `get_alpaca_positions()` call has its own try/except wrapper (fail-CLOSED): a broker outage on the very first call skips the whole cycle, suppresses the `daily_stats` upsert, and waits for the next hourly cron fire (PR #145). Each per-trade outcome is persisted via `record_monitor_action()` to `monitor_actions`; the end-of-pass summary is upserted to `daily_stats` via `upsert_daily_stat()`.
+The post-pivot helpers post structured JSON dicts (`event_type` + event-specific fields) so the n8n flow can route on shape: `notify_regime_flip`, `notify_kill_switch_fired`, `notify_trade_failed`, `notify_tws_disconnected`, `notify_state_desync`. The string-payload helpers `notify_error` (used by panic + daily_check generic-exception) and `notify_panic` are also kept.
 
 ### Settings
 
@@ -117,50 +110,35 @@ Alpaca free paper accounts require `DataFeed.IEX`. Paid live accounts use `DataF
 
 ## Testing conventions
 
-Mock idioms, fixtures, helper-function naming, and the agent-test triad (happy path / name check / JSON fallback) are documented in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md). Read it before writing or modifying agent tests.
+Mock idioms and broker-call mocking patterns: `tools/ibkr_broker.py` exposes four guarded helpers (`connect_ibkr`, `place_market_order`, `liquidate`, `cancel_all_orders`) that call `_check_guard()` at the top of each function, plus two read-only helpers (`get_position`, `get_account_value`) that operate on an existing `IB` instance. `get_position` and `get_account_value` do not call the guard themselves but cannot be reached without first calling `connect_ibkr` (which is guarded), so the test-side fail-fast property holds end-to-end. All six helpers MUST be mocked in any test that exercises a path which would call them. The `CLAUDE_AGENT_NO_BROKER` autouse conftest fixture (`tests/conftest.py`) sets the env var so every guarded helper raises `BrokerCallBlockedError` before any IBKR call — this is the mechanical safety net, but tests should still mock cleanly so the assertions are meaningful.
+
+Patch at the module path the caller imports from. Example: `daily_check.py` does `from tools.ibkr_broker import place_market_order`, so tests patch `daily_check.place_market_order`, not `tools.ibkr_broker.place_market_order`.
 
 ## Key constraints
 
-- `MAX_HOLD_DAYS`, `RISK_PER_TRADE`, `MAX_POSITIONS` are validated at startup — invalid values raise immediately
-- Stop-loss priority: `stop_loss → take_profit → max_hold → hold` — order matters
-- `place_market_order` validates `side` is exactly `"buy"` or `"sell"` — raises `ValueError` otherwise
-- `get_current_price` returns mid-price `(bid + ask) / 2`, with fallback if either is zero
-- Morning scan is idempotent: `main.py scan` sets `_scan_already_ran = True` after the first successful run and skips subsequent calls within the same process — prevents double-firing if cron overlaps
-- Morning scan must run **pre-market** (cron at `25 13 * * 1-5` UTC, 5 min before NYSE open). Signals are computed on daily bars in `tools/market_data.py`; running after 13:30 UTC means the last bar is still forming and `volume_ratio` collapses to ~0, killing every entry. Yesterday's closed bar is the input; orders fill at today's open.
+- `IBKR_PORT`, `IBKR_CLIENT_ID`, `REGIME_SMA_DAYS`, `KILL_SWITCH_DRAWDOWN_PCT`, `KILL_SWITCH_LOOKBACK_DAYS`, `BOT_TICKER`, `BOT_BENCHMARK` are validated at startup — invalid values raise immediately.
+- `daily_check.py` must run **post-US-close** (cron at `30 22 * * 1-5` UTC, ~5h after NYSE close, 1.5h after yfinance daily bar publishes). Running before yfinance has the closed bar will hit the stale-data guard and exit with `skipped:stale_data` in audit_log.
+- `daily_check.py` is idempotent: re-running on the same trading day computes the same `target_state`, sees `current_state` already matches, and writes a no-op `regime_state` row.
+- The bot has one decision rule. It is testable as a pure function (`strategy.regime.compute_target_state`). Do not add second decision rules without a fresh brainstorm and spec.
+- `daily_check.py` honors `TRADING_PAUSED` — `python main.py panic --pause` is the operational kill switch.
 
 ## Architectural invariants
 
-**The LLM must never control risk parameters directly.** This is non-negotiable.
+- **One decision rule.** The bot trades on exactly one signal: SPY close vs SPY 200-DMA, modulated by the kill-switch flag. The signal is computed by a pure function (`strategy.regime.compute_target_state`) so every decision is reproducible from the SPY history alone. Do not add a second decision rule (sentiment overlay, sector tilt, etc.) without a fresh brainstorm and design spec — the rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was indistinguishable from a coin flip on 5y data.
+- **No LLM in the trading path.** `daily_check.py` and `monitor/kill_switch.py` import nothing from `anthropic` and do not instantiate any agent. The only Claude session in the repo is the operator's interactive Team Leader for development work — it never executes orders.
+- **Operational kill switch.** `TRADING_PAUSED=true` in `.env` halts new entries — `daily_check.py` writes `skipped:trading_paused` to `audit_log` and exits 0 without contacting IBKR. The kill-switch monitor is unaffected and continues exit handling. The faster path is `python main.py panic --pause` — same effect on `TRADING_PAUSED`, plus order cancellation and liquidation in one invocation.
+- **Panic CLI is the deterministic kill button.** `main.py panic --cancel-orders | --liquidate --confirm | --pause` calls IBKR and writes `.env` directly. No LLM is imported in this path. Audit row in `audit_log` (`script_name="panic"`) is written before the broker call and updated in `finally` with the per-action result, so a partial run is recoverable from the DB. `--pause` writes to `.env` anchored at the repo root via `Path(__file__).resolve().parent`, not cwd.
+- **Engineer subagents must never execute against the live broker.** Subagents spawn into worktrees that inherit `/opt/trading-bot/.env` via the parent shell, so any `pytest`, ad-hoc `python -c`, or `python daily_check.py` invocation would submit real orders to the live account. The four guarded `tools/ibkr_broker.py` helpers — `connect_ibkr`, `place_market_order`, `liquidate`, `cancel_all_orders` — call `_check_guard()` at the top of each function and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. The two read-only helpers (`get_position`, `get_account_value`) do not call the guard themselves but cannot be reached without first calling `connect_ibkr` (which is guarded), so the test-side fail-fast property holds end-to-end. All six helpers MUST be mocked in agent-spawned tests (patch at the module path the caller imports from). Integration tests that need a real broker must use a separate sandbox account with explicitly-set env vars, or be explicitly skipped in agent contexts. **Mechanically enforced via the `CLAUDE_AGENT_NO_BROKER` env var (#168) — when set, the four guarded helpers raise `BrokerCallBlockedError` before any IBKR call. Production cron leaves the var unset; pytest sets it via an autouse conftest fixture so any forgotten mock fails fast instead of materialising a live order.** _Rationale: 2026-05-06 incident #149 — six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions that would have filled unprotected at market open if not surgically cancelled. Re-materialised ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered via panic CLI). The production cron path was unaffected in both incidents; the gap was on the agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-depth)._ The rule applies post-pivot to `tools/ibkr_broker.py` exactly as it applied pre-pivot to `tools/broker.py`.
 
-Specifically:
-- Stop-loss and take-profit values are always calculated by `tools/risk.py` (ATR-based, deterministic). The LLM receives them as inputs — it cannot set or override them.
-- Position monitor exit logic in `monitor/position_monitor.py` is rule-based only. No LLM call is made during exits.
-- Portfolio guardrails (`check_portfolio_guardrails` in `tools/risk.py`) run deterministically before any order is placed. The LLM cannot bypass them.
-- The order-placement path has a deterministic exposure gate inside `team_leader.place_order` that calls `tools/risk.py::check_exposure_for_new_order` against broker truth (`get_alpaca_positions`) before submission. It fails closed on broker outage and cannot be bypassed by the LLM (the gate lives in the tool implementation, not the prompt).
-- Only `TeamLeaderAgent` places orders, and only with stop/target values that come from `pending_stops`/`pending_targets` — pre-approved by the risk layer.
-- Stops and take-profits execute server-side via Alpaca **OCO bracket orders submitted post-fill**. The flow is: parent market order → poll `get_order_by_id` for the actual fill (`#132`) → submit a separate sell-side `OrderClass.OCO` LimitOrderRequest with both legs anchored to the broker's `filled_avg_price` (`#133`). The atomic Alpaca BRACKET order class is no longer used because it commits the children to the pre-order quote at submission, drifting realised R:R by the slippage fraction. The `position_monitor` soft-stop check is defense-in-depth, not the primary mechanism.
-- ATR is plumbed `risk_review` → `main.py` → `team_leader` so brackets are anchored to the **actual fill price** (post-poll) rather than the LLM's stale prior-close or the pre-order quote. This keeps the realised R:R within ±1% of `RR_RATIO_MIN` regardless of fill drift — the only remaining drift source is rounding (`round(..., 4)` on stop and target). Pre-`#133` the bound was ±5% under typical drift; post-`#133` the bound is invariant to drift.
-- Fill-to-OCO window: `_poll_for_fill` polls `get_order_by_id` every `FILL_POLL_INTERVAL_S` (default 0.5s) up to `FILL_POLL_TIMEOUT_S` (default 10s), so the position is unprotected for typically <1s under normal load. If the OCO submission fails (broker outage), `team_leader.place_order` fires `notify_error` with the parent `order_id` and ticker, and the position monitor's soft-stop becomes the recovery layer — `trades.stop_loss` is still written (anchored to the actual fill) so the soft-stop has the right price to compare against.
-- If the parent fill cannot be determined (poll timeout → `fill_price=None`), the trade row is still written with the pre-order quote as a best-effort `entry_price` (`#132` fallback). The OCO is submitted using the same fallback math (stop/target derived from quote + ATR). Operators see a `[place_order] WARN ... broker fill not reported within poll window` log line.
-- Operational kill switch: `TRADING_PAUSED=true` in `.env` halts new entries — `main.py scan` exits immediately, no agents run. The position monitor is unaffected and continues exit handling. The faster path is `python main.py panic` (see below) — same effect on `TRADING_PAUSED`, plus order cancellation and liquidation, with no LLM in the path.
-- Panic CLI is the deterministic kill button: `main.py panic --cancel-orders | --liquidate --confirm | --pause` calls Alpaca and writes `.env` directly. No agents are imported, no `Anthropic()` is instantiated, no risk math runs. Audit row in `agent_logs` (`agent_name="panic"`) is written before the broker call and updated in `finally` with the per-action result, so a partial run is recoverable from the DB. `--pause` writes to `.env` anchored at the repo root, not cwd.
-- `team_leader.place_order` runs the deterministic safety stack — `check_exposure_for_new_order` against broker truth, `validate_bracket_params` — in **both** the live path and `dry_run=True`. Only the broker SUBMIT and DB INSERT are skipped in dry-run. This makes `python main.py scan --dry-run` an honest smoke test: an over-cap or malformed candidate is rejected the same way it would be live, instead of being green-lit and only failing under real cron.
-- Tool exceptions cannot crash the scan: `BaseAgent._handle_tool_calls` returns failures (and the unknown-tool branch) as `tool_result` blocks with `is_error: True` so the LLM can react instead of the morning pipeline aborting mid-loop.
-- Team Leader Discord summary counts and `agent_logs.output_summary` are derived deterministically from `place_order` tool_results (a per-run `_order_outcomes` ledger), not from LLM prose. The system-prompt instruction is belt-and-braces only — structured counts are the primary mechanism, so a hallucinated narrative cannot misreport what the safety stack actually decided (PR #146 / #139).
-- Position monitor's top-of-loop `get_alpaca_positions()` call is wrapped in its own try/except. A transient broker error fails CLOSED: the cycle returns an empty action list, the `daily_stats` upsert is skipped, `notify_error` fires, and the next hourly cron fire retries from scratch. Per-iteration isolation from #118 is preserved unchanged (PR #145 / #134).
-- **Engineer subagents must never execute against the live Alpaca paper account.** Subagents spawn into worktrees that inherit `/opt/trading-bot/.env` via the parent shell, so any `pytest`, ad-hoc `python -c`, or `python main.py scan` invocation submits real orders to the live paper account. Every `tools/broker.py` submission helper — `place_market_order`, `place_parent_market_order`, `place_oco_brackets`, `cancel_all_orders`, `liquidate_all_positions` — MUST be mocked in agent-spawned tests (patch at the module path the caller imports from, per the testing conventions in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md)). Integration tests that need a real broker must use a separate sandbox account with explicitly-set env vars, or be explicitly skipped in agent contexts. **Mechanically enforced via the `CLAUDE_AGENT_NO_BROKER` env var (#168) — when set, all five helpers raise `BrokerCallBlockedError` before any Alpaca call. Production cron leaves the var unset; pytest sets it via an autouse conftest fixture so any forgotten mock fails fast instead of materialising a live order.** _Rationale: 2026-05-06 incident #149 — six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions that would have filled unprotected at market open if not surgically cancelled. Re-materialised ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered via panic CLI). The production cron path was unaffected in both incidents; the gap was on the agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-depth)._
-
-**Any new LLM capability added to this bot must be bounded by deterministic pre/post conditions.** If you are adding a new agent or extending an existing one to make decisions that affect position sizing, entry/exit timing, or stop distances — stop and add a deterministic validation layer first.
-
-_Rationale: LLM outputs are non-deterministic and can behave unexpectedly under novel market conditions. The deterministic rules engine is the safety net that makes the system auditable and prevents runaway losses._
+_Rationale: deterministic rules engines are auditable; LLM outputs are not. The v1.14 incident history showed that even with deterministic guardrails wrapped around an LLM, the LLM's non-determinism leaked through at the points where it set sizes, picked instruments, or narrated outcomes. The post-pivot bot has none of that surface area — there is no decision the LLM can corrupt because there is no LLM in the path._
 
 ## Team
 
 The main session always acts as **Team Leader** — it orchestrates the specialist subagents listed in [`TEAM.md`](TEAM.md). You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
 
-| Tell the Team Leader | It will dispatch… |
+| Tell the Team Leader | It will dispatch... |
 |---|---|
 | `Triage open issues` | Lead — label, prioritize, set `status: ready` |
-| `Work on issue #N` | Brainstorm → plan → engineer + spec-reviewer + code-quality-reviewer per task → lead merges |
+| `Work on issue #N` | Brainstorm -> plan -> engineer + spec-reviewer + code-quality-reviewer per task -> lead merges |
 | `Run QA` | QA — discover bugs, open issues (with `superpowers:systematic-debugging` triage) |
 | `Update docs` | Docs — sync README, CLAUDE.md, CURRENT_CONFIG |
