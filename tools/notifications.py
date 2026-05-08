@@ -6,13 +6,27 @@ import json
 from config import settings
 
 
-def _post(message: str) -> None:
+def _post(payload) -> None:
+    """POST a payload to the n8n webhook, silently no-op'ing if it's unset.
+
+    Two payload shapes are supported:
+    - **dict** — serialised verbatim. Used by the rules-engine pivot's
+      structured event types (#196), which encode `event_type` plus
+      event-specific fields so downstream automations can route on shape.
+    - **str** — wrapped as ``{"message": <str>}`` before serialising.
+      Preserved for backwards compatibility with the legacy notifiers
+      (``notify_scan_complete``, ``notify_error``, ``notify_panic`` etc.)
+      which all post free-form Discord-style strings.
+    """
     if not settings.N8N_WEBHOOK_URL:
         return
-    payload = json.dumps({"message": message}).encode()
+    if isinstance(payload, dict):
+        body = json.dumps(payload).encode()
+    else:
+        body = json.dumps({"message": payload}).encode()
     req = urllib.request.Request(
         settings.N8N_WEBHOOK_URL,
-        data=payload,
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -183,3 +197,122 @@ def notify_backtest(result: dict) -> None:
         f"Winner:Loser: {wl} | "
         f"Expectancy: {exp}%"
     )
+
+
+# ---------------------------------------------------------------------------
+# Rules-engine pivot (#196): structured-payload event types.
+#
+# Each helper posts a JSON dict ({"event_type": "...", ...fields}) so the
+# n8n flow downstream can route on shape rather than parsing free-form
+# Discord prose. Keyword-only signatures keep call sites self-documenting.
+# ---------------------------------------------------------------------------
+
+
+def notify_regime_flip(
+    *,
+    target_state: str,
+    spy_close: float,
+    spy_sma200: float,
+    ticker: str,
+    fill_price: float,
+    qty: int,
+    account_value: float,
+) -> None:
+    """Emitted whenever the SPY/SMA200 regime filter flips state and we trade
+    on it (LONG entry or CASH exit). Includes the SPY snapshot that drove the
+    decision plus the resulting fill so downstream audit can reconcile.
+    """
+    _post({
+        "event_type": "regime_flip",
+        "target_state": target_state,
+        "spy_close": spy_close,
+        "spy_sma200": spy_sma200,
+        "ticker": ticker,
+        "fill_price": fill_price,
+        "qty": qty,
+        "account_value": account_value,
+    })
+
+
+def notify_kill_switch_fired(
+    *,
+    ticker: str,
+    drawdown_pct: float,
+    ref_high: float,
+    last_price: float,
+    qty: int,
+    fill_price: float,
+) -> None:
+    """Emitted when the per-position drawdown kill switch closes a holding.
+    `drawdown_pct` is signed (negative for a loss); `ref_high` is the high-
+    water mark used as the drawdown reference.
+    """
+    _post({
+        "event_type": "kill_switch_fired",
+        "ticker": ticker,
+        "drawdown_pct": drawdown_pct,
+        "ref_high": ref_high,
+        "last_price": last_price,
+        "qty": qty,
+        "fill_price": fill_price,
+    })
+
+
+def notify_trade_failed(
+    *,
+    symbol: str,
+    side: str,
+    qty: int,
+    reason: str,
+) -> None:
+    """Emitted when the broker rejects an order. `reason` is the broker's
+    (or our pre-submit gate's) machine-readable code, e.g.
+    ``"insufficient_buying_power"``.
+    """
+    _post({
+        "event_type": "trade_failed",
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "reason": reason,
+    })
+
+
+def notify_tws_disconnected(
+    *,
+    host: str,
+    port: int,
+    attempts: int,
+    error_msg: str,
+) -> None:
+    """Emitted when the IBKR TWS/Gateway connection cannot be re-established
+    after `attempts` retries. `error_msg` is the last error string from the
+    underlying client.
+    """
+    _post({
+        "event_type": "tws_disconnected",
+        "host": host,
+        "port": port,
+        "attempts": attempts,
+        "error_msg": error_msg,
+    })
+
+
+def notify_state_desync(
+    *,
+    db_state: str,
+    broker_state: str,
+    symbol: str,
+    action_taken: str,
+) -> None:
+    """Emitted when the persisted `regime_state` (DB) disagrees with broker
+    truth on reconciliation. `action_taken` describes the corrective step
+    the bot performed (e.g. ``"DB updated to CASH"``).
+    """
+    _post({
+        "event_type": "state_desync",
+        "db_state": db_state,
+        "broker_state": broker_state,
+        "symbol": symbol,
+        "action_taken": action_taken,
+    })
