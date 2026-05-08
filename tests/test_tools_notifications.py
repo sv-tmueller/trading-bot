@@ -308,6 +308,140 @@ def test_notify_state_desync_payload(mocker):
     assert payload["action_taken"] == "DB updated to CASH"
 
 
+def test_notify_regime_flip_payload_carries_message_field(mocker):
+    """The structured-event payload must include a non-empty `message` string so
+    the n8n flow's `{{ $json.body.message }}` Discord template renders something."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert isinstance(payload.get("message"), str)
+    assert payload["message"]
+    # Message should mention the ticker and target state so the operator can
+    # tell what the alert is about without expanding the JSON body.
+    assert "WSPL.DE" in payload["message"]
+    assert "LONG" in payload["message"]
+
+
+def test_notify_regime_flip_dry_run_message_carries_dry_run_marker(mocker):
+    """In dry-run the `message` body must carry the [DRY-RUN] prefix too — not just
+    the title — because Discord cards bind to `message`, not `title`."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+        dry_run=True,
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert "[DRY-RUN]" in payload["message"]
+
+
+def test_notify_kill_switch_fired_payload_carries_message_field(mocker):
+    """notify_kill_switch_fired payload must include a non-empty Discord-renderable
+    `message` field with the ticker and drawdown context."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_kill_switch_fired
+
+    notify_kill_switch_fired(
+        ticker="WSPL.DE",
+        drawdown_pct=-0.27,
+        ref_high=68.5,
+        last_price=50.0,
+        qty=100,
+        fill_price=49.5,
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert isinstance(payload.get("message"), str)
+    assert payload["message"]
+    assert "WSPL.DE" in payload["message"]
+
+
+def test_notify_trade_failed_payload_carries_message_field(mocker):
+    """notify_trade_failed payload must include a non-empty Discord-renderable
+    `message` field with the symbol/side/reason."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_trade_failed
+
+    notify_trade_failed(
+        symbol="WSPL.DE",
+        side="BUY",
+        qty=100,
+        reason="insufficient_buying_power",
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert isinstance(payload.get("message"), str)
+    assert payload["message"]
+    assert "WSPL.DE" in payload["message"]
+    assert "insufficient_buying_power" in payload["message"]
+
+
+def test_notify_tws_disconnected_payload_carries_message_field(mocker):
+    """notify_tws_disconnected payload must include a non-empty Discord-renderable
+    `message` field with the host:port context."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_tws_disconnected
+
+    notify_tws_disconnected(
+        host="127.0.0.1",
+        port=4002,
+        attempts=3,
+        error_msg="connect refused",
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert isinstance(payload.get("message"), str)
+    assert payload["message"]
+    assert "127.0.0.1" in payload["message"]
+    assert "4002" in payload["message"]
+
+
+def test_notify_state_desync_payload_carries_message_field(mocker):
+    """notify_state_desync payload must include a non-empty Discord-renderable
+    `message` field with the symbol and DB-vs-broker delta."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_state_desync
+
+    notify_state_desync(
+        db_state="LONG",
+        broker_state="CASH",
+        symbol="WSPL.DE",
+        action_taken="DB updated to CASH",
+    )
+
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert isinstance(payload.get("message"), str)
+    assert payload["message"]
+    assert "WSPL.DE" in payload["message"]
+    assert "LONG" in payload["message"]
+    assert "CASH" in payload["message"]
+
+
 def test_silent_when_webhook_unset(mocker):
     """When N8N_WEBHOOK_URL is empty, structured-payload notifiers must not raise or call urlopen."""
     mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "")
