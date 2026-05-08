@@ -234,6 +234,7 @@ def test_liquidate_blocked_by_guard(monkeypatch):
     from tools.ibkr_broker import liquidate, BrokerCallBlockedError
     with pytest.raises(BrokerCallBlockedError):
         liquidate(mock_ib, symbol="WSPL.DE")
+    mock_ib.positions.assert_not_called()
 
 
 def test_cancel_all_orders_calls_cancel_for_each_open():
@@ -250,9 +251,26 @@ def test_cancel_all_orders_calls_cancel_for_each_open():
     assert mock_ib.cancelOrder.call_count == 2
 
 
+def test_cancel_all_orders_returns_success_count_only():
+    """If a cancel raises, it must be excluded from the returned count."""
+    mock_ib = MagicMock()
+    o1 = MagicMock(); o1.orderId = 1
+    o2 = MagicMock(); o2.orderId = 2
+    trade1 = MagicMock(); trade1.order = o1; trade1.isDone.return_value = False
+    trade2 = MagicMock(); trade2.order = o2; trade2.isDone.return_value = False
+    mock_ib.openTrades.return_value = [trade1, trade2]
+    mock_ib.cancelOrder.side_effect = [None, RuntimeError("broker hiccup")]
+
+    from tools.ibkr_broker import cancel_all_orders
+    n = cancel_all_orders(mock_ib)
+    assert n == 1  # only the first succeeded
+    assert mock_ib.cancelOrder.call_count == 2  # both were attempted
+
+
 def test_cancel_all_orders_blocked_by_guard(monkeypatch):
     monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", "true")
     mock_ib = MagicMock()
     from tools.ibkr_broker import cancel_all_orders, BrokerCallBlockedError
     with pytest.raises(BrokerCallBlockedError):
         cancel_all_orders(mock_ib)
+    mock_ib.openTrades.assert_not_called()

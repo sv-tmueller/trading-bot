@@ -193,12 +193,18 @@ def liquidate(
 
 
 def cancel_all_orders(ib: IB) -> int:
-    """Cancel every open order. Returns count cancelled."""
+    """Cancel every open order. Returns count of successful cancellations.
+
+    Failed cancellations (e.g., broker connection drop mid-cancel) are
+    swallowed and excluded from the count — best-effort semantics.
+    """
     _check_guard("cancel_all_orders")
     open_trades = [t for t in ib.openTrades() if not t.isDone()]
+    n_ok = 0
     for trade in open_trades:
         try:
             ib.cancelOrder(trade.order)
+            n_ok += 1
         except Exception:  # noqa: BLE001
             pass  # Best-effort
-    return len(open_trades)
+    return n_ok
