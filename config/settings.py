@@ -5,18 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TRADING_MODE = os.getenv("TRADING_MODE", "paper").lower()
-if TRADING_MODE not in ("paper", "live"):
-    raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got: {TRADING_MODE!r}")
-
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = (
-    "https://paper-api.alpaca.markets"
-    if TRADING_MODE == "paper"
-    else "https://api.alpaca.markets"
-)
-
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")
 
 DATA_FEED = os.getenv("DATA_FEED", "iex").lower()
