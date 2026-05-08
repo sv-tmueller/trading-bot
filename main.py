@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import traceback
 import pandas_market_calendars as mcal
 from datetime import date
@@ -25,6 +26,13 @@ from tools.notifications import (
     notify_error,
     notify_paused,
     notify_panic,
+)
+from tools.ibkr_broker import (
+    connect_ibkr,
+    cancel_all_orders,
+    liquidate,
+    get_position,
+    IBKRConnectionError,
 )
 
 
@@ -295,21 +303,39 @@ def run_panic(
     --cancel-orders and --liquidate are set: cancel orders FIRST so any
     unfilled bracket entries don't race the liquidation.
     """
-    from tools.broker import cancel_all_orders, liquidate_all_positions
+    # The kwarg ``liquidate`` shadows the module-level import of the same name
+    # within this function's scope. Resolve broker-call attributes through the
+    # module dict at call time so test patches on ``main.connect_ibkr`` /
+    # ``main.cancel_all_orders`` / ``main.liquidate`` / ``main.get_position``
+    # take effect (the LEGB lookup would otherwise miss them).
+    _mod = sys.modules[__name__]
 
-    # `--liquidate` without `--confirm` must NOT touch the broker. Print a dry
-    # preview, post a dry-run Discord alert, and exit non-zero so a script
-    # invoking us catches the missing flag.
+    # `--liquidate` without `--confirm` must NOT touch the broker beyond a
+    # read-only position query for the preview. Post a dry-run Discord alert
+    # and exit non-zero so a script invoking us catches the missing flag.
     if liquidate and not confirm:
         print("DRY RUN — would liquidate all positions. Re-run with --confirm to execute.")
+        qty = 0
         try:
-            from tools.broker import get_alpaca_positions
-            positions = get_alpaca_positions()
+            ib_preview = _mod.connect_ibkr(
+                host=settings.IBKR_HOST,
+                port=settings.IBKR_PORT,
+                client_id=settings.IBKR_CLIENT_ID,
+            )
+            try:
+                qty = _mod.get_position(ib_preview, settings.BOT_TICKER)
+            finally:
+                try:
+                    ib_preview.disconnect()
+                except Exception:
+                    pass
         except Exception as e:
-            print(f"[panic] could not list positions for dry preview: {e}")
-            positions = []
-        for p in positions:
-            print(f"  would close: {p['ticker']} qty={p['qty']} avg_entry={p['avg_entry_price']}")
+            print(f"[panic] could not query position for dry preview: {e}")
+            qty = 0
+        positions: list = []
+        if qty > 0:
+            positions = [{"ticker": settings.BOT_TICKER, "qty": qty}]
+            print(f"  would close: {settings.BOT_TICKER} qty={qty}")
         try:
             notify_panic("liquidate", positions, dry_run=True)
         except Exception as e:
@@ -365,48 +391,88 @@ def run_panic(
     exit_code = 0
     result_parts: list = []
 
+    ib = None
     try:
-        # 1. Cancel orders FIRST so unfilled bracket entries don't race the liquidation.
-        if cancel_orders:
+        # Connect once if any broker action is requested. Connection failure
+        # fails the affected branches CLOSED — the pause branch is unaffected.
+        if cancel_orders or (liquidate and confirm):
             try:
-                cancelled = cancel_all_orders()
-                print(f"[panic] cancelled {len(cancelled)} order(s)")
-                result_parts.append(f"cancel-orders=ok({len(cancelled)})")
-                try:
-                    notify_panic("cancel-orders", cancelled)
-                except Exception as e:
-                    print(f"[panic] notify_panic failed: {e}")
-            except Exception as e:
+                ib = _mod.connect_ibkr(
+                    host=settings.IBKR_HOST,
+                    port=settings.IBKR_PORT,
+                    client_id=settings.IBKR_CLIENT_ID,
+                )
+            except IBKRConnectionError as e:
                 tb = traceback.format_exc()
-                print(f"[panic] cancel_all_orders failed: {e}")
-                result_parts.append(f"cancel-orders=fail({type(e).__name__})")
+                print(f"[panic] TWS connection failed: {e}")
+                result_parts.append(f"connect=fail({type(e).__name__})")
                 try:
-                    notify_error("panic", f"cancel_all_orders failed: {e}\n\n{tb}")
+                    notify_error("panic", f"connect_ibkr failed: {e}\n\n{tb}")
                 except Exception:
                     pass
                 exit_code = 1
+                ib = None
 
-        # 2. Liquidate positions. Alpaca's close_all_positions(cancel_orders=True)
-        # also cancels protective bracket-child legs on each position before issuing
-        # the market-close, so we don't need a separate sweep for them here.
-        if liquidate and confirm:
-            try:
-                closed = liquidate_all_positions()
-                print(f"[panic] liquidated {len(closed)} position(s)")
-                result_parts.append(f"liquidate=ok({len(closed)})")
+        # 1. Cancel orders FIRST so unfilled entries don't race the liquidation.
+        if cancel_orders:
+            if ib is None:
+                # Connection failed above — record the skip. notify_error already fired.
+                result_parts.append("cancel-orders=fail(no_ib)")
+            else:
                 try:
-                    notify_panic("liquidate", closed)
+                    n = _mod.cancel_all_orders(ib)
+                    print(f"[panic] cancelled {n} order(s)")
+                    result_parts.append(f"cancel-orders=ok({n})")
+                    try:
+                        notify_panic("cancel-orders", [{"count": n}])
+                    except Exception as e:
+                        print(f"[panic] notify_panic failed: {e}")
                 except Exception as e:
-                    print(f"[panic] notify_panic failed: {e}")
-            except Exception as e:
-                tb = traceback.format_exc()
-                print(f"[panic] liquidate_all_positions failed: {e}")
-                result_parts.append(f"liquidate=fail({type(e).__name__})")
+                    tb = traceback.format_exc()
+                    print(f"[panic] cancel_all_orders failed: {e}")
+                    result_parts.append(f"cancel-orders=fail({type(e).__name__})")
+                    try:
+                        notify_error("panic", f"cancel_all_orders failed: {e}\n\n{tb}")
+                    except Exception:
+                        pass
+                    exit_code = 1
+
+        # 2. Liquidate the single bot position. The new bot is single-vehicle
+        # (settings.BOT_TICKER), so liquidate() returns Optional[dict] for that
+        # one symbol — None means no position (success path, not failure).
+        if liquidate and confirm:
+            if ib is None:
+                result_parts.append("liquidate=fail(no_ib)")
+            else:
                 try:
-                    notify_error("panic", f"liquidate_all_positions failed: {e}\n\n{tb}")
-                except Exception:
-                    pass
-                exit_code = 1
+                    fill = _mod.liquidate(ib, symbol=settings.BOT_TICKER)
+                    if fill:
+                        print(f"[panic] liquidated {fill['qty']} @ {fill['fill_price']}")
+                        result_parts.append(f"liquidate=ok(qty={fill['qty']}@{fill['fill_price']})")
+                        try:
+                            notify_panic("liquidate", [{
+                                "ticker": settings.BOT_TICKER,
+                                "qty": fill["qty"],
+                                "fill_price": fill["fill_price"],
+                            }])
+                        except Exception as e:
+                            print(f"[panic] notify_panic failed: {e}")
+                    else:
+                        print("[panic] no position to liquidate")
+                        result_parts.append("liquidate=ok(no_position)")
+                        try:
+                            notify_panic("liquidate", [])
+                        except Exception as e:
+                            print(f"[panic] notify_panic failed: {e}")
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    print(f"[panic] liquidate failed: {e}")
+                    result_parts.append(f"liquidate=fail({type(e).__name__})")
+                    try:
+                        notify_error("panic", f"liquidate failed: {e}\n\n{tb}")
+                    except Exception:
+                        pass
+                    exit_code = 1
 
         # 3. Pause new entries (idempotent — no-op if already paused).
         if pause:
@@ -429,6 +495,12 @@ def run_panic(
                     pass
                 exit_code = 1
     finally:
+        # Always disconnect IB if we connected, including error paths.
+        if ib is not None:
+            try:
+                ib.disconnect()
+            except Exception:
+                pass
         # Update the same audit row with the actual outcome — single row per panic
         # invocation, intent + result both captured.
         if conn is not None:
