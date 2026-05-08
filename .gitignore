@@ -1,5 +1,6 @@
 .env
 storage/*.db
+trading_bot.db
 reports/
 __pycache__/
 *.pyc

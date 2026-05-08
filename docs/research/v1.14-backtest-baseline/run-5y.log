@@ -1,0 +1,34 @@
+/opt/trading-bot/backtest/runner.py:167: UserWarning: Some trades remain open at the end of backtest. Use `Backtest(..., finalize_trades=True)` to close them and include them in stats.
+  stats = bt.run(**strategy_params)
+/opt/trading-bot/backtest/runner.py:167: UserWarning: Some trades remain open at the end of backtest. Use `Backtest(..., finalize_trades=True)` to close them and include them in stats.
+  stats = bt.run(**strategy_params)
+/opt/trading-bot/backtest/runner.py:167: UserWarning: Some trades remain open at the end of backtest. Use `Backtest(..., finalize_trades=True)` to close them and include them in stats.
+  stats = bt.run(**strategy_params)
+/opt/trading-bot/backtest/runner.py:167: UserWarning: Some trades remain open at the end of backtest. Use `Backtest(..., finalize_trades=True)` to close them and include them in stats.
+  stats = bt.run(**strategy_params)
+/opt/trading-bot/backtest/runner.py:167: UserWarning: Some trades remain open at the end of backtest. Use `Backtest(..., finalize_trades=True)` to close them and include them in stats.
+  stats = bt.run(**strategy_params)
+Backtest: 2021-05-06 → 2026-05-06  |  EMA 20/50  RSI 30-75  Hold ≤20d
+(each ticker independent — max-positions constraint not simulated)
+
+Ticker   Trades   Win%    Return   Max DD    PF  Win $ Loss $
+-------------------------------------------------------------
+AMD          47  38.3%    +18.5%   -10.3%  1.41 +16.3%  -7.1%
+NOW          51  39.2%    +11.3%    -8.7%  1.31  +9.0%  -4.5%
+SHEL         75  37.3%     -5.9%   -17.5%  0.95  +5.4%  -3.4%
+NVDA         66  45.5%    +28.5%   -11.7%  1.50 +11.6%  -6.4%
+GOOGL        61  42.6%    +18.0%    -9.7%  1.37  +7.5%  -4.1%
+META         52  48.1%    +43.6%    -6.9%  2.62 +11.0%  -3.9%
+AMZN         56  30.4%    -11.2%   -13.6%  0.71  +6.7%  -4.2%
+TSLA         57  36.8%     +9.4%   -11.9%  1.20 +14.4%  -7.0%
+AAPL         64  34.4%     +8.8%   -10.1%  1.12  +6.6%  -3.1%
+JPM          60  43.3%    +13.8%    -7.4%  1.38  +5.4%  -3.0%
+LLY          61  44.3%    +19.8%   -15.0%  1.37  +7.5%  -4.4%
+AVGO         75  42.7%    +39.5%    -6.8%  1.81 +10.3%  -4.2%
+-------------------------------------------------------------
+TOTAL       725  40.3%    +16.2%   -17.5%  1.39  +9.2%  -4.5%
+
+Aggregate (pooled across all trades):
+  Profit factor:       1.39
+  Expectancy / trade:  +1.0%
+  Winner : Loser:      2.03

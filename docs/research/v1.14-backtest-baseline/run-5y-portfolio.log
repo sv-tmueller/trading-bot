@@ -1,0 +1,67 @@
+Portfolio backtest: 2021-05-06 → 2026-05-06  |  EMA 20/50  RSI 30-75  Hold ≤20d
+(single shared equity, MAX_POSITIONS + exposure gate enforced)
+
+Metric                          Value
+-------------------------------------
+Trades                             93
+Win rate                       36.56%
+Total return                  +11.32%
+Max drawdown                  -17.43%
+Final equity              $111,323.11
+Profit factor                    1.19
+Expectancy / trade              +0.8%
+Avg winner                     +12.9%
+Avg loser                       -6.2%
+Winner : Loser                   2.07
+
+Trade log (93 trades, showing up to 20):
+Exit        Ticker Shares      Entry       Exit    Ret%      PnL $ Reason    
+-----------------------------------------------------------------------------
+2021-08-16  NVDA     1067      18.74      19.90  +6.23%   +1204.58 max_hold  
+2021-09-15  TSLA       85     221.90     251.94 +13.54%   +2513.12 max_hold  
+2021-10-22  NVDA     1010      19.69      22.77 +15.64%   +3068.28 target    
+2021-11-09  TSLA       47     387.65     365.11  -5.81%   -1094.46 stop      
+2021-12-08  TSLA       39     341.17     356.32  +4.44%    +563.78 max_hold  
+2022-01-11  NVDA      419      28.11      27.76  -1.22%    -167.26 max_hold  
+2022-01-20  AMD        97     137.31     126.47  -7.89%   -1076.68 stop      
+2022-01-24  TSLA       34     314.63     284.19  -9.68%   -1055.45 stop      
+2022-01-27  TSLA       32     310.00     278.43 -10.18%   -1029.08 stop      
+2022-02-22  AVGO      352      55.72      52.80  -5.24%   -1065.98 stop      
+2022-03-04  SHEL      438      43.90      41.57  -5.30%   -1055.93 stop      
+2022-04-01  SHEL      412      42.22      47.63 +12.82%   +2192.43 max_hold  
+2022-04-06  TSLA       42     381.82     357.43  -6.39%   -1055.13 stop      
+2022-04-11  NVDA      497      24.36      22.31  -8.41%   -1041.78 stop      
+2022-04-26  TSLA       41     325.73     301.30  -7.50%   -1027.30 stop      
+2022-05-09  TSLA       35     292.14     263.86  -9.68%   -1009.20 stop      
+2022-08-26  TSLA       48     297.15     288.09  -3.05%    -462.97 max_hold  
+2022-09-01  NVDA      749      16.23      14.92  -8.09%   -1006.71 stop      
+2022-09-16  AMZN      144     127.82     121.08  -5.27%   -1006.12 stop      
+2022-09-22  AMZN      138     123.53     116.58  -5.62%    -991.70 stop      
+... (+73 more)
+
+Rejected signals (2867 total):
+  max_exposure    2867
+
+Most recent rejections (up to 20):
+Date        Ticker Reason            Score
+------------------------------------------
+2026-04-28  SHEL   max_exposure      1.985
+2026-04-28  NVDA   max_exposure      0.696
+2026-04-28  GOOGL  max_exposure      0.642
+2026-04-28  AMD    max_exposure      0.572
+2026-04-29  SHEL   max_exposure      1.567
+2026-04-29  META   max_exposure      1.095
+2026-04-29  GOOGL  max_exposure      0.828
+2026-04-30  META   max_exposure      2.769
+2026-04-30  AAPL   max_exposure      1.747
+2026-04-30  NVDA   max_exposure      1.396
+2026-04-30  SHEL   max_exposure      1.065
+2026-04-30  JPM    max_exposure      0.887
+2026-05-01  AAPL   max_exposure      1.171
+2026-05-01  META   max_exposure      1.077
+2026-05-04  SHEL   max_exposure      1.034
+2026-05-04  AMD    max_exposure      0.628
+2026-05-05  SHEL   max_exposure      1.159
+2026-05-05  META   max_exposure      0.808
+2026-05-05  AMD    max_exposure      0.775
+2026-05-05  AAPL   max_exposure      0.699
