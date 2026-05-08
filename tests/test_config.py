@@ -184,3 +184,87 @@ def test_claude_agent_no_broker_falsy_values(monkeypatch):
     for val in ("", "0", "false", "FALSE", "no", "anything-else"):
         monkeypatch.setenv("CLAUDE_AGENT_NO_BROKER", val)
         assert s.is_claude_agent_no_broker() is False, f"failed for {val!r}"
+
+
+# --- IBKR + regime-filter env vars (rules-engine pivot, Task 1) --------------
+
+
+def test_ibkr_host_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.IBKR_HOST == "127.0.0.1"
+
+
+def test_ibkr_port_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.IBKR_PORT == 4002  # paper default
+
+
+def test_ibkr_port_validation_low(monkeypatch):
+    monkeypatch.setenv("IBKR_PORT", "0")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="IBKR_PORT"):
+        importlib.reload(s)
+
+
+def test_ibkr_port_validation_high(monkeypatch):
+    monkeypatch.setenv("IBKR_PORT", "70000")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="IBKR_PORT"):
+        importlib.reload(s)
+
+
+def test_kill_switch_drawdown_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.KILL_SWITCH_DRAWDOWN_PCT == 0.25
+
+
+def test_kill_switch_drawdown_validation(monkeypatch):
+    monkeypatch.setenv("KILL_SWITCH_DRAWDOWN_PCT", "1.5")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="KILL_SWITCH_DRAWDOWN_PCT"):
+        importlib.reload(s)
+
+
+def test_regime_sma_days_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.REGIME_SMA_DAYS == 200
+
+
+def test_kill_switch_lookback_days_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.KILL_SWITCH_LOOKBACK_DAYS == 30
+
+
+def test_bot_ticker_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.BOT_TICKER == "WSPL.DE"
+
+
+def test_bot_benchmark_default():
+    import importlib
+    import config.settings as s
+    importlib.reload(s)
+    assert s.BOT_BENCHMARK == "SPY"
+
+
+def test_bot_ticker_empty_rejected(monkeypatch):
+    monkeypatch.setenv("BOT_TICKER", "")
+    import importlib
+    import config.settings as s
+    with pytest.raises(ValueError, match="BOT_TICKER"):
+        importlib.reload(s)

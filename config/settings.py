@@ -98,6 +98,35 @@ FILL_POLL_INTERVAL_S: float = float(os.getenv("FILL_POLL_INTERVAL_S", "0.5"))
 if not 0.05 <= FILL_POLL_INTERVAL_S <= 5.0:
     raise ValueError(f"FILL_POLL_INTERVAL_S={FILL_POLL_INTERVAL_S} outside safe bounds [0.05, 5.0]")
 
+# --- IBKR connection (replaces Alpaca) ----------------------------------
+IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
+IBKR_PORT = int(os.getenv("IBKR_PORT", "4002"))  # 4002=paper, 4001=live
+if not 1 <= IBKR_PORT <= 65535:
+    raise ValueError(f"IBKR_PORT={IBKR_PORT} outside valid TCP range [1, 65535]")
+IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
+if not 0 <= IBKR_CLIENT_ID <= 999:
+    raise ValueError(f"IBKR_CLIENT_ID={IBKR_CLIENT_ID} outside safe bounds [0, 999]")
+
+# --- Bot strategy parameters --------------------------------------------
+BOT_TICKER = os.getenv("BOT_TICKER", "WSPL.DE")  # 3USL UCITS on Xetra
+if not BOT_TICKER.strip():
+    raise ValueError("BOT_TICKER must be a non-empty ticker symbol")
+BOT_BENCHMARK = os.getenv("BOT_BENCHMARK", "SPY")  # regime-filter input
+if not BOT_BENCHMARK.strip():
+    raise ValueError("BOT_BENCHMARK must be a non-empty ticker symbol")
+
+REGIME_SMA_DAYS = int(os.getenv("REGIME_SMA_DAYS", "200"))
+if not 20 <= REGIME_SMA_DAYS <= 500:
+    raise ValueError(f"REGIME_SMA_DAYS={REGIME_SMA_DAYS} outside safe bounds [20, 500]")
+
+KILL_SWITCH_DRAWDOWN_PCT = float(os.getenv("KILL_SWITCH_DRAWDOWN_PCT", "0.25"))
+if not 0.05 <= KILL_SWITCH_DRAWDOWN_PCT <= 0.50:
+    raise ValueError(f"KILL_SWITCH_DRAWDOWN_PCT={KILL_SWITCH_DRAWDOWN_PCT} outside safe bounds [0.05, 0.50]")
+
+KILL_SWITCH_LOOKBACK_DAYS = int(os.getenv("KILL_SWITCH_LOOKBACK_DAYS", "30"))
+if not 5 <= KILL_SWITCH_LOOKBACK_DAYS <= 252:
+    raise ValueError(f"KILL_SWITCH_LOOKBACK_DAYS={KILL_SWITCH_LOOKBACK_DAYS} outside safe bounds [5, 252]")
+
 
 # Mechanical safety guard for agent-context broker calls (issue #168). When set,
 # every `tools/broker.py` submission helper raises `BrokerCallBlockedError` BEFORE
