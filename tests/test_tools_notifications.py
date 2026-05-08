@@ -409,3 +409,156 @@ def test_notify_performance_summary_calls_post(mocker):
     assert "60.0%" in msg
     assert "+250.00" in msg
     assert "+1.50" in msg
+
+
+# ---------------------------------------------------------------------------
+# Rules-engine pivot (#196): structured-payload event types
+#
+# These helpers post JSON dicts (not free-form strings) to the n8n webhook so
+# downstream automations can route on `event_type` rather than parsing prose.
+# ---------------------------------------------------------------------------
+
+
+def _decode_dict_payload(req):
+    """Read the dict payload posted to urlopen back into a dict."""
+    import json
+    return json.loads(req.data.decode())
+
+
+def test_notify_regime_flip_long_payload(mocker):
+    """notify_regime_flip emits an event_type='regime_flip' JSON payload with the SPY/regime context."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "regime_flip"
+    assert payload["target_state"] == "LONG"
+    assert payload["ticker"] == "WSPL.DE"
+    assert payload["fill_price"] == 50.0
+    assert payload["spy_close"] == 400.0
+    assert payload["spy_sma200"] == 380.0
+    assert payload["qty"] == 100
+    assert payload["account_value"] == 10000.0
+
+
+def test_notify_kill_switch_fired_payload(mocker):
+    """notify_kill_switch_fired emits the drawdown context required for post-trade audit."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_kill_switch_fired
+
+    notify_kill_switch_fired(
+        ticker="WSPL.DE",
+        drawdown_pct=-0.27,
+        ref_high=68.5,
+        last_price=50.0,
+        qty=100,
+        fill_price=49.5,
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "kill_switch_fired"
+    assert payload["drawdown_pct"] == -0.27
+    assert payload["fill_price"] == 49.5
+    assert payload["ticker"] == "WSPL.DE"
+    assert payload["ref_high"] == 68.5
+    assert payload["last_price"] == 50.0
+    assert payload["qty"] == 100
+
+
+def test_notify_trade_failed_payload(mocker):
+    """notify_trade_failed emits the broker-rejection reason so the operator can triage."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_trade_failed
+
+    notify_trade_failed(
+        symbol="WSPL.DE",
+        side="BUY",
+        qty=100,
+        reason="insufficient_buying_power",
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "trade_failed"
+    assert payload["reason"] == "insufficient_buying_power"
+    assert payload["symbol"] == "WSPL.DE"
+    assert payload["side"] == "BUY"
+    assert payload["qty"] == 100
+
+
+def test_notify_tws_disconnected_payload(mocker):
+    """notify_tws_disconnected emits the IBKR-connection failure context."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_tws_disconnected
+
+    notify_tws_disconnected(
+        host="127.0.0.1",
+        port=4002,
+        attempts=3,
+        error_msg="connect refused",
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "tws_disconnected"
+    assert payload["attempts"] == 3
+    assert payload["host"] == "127.0.0.1"
+    assert payload["port"] == 4002
+    assert payload["error_msg"] == "connect refused"
+
+
+def test_notify_state_desync_payload(mocker):
+    """notify_state_desync emits the DB-vs-broker delta and the corrective action taken."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "http://localhost:5678/webhook")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_state_desync
+
+    notify_state_desync(
+        db_state="LONG",
+        broker_state="CASH",
+        symbol="WSPL.DE",
+        action_taken="DB updated to CASH",
+    )
+
+    mock_urlopen.assert_called_once()
+    payload = _decode_dict_payload(mock_urlopen.call_args[0][0])
+    assert payload["event_type"] == "state_desync"
+    assert payload["db_state"] == "LONG"
+    assert payload["broker_state"] == "CASH"
+    assert payload["symbol"] == "WSPL.DE"
+    assert payload["action_taken"] == "DB updated to CASH"
+
+
+def test_silent_when_webhook_unset(mocker):
+    """When N8N_WEBHOOK_URL is empty, structured-payload notifiers must not raise or call urlopen."""
+    mocker.patch("tools.notifications.settings.N8N_WEBHOOK_URL", "")
+    mock_urlopen = mocker.patch("tools.notifications.urllib.request.urlopen")
+    from tools.notifications import notify_regime_flip
+
+    notify_regime_flip(
+        target_state="LONG",
+        spy_close=400.0,
+        spy_sma200=380.0,
+        ticker="WSPL.DE",
+        fill_price=50.0,
+        qty=100,
+        account_value=10000.0,
+    )  # must not raise
+
+    mock_urlopen.assert_not_called()
