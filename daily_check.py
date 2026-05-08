@@ -25,7 +25,6 @@ running end-to-end without committing real capital.
 from __future__ import annotations
 
 import argparse
-import os
 import sqlite3
 import sys
 import traceback
@@ -69,12 +68,8 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _is_truthy(value: str) -> bool:
-    return value.strip().lower() in ("1", "true", "yes")
-
-
 def _resolve_dry_run(argv: list[str] | None) -> bool:
-    """CLI ``--dry-run`` wins over the env var; either truthy enables dry-run."""
+    """CLI ``--dry-run`` wins over ``settings.DAILY_CHECK_DRY_RUN``; either truthy enables dry-run."""
     parser = argparse.ArgumentParser(prog="daily_check", add_help=False)
     parser.add_argument("--dry-run", action="store_true", default=False)
     parser.add_argument("-h", "--help", action="store_true", default=False)
@@ -82,9 +77,20 @@ def _resolve_dry_run(argv: list[str] | None) -> bool:
     if args.help:
         print("Usage: python daily_check.py [--dry-run]")
         sys.exit(0)
-    if args.dry_run:
-        return True
-    return _is_truthy(os.environ.get("DAILY_CHECK_DRY_RUN", ""))
+    return args.dry_run or settings.DAILY_CHECK_DRY_RUN
+
+
+def _fetch_vehicle_close(ticker: str) -> float:
+    """Return the most recent close for ``ticker``. Used for sizing the
+    hypothetical buy in dry-run, the live buy in the live path, and the
+    fill_price field on the dry-run bearish CASH-flip alert (so the operator
+    sees a meaningful price rather than 0.0). Kept as a standalone helper so
+    test patches on ``daily_check.yf.download`` cover all call sites.
+    """
+    df = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return float(df["Close"].dropna().iloc[-1])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,6 +107,21 @@ def main(argv: list[str] | None = None) -> int:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     audit_id = insert_audit_log(conn, script_name="daily_check", started_at=started)
+
+    # Operational kill switch — same semantics as `main.py scan` (#197 review):
+    # when TRADING_PAUSED is truthy the script must exit cleanly without touching
+    # yfinance, IBKR, or the trades table. Honouring this here preserves the
+    # `panic --pause` workflow once #200 decommissions `main.py scan`.
+    if settings.TRADING_PAUSED:
+        update_audit_log(
+            conn,
+            rowid=audit_id,
+            finished_at=_now_iso(),
+            outcome="skipped:trading_paused",
+            notes="TRADING_PAUSED env var is set",
+        )
+        conn.close()
+        return 0
 
     try:
         # 1. Fetch SPY data
@@ -262,13 +283,16 @@ def main(argv: list[str] | None = None) -> int:
                     if dry_run:
                         # Hypothetical sell: skip liquidate + insert_trade.
                         # Use last-known position qty from broker for the alert
-                        # so the operator sees the sized impact.
+                        # so the operator sees the sized impact, plus the most
+                        # recent close as fill_price (review minor #2 — 0.0 is
+                        # not informative for the operator).
+                        vehicle_close = _fetch_vehicle_close(settings.BOT_TICKER)
                         notify_regime_flip(
                             target_state="CASH",
                             spy_close=spy_close,
                             spy_sma200=spy_sma,
                             ticker=settings.BOT_TICKER,
-                            fill_price=0.0,
+                            fill_price=vehicle_close,
                             qty=qty,
                             account_value=get_account_value(ib, currency="EUR"),
                             dry_run=True,
@@ -296,7 +320,28 @@ def main(argv: list[str] | None = None) -> int:
                                 qty=fill["qty"],
                                 account_value=get_account_value(ib, currency="EUR"),
                             )
-                        new_current_state = "CASH"
+                            # Only advance current_state when the broker
+                            # confirmed the liquidation. If `liquidate()`
+                            # returned None (review important #2), drop into
+                            # the error branch below — silently flipping to
+                            # CASH would lie to tomorrow's idempotency check
+                            # about the broker position.
+                            new_current_state = "CASH"
+                        else:
+                            notify_trade_failed(
+                                symbol=settings.BOT_TICKER,
+                                side="SELL",
+                                qty=qty,
+                                reason="liquidate_returned_none",
+                            )
+                            update_audit_log(
+                                conn,
+                                rowid=audit_id,
+                                finished_at=_now_iso(),
+                                outcome="error:liquidate_failed",
+                                notes=f"liquidate({settings.BOT_TICKER}) returned None; current_state pinned at {current_state}",
+                            )
+                            return 1
             else:
                 # No flip required.
                 if dry_run:
@@ -343,18 +388,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         conn.close()
-
-
-def _fetch_vehicle_close(ticker: str) -> float:
-    """Return the most recent close for ``ticker``. Used for sizing the
-    hypothetical buy in dry-run and the live buy in the live path. Kept as a
-    standalone helper so test patches on ``daily_check.yf.download`` cover
-    both call sites.
-    """
-    df = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return float(df["Close"].dropna().iloc[-1])
 
 
 if __name__ == "__main__":
