@@ -107,7 +107,7 @@ def test_run_panic_tws_connection_failure_returns_error_does_not_call_broker():
 def test_run_panic_pause_writes_env_atomic(tmp_path, monkeypatch):
     """--pause writes TRADING_PAUSED=true to repo-root .env; broker untouched."""
     env_path = tmp_path / ".env"
-    env_path.write_text("TRADING_MODE=paper\nTRADING_PAUSED=false\n")
+    env_path.write_text("BOT_TICKER=WSPL.DE\nTRADING_PAUSED=false\n")
     monkeypatch.setattr("main._REPO_ROOT", tmp_path)
 
     with patch("main.connect_ibkr") as mock_connect, \
