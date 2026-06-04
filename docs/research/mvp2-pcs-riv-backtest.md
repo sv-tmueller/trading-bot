@@ -71,3 +71,21 @@ Per the Phase 1 gate, **stop here for this hypothesis — $0 spent on OPRA or in
 2. Reconsider whether an options layer earns its complexity over the deterministic equity bot at all.
 
 The engine (`options_pricing` / `options_data` / `pcs_riv`) is reusable for any of these — swapping the rule is cheap.
+
+---
+
+## Addendum — regime-gate ablation (2026-06-04)
+
+Tested whether the regime gate itself is the problem, holding the best config (width 25, delta 0.30, IV-rank ≥ 30) fixed and varying only the gate: ON (`bullish`), OFF (`any`), INVERTED (`bearish`). Reproduce: `venv/bin/python -m backtest.run_pcs_riv --start 2015 --ablate`.
+
+| regime_mode | total | CAGR | Sharpe | trades | win | PF |
+|---|---|---|---|---|---|---|
+| bullish (gate on) | +3.0% | 0.3% | 0.14 | 79 | 71% | 1.14 |
+| **any (gate off)** | **+13.1%** | **1.1%** | **0.36** | 133 | 80% | **1.41** |
+| bearish (inverted) | +5.0% | 0.4% | 0.18 | 76 | 82% | 1.26 |
+
+- **The bullish gate was actively hurting.** Removing it ~2.5×'s the Sharpe (0.14 → 0.36) and gives the best profit factor (1.41) — confirming the structural diagnosis: gating premium-selling to uptrends concentrates it in exactly the moves it forgoes.
+- **Pure vol-harvesting (gate off, high IV-rank) has a small but real edge** (PF 1.41, 80% win, +13% over 11.4y).
+- **It still loses decisively to SPY buy-hold** (Sharpe 0.36 vs 0.83; +13% vs +343%).
+
+**Implication:** premium-selling on SPY is not a buy-hold replacement. Its only plausible role is a **low-correlation diversifier / income overlay** (judged on risk-adjusted, combined-portfolio terms), not a standalone return engine. Verdict unchanged for the "beat buy-hold" gate: **KILL as a standalone strategy** — with a documented thread (uncorrelated vol-harvesting) if a diversifier framing is ever wanted.
