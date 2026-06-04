@@ -101,7 +101,10 @@ def run_pcs_riv_backtest(
     starting_cash: float = 100_000.0,
     risk_per_trade: float = 0.05,
     fee_per_contract: float = 0.05,
+    regime_mode: str = "bullish",
 ) -> dict:
+    if regime_mode not in ("bullish", "any", "bearish"):
+        raise ValueError(f"regime_mode must be bullish|any|bearish, got {regime_mode!r}")
     dates = sorted(trading_dates) if trading_dates is not None else sorted(spy_closes)
     closes = [spy_closes[d] for d in dates]
     sma = _rolling_sma(closes, sma_days)
@@ -119,6 +122,12 @@ def run_pcs_riv_backtest(
         )
         return target == "LONG"
 
+    def regime_ok(i: int) -> bool:
+        """Whether the entry regime condition holds (generalised gate)."""
+        if regime_mode == "any":
+            return True
+        return bullish(i) if regime_mode == "bullish" else not bullish(i)
+
     def close_position(pos: _Position, on: date, cost: float, reason: str) -> float:
         captured = pos.credit - cost
         exit_fee = fee_per_contract * pos.contracts * 2
@@ -134,7 +143,7 @@ def run_pcs_riv_backtest(
         return pnl
 
     for i, on in enumerate(dates):
-        is_bull = bullish(i)
+        is_ok = regime_ok(i)
 
         # --- manage open positions (exits) ---
         for sym in list(positions):
@@ -150,14 +159,14 @@ def run_pcs_riv_backtest(
                 reason = "profit_target"
             elif dte <= time_stop_dte:
                 reason = "time_stop"
-            elif not is_bull:
+            elif not is_ok:
                 reason = "regime_flip"
             if reason is not None:
                 cash += close_position(pos, on, cost, reason)
                 del positions[sym]
 
         # --- entries ---
-        if is_bull:
+        if is_ok:
             iv_rank = compute_iv_rank(iv_series, on=on, lookback_days=iv_rank_lookback_days)
             if iv_rank is not None and iv_rank >= iv_rank_threshold:
                 equity_now = cash + _open_mtm(source, positions, on)

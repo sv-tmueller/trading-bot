@@ -69,6 +69,7 @@ def main(argv: list = None) -> int:
     parser.add_argument("--short-delta", type=float, default=0.30)
     parser.add_argument("--width", type=float, default=5.0)
     parser.add_argument("--sweep", action="store_true", help="grid over width x delta x IV-rank")
+    parser.add_argument("--ablate", action="store_true", help="best config across regime gate on/off/inverted")
     args = parser.parse_args(argv)
 
     start, end = f"{args.start}-01-01", date.today().isoformat()
@@ -106,6 +107,23 @@ def main(argv: list = None) -> int:
         best = max(rows, key=lambda x: x[3]["sharpe"])[3]
         verdict = "GO" if best["sharpe"] > bh["sharpe"] and best["total_return"] > 0 else "KILL"
         print(f"\nBest-case Sharpe {best['sharpe']:.2f} vs SPY {bh['sharpe']:.2f}  ->  {verdict}")
+        return 0
+
+    if args.ablate:
+        source = ModeledSource(prices, ivs, spread_frac=0.05)
+        bh = _buy_and_hold(prices, dates, starting_cash)
+        print(f"\nRegime-gate ablation (modeled arm)  {dates[0]} -> {dates[-1]}  ({(dates[-1]-dates[0]).days/365.25:.1f}y)")
+        print(f"Config: width 25, delta 0.30, IV-rank>=30   |   SPY buy-hold: total {bh['total_return']*100:.0f}%  sharpe {bh['sharpe']:.2f}\n")
+        print(f"{'regime_mode':<14} {'total':>9} {'cagr':>7} {'sharpe':>7} {'trades':>7} {'win':>6} {'pf':>6}")
+        print("-" * 60)
+        for mode in ("bullish", "any", "bearish"):
+            r = run_pcs_riv_backtest(
+                source=source, underlyings=[args.underlying], spy_closes=prices, iv_series=vix,
+                trading_dates=dates, iv_rank_threshold=30.0, short_delta=0.30, width=25.0,
+                starting_cash=starting_cash, regime_mode=mode,
+            )
+            print(f"{mode:<14} {r['total_return']*100:>8.1f}% {r['cagr']*100:>6.1f}% {r['sharpe']:>7.2f} "
+                  f"{r['trade_count']:>7} {r['win_rate']*100:>5.0f}% {r['profit_factor']:>6.2f}")
         return 0
 
     common = dict(

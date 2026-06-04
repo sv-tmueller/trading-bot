@@ -88,6 +88,27 @@ def test_mid_fills_beat_spread_fills():
     assert mid["ending_equity"] > spread["ending_equity"]
 
 
+def test_regime_mode_any_enters_in_downtrend():
+    # Declining world: default 'bullish' gate blocks; 'any' (no gate) enters on IV alone.
+    path = [110 - i for i in range(10)]
+    blocked = _run(*_world(path, iv="up"))
+    ungated = _run(*_world(path, iv="up"), regime_mode="any")
+    assert blocked["trade_count"] == 0
+    assert ungated["trade_count"] >= 1
+
+
+def test_regime_mode_bearish_inverts_gate():
+    # Declining world: 'bearish' mode (sell only when NOT bullish) enters; 'bullish' does not.
+    path = [110 - i for i in range(10)]
+    assert _run(*_world(path, iv="up"))["trade_count"] == 0
+    assert _run(*_world(path, iv="up"), regime_mode="bearish")["trade_count"] >= 1
+
+
+def test_regime_mode_invalid_raises():
+    with pytest.raises(ValueError):
+        _run(*_world([100, 101, 102], iv="up"), regime_mode="sideways")
+
+
 def test_result_has_expected_metric_keys():
     source, prices, dates, iv_series = _world([100, 101, 102, 130, 130, 130, 130, 130], iv="up")
     res = _run(source, prices, dates, iv_series)
