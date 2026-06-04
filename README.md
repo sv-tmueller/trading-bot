@@ -168,8 +168,8 @@ The bot runs unattended via cron. You only need to log in when you want to inspe
 ssh -L 54545:localhost:54545 root@your-vps-ip     # or: your-sudo-user@your-vps-ip
 
 # 2. Become the `trader` user
-#    /opt/trading-bot is owned by trader, and Claude Code refuses to start
-#    as root because bypassPermissions is on in .claude/settings.json.
+#    /opt/trading-bot is owned by trader, so run Claude Code as trader to
+#    keep file ownership consistent.
 sudo -u trader -i
 
 # 3. Go to the project
