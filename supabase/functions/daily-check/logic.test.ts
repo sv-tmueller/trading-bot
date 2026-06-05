@@ -95,6 +95,24 @@ Deno.test("stale data -> skipped:stale_data", async () => {
   assertEquals(await runDailyCheck(deps), "skipped:stale_data");
 });
 
+Deno.test("no bars -> skipped:stale_data", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: { getDailyCloses: () => Promise.resolve([]) } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:stale_data");
+  assertEquals(calls.placeMarketOrder, undefined);
+});
+
+Deno.test("insufficient history (bars < SMA window) -> skipped:insufficient_history", async () => {
+  // config.regimeSmaDays is 3 in makeDeps; supply only 2 bars (last dated today).
+  const { deps, calls } = makeDeps({
+    marketdata: { getDailyCloses: () => Promise.resolve(bars([400, 410])) } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:insufficient_history");
+  assertEquals(calls.placeMarketOrder, undefined);
+  assertEquals(calls.upsert, undefined); // no NaN row written
+});
+
 Deno.test("bullish from CASH -> BUY and success", async () => {
   const { deps, calls } = makeDeps();
   const outcome = await runDailyCheck(deps);

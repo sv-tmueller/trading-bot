@@ -93,6 +93,15 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     const spyClose = lastBar.close;
     const spySma200 = sma(closes, config.regimeSmaDays);
 
+    // Not enough history to compute the SMA → skip cleanly rather than act on a
+    // NaN-driven signal. (Also avoids writing NaN, which JSON-serializes to null
+    // and would violate the spy_sma200 NOT NULL column.) regime.ts's NaN→CASH
+    // branch remains as defense in depth for any caller that skips this check.
+    if (Number.isNaN(spySma200)) {
+      await finish("skipped:insufficient_history", `only ${closes.length} bars for SMA${config.regimeSmaDays}`);
+      return "skipped:insufficient_history";
+    }
+
     const latest = await db.getLatestRegimeState();
     let currentState: State = (latest?.current_state as State) ?? "CASH";
     const killSwitchActive = latest?.kill_switch_active ?? false;

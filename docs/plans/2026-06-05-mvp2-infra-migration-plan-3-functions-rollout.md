@@ -90,6 +90,11 @@ git commit -m "chore(mvp2): service client helper + widen test glob (#220)"
 > - Two extra assertions were added: desync test asserts `upsert.currentState === "LONG"` (reconciled state
 >   persisted); liquidate-failed test asserts `calls.upsert === undefined` (current_state pinned, no row written).
 > The committed files are the source of truth.
+>
+> **Final whole-implementation review (2026-06-05):** added an early exit when `sma()` returns `NaN`
+> (fewer than `REGIME_SMA_DAYS` bars) → `skipped:insufficient_history`, BEFORE any reconcile/flip/upsert.
+> Without it, `JSON.stringify(NaN)` → `null` would violate the `spy_sma200 NOT NULL` column. Tests added
+> for the insufficient-history and empty-bars (`skipped:stale_data`) paths.
 
 **Files:**
 - Create: `supabase/functions/daily-check/logic.test.ts`
