@@ -1,5 +1,6 @@
 // n8n webhook poster. Mirrors tools/notifications.py: structured event_type
-// payloads, and NEVER throws — a notification outage must not crash the bot.
+// payloads (each carrying a human-readable `message` the n8n Discord node
+// renders), and NEVER throws — a notification outage must not crash the bot.
 import { getN8nWebhookUrl } from "./config.ts";
 
 export async function notify(event: Record<string, unknown>): Promise<void> {
@@ -26,8 +27,13 @@ export function notifyRegimeFlip(p: {
   accountValue: number;
   dryRun?: boolean;
 }): Promise<void> {
+  const titlePrefix = p.dryRun ? "[DRY-RUN] " : "";
+  const message = `${titlePrefix}Regime flip -> ${p.targetState}: ${p.ticker} qty=${p.qty} ` +
+    `@ $${p.fillPrice.toFixed(2)} (SPY $${p.spyClose.toFixed(2)} vs 200-DMA $${p.spySma200.toFixed(2)})`;
   return notify({
     event_type: "regime_flip",
+    title: `${titlePrefix}regime_flip ${p.targetState}`,
+    message,
     target_state: p.targetState,
     spy_close: p.spyClose,
     spy_sma200: p.spySma200,
@@ -47,8 +53,12 @@ export function notifyKillSwitchFired(p: {
   qty: number;
   fillPrice: number;
 }): Promise<void> {
+  const message = `Kill switch fired on ${p.ticker}: drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
+    `(ref high $${p.refHigh.toFixed(2)}, last $${p.lastPrice.toFixed(2)}), ` +
+    `liquidated qty=${p.qty} @ $${p.fillPrice.toFixed(2)}`;
   return notify({
     event_type: "kill_switch_fired",
+    message,
     ticker: p.ticker,
     drawdown_pct: p.drawdownPct,
     ref_high: p.refHigh,
@@ -64,8 +74,10 @@ export function notifyTradeFailed(p: {
   qty: number;
   reason: string;
 }): Promise<void> {
+  const message = `Trade failed: ${p.side} ${p.qty} ${p.symbol} -- ${p.reason}`;
   return notify({
     event_type: "trade_failed",
+    message,
     symbol: p.symbol,
     side: p.side,
     qty: p.qty,
@@ -79,8 +91,11 @@ export function notifyStateDesync(p: {
   symbol: string;
   actionTaken: string;
 }): Promise<void> {
+  const message =
+    `State desync on ${p.symbol}: DB=${p.dbState}, broker=${p.brokerState}. ${p.actionTaken}`;
   return notify({
     event_type: "state_desync",
+    message,
     db_state: p.dbState,
     broker_state: p.brokerState,
     symbol: p.symbol,
@@ -91,8 +106,10 @@ export function notifyStateDesync(p: {
 // Replaces notify_tws_disconnected — Alpaca is stateless REST, so this covers
 // any broker/API error (connection, 5xx, auth).
 export function notifyBrokerError(p: { context: string; errorMsg: string }): Promise<void> {
+  const message = `Broker API error (${p.context}): ${p.errorMsg}`;
   return notify({
     event_type: "broker_error",
+    message,
     context: p.context,
     error_msg: p.errorMsg,
   });
@@ -103,5 +120,6 @@ export function notifyError(message: string): Promise<void> {
 }
 
 export function notifyPanic(p: { action: string; result: string }): Promise<void> {
-  return notify({ event_type: "panic", action: p.action, result: p.result });
+  const message = `🛑 PANIC — ${p.action}: ${p.result}`;
+  return notify({ event_type: "panic", message, action: p.action, result: p.result });
 }

@@ -169,6 +169,13 @@ git commit -m "feat(mvp2): config accessors for Alpaca, n8n, broker guard (#220)
 
 ## Task 2: `test_helpers.ts` + `notifications.ts`
 
+> **Post-review amendment (2026-06-05):** the implemented `notifications.ts` additionally
+> includes a human-readable `message` field in every typed wrapper (and a `title` field in
+> `notifyRegimeFlip`), matching the prose in `tools/notifications.py`, because the existing
+> n8n→Discord flow likely renders `body.message`. The code blocks below show the original
+> structured-only version; the committed module (see `git show` of the Task 2 commit) is the
+> source of truth.
+
 **Files:**
 - Create: `supabase/functions/_shared/test_helpers.ts`
 - Create: `supabase/functions/_shared/notifications.test.ts`

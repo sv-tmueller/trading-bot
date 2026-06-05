@@ -69,6 +69,11 @@ Deno.test("notifyRegimeFlip builds the structured payload", async () => {
     assertEquals(body.target_state, "LONG");
     assertEquals(body.ticker, "UPRO");
     assertEquals(body.dry_run, false);
+    // Human-readable fields the n8n Discord node renders (parity with the
+    // Python tools/notifications.py payloads).
+    assertEquals(typeof body.message, "string");
+    assertEquals((body.message as string).includes("Regime flip -> LONG"), true);
+    assertEquals(body.title, "regime_flip LONG");
   } finally {
     restore();
     Deno.env.delete("N8N_WEBHOOK_URL");
