@@ -1,11 +1,11 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
-  AlpacaError,
   BrokerCallBlockedError,
   createAlpacaClient,
   OrderTimeoutError,
 } from "./alpaca.ts";
+import { DataError } from "./num.ts";
 
 function setKeys() {
   Deno.env.set("ALPACA_API_KEY", "k");
@@ -204,7 +204,7 @@ Deno.test("getAccountValue throws on non-numeric equity", async () => {
   setKeys();
   const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: null })));
   try {
-    await assertRejects(() => createAlpacaClient().getAccountValue(), AlpacaError, "equity");
+    await assertRejects(() => createAlpacaClient().getAccountValue(), DataError, "equity");
   } finally {
     restore();
     clearKeys();

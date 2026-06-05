@@ -1,5 +1,6 @@
 // Alpaca Market Data REST v2. Replaces yfinance. Uses the IEX feed (free).
 import { getAlpacaConfig } from "./config.ts";
+import { DataError, requireNumber } from "./num.ts";
 
 export interface DailyBar {
   date: string; // YYYY-MM-DD (UTC)
@@ -22,19 +23,20 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
   // Look back generously in calendar days to cover `count` trading days.
   const startMs = Date.now() - Math.ceil(count * 1.6) * 24 * 60 * 60 * 1000;
   const start = new Date(startMs).toISOString().slice(0, 10);
+  // sort=asc makes oldest-first explicit rather than relying on the API default.
   const url =
     `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
-    `?timeframe=1Day&start=${start}&limit=10000&adjustment=raw&feed=iex`;
+    `?timeframe=1Day&start=${start}&limit=10000&adjustment=raw&sort=asc&feed=iex`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET bars ${symbol} -> ${res.status}: ${await res.text()}`);
   }
   const j = await res.json();
   const bars = Array.isArray(j.bars) ? j.bars : [];
-  return bars.map((b: { t: string; c: number; h: number }) => ({
+  return bars.map((b: { t: string; c: unknown; h: unknown }) => ({
     date: String(b.t).slice(0, 10),
-    close: Number(b.c),
-    high: Number(b.h),
+    close: requireNumber(b.c, "bar close"),
+    high: requireNumber(b.h, "bar high"),
   }));
 }
 
@@ -47,5 +49,8 @@ export async function getLatestTradePrice(symbol: string): Promise<number> {
     throw new Error(`GET latest trade ${symbol} -> ${res.status}: ${await res.text()}`);
   }
   const j = await res.json();
-  return Number(j.trade.p);
+  if (!j.trade) {
+    throw new DataError(`no latest trade for ${symbol} (got ${JSON.stringify(j.trade)})`);
+  }
+  return requireNumber(j.trade.p, "trade price");
 }

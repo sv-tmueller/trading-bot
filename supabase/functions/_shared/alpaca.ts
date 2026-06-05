@@ -3,6 +3,7 @@
 // order (spec §5, ported #168). Read-only methods are unguarded but cannot place
 // an order.
 import { getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
+import { requireNumber } from "./num.ts";
 
 export class BrokerCallBlockedError extends Error {}
 export class AlpacaError extends Error {}
@@ -41,22 +42,6 @@ function checkGuard(op: string): void {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Alpaca can return null / missing numeric fields (e.g. filled_avg_price on a
-// cancelled or not-yet-filled order). Turning those into NaN silently would
-// corrupt sizing / P&L downstream, so we fail loud instead.
-function requireNumber(val: unknown, field: string): number {
-  // Note: Number(null) === 0 and Number("") === 0, so reject those explicitly —
-  // a null filled_avg_price must fail loud, not silently become 0.
-  if (val === null || val === undefined || val === "") {
-    throw new AlpacaError(`expected numeric ${field}, got ${JSON.stringify(val)}`);
-  }
-  const n = Number(val);
-  if (Number.isNaN(n)) {
-    throw new AlpacaError(`expected numeric ${field}, got ${JSON.stringify(val)}`);
-  }
-  return n;
-}
 
 export function createAlpacaClient(): AlpacaClient {
   const cfg = getAlpacaConfig();

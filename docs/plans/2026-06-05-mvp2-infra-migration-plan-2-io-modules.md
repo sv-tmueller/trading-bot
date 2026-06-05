@@ -432,12 +432,11 @@ git commit -m "feat(mvp2): n8n notifications module + test helpers (#220)"
 
 ## Task 3: `alpaca.ts` — broker client + guard
 
-> **Post-review amendment (2026-06-05):** the committed `alpaca.ts` adds a `requireNumber(val, field)`
-> helper used for `equity`, `position qty`, `filled_avg_price`, and `filled_qty` — it throws
-> `AlpacaError` on `null`/`undefined`/`""`/NaN (Alpaca can return `null` `filled_avg_price` on a
-> cancelled/partial order; `Number(null)===0` would silently corrupt sizing/P&L). Three extra tests
-> were added: liquidate-sells-full-position-and-returns-fill, cancelAllOrders-count, and
-> getAccountValue-throws-on-null-equity. See the committed file for the source of truth.
+> **Post-review amendment (2026-06-05):** numeric reads off Alpaca now go through a shared
+> `requireNumber(val, field)` helper in `supabase/functions/_shared/num.ts` (throws `DataError` on
+> `null`/`undefined`/`""`/NaN — `Number(null)===0` would silently corrupt sizing/P&L). `alpaca.ts`
+> uses it for `equity`, `position qty`, `filled_avg_price`, `filled_qty`; three extra tests were added
+> (liquidate fill-path, cancelAllOrders count, null-equity). See the committed files for the source of truth.
 
 **Files:**
 - Create: `supabase/functions/_shared/alpaca.test.ts`
@@ -797,6 +796,13 @@ git commit -m "feat(mvp2): Alpaca broker client with CLAUDE_AGENT_NO_BROKER guar
 ---
 
 ## Task 4: `marketdata.ts` — daily bars + latest trade
+
+> **Post-review amendment (2026-06-05):** the committed `marketdata.ts` uses the shared
+> `requireNumber` (`num.ts`) for `bar close`, `bar high`, and `trade price` (these feed the SMA200 and
+> the kill-switch — silent zeros would corrupt the safety path), adds `&sort=asc` to the bars URL
+> (oldest-first explicit, not API-default-dependent), and throws `DataError` when the latest-trade
+> endpoint returns no `trade`. Extra tests: empty-bars → [], null-close → throws, no-trade → throws,
+> and the bars test asserts `feed=iex` + `sort=asc`.
 
 **Files:**
 - Create: `supabase/functions/_shared/marketdata.test.ts`
