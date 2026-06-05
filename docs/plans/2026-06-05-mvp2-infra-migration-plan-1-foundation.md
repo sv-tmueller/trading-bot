@@ -106,11 +106,11 @@ Create `supabase/migrations/0001_init.sql`:
 
 create table if not exists regime_state (
     date date primary key,
-    spy_close real not null,
-    spy_sma200 real not null,
+    spy_close double precision not null,
+    spy_sma200 double precision not null,
     target_state text not null check (target_state in ('LONG','CASH')),
     current_state text not null check (current_state in ('LONG','CASH')),
-    position_drawdown_pct real,
+    position_drawdown_pct double precision,
     kill_switch_active boolean not null default false,
     kill_switch_fired_at timestamptz,
     created_at timestamptz not null default now()
@@ -121,7 +121,7 @@ create table if not exists trades (
     symbol text not null,
     side text not null check (side in ('BUY','SELL')),
     qty integer not null,
-    fill_price real not null,
+    fill_price double precision not null,
     fill_time timestamptz not null,
     broker_order_id text not null,
     reason text not null check (reason in
@@ -146,6 +146,20 @@ create table if not exists bot_config (
 
 insert into bot_config (key, value) values ('paused', 'false')
 on conflict (key) do nothing;
+
+-- Keep bot_config.updated_at honest on every UPDATE (DEFAULT only fires on
+-- INSERT). The app layer also sets it explicitly, but the trigger removes the
+-- footgun for any future writer — important for forensic timestamps.
+create or replace function set_updated_at() returns trigger language plpgsql as $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$;
+
+create trigger bot_config_updated_at
+    before update on bot_config
+    for each row execute procedure set_updated_at();
 
 -- Edge Functions connect with the service-role key (bypasses RLS). Enable RLS
 -- and add no policies so anon/public access is denied by default.
