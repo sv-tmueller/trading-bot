@@ -115,6 +115,17 @@ Deno.test("nan sma with existing long exits to cash", () => {
   assertEquals(r.killSwitchActive, false);
 });
 
+Deno.test("nan sma preserves kill-switch flag", () => {
+  const r = computeTargetState({
+    spyClose: 400,
+    spySma200: NaN,
+    currentState: "CASH",
+    killSwitchActive: true,
+  });
+  assertEquals(r.targetState, "CASH");
+  assertEquals(r.killSwitchActive, true);
+});
+
 // --- Validation ---
 Deno.test("invalid current_state raises", () => {
   assertThrows(
@@ -136,6 +147,20 @@ Deno.test("negative spy_close raises", () => {
     () =>
       computeTargetState({
         spyClose: -1,
+        spySma200: 380,
+        currentState: "CASH",
+        killSwitchActive: false,
+      }),
+    Error,
+    "spyClose",
+  );
+});
+
+Deno.test("zero spy_close raises", () => {
+  assertThrows(
+    () =>
+      computeTargetState({
+        spyClose: 0,
         spySma200: 380,
         currentState: "CASH",
         killSwitchActive: false,
