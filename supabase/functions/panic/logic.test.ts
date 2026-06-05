@@ -68,3 +68,14 @@ Deno.test("unknown action -> error", async () => {
   const r = await runPanic(deps, "boom" as any);
   assertEquals(r.startsWith("error:"), true);
 });
+
+Deno.test("notify failure does not corrupt a successful outcome", async () => {
+  const { deps, calls } = makeDeps({
+    notifications: {
+      notifyPanic: () => Promise.reject(new Error("n8n down")),
+    } as unknown as PanicDeps["notifications"],
+  });
+  const r = await runPanic(deps, "pause");
+  assertEquals(r, "paused");
+  assertEquals((calls.audit as { outcome: string }).outcome, "success:panic");
+});

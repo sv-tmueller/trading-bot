@@ -34,5 +34,11 @@ Deno.serve(async (req) => {
     notifications: { notifyPanic },
   }, action);
 
-  return new Response(JSON.stringify({ result }), { headers: { "content-type": "application/json" } });
+  // Surface a failed action (e.g. liquidate timeout) as 500 so the operator
+  // can't mistake an error result for success.
+  const status = result.startsWith("error:") ? 500 : 200;
+  return new Response(JSON.stringify({ result }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 });

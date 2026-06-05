@@ -785,6 +785,13 @@ git commit -m "feat(mvp2): kill-switch Edge Function (5-min intraday) (#220)"
 
 ## Task 3: `panic` function (deterministic kill button)
 
+> **Post-review amendments (2026-06-05):** (1) `logic.ts` closes the audit row (`updateAuditLog`)
+> BEFORE calling `notifyPanic`, and wraps `notifyPanic` in its own try/catch — a notification
+> failure must not flip a successful action's outcome to error. (2) `index.ts` returns HTTP **500**
+> when the result starts with `error:` (so the operator can't mistake a failed liquidation for
+> success), 200 otherwise. A test was added: notify-failure-does-not-corrupt-a-successful-outcome.
+> Committed files are the source of truth.
+
 **Files:**
 - Create: `supabase/functions/panic/logic.test.ts`
 - Create: `supabase/functions/panic/logic.ts`

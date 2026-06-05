@@ -59,8 +59,12 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
       default:
         throw new Error(`unknown action: ${action}`);
     }
-    await deps.notifications.notifyPanic({ action, result });
+    // Close the audit row FIRST, then notify fire-and-forget — a notification
+    // failure must not flip a successful action's outcome to error.
     await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome: "success:panic", notes: `${action}: ${result}` });
+    try {
+      await deps.notifications.notifyPanic({ action, result });
+    } catch (_e) { /* fire-and-forget */ }
     return result;
   } catch (e) {
     const err = e as Error;
