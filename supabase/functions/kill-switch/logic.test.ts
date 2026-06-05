@@ -7,7 +7,7 @@ function bars(highs: number[]): DailyBar[] {
 }
 
 function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
-  const calls: Record<string, unknown> = {};
+  const calls: Record<string, unknown> = { upserts: [] };
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
     getLatestTradePrice: () => Promise.resolve(100),
@@ -31,6 +31,7 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
       } as never),
     upsertRegimeState: (p) => {
       calls.upsert = p;
+      (calls.upserts as unknown[]).push(p);
       return Promise.resolve();
     },
     insertTrade: (p) => {
@@ -72,19 +73,21 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
 }
 
 Deno.test("not LONG -> success:no_position", async () => {
-  const { deps } = makeDeps({
+  const { deps, calls } = makeDeps({
     db: {
       getLatestRegimeState: () => Promise.resolve({ current_state: "CASH" } as never),
     } as unknown as KillSwitchDeps["db"],
   });
   assertEquals(await runKillSwitch(deps), "success:no_position");
+  assertEquals((calls.audit as { outcome: string }).outcome, "success:no_position");
 });
 
 Deno.test("market closed -> skipped:market_closed", async () => {
-  const { deps } = makeDeps({
+  const { deps, calls } = makeDeps({
     alpaca: { getClock: () => Promise.resolve({ isOpen: false }) } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "skipped:market_closed");
+  assertEquals((calls.audit as { outcome: string }).outcome, "skipped:market_closed");
 });
 
 Deno.test("within threshold -> success:within_threshold, persists drawdown", async () => {
@@ -116,6 +119,11 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
   assertEquals((calls.insertTrade as { reason: string }).reason, "kill_switch");
   assertEquals((calls.upsert as { currentState: string }).currentState, "CASH");
   assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, true);
+  // Two upserts: the first persists the drawdown while still LONG (visibility),
+  // the second flips to CASH on the fire.
+  const upserts = calls.upserts as Array<{ currentState: string }>;
+  assertEquals(upserts.length, 2);
+  assertEquals(upserts[0].currentState, "LONG");
 });
 
 Deno.test("breach but position vanished -> success:no_position_to_liquidate", async () => {
@@ -131,4 +139,5 @@ Deno.test("breach but position vanished -> success:no_position_to_liquidate", as
   });
   assertEquals(await runKillSwitch(deps), "success:no_position_to_liquidate");
   assertEquals((calls.upsert as { currentState: string }).currentState, "CASH");
+  assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, true);
 });

@@ -79,6 +79,11 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       return "skipped:insufficient_data";
     }
 
+    // Intraday-stop design (spec §4), NOT the old daily-close hourly logic in
+    // monitor/kill_switch.py: reference high = max of recent daily *highs* plus
+    // today's last trade, so we measure drawdown from the actual recent peak.
+    // Including lastPrice means a fresh high yields drawdown 0 (can't fire) —
+    // intended: you can't be in drawdown while at a new high.
     const lastPrice = await marketdata.getLatestTradePrice(config.botTicker);
     const recentHighs = barsArr.slice(-config.killSwitchLookbackDays).map((b) => b.high);
     const refHigh = Math.max(...recentHighs, lastPrice);
