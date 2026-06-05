@@ -11,3 +11,7 @@ dist/
 venv/
 .venv/
 logs/
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
