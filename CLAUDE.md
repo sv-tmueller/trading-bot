@@ -38,97 +38,128 @@ The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `resea
 
 ## Commands
 
+The production bot is TypeScript on Supabase + Alpaca. The Python that remains is research-only
+(`backtest/`, `strategy/regime.py`, `main.py`).
+
 ```bash
-# Run all tests
-python3 -m pytest
+# Run all TS unit tests (Alpaca + DB mocked; the broker guard fails fast)
+deno task test
 
-# Run a single test file
-python3 -m pytest tests/test_daily_check.py -v
+# Run a single TS test file
+deno test --allow-env --allow-net supabase/functions/_shared/regime.test.ts
 
-# Run a single test
-python3 -m pytest tests/test_daily_check.py::test_bullish_first_run_buys -v
+# DB integration tests — needs a local Postgres (gated behind RUN_DB_TESTS)
+deno task test:db
 
-# Run today's regime check + flip (cron does this automatically at 22:30 UTC)
-venv/bin/python daily_check.py
-venv/bin/python daily_check.py --dry-run    # full pipeline, no broker orders
+# Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
+supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
+supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
+supabase db push                                      # applies 0001_init + 0002_schedule
 
-# Hourly drawdown check (cron does this automatically during US market hours)
-venv/bin/python -m monitor.kill_switch
+# Panic kill button (token-auth Edge Function — deterministic, no LLM)
+curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"
+#   actions: pause | resume | cancel-orders | liquidate   (500 + error: result = action failed)
 
-# Backtest the regime strategy
+# Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5
-
-# Trailing 30-day trade summary
-venv/bin/python main.py summary
-
-# Kill button (deterministic, no LLM)
-venv/bin/python main.py panic --pause
-venv/bin/python main.py panic --cancel-orders
-venv/bin/python main.py panic --liquidate --confirm
-
-# Initialise the database (first time only)
-python3 -c "from storage.init_db import init_db; init_db()"
 ```
 
-## Python version
+## Languages / runtime
 
-Runtime is Python 3.9. **Every Python file must start with `from __future__ import annotations`** — this enables modern type hint syntax on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
+The production bot is **TypeScript on Deno** (Supabase Edge Functions). Production code lives in
+`supabase/functions/`; `regime.ts` is a 1:1 port of the kept `strategy/regime.py`.
+
+The research backtester is **Python 3.9** (`backtest/`, `strategy/`, `main.py`). **Every Python
+file must start with `from __future__ import annotations`** — this enables modern type hint syntax
+on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
 
 ## Architecture
 
+The production bot is three Supabase Edge Functions (TypeScript/Deno) driven by `pg_cron`, over
+shared TS modules in `supabase/functions/_shared/` (`regime`, `config`, `alpaca`, `marketdata`,
+`db`, `notifications`, `num`, `supabase_client`). Each function is `logic.ts` (pure, testable) +
+`index.ts` (HTTP entry). Broker + market data are Alpaca REST; persistence is Postgres.
+
 ### Daily flow
 
-`daily_check.py` runs once per weekday (cron, post-US-close). It computes the 200-DMA regime
-filter on SPY, reconciles with IBKR, and flips between LONG (`BOT_TICKER`) and CASH if needed.
-Wraps the entire flow in an `audit_log` row; every exit path writes a deterministic `outcome`
-string (`success`, `dry_run:*`, `skipped:*`, `error:*`).
+`daily-check` runs once per weekday (`pg_cron` `30 22 * * 1-5` UTC, post-US-close). It fetches SPY
+daily bars from Alpaca, computes the 200-DMA regime filter, reconciles against the Alpaca position,
+and flips between LONG (`BOT_TICKER`=UPRO) and CASH if needed. Account value is read in **USD**
+(Alpaca accounts are USD-denominated). Wraps the flow in an `audit_log` row; every exit path writes
+a deterministic `outcome` string (`success`, `success:*`, `skipped:*`, `error:*`).
 
-### Hourly kill-switch
+### Intraday kill-switch
 
-`monitor/kill_switch.py` runs hourly during US market hours. If `BOT_TICKER` drawdown from its
-30-trading-day rolling high exceeds `KILL_SWITCH_DRAWDOWN_PCT`, it liquidates and sets
-`kill_switch_active=1` in `regime_state`.
+`kill-switch` runs every 5 minutes during US market hours (`pg_cron` `*/5 13-21 * * 1-5` UTC; it
+calls Alpaca `/v2/clock` and early-exits when the market is closed, so US DST is handled without
+changing the cron expression). If UPRO drawdown from its `KILL_SWITCH_LOOKBACK_DAYS` rolling high —
+including today's running high / last trade — exceeds `KILL_SWITCH_DRAWDOWN_PCT`, it liquidates and
+sets `kill_switch_active=true` in `regime_state`.
 
 ### Database
 
-SQLite via `storage/schema.sql`. All queries use named parameters (`:key` syntax). `conn.row_factory = sqlite3.Row` is always set so rows behave like dicts. Foreign keys are enabled with `PRAGMA foreign_keys = ON`.
-
-The post-pivot tables are:
+Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `regime_state` — one row per trading day with `spy_close`, `spy_sma200`, `target_state`, `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`.
-- `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`, `ibkr_order_id`, `reason`).
-- `audit_log` — one row per script invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`.
+- `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`, `broker_order_id`, `reason`).
+- `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`.
+- `bot_config` — key/value config; holds the runtime `paused` flag (replaces the old `TRADING_PAUSED` env var).
+
+All tables are RLS-deny-all; the Edge Functions connect with the **service-role key** (bypasses RLS).
+The cron jobs (`0002_schedule.sql`) read the service-role key and the functions base URL from
+**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migration works
+for both dev and prod — only the Vault values differ.
 
 ### Notifications
 
-`tools/notifications.py` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` env var) which forwards to Discord. Uses only stdlib `urllib` — no extra dependency. Silently skips if the env var is unset or the request fails, so a notification outage never crashes the bot. Use `http://localhost:5678` not the public n8n URL (Cloudflare Access blocks unauthenticated external requests).
+`notifications.ts` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` secret) which forwards to Discord.
+Silently skips if the secret is unset or the request fails, so a notification outage never crashes
+the bot. The webhook must be reachable from Supabase's cloud — a `localhost` URL won't work, and a
+Cloudflare-Access-protected n8n needs a path **bypass** (the bot sends no auth header).
 
-The post-pivot helpers post structured JSON dicts (`event_type` + event-specific fields) so the n8n flow can route on shape: `notify_regime_flip`, `notify_kill_switch_fired`, `notify_trade_failed`, `notify_tws_disconnected`, `notify_state_desync`. The string-payload helpers `notify_error` (used by panic + daily_check generic-exception) and `notify_panic` are also kept.
+The helpers post structured JSON dicts (`event_type` + event-specific fields, plus a `message`
+field the n8n flow renders) so the flow can route on shape: `notifyRegimeFlip`,
+`notifyKillSwitchFired`, `notifyTradeFailed`, `notifyStateDesync`, `notifyBrokerError`,
+`notifyError`, `notifyPanic`.
 
 ### Settings
 
-`config/settings.py` validates env vars at import time and raises `ValueError` for out-of-range values. The recipe for adding a new setting (env read, validation, `.env.example`, README, opt-in/default-OFF pattern for risky changes) is in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md).
+`config.ts` reads + range-validates settings from Edge Function secrets at function start and throws
+on out-of-range. The recipe for adding a new setting (env read, validation, README, opt-in/default-OFF
+pattern for risky changes) is in [`.claude/skills/add-or-extend-agent/SKILL.md`](.claude/skills/add-or-extend-agent/SKILL.md) — the
+env-var mechanics now apply to `supabase secrets set` / `config.ts` rather than `.env` / `config/settings.py`.
 
 ## Testing conventions
 
-Mock idioms and broker-call mocking patterns: `tools/ibkr_broker.py` exposes four guarded helpers (`connect_ibkr`, `place_market_order`, `liquidate`, `cancel_all_orders`) that call `_check_guard()` at the top of each function, plus two read-only helpers (`get_position`, `get_account_value`) that operate on an existing `IB` instance. `get_position` and `get_account_value` do not call the guard themselves but cannot be reached without first calling `connect_ibkr` (which is guarded), so the test-side fail-fast property holds end-to-end. All six helpers MUST be mocked in any test that exercises a path which would call them. The `CLAUDE_AGENT_NO_BROKER` autouse conftest fixture (`tests/conftest.py`) sets the env var so every guarded helper raises `BrokerCallBlockedError` before any IBKR call — this is the mechanical safety net, but tests should still mock cleanly so the assertions are meaningful.
-
-Patch at the module path the caller imports from. Example: `daily_check.py` does `from tools.ibkr_broker import place_market_order`, so tests patch `daily_check.place_market_order`, not `tools.ibkr_broker.place_market_order`.
+The broker client `supabase/functions/_shared/alpaca.ts` exposes a client from `createAlpacaClient()`
+with three mutating helpers (`placeMarketOrder`, `liquidate`, `cancelAllOrders`) that call
+`checkGuard()` at the top, plus read-only helpers (`getClock`, `getAccountValue`, `getPosition`).
+`liquidate` routes through `placeMarketOrder`, so the guard covers it transitively too. All Alpaca
+calls MUST be mocked in any test that exercises a path which would reach them. When
+`CLAUDE_AGENT_NO_BROKER` is set, the guarded helpers raise `BrokerCallBlockedError` before any HTTP
+call — this is the mechanical safety net, but tests should still mock cleanly so the assertions are
+meaningful. The function `logic.ts` modules take their broker/db/notification dependencies via an
+injected `deps` object, so tests pass mocks directly.
 
 ## Key constraints
 
-- `IBKR_PORT`, `IBKR_CLIENT_ID`, `REGIME_SMA_DAYS`, `KILL_SWITCH_DRAWDOWN_PCT`, `KILL_SWITCH_LOOKBACK_DAYS`, `BOT_TICKER`, `BOT_BENCHMARK` are validated at startup — invalid values raise immediately.
-- `daily_check.py` must run **post-US-close** (cron at `30 22 * * 1-5` UTC, ~5h after NYSE close, 1.5h after yfinance daily bar publishes). Running before yfinance has the closed bar will hit the stale-data guard and exit with `skipped:stale_data` in audit_log.
-- `daily_check.py` is idempotent: re-running on the same trading day computes the same `target_state`, sees `current_state` already matches, and writes a no-op `regime_state` row.
-- The bot has one decision rule. It is testable as a pure function (`strategy.regime.compute_target_state`). Do not add second decision rules without a fresh brainstorm and spec.
-- `daily_check.py` honors `TRADING_PAUSED` — `python main.py panic --pause` is the operational kill switch.
+- `REGIME_SMA_DAYS`, `KILL_SWITCH_DRAWDOWN_PCT`, `KILL_SWITCH_LOOKBACK_DAYS`, `BOT_TICKER`, `BOT_BENCHMARK`, and the Alpaca credentials are validated by `config.ts` at function start — invalid values throw immediately.
+- `daily-check` must run **post-US-close** (`pg_cron` `30 22 * * 1-5` UTC). If Alpaca's latest SPY daily bar predates today (UTC), it hits the stale-data guard and exits with `skipped:stale_data` in `audit_log`.
+- `daily-check` is idempotent: re-running on the same trading day computes the same `target_state`, sees `current_state` already matches, and writes a no-op `regime_state` row.
+- The bot has one decision rule. It is testable as a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`). Do not add second decision rules without a fresh brainstorm and spec.
+- `daily-check` honors `bot_config.paused` — the `panic` Edge Function (`action=pause`) is the operational kill switch.
 
 ## Architectural invariants
 
-- **One decision rule.** The bot trades on exactly one signal: SPY close vs SPY 200-DMA, modulated by the kill-switch flag. The signal is computed by a pure function (`strategy.regime.compute_target_state`) so every decision is reproducible from the SPY history alone. Do not add a second decision rule (sentiment overlay, sector tilt, etc.) without a fresh brainstorm and design spec — the rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was indistinguishable from a coin flip on 5y data.
-- **No LLM in the trading path.** `daily_check.py` and `monitor/kill_switch.py` import nothing from `anthropic` and do not instantiate any agent. The only Claude session in the repo is the operator's interactive Team Leader for development work — it never executes orders.
-- **Operational kill switch.** `TRADING_PAUSED=true` in `.env` halts new entries — `daily_check.py` writes `skipped:trading_paused` to `audit_log` and exits 0 without contacting IBKR. The kill-switch monitor is unaffected and continues exit handling. The faster path is `python main.py panic --pause` — same effect on `TRADING_PAUSED`, plus order cancellation and liquidation in one invocation.
-- **Panic CLI is the deterministic kill button.** `main.py panic --cancel-orders | --liquidate --confirm | --pause` calls IBKR and writes `.env` directly. No LLM is imported in this path. Audit row in `audit_log` (`script_name="panic"`) is written before the broker call and updated in `finally` with the per-action result, so a partial run is recoverable from the DB. `--pause` writes to `.env` anchored at the repo root via `Path(__file__).resolve().parent`, not cwd.
-- **Engineer subagents must never execute against the live broker.** Subagents spawn into worktrees that inherit `/opt/trading-bot/.env` via the parent shell, so any `pytest`, ad-hoc `python -c`, or `python daily_check.py` invocation would submit real orders to the live account. The four guarded `tools/ibkr_broker.py` helpers — `connect_ibkr`, `place_market_order`, `liquidate`, `cancel_all_orders` — call `_check_guard()` at the top of each function and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. The two read-only helpers (`get_position`, `get_account_value`) do not call the guard themselves but cannot be reached without first calling `connect_ibkr` (which is guarded), so the test-side fail-fast property holds end-to-end. All six helpers MUST be mocked in agent-spawned tests (patch at the module path the caller imports from). Integration tests that need a real broker must use a separate sandbox account with explicitly-set env vars, or be explicitly skipped in agent contexts. **Mechanically enforced via the `CLAUDE_AGENT_NO_BROKER` env var (#168) — when set, the four guarded helpers raise `BrokerCallBlockedError` before any IBKR call. Production cron leaves the var unset; pytest sets it via an autouse conftest fixture so any forgotten mock fails fast instead of materialising a live order.** _Rationale: 2026-05-06 incident #149 — six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions that would have filled unprotected at market open if not surgically cancelled. Re-materialised ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered via panic CLI). The production cron path was unaffected in both incidents; the gap was on the agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-depth)._ The rule applies post-pivot to `tools/ibkr_broker.py` exactly as it applied pre-pivot to `tools/broker.py`.
+These are non-negotiable and carry over verbatim in intent from the pre-migration bot. The MVP 2.0
+migration (#220) re-pointed the *implementation* (IBKR -> Alpaca, `daily_check.py` -> `daily-check`
+Edge Function, SQLite -> Supabase Postgres, `.env` -> `supabase secrets` / `bot_config`) but did not
+relax a single one of these guarantees.
+
+- **One decision rule.** The bot trades on exactly one signal: SPY close vs SPY 200-DMA, modulated by the kill-switch flag. The signal is computed by a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`, a 1:1 port of `strategy/regime.py`) so every decision is reproducible from the SPY history alone. Do not add a second decision rule (sentiment overlay, sector tilt, etc.) without a fresh brainstorm and design spec — the rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was indistinguishable from a coin flip on 5y data.
+- **No LLM in the trading path.** The `daily-check`, `kill-switch`, and `panic` Edge Functions import no model SDK and instantiate no agent. The only Claude session in the repo is the operator's interactive Team Leader for development work — it never executes orders.
+- **Operational kill switch.** `bot_config.paused=true` halts new entries — `daily-check` writes `skipped:trading_paused` to `audit_log` and exits 0 without contacting Alpaca. The kill-switch function is unaffected and continues protecting an open position. The flag is set via the `panic` Edge Function (`action=pause`, cleared with `action=resume`), which is also the faster incident path — it can cancel orders or liquidate in the same family of invocations.
+- **Panic is the deterministic kill button.** The `panic` Edge Function (`action=pause|resume|cancel-orders|liquidate`, authenticated by the `x-panic-token` header) calls Alpaca and writes `bot_config` directly. No LLM is imported in this path. Its `audit_log` row (`script_name="panic"`) is written before the broker call and updated in a `finally` with the per-action result, so a partial run is recoverable from the DB. A failed action returns HTTP 500 with an `error:` result — never treat a 500 as success.
+- **Engineer subagents must never execute against the live broker.** Subagents spawn into worktrees that inherit the project's Alpaca secrets via the parent shell, so any `deno test`, ad-hoc script, or direct function invocation could submit real orders if it reached a live broker path. The mutating helpers on the `supabase/functions/_shared/alpaca.ts` client — `placeMarketOrder`, `liquidate`, `cancelAllOrders` — call `checkGuard()` at the top of each function and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. `liquidate` routes through `placeMarketOrder`, so the guard covers it transitively; the read-only helpers (`getClock`, `getAccountValue`, `getPosition`) cannot place orders. All Alpaca calls MUST be mocked in agent-spawned tests (function `logic.ts` modules take an injected `deps` object — pass mocks directly). Integration tests that need a real broker must use the Alpaca **paper** account with explicitly-set secrets, or be explicitly skipped in agent contexts. **Mechanically enforced via the `CLAUDE_AGENT_NO_BROKER` env var (ported from #168) — when set, the guarded helpers raise `BrokerCallBlockedError` before any Alpaca call. Production leaves the var unset; the test setup sets it so any forgotten mock fails fast instead of materialising a live order. Defense in depth: dev/test use Alpaca paper keys.** _Rationale: 2026-05-06 incident #149 — six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions that would have filled unprotected at market open if not surgically cancelled. Re-materialised ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered via panic CLI). The production cron path was unaffected in both incidents; the gap was on the agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-depth)._ The rule originated against the pre-pivot `tools/broker.py`, applied to the IBKR `tools/ibkr_broker.py`, and now applies to `supabase/functions/_shared/alpaca.ts` exactly the same way.
 
 _Rationale: deterministic rules engines are auditable; LLM outputs are not. The v1.14 incident history showed that even with deterministic guardrails wrapped around an LLM, the LLM's non-determinism leaked through at the points where it set sizes, picked instruments, or narrated outcomes. The post-pivot bot has none of that surface area — there is no decision the LLM can corrupt because there is no LLM in the path._
 
