@@ -4,9 +4,10 @@ Decision rule (Mebane Faber, 2007):
     if SPY > SMA(200):  target = LONG    (kill-switch flag cleared if previously set)
     else:               target = CASH   (kill-switch flag preserved if set)
 
-This module is intentionally I/O-free. All I/O happens in callers (`daily_check.py`,
-`monitor/kill_switch.py`). That makes the function trivially testable and removes
-any path where business logic could be perturbed by network/clock/DB state.
+This module is intentionally I/O-free, which makes it trivially testable and keeps
+the business logic free of network/clock/DB state. It is retained as the Python
+reference used by the offline backtest research (`backtest/`); the live bot ports
+this same rule to TypeScript (`supabase/functions/_shared/regime.ts`).
 """
 from __future__ import annotations
 
