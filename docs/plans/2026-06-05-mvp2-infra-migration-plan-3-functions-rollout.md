@@ -81,6 +81,16 @@ git commit -m "chore(mvp2): service client helper + widen test glob (#220)"
 
 ## Task 1: `daily-check` function
 
+> **Post-review amendments (2026-06-05) — these also apply to the Task 2/3 test files (same `makeDeps` pattern):**
+> - Partial dep casts must be `as unknown as DailyCheckDeps["db"]` (TS2352 rejects the direct cast).
+> - `makeDeps` must merge each partial over a *captured default* (e.g. `{ ...defaultDb, ...over.db }`),
+>   not re-spread `over` (the `...over` spread already replaced the nested object, making a re-merge a no-op).
+> - Assertions on the captured `upsertRegimeState` arg use **camelCase** keys (`currentState`, `spyClose`, …),
+>   matching the `DailyCheckDeps` interface — not snake_case.
+> - Two extra assertions were added: desync test asserts `upsert.currentState === "LONG"` (reconciled state
+>   persisted); liquidate-failed test asserts `calls.upsert === undefined` (current_state pinned, no row written).
+> The committed files are the source of truth.
+
 **Files:**
 - Create: `supabase/functions/daily-check/logic.test.ts`
 - Create: `supabase/functions/daily-check/logic.ts`

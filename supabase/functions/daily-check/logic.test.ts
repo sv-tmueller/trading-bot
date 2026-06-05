@@ -136,6 +136,8 @@ Deno.test("desync (broker LONG, db CASH) reconciles + notifies", async () => {
   await runDailyCheck(deps);
   assertEquals(calls.desync, true);
   assertEquals(calls.placeMarketOrder, undefined); // already LONG after reconcile
+  // The reconciled state (LONG, from broker truth) must be persisted.
+  assertEquals((calls.upsert as { currentState: string }).currentState, "LONG");
 });
 
 Deno.test("insufficient buying power -> error:insufficient_funds", async () => {
@@ -155,4 +157,6 @@ Deno.test("liquidate returns null -> error:liquidate_failed", async () => {
   });
   assertEquals(await runDailyCheck(deps), "error:liquidate_failed");
   assertEquals(calls.tradeFailed, true);
+  // current_state must be pinned: no regime_state row is written on a failed liquidation.
+  assertEquals(calls.upsert, undefined);
 });
