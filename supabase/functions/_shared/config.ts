@@ -69,3 +69,40 @@ export function getStrategyConfig(): StrategyConfig {
 
   return { regimeSmaDays, killSwitchDrawdownPct, killSwitchLookbackDays, botTicker, botBenchmark };
 }
+
+export interface AlpacaConfig {
+  apiKeyId: string;
+  apiSecretKey: string;
+  paper: boolean;
+  tradingBaseUrl: string;
+  dataBaseUrl: string;
+}
+
+export function getAlpacaConfig(): AlpacaConfig {
+  const apiKeyId = Deno.env.get("ALPACA_API_KEY")?.trim() ?? "";
+  const apiSecretKey = Deno.env.get("ALPACA_SECRET_KEY")?.trim() ?? "";
+  if (apiKeyId === "" || apiSecretKey === "") {
+    throw new Error("ALPACA_API_KEY and ALPACA_SECRET_KEY must both be set");
+  }
+  // Default to PAPER. Only an explicit ALPACA_PAPER=false selects live.
+  const paper = (Deno.env.get("ALPACA_PAPER") ?? "true").toLowerCase() !== "false";
+  return {
+    apiKeyId,
+    apiSecretKey,
+    paper,
+    tradingBaseUrl: paper
+      ? "https://paper-api.alpaca.markets"
+      : "https://api.alpaca.markets",
+    dataBaseUrl: "https://data.alpaca.markets",
+  };
+}
+
+export function getN8nWebhookUrl(): string {
+  return Deno.env.get("N8N_WEBHOOK_URL")?.trim() ?? "";
+}
+
+// Ported #168 guard. Read fresh every call so tests can flip it mid-test.
+export function isClaudeAgentNoBroker(): boolean {
+  const v = Deno.env.get("CLAUDE_AGENT_NO_BROKER")?.toLowerCase() ?? "";
+  return v === "1" || v === "true" || v === "yes";
+}

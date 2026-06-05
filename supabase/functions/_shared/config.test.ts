@@ -64,3 +64,46 @@ Deno.test("rejects empty BOT_TICKER", () => {
   assertThrows(() => getStrategyConfig(), Error, "BOT_TICKER");
   clearEnv();
 });
+
+import { getAlpacaConfig, getN8nWebhookUrl, isClaudeAgentNoBroker } from "./config.ts";
+
+Deno.test("getAlpacaConfig throws when keys missing", () => {
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+  assertThrows(() => getAlpacaConfig(), Error, "ALPACA_API_KEY");
+});
+
+Deno.test("getAlpacaConfig defaults to paper base URL", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.delete("ALPACA_PAPER");
+  const c = getAlpacaConfig();
+  assertEquals(c.paper, true);
+  assertEquals(c.tradingBaseUrl, "https://paper-api.alpaca.markets");
+  assertEquals(c.dataBaseUrl, "https://data.alpaca.markets");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+});
+
+Deno.test("getAlpacaConfig honours ALPACA_PAPER=false", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.set("ALPACA_PAPER", "false");
+  assertEquals(getAlpacaConfig().tradingBaseUrl, "https://api.alpaca.markets");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+  Deno.env.delete("ALPACA_PAPER");
+});
+
+Deno.test("getN8nWebhookUrl empty when unset", () => {
+  Deno.env.delete("N8N_WEBHOOK_URL");
+  assertEquals(getN8nWebhookUrl(), "");
+});
+
+Deno.test("isClaudeAgentNoBroker reads env fresh", () => {
+  Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+  assertEquals(isClaudeAgentNoBroker(), false);
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  assertEquals(isClaudeAgentNoBroker(), true);
+  Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+});
