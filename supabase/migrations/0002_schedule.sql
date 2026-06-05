@@ -10,6 +10,10 @@ create or replace function _service_role_key() returns text language sql stable 
   select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key' limit 1;
 $$;
 
+-- Defence in depth: pg_cron runs as superuser (unaffected), but no anon/
+-- authenticated caller should be able to invoke this key-retrieval helper.
+revoke execute on function _service_role_key() from public;
+
 -- daily-check: 22:30 UTC, Mon-Fri (post-US-close).
 select cron.schedule(
   'daily-check',

@@ -1015,6 +1015,11 @@ git commit -m "feat(mvp2): panic Edge Function (token-auth kill button) (#220)"
 
 ## Task 4: `pg_cron` scheduling migration
 
+> **Post-review amendment (2026-06-05):** the committed `0002_schedule.sql` adds
+> `revoke execute on function _service_role_key() from public;` after the helper definition —
+> defence in depth so anon/authenticated roles can't invoke the key-retrieval helper (pg_cron runs
+> as superuser and is unaffected). Committed file is the source of truth.
+
 **Files:**
 - Create: `supabase/migrations/0002_schedule.sql`
 
