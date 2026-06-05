@@ -1024,6 +1024,11 @@ git commit -m "feat(mvp2): panic Edge Function (token-auth kill button) (#220)"
 > `revoke execute on function _service_role_key() from public;` after the helper definition —
 > defence in depth so anon/authenticated roles can't invoke the key-retrieval helper (pg_cron runs
 > as superuser and is unaffected). Committed file is the source of truth.
+>
+> **Deploy-time amendment (2026-06-05):** the `PROJECT_REF` placeholder was removed — the cron URLs now
+> read a `functions_base_url` secret from Vault via `_functions_base_url()` (same pattern as the service-role
+> key). The same committed migration works for both the dev and prod projects; only the Vault secrets differ.
+> Operator sets `vault.create_secret('https://<ref>.supabase.co/functions/v1', 'functions_base_url')` once per project.
 
 **Files:**
 - Create: `supabase/migrations/0002_schedule.sql`

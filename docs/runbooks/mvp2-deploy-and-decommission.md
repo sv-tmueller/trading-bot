@@ -16,10 +16,13 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
    `supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true N8N_WEBHOOK_URL=... PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY`
    (Strategy params `REGIME_SMA_DAYS`/`KILL_SWITCH_DRAWDOWN_PCT`/`KILL_SWITCH_LOOKBACK_DAYS` default to 200/0.25/30 — set only to override.)
 3. `supabase db push` (applies `0001_init.sql` + `0002_schedule.sql`).
-4. In the SQL editor, store the service-role key in Vault (one-time, not committed):
-   `select vault.create_secret('<service_role_key>', 'service_role_key');`
-   (The `0002` migration's `_service_role_key()` reads this; `revoke execute ... from public` is already applied.)
-5. Substitute `PROJECT_REF` in the two `cron.schedule` URLs in `0002_schedule.sql` with your real project ref **before** `db push` (it is a deploy-time value, not committed-resolved). Verify the jobs registered: `select jobname, schedule from cron.job;` → `daily-check | 30 22 * * 1-5` and `kill-switch | */5 13-21 * * 1-5`.
+4. In the SQL editor, store **two** secrets in Vault (one-time per project, not committed — the same migration works for dev and prod, only these differ):
+   ```sql
+   select vault.create_secret('<service_role_key>', 'service_role_key');
+   select vault.create_secret('https://<ref>.supabase.co/functions/v1', 'functions_base_url');
+   ```
+   (`0002`'s `_service_role_key()` / `_functions_base_url()` read these at cron-call time; `revoke execute ... from public` is already applied. The service-role key is in Dashboard → Settings → API.)
+5. Verify the cron jobs registered: `select jobname, schedule from cron.job;` → `daily-check | 30 22 * * 1-5` and `kill-switch | */5 13-21 * * 1-5`. (No `PROJECT_REF` edit needed — the URL comes from the `functions_base_url` Vault secret.)
 6. Deploy functions:
    - `supabase functions deploy daily-check kill-switch` (default JWT-verified; cron sends the service-role bearer)
    - `supabase functions deploy panic --no-verify-jwt` (auth is the `x-panic-token` header)
