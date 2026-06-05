@@ -1,4 +1,5 @@
 import { serviceClient } from "@/lib/supabase";
+import { getAccount, getPositions, type AlpacaAccount, type AlpacaPosition } from "@/lib/alpaca";
 
 // Always render fresh at request time — this is a live status page.
 export const dynamic = "force-dynamic";
@@ -32,17 +33,21 @@ type Audit = {
 
 async function getData() {
   const sb = serviceClient();
-  const [rs, cfg, tr, al] = await Promise.all([
+  const [rs, cfg, tr, al, account, positions] = await Promise.all([
     sb.from("regime_state").select("*").order("date", { ascending: false }).limit(1).maybeSingle(),
     sb.from("bot_config").select("value").eq("key", "paused").maybeSingle(),
     sb.from("trades").select("*").order("id", { ascending: false }).limit(10),
     sb.from("audit_log").select("*").order("id", { ascending: false }).limit(15),
+    getAccount(),
+    getPositions(),
   ]);
   return {
     regime: (rs.data as RegimeState | null) ?? null,
     paused: (cfg.data as { value: string } | null)?.value === "true",
     trades: (tr.data as Trade[] | null) ?? [],
     audit: (al.data as Audit[] | null) ?? [],
+    account: account as AlpacaAccount | null,
+    positions: positions as AlpacaPosition[],
   };
 }
 
@@ -52,7 +57,7 @@ const fmt = (s: string | null) =>
   s ? `${new Date(s).toISOString().replace("T", " ").slice(0, 19)}Z` : "—";
 
 export default async function Page() {
-  const { regime, paused, trades, audit } = await getData();
+  const { regime, paused, trades, audit, account, positions } = await getData();
   const bullish = regime ? regime.spy_close > regime.spy_sma200 : false;
 
   return (
@@ -82,6 +87,40 @@ export default async function Page() {
           {regime.kill_switch_fired_at ? ` · kill-switch fired ${fmt(regime.kill_switch_fired_at)}` : ""}
         </p>
       )}
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-medium text-zinc-300">
+          Holdings — Alpaca {account && account.paper === false ? "LIVE" : "paper"}
+        </h2>
+        {account === null ? (
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
+            Alpaca not connected — set <code className="text-zinc-300">ALPACA_API_KEY</code>,{" "}
+            <code className="text-zinc-300">ALPACA_SECRET_KEY</code> (and <code className="text-zinc-300">ALPACA_PAPER</code>)
+            in the Vercel project to show live equity + positions.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              <Stat label="Equity" value={money(account.equity)} accent="zinc" />
+              <Stat label="Buying power" value={money(account.buyingPower)} accent="zinc" />
+              <Stat label="Cash" value={money(account.cash)} accent="zinc" />
+            </div>
+            <Table
+              title=""
+              cols={["symbol", "qty", "avg entry", "current", "market value", "unrealized P&L"]}
+              rows={positions.map((p) => [
+                p.symbol,
+                String(p.qty),
+                money(p.avgEntry),
+                money(p.currentPrice),
+                money(p.marketValue),
+                `${p.unrealizedPl >= 0 ? "+" : ""}${money(p.unrealizedPl)} (${(p.unrealizedPlpc * 100).toFixed(2)}%)`,
+              ])}
+              empty="No open positions."
+            />
+          </>
+        )}
+      </section>
 
       <Table
         title="Recent trades"
@@ -118,7 +157,7 @@ function Stat({ label, value, accent }: { label: string; value: string; accent: 
 function Table({ title, cols, rows, empty }: { title: string; cols: string[]; rows: string[][]; empty: string }) {
   return (
     <section>
-      <h2 className="mb-2 text-sm font-medium text-zinc-300">{title}</h2>
+      {title ? <h2 className="mb-2 text-sm font-medium text-zinc-300">{title}</h2> : null}
       <div className="overflow-x-auto rounded-lg border border-zinc-800">
         <table className="w-full text-left text-sm">
           <thead className="bg-zinc-900/60 text-[11px] uppercase tracking-wide text-zinc-500">
