@@ -56,6 +56,7 @@ export function getStrategyConfig(): StrategyConfig {
     );
   }
 
+  // Default is UPRO, not settings.py's WSPL.DE: Alpaca is US-listed-only (spec §2).
   const botTicker = strEnv("BOT_TICKER", "UPRO");
   if (botTicker.trim() === "") {
     throw new Error("BOT_TICKER must be a non-empty ticker symbol");

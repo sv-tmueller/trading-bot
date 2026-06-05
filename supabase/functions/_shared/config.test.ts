@@ -51,6 +51,13 @@ Deno.test("rejects out-of-range KILL_SWITCH_DRAWDOWN_PCT", () => {
   clearEnv();
 });
 
+Deno.test("rejects out-of-range KILL_SWITCH_LOOKBACK_DAYS", () => {
+  clearEnv();
+  Deno.env.set("KILL_SWITCH_LOOKBACK_DAYS", "3");
+  assertThrows(() => getStrategyConfig(), Error, "KILL_SWITCH_LOOKBACK_DAYS");
+  clearEnv();
+});
+
 Deno.test("rejects empty BOT_TICKER", () => {
   clearEnv();
   Deno.env.set("BOT_TICKER", "  ");
