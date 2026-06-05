@@ -42,6 +42,22 @@ function checkGuard(op: string): void {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Alpaca can return null / missing numeric fields (e.g. filled_avg_price on a
+// cancelled or not-yet-filled order). Turning those into NaN silently would
+// corrupt sizing / P&L downstream, so we fail loud instead.
+function requireNumber(val: unknown, field: string): number {
+  // Note: Number(null) === 0 and Number("") === 0, so reject those explicitly —
+  // a null filled_avg_price must fail loud, not silently become 0.
+  if (val === null || val === undefined || val === "") {
+    throw new AlpacaError(`expected numeric ${field}, got ${JSON.stringify(val)}`);
+  }
+  const n = Number(val);
+  if (Number.isNaN(n)) {
+    throw new AlpacaError(`expected numeric ${field}, got ${JSON.stringify(val)}`);
+  }
+  return n;
+}
+
 export function createAlpacaClient(): AlpacaClient {
   const cfg = getAlpacaConfig();
   const headers = {
@@ -71,7 +87,7 @@ export function createAlpacaClient(): AlpacaClient {
 
   async function getAccountValue() {
     const j = await tradeJson("/v2/account");
-    return Number(j.equity);
+    return requireNumber(j.equity, "account equity");
   }
 
   async function getPosition(symbol: string): Promise<number> {
@@ -79,7 +95,7 @@ export function createAlpacaClient(): AlpacaClient {
     if (res.status === 404) return 0;
     if (!res.ok) throw new AlpacaError(`GET position ${symbol} -> ${res.status}: ${await res.text()}`);
     const j = await res.json();
-    return Math.trunc(Number(j.qty));
+    return Math.trunc(requireNumber(j.qty, "position qty"));
   }
 
   async function placeMarketOrder(
@@ -114,8 +130,8 @@ export function createAlpacaClient(): AlpacaClient {
       if (o.status === "filled") {
         return {
           orderId,
-          fillPrice: Number(o.filled_avg_price),
-          qty: Math.trunc(Number(o.filled_qty)),
+          fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
+          qty: Math.trunc(requireNumber(o.filled_qty, "filled_qty")),
           fillTime: String(o.filled_at),
         };
       }

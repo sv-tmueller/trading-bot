@@ -432,6 +432,13 @@ git commit -m "feat(mvp2): n8n notifications module + test helpers (#220)"
 
 ## Task 3: `alpaca.ts` — broker client + guard
 
+> **Post-review amendment (2026-06-05):** the committed `alpaca.ts` adds a `requireNumber(val, field)`
+> helper used for `equity`, `position qty`, `filled_avg_price`, and `filled_qty` — it throws
+> `AlpacaError` on `null`/`undefined`/`""`/NaN (Alpaca can return `null` `filled_avg_price` on a
+> cancelled/partial order; `Number(null)===0` would silently corrupt sizing/P&L). Three extra tests
+> were added: liquidate-sells-full-position-and-returns-fill, cancelAllOrders-count, and
+> getAccountValue-throws-on-null-equity. See the committed file for the source of truth.
+
 **Files:**
 - Create: `supabase/functions/_shared/alpaca.test.ts`
 - Create: `supabase/functions/_shared/alpaca.ts`

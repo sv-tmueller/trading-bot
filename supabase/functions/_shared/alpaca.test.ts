@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
+  AlpacaError,
   BrokerCallBlockedError,
   createAlpacaClient,
   OrderTimeoutError,
@@ -141,6 +142,69 @@ Deno.test("liquidate returns null with no position", async () => {
   const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "no position" }, 404)));
   try {
     assertEquals(await createAlpacaClient().liquidate("UPRO"), null);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("liquidate sells the full position and returns the fill", async () => {
+  setKeys();
+  let placedSide = "";
+  let placedQty = "";
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (url.includes("/v2/positions/")) {
+      return Promise.resolve(jsonResponse({ qty: "100" }));
+    }
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      const body = JSON.parse(String(init?.body));
+      placedSide = body.side;
+      placedQty = body.qty;
+      return Promise.resolve(jsonResponse({ id: "o9", status: "accepted" }));
+    }
+    return Promise.resolve(jsonResponse({
+      id: "o9",
+      status: "filled",
+      filled_avg_price: "69.5",
+      filled_qty: "100",
+      filled_at: "2026-06-05T15:00:00Z",
+    }));
+  });
+  try {
+    const fill = await createAlpacaClient().liquidate("UPRO", { timeoutMs: 1000, intervalMs: 1 });
+    assertEquals(placedSide, "sell");
+    assertEquals(placedQty, "100");
+    assertEquals(fill, { orderId: "o9", fillPrice: 69.5, qty: 100, fillTime: "2026-06-05T15:00:00Z" });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelAllOrders returns count of successful cancels", async () => {
+  setKeys();
+  const restore = stubFetch((i, init) => {
+    assertEquals(init?.method, "DELETE");
+    assertEquals(urlOf(i).endsWith("/v2/orders"), true);
+    return Promise.resolve(jsonResponse(
+      [{ id: "a", status: 200 }, { id: "b", status: 500 }, { id: "c", status: 200 }],
+      207,
+    ));
+  });
+  try {
+    assertEquals(await createAlpacaClient().cancelAllOrders(), 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getAccountValue throws on non-numeric equity", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: null })));
+  try {
+    await assertRejects(() => createAlpacaClient().getAccountValue(), AlpacaError, "equity");
   } finally {
     restore();
     clearKeys();
