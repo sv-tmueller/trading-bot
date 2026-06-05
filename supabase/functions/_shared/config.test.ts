@@ -1,5 +1,10 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { getStrategyConfig } from "./config.ts";
+import {
+  getAlpacaConfig,
+  getN8nWebhookUrl,
+  getStrategyConfig,
+  isClaudeAgentNoBroker,
+} from "./config.ts";
 
 function clearEnv() {
   for (
@@ -64,8 +69,6 @@ Deno.test("rejects empty BOT_TICKER", () => {
   assertThrows(() => getStrategyConfig(), Error, "BOT_TICKER");
   clearEnv();
 });
-
-import { getAlpacaConfig, getN8nWebhookUrl, isClaudeAgentNoBroker } from "./config.ts";
 
 Deno.test("getAlpacaConfig throws when keys missing", () => {
   Deno.env.delete("ALPACA_API_KEY");
