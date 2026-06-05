@@ -312,7 +312,9 @@ function floatEnv(name: string, def: number): number {
 
 function strEnv(name: string, def: string): string {
   const raw = Deno.env.get(name);
-  if (raw === undefined || raw.trim() === "") return def;
+  // Unset -> default; set-but-blank -> passed through so the caller's non-empty
+  // check raises (mirrors config/settings.py: getenv default vs .strip() guard).
+  if (raw === undefined) return def;
   return raw;
 }
 
