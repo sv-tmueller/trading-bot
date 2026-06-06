@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { runKillSwitch, type KillSwitchDeps } from "./logic.ts";
+import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(highs: number[]): DailyBar[] {
@@ -140,4 +141,88 @@ Deno.test("breach but position vanished -> success:no_position_to_liquidate", as
   assertEquals(await runKillSwitch(deps), "success:no_position_to_liquidate");
   assertEquals((calls.upsert as { currentState: string }).currentState, "CASH");
   assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, true);
+});
+
+Deno.test("exactly at threshold -> fires (boundary: drawdown === -pct)", async () => {
+  // highs all 100, lastPrice 75 -> drawdown = 75/100 - 1 = -0.25, exactly
+  // -killSwitchDrawdownPct. The guard is `drawdown > -pct`, which is false at
+  // equality, so the kill-switch FIRES at exactly the configured limit. Pins the
+  // comparator direction: flipping `>` to `>=` would make this case NOT fire.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(75),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+});
+
+Deno.test("just inside threshold -> does not fire", async () => {
+  // lastPrice 76 -> drawdown = -0.24 > -0.25, so within threshold (no liquidation).
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(76),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.liquidate, undefined);
+});
+
+Deno.test("fresh high (lastPrice above recent highs) -> drawdown 0, cannot fire", async () => {
+  // refHigh = max(recentHighs, lastPrice) includes today's last trade, so a new
+  // high yields drawdown 0 and cannot fire. If lastPrice were dropped from the
+  // max, refHigh would be 90 and the persisted drawdown would be +0.11 — asserting
+  // the drawdown is exactly 0 pins the inclusivity of today's price in refHigh.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([90, 90, 90, 90, 90])),
+      getLatestTradePrice: () => Promise.resolve(100),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals((calls.upsert as { positionDrawdownPct: number }).positionDrawdownPct, 0);
+});
+
+Deno.test("insufficient data (bars < lookback) -> skipped:insufficient_data", async () => {
+  // killSwitchLookbackDays is 5; supply only 4 bars.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:insufficient_data");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.upsert, undefined);
+});
+
+Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", async () => {
+  // A breach reaches liquidate, which throws AlpacaError. The catch reports the
+  // error and (because it's an AlpacaError) fires notifyBrokerError with the
+  // kill-switch context. NOTE: err.name is "Error" — the custom AlpacaError
+  // subclass does not set .name — so the outcome is "error:Error".
+  let brokerError: { context: string; errorMsg: string } | undefined;
+  const { deps } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as KillSwitchDeps["marketdata"],
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: true }),
+      liquidate: () => Promise.reject(new AlpacaError("alpaca 500")),
+    } as unknown as KillSwitchDeps["alpaca"],
+    notifications: {
+      notifyKillSwitchFired: () => Promise.resolve(),
+      notifyTradeFailed: () => Promise.resolve(),
+      notifyBrokerError: (p: { context: string; errorMsg: string }) => {
+        brokerError = p;
+        return Promise.resolve();
+      },
+    } as unknown as KillSwitchDeps["notifications"],
+  });
+  assertEquals(await runKillSwitch(deps), "error:Error");
+  assertEquals(brokerError?.context, "kill-switch");
 });
