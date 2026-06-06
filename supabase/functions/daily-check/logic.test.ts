@@ -204,3 +204,39 @@ Deno.test("broker error -> error outcome + notifyBrokerError(daily-check)", asyn
   assertEquals(await runDailyCheck(deps), "error:Error");
   assertEquals(brokerError?.context, "daily-check");
 });
+
+Deno.test("getConfig (paused read) failure -> error outcome, no trade (#238)", async () => {
+  // The paused read now lives inside the try; a DB failure there must produce an
+  // error:* audit outcome, not an unhandled throw that escapes with no outcome.
+  const { deps, calls } = makeDeps({
+    db: { getConfig: () => Promise.reject(new Error("db down")) } as unknown as DailyCheckDeps["db"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome.startsWith("error:"), true);
+  assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
+  assertEquals(calls.placeMarketOrder, undefined);
+});
+
+Deno.test("account-value read fails before liquidate -> error, no trade, no state write (#238)", async () => {
+  // accountValue is read once before any order. On a CASH flip a read failure
+  // must error pre-trade (liquidate not called, no regime_state row) rather than
+  // after a fill — which would mislabel a completed SELL as error.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([410, 400, 390])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: {
+      getPosition: () => Promise.resolve(99),
+      getAccountValue: () => Promise.reject(new Error("acct read failed")),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome.startsWith("error:"), true);
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.upsert, undefined);
+});

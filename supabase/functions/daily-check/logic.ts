@@ -70,14 +70,16 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
   const finish = (outcome: string, notes?: string) =>
     db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
 
-  // Operational pause.
-  const paused = (await db.getConfig("paused"))?.toLowerCase() === "true";
-  if (paused) {
-    await finish("skipped:trading_paused", "bot_config.paused is true");
-    return "skipped:trading_paused";
-  }
-
   try {
+    // Operational pause. Read inside the try so a DB failure here yields an
+    // error:* audit outcome instead of an unhandled throw that escapes with no
+    // outcome written (the index.ts handler has no top-level catch).
+    const paused = (await db.getConfig("paused"))?.toLowerCase() === "true";
+    if (paused) {
+      await finish("skipped:trading_paused", "bot_config.paused is true");
+      return "skipped:trading_paused";
+    }
+
     const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
     if (barsArr.length === 0) {
       await finish("skipped:stale_data", "no bars returned");
@@ -128,8 +130,12 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     let outcome = "success";
 
     if (targetState !== currentState) {
+      // Read account value once, before any order, so a transient read failure
+      // errors cleanly pre-trade rather than after a fill — a post-fill read
+      // failure would skip the state write and mislabel a completed trade as
+      // error. Reused by both the LONG (sizing) and CASH (notification) paths.
+      const accountValue = await alpaca.getAccountValue();
       if (targetState === "LONG") {
-        const accountValue = await alpaca.getAccountValue();
         const vehiclePrice = await marketdata.getLatestTradePrice(config.botTicker);
         const targetQty = Math.floor((accountValue * 0.99) / vehiclePrice);
         if (targetQty <= 0) {
@@ -156,7 +162,7 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
           });
           await notifications.notifyRegimeFlip({
             targetState: "CASH", spyClose, spySma200, ticker: config.botTicker,
-            fillPrice: fill.fillPrice, qty: fill.qty, accountValue: await alpaca.getAccountValue(),
+            fillPrice: fill.fillPrice, qty: fill.qty, accountValue,
           });
           newCurrentState = "CASH";
         } else {

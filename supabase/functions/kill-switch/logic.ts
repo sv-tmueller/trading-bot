@@ -108,18 +108,23 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
 
     // Threshold breached — liquidate.
     const fill = await alpaca.liquidate(config.botTicker);
+
+    // Persist the flip to CASH + kill_switch_active FIRST, before insertTrade or
+    // the notification, so a later DB/notify failure cannot erase the fact that
+    // the kill-switch fired. Runs whether or not there was a position to sell.
+    await db.upsertRegimeState({
+      date: ymd(deps.now()),
+      spyClose: latest.spy_close,
+      spySma200: latest.spy_sma200,
+      targetState: "CASH",
+      currentState: "CASH",
+      positionDrawdownPct: drawdown,
+      killSwitchActive: true,
+      killSwitchFiredAt: iso(deps.now()),
+    });
+
     if (fill === null) {
-      // Position already gone — still flip state to CASH and set kill_switch_active.
-      await db.upsertRegimeState({
-        date: ymd(deps.now()),
-        spyClose: latest.spy_close,
-        spySma200: latest.spy_sma200,
-        targetState: "CASH",
-        currentState: "CASH",
-        positionDrawdownPct: drawdown,
-        killSwitchActive: true,
-        killSwitchFiredAt: iso(deps.now()),
-      });
+      // Position already gone — state is flipped above; no fill to record.
       await finish("success:no_position_to_liquidate");
       return "success:no_position_to_liquidate";
     }
@@ -132,16 +137,6 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       fillTime: fill.fillTime,
       brokerOrderId: fill.orderId,
       reason: "kill_switch",
-    });
-    await db.upsertRegimeState({
-      date: ymd(deps.now()),
-      spyClose: latest.spy_close,
-      spySma200: latest.spy_sma200,
-      targetState: "CASH",
-      currentState: "CASH",
-      positionDrawdownPct: drawdown,
-      killSwitchActive: true,
-      killSwitchFiredAt: iso(deps.now()),
     });
     await notifications.notifyKillSwitchFired({
       ticker: config.botTicker,
