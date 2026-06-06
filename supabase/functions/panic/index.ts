@@ -36,8 +36,8 @@ Deno.serve(async (req) => {
 
   // Surface a failed action (e.g. liquidate timeout) as 500 so the operator
   // can't mistake an error result for success.
-  const status = result.startsWith("error:") ? 500 : 200;
-  return new Response(JSON.stringify({ result }), {
+  const status = result.ok ? 200 : 500;
+  return new Response(JSON.stringify({ result: result.result }), {
     status,
     headers: { "content-type": "application/json" },
   });
