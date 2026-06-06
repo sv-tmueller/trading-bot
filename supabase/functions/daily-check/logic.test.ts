@@ -184,8 +184,8 @@ Deno.test("liquidate returns null -> error:liquidate_failed", async () => {
 
 Deno.test("broker error -> error outcome + notifyBrokerError(daily-check)", async () => {
   // getPosition throws AlpacaError during reconciliation; the catch reports the
-  // error and fires notifyBrokerError with context "daily-check". NOTE: the
-  // outcome is "error:Error" because the AlpacaError subclass does not set .name.
+  // error and fires notifyBrokerError with context "daily-check". Since #242 set
+  // .name on AlpacaError, the outcome is "error:AlpacaError".
   let brokerError: { context: string; errorMsg: string } | undefined;
   const { deps } = makeDeps({
     alpaca: {
@@ -201,7 +201,7 @@ Deno.test("broker error -> error outcome + notifyBrokerError(daily-check)", asyn
       },
     } as unknown as DailyCheckDeps["notifications"],
   });
-  assertEquals(await runDailyCheck(deps), "error:Error");
+  assertEquals(await runDailyCheck(deps), "error:AlpacaError");
   assertEquals(brokerError?.context, "daily-check");
 });
 

@@ -84,8 +84,13 @@ export function getAlpacaConfig(): AlpacaConfig {
   if (apiKeyId === "" || apiSecretKey === "") {
     throw new Error("ALPACA_API_KEY and ALPACA_SECRET_KEY must both be set");
   }
-  // Default to PAPER. Only an explicit ALPACA_PAPER=false selects live.
-  const paper = (Deno.env.get("ALPACA_PAPER") ?? "true").toLowerCase() !== "false";
+  // Default to PAPER. Validate explicitly so a typo (e.g. ALPACA_PAPER=0) fails
+  // loud instead of silently staying on paper. Only "false" selects live.
+  const paperRaw = (Deno.env.get("ALPACA_PAPER") ?? "true").trim().toLowerCase();
+  if (paperRaw !== "true" && paperRaw !== "false") {
+    throw new Error(`ALPACA_PAPER must be "true" or "false", got ${JSON.stringify(paperRaw)}`);
+  }
+  const paper = paperRaw !== "false";
   return {
     apiKeyId,
     apiSecretKey,

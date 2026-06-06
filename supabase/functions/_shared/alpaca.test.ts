@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
+  AlpacaError,
   BrokerCallBlockedError,
   createAlpacaClient,
   OrderTimeoutError,
@@ -182,18 +183,35 @@ Deno.test("liquidate sells the full position and returns the fill", async () => 
   }
 });
 
-Deno.test("cancelAllOrders returns count of successful cancels", async () => {
+Deno.test("cancelAllOrders returns count when all cancels succeed", async () => {
   setKeys();
   const restore = stubFetch((i, init) => {
     assertEquals(init?.method, "DELETE");
     assertEquals(urlOf(i).endsWith("/v2/orders"), true);
     return Promise.resolve(jsonResponse(
-      [{ id: "a", status: 200 }, { id: "b", status: 500 }, { id: "c", status: 200 }],
+      [{ id: "a", status: 200 }, { id: "b", status: 200 }],
       207,
     ));
   });
   try {
     assertEquals(await createAlpacaClient().cancelAllOrders(), 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelAllOrders throws when any order fails to cancel", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse(
+      [{ id: "a", status: 200 }, { id: "b", status: 500 }],
+      207,
+    ))
+  );
+  try {
+    // A partial cancel must not be reported as success.
+    await assertRejects(() => createAlpacaClient().cancelAllOrders(), AlpacaError, "failed");
   } finally {
     restore();
     clearKeys();

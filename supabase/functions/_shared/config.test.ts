@@ -98,6 +98,16 @@ Deno.test("getAlpacaConfig honours ALPACA_PAPER=false", () => {
   Deno.env.delete("ALPACA_PAPER");
 });
 
+Deno.test("getAlpacaConfig rejects invalid ALPACA_PAPER", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.set("ALPACA_PAPER", "0"); // not true/false -> must throw, not silently stay paper
+  assertThrows(() => getAlpacaConfig(), Error, "ALPACA_PAPER");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+  Deno.env.delete("ALPACA_PAPER");
+});
+
 Deno.test("getN8nWebhookUrl empty when unset", () => {
   Deno.env.delete("N8N_WEBHOOK_URL");
   assertEquals(getN8nWebhookUrl(), "");

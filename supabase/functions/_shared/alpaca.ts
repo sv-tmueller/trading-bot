@@ -5,9 +5,17 @@
 import { getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
 import { requireNumber } from "./num.ts";
 
-export class BrokerCallBlockedError extends Error {}
-export class AlpacaError extends Error {}
-export class OrderTimeoutError extends Error {}
+// Set .name so the deterministic `error:${err.name}` audit outcomes distinguish
+// broker errors (e.g. error:AlpacaError) instead of collapsing to error:Error.
+export class BrokerCallBlockedError extends Error {
+  override name = "BrokerCallBlockedError";
+}
+export class AlpacaError extends Error {
+  override name = "AlpacaError";
+}
+export class OrderTimeoutError extends Error {
+  override name = "OrderTimeoutError";
+}
 
 export interface Fill {
   orderId: string;
@@ -146,7 +154,14 @@ export function createAlpacaClient(): AlpacaClient {
     if (!res.ok) throw new AlpacaError(`DELETE orders -> ${res.status}: ${await res.text()}`);
     const arr = await res.json();
     if (!Array.isArray(arr)) return 0;
-    return arr.filter((e) => Number((e as { status?: number }).status) === 200).length;
+    const cancelled = arr.filter((e) => Number((e as { status?: number }).status) === 200).length;
+    const failed = arr.length - cancelled;
+    if (failed > 0) {
+      // Don't report a partial cancel as success — surface it so the panic
+      // operator sees a 500 instead of "cancelled N orders".
+      throw new AlpacaError(`cancel-all: ${cancelled} cancelled, ${failed} failed of ${arr.length}`);
+    }
+    return cancelled;
   }
 
   return { getClock, getAccountValue, getPosition, placeMarketOrder, liquidate, cancelAllOrders };
