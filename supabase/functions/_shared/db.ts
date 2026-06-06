@@ -1,6 +1,7 @@
 // Supabase persistence. Mirrors tools/database.py. Each function takes the
 // Supabase client so callers (Edge Functions) inject the service-role client.
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@^2.45.0";
+import { requireNumber } from "./num.ts";
 
 export interface RegimeStateRow {
   date: string;
@@ -12,6 +13,25 @@ export interface RegimeStateRow {
   kill_switch_active: boolean;
   kill_switch_fired_at: string | null;
   created_at?: string;
+}
+
+// PostgREST returns `numeric` columns as JSON strings to preserve precision.
+// Coerce the price/money fields back to number so RegimeStateRow stays
+// number-typed for the bot. Accepts numbers too (pre-migration double rows).
+export function coerceRegimeRow(raw: Record<string, unknown>): RegimeStateRow {
+  return {
+    date: raw.date as string,
+    spy_close: requireNumber(raw.spy_close, "spy_close"),
+    spy_sma200: requireNumber(raw.spy_sma200, "spy_sma200"),
+    target_state: raw.target_state as "LONG" | "CASH",
+    current_state: raw.current_state as "LONG" | "CASH",
+    position_drawdown_pct: raw.position_drawdown_pct == null
+      ? null
+      : requireNumber(raw.position_drawdown_pct, "position_drawdown_pct"),
+    kill_switch_active: raw.kill_switch_active as boolean,
+    kill_switch_fired_at: (raw.kill_switch_fired_at as string | null) ?? null,
+    created_at: raw.created_at as string | undefined,
+  };
 }
 
 export async function upsertRegimeState(sb: SupabaseClient, p: {
@@ -47,7 +67,7 @@ export async function getLatestRegimeState(
     .limit(1)
     .maybeSingle();
   if (error) throw new Error(`getLatestRegimeState: ${error.message}`);
-  return (data as RegimeStateRow) ?? null;
+  return data ? coerceRegimeRow(data as Record<string, unknown>) : null;
 }
 
 export async function insertTrade(sb: SupabaseClient, p: {
