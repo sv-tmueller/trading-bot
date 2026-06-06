@@ -22,12 +22,19 @@ export interface PanicDeps {
   notifications: { notifyPanic: (p: { action: string; result: string }) => Promise<void> };
 }
 
-export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<string> {
+export interface PanicResult {
+  ok: boolean;
+  result: string;
+}
+
+export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<PanicResult> {
   const { db, alpaca, config } = deps;
   const iso = (d: Date) => d.toISOString();
   // Audit row is written BEFORE any broker call (recoverable on partial run).
   const auditId = await db.insertAuditLog({ scriptName: "panic", startedAt: iso(deps.now()) });
+  let ok = false;
   let result = "";
+  let err: Error | null = null;
   try {
     switch (action) {
       case "pause":
@@ -59,17 +66,21 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
       default:
         throw new Error(`unknown action: ${action}`);
     }
-    // Close the audit row FIRST, then notify fire-and-forget — a notification
-    // failure must not flip a successful action's outcome to error.
-    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome: "success:panic", notes: `${action}: ${result}` });
+    ok = true;
+    // Notify fire-and-forget — a notification failure must not flip a
+    // successful action's outcome to error.
     try {
       await deps.notifications.notifyPanic({ action, result });
     } catch (_e) { /* fire-and-forget */ }
-    return result;
   } catch (e) {
-    const err = e as Error;
-    const outcome = `error:${err.name}`;
-    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes: `${action}: ${err.message}`.slice(0, 500) });
-    return `${outcome}: ${err.message}`;
+    err = e as Error;
+    result = `${err.name}: ${err.message}`;
+  } finally {
+    // Single point that closes the audit row — matches the documented
+    // "updated in a finally" contract and avoids a double-update.
+    const outcome = ok ? "success:panic" : `error:${err?.name}`;
+    const notes = ok ? `${action}: ${result}` : `${action}: ${err?.message}`.slice(0, 500);
+    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
   }
+  return { ok, result };
 }

@@ -31,20 +31,24 @@ Deno.test("pause sets bot_config.paused=true", async () => {
   const { deps, calls } = makeDeps();
   const r = await runPanic(deps, "pause");
   assertEquals(calls.setConfig, ["paused", "true"]);
-  assertEquals(r, "paused");
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "paused");
 });
 
 Deno.test("resume sets bot_config.paused=false", async () => {
   const { deps, calls } = makeDeps();
-  await runPanic(deps, "resume");
+  const r = await runPanic(deps, "resume");
   assertEquals(calls.setConfig, ["paused", "false"]);
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "resumed");
 });
 
 Deno.test("cancel-orders cancels and reports count", async () => {
   const { deps, calls } = makeDeps();
   const r = await runPanic(deps, "cancel-orders");
   assertEquals(calls.cancel, true);
-  assertEquals(r, "cancelled 3 orders");
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "cancelled 3 orders");
 });
 
 Deno.test("liquidate sells + writes panic_cli trade", async () => {
@@ -52,13 +56,15 @@ Deno.test("liquidate sells + writes panic_cli trade", async () => {
   const r = await runPanic(deps, "liquidate");
   assertEquals(calls.liquidate, true);
   assertEquals((calls.insertTrade as { reason: string }).reason, "panic_cli");
-  assertEquals(r.includes("liquidated"), true);
+  assertEquals(r.ok, true);
+  assertEquals(r.result.includes("liquidated"), true);
 });
 
 Deno.test("liquidate with no position reports no position", async () => {
   const { deps, calls } = makeDeps({ alpaca: { liquidate: () => Promise.resolve(null) } as unknown as PanicDeps["alpaca"] });
   const r = await runPanic(deps, "liquidate");
-  assertEquals(r, "no position to liquidate");
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "no position to liquidate");
   assertEquals(calls.insertTrade, undefined);
 });
 
@@ -66,7 +72,7 @@ Deno.test("unknown action -> error", async () => {
   const { deps } = makeDeps();
   // deno-lint-ignore no-explicit-any
   const r = await runPanic(deps, "boom" as any);
-  assertEquals(r.startsWith("error:"), true);
+  assertEquals(r.ok, false);
 });
 
 Deno.test("notify failure does not corrupt a successful outcome", async () => {
@@ -76,34 +82,35 @@ Deno.test("notify failure does not corrupt a successful outcome", async () => {
     } as unknown as PanicDeps["notifications"],
   });
   const r = await runPanic(deps, "pause");
-  assertEquals(r, "paused");
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "paused");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:panic");
 });
 
-Deno.test("liquidate broker failure -> error result + error audit outcome, no trade", async () => {
-  // liquidate throws; runPanic returns an error:-prefixed string (which index.ts
-  // maps to HTTP 500) and the audit row outcome is error-prefixed. No trade is
-  // recorded because the throw precedes insertTrade.
+Deno.test("liquidate broker failure -> ok:false + error audit outcome, no trade", async () => {
+  // liquidate throws; runPanic returns ok:false (which index.ts maps to HTTP 500)
+  // and the audit row outcome is error-prefixed. No trade is recorded because the
+  // throw precedes insertTrade.
   const { deps, calls } = makeDeps({
     alpaca: {
       liquidate: () => Promise.reject(new Error("alpaca timeout")),
     } as unknown as PanicDeps["alpaca"],
   });
   const r = await runPanic(deps, "liquidate");
-  assertEquals(r.startsWith("error:"), true);
+  assertEquals(r.ok, false);
   assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
   assertEquals(calls.insertTrade, undefined);
 });
 
-Deno.test("cancel-orders broker failure -> error result + error audit outcome", async () => {
+Deno.test("cancel-orders broker failure -> ok:false + error audit outcome", async () => {
   // cancelAllOrders now throws on a partial/failed cancel; panic must surface it
-  // as an error: outcome (which index.ts maps to HTTP 500), not a false success.
+  // as ok:false (which index.ts maps to HTTP 500), not a false success.
   const { deps, calls } = makeDeps({
     alpaca: {
       cancelAllOrders: () => Promise.reject(new Error("cancel-all: 1 cancelled, 1 failed of 2")),
     } as unknown as PanicDeps["alpaca"],
   });
   const r = await runPanic(deps, "cancel-orders");
-  assertEquals(r.startsWith("error:"), true);
+  assertEquals(r.ok, false);
   assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
 });
