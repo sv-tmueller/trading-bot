@@ -53,14 +53,24 @@ def run_regime_backtest(
     end: date,
     sma_days: int = 200,
     starting_cash: float = STARTING_CASH,
+    alloc_frac: float = 1.0,
+    benchmark_px: Optional[pd.DataFrame] = None,
+    vehicle_px: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Run the regime-filter backtest. Returns headline metrics + trade list.
 
     Result keys: total_return, cagr, max_drawdown, trade_count, ending_equity,
                  starting_cash, trades (list of dicts), equity_curve (pd.Series).
+
+    ``alloc_frac`` is the fraction of *available cash* deployed into the vehicle
+    on LONG (default 1.0 = 100%, the live bot's behaviour). The remainder stays
+    in cash earning 0%. ``benchmark_px`` / ``vehicle_px`` let callers inject an
+    already-built OHLC frame (used by the synthetic-leverage research code) in
+    place of a yfinance download; each must have ``Open`` and ``Close`` columns
+    indexed by date.
     """
-    benchmark = _fetch(benchmark_ticker, start, end)
-    vehicle = _fetch(vehicle_ticker, start, end)
+    benchmark = _fetch(benchmark_ticker, start, end) if benchmark_px is None else benchmark_px
+    vehicle = _fetch(vehicle_ticker, start, end) if vehicle_px is None else vehicle_px
 
     # Align on common dates
     common = benchmark.index.intersection(vehicle.index)
@@ -89,9 +99,11 @@ def run_regime_backtest(
 
         # Open-of-day execution
         if want_long and qty == 0 and not np.isnan(sma.iloc[i - 1] if i > 0 else np.nan):
-            # Buy at open, with slippage + commission
+            # Buy at open, with slippage + commission. ``alloc_frac`` of cash is
+            # deployed; the remainder sits in cash (0% yield).
             execution_px = open_px * (1 + SLIPPAGE_BPS / 10_000)
-            qty = int(cash / execution_px / (1 + COMMISSION_BPS / 10_000))
+            investable = cash * alloc_frac
+            qty = int(investable / execution_px / (1 + COMMISSION_BPS / 10_000))
             cost = qty * execution_px * (1 + COMMISSION_BPS / 10_000)
             cash -= cost
             entry_price = execution_px
