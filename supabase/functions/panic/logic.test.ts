@@ -94,3 +94,16 @@ Deno.test("liquidate broker failure -> error result + error audit outcome, no tr
   assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
   assertEquals(calls.insertTrade, undefined);
 });
+
+Deno.test("cancel-orders broker failure -> error result + error audit outcome", async () => {
+  // cancelAllOrders now throws on a partial/failed cancel; panic must surface it
+  // as an error: outcome (which index.ts maps to HTTP 500), not a false success.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      cancelAllOrders: () => Promise.reject(new Error("cancel-all: 1 cancelled, 1 failed of 2")),
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "cancel-orders");
+  assertEquals(r.startsWith("error:"), true);
+  assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
+});

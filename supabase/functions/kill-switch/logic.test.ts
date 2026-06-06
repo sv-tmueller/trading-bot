@@ -247,8 +247,8 @@ Deno.test("insufficient data (bars < lookback) -> skipped:insufficient_data", as
 Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", async () => {
   // A breach reaches liquidate, which throws AlpacaError. The catch reports the
   // error and (because it's an AlpacaError) fires notifyBrokerError with the
-  // kill-switch context. NOTE: err.name is "Error" — the custom AlpacaError
-  // subclass does not set .name — so the outcome is "error:Error".
+  // kill-switch context. Since #242 set .name on AlpacaError, the outcome is
+  // "error:AlpacaError".
   let brokerError: { context: string; errorMsg: string } | undefined;
   const { deps } = makeDeps({
     marketdata: {
@@ -268,7 +268,7 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
       },
     } as unknown as KillSwitchDeps["notifications"],
   });
-  assertEquals(await runKillSwitch(deps), "error:Error");
+  assertEquals(await runKillSwitch(deps), "error:AlpacaError");
   assertEquals(brokerError?.context, "kill-switch");
 });
 
