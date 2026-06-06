@@ -22,8 +22,21 @@ Create a Vercel project with **Root Directory = `web`**, framework auto-detected
 (Next.js). In Vercel → Settings → Environment Variables, set:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (required) — point at **dev** during the soak, **prod** at go-live.
 - `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER` (optional) — read-only keys for the Holdings panel.
+- `DASHBOARD_BASIC_AUTH` (optional, **default-OFF**) — `user:pass` to gate the whole
+  dashboard behind HTTP Basic auth (see "Go-live hardening" below).
 
 All secrets are used only in server code (`lib/supabase.ts`, `lib/alpaca.ts`), so
-they are never sent to the browser. Supabase tables are RLS-deny-all; the
-service-role key bypasses RLS for these reads. Alpaca access is read-only (GET
-`/v2/account` + `/v2/positions`) — no order placement.
+they are never sent to the browser. Both modules `import "server-only"`, so a stray
+client-side import is a build error rather than a silent secret leak. Supabase
+tables are RLS-deny-all; the service-role key bypasses RLS for these reads. Alpaca
+access is read-only (GET `/v2/account` + `/v2/positions`) — no order placement.
+
+## Go-live hardening
+Before pointing the dashboard at **live/prod** keys (URL secrecy is not access
+control), turn on an auth gate — either Vercel Access Protection (password/SSO) or
+the built-in HTTP Basic gate: set `DASHBOARD_BASIC_AUTH=user:pass`. When that env
+var is **unset** (the default), `middleware.ts` passes every request through, so the
+current open paper soak is unaffected; when set, every request must carry matching
+Basic credentials or it gets a 401. Security headers (`X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, a CSP, `Referrer-Policy`) are always on via
+`next.config.mjs`.
