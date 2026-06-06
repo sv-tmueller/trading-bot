@@ -96,6 +96,11 @@ changing the cron expression). If UPRO drawdown from its `KILL_SWITCH_LOOKBACK_D
 including today's running high / last trade — exceeds `KILL_SWITCH_DRAWDOWN_PCT`, it liquidates and
 sets `kill_switch_active=true` in `regime_state`.
 
+It sources the position from the broker (`getPosition`), **not** `regime_state.current_state`, so a
+DB/broker desync can't leave a real position unprotected: a position the DB recorded as CASH is still
+protected and raises `notifyStateDesync`, while a position with no `regime_state` row to carry forward
+exits `skipped:no_regime_state`.
+
 ### Database
 
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
