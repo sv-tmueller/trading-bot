@@ -4,7 +4,9 @@ import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import { getLatestRegimeState, insertAuditLog, insertTrade, updateAuditLog, upsertRegimeState } from "../_shared/db.ts";
-import { notifyBrokerError, notifyKillSwitchFired, notifyTradeFailed } from "../_shared/notifications.ts";
+import {
+  notifyBrokerError, notifyKillSwitchFired, notifyStateDesync, notifyTradeFailed,
+} from "../_shared/notifications.ts";
 
 function buildDeps(): KillSwitchDeps {
   const sb = getServiceClient();
@@ -13,7 +15,11 @@ function buildDeps(): KillSwitchDeps {
     config: getStrategyConfig(),
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice },
-    alpaca: { getClock: () => alpaca.getClock(), liquidate: (s) => alpaca.liquidate(s) },
+    alpaca: {
+      getClock: () => alpaca.getClock(),
+      getPosition: (s) => alpaca.getPosition(s),
+      liquidate: (s) => alpaca.liquidate(s),
+    },
     db: {
       getLatestRegimeState: () => getLatestRegimeState(sb),
       upsertRegimeState: (p) => upsertRegimeState(sb, p),
@@ -21,7 +27,7 @@ function buildDeps(): KillSwitchDeps {
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),
     },
-    notifications: { notifyKillSwitchFired, notifyTradeFailed, notifyBrokerError },
+    notifications: { notifyKillSwitchFired, notifyTradeFailed, notifyBrokerError, notifyStateDesync },
   };
 }
 

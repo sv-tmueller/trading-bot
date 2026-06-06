@@ -15,6 +15,7 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
   };
   const defaultAlpaca: KillSwitchDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
+    getPosition: () => Promise.resolve(99),
     liquidate: () => {
       calls.liquidate = true;
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
@@ -64,6 +65,10 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
       },
       notifyTradeFailed: () => Promise.resolve(),
       notifyBrokerError: () => Promise.resolve(),
+      notifyStateDesync: () => {
+        calls.desync = true;
+        return Promise.resolve();
+      },
     },
     ...over,
   };
@@ -73,14 +78,54 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
   return { deps, calls };
 }
 
-Deno.test("not LONG -> success:no_position", async () => {
+Deno.test("broker flat -> success:no_position (broker is source of truth)", async () => {
+  // Gate is now the real broker position (#237), not the DB's current_state.
   const { deps, calls } = makeDeps({
-    db: {
-      getLatestRegimeState: () => Promise.resolve({ current_state: "CASH" } as never),
-    } as unknown as KillSwitchDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(0) } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "success:no_position");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:no_position");
+  assertEquals(calls.liquidate, undefined);
+});
+
+Deno.test("DB says CASH but broker holds a position -> protects it + notifies desync (#237)", async () => {
+  // The intraday safety net must protect a real position the DB doesn't know
+  // about. DB row exists with current_state=CASH; broker is LONG; price breaches
+  // the threshold -> the kill-switch fires AND raises a desync notification.
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({
+          current_state: "CASH",
+          kill_switch_active: false,
+          spy_close: 400,
+          spy_sma200: 380,
+          target_state: "CASH",
+          kill_switch_fired_at: null,
+        } as never),
+    } as unknown as KillSwitchDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // drawdown -0.30, breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.desync, true);
+  assertEquals(calls.liquidate, true);
+  assertEquals((calls.upsert as { currentState: string }).currentState, "CASH");
+  assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, true);
+});
+
+Deno.test("no regime_state row but broker holds a position -> skipped:no_regime_state + desync (#237)", async () => {
+  const { deps, calls } = makeDeps({
+    db: { getLatestRegimeState: () => Promise.resolve(null) } as unknown as KillSwitchDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:no_regime_state");
+  assertEquals(calls.desync, true);
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.upsert, undefined);
 });
 
 Deno.test("market closed -> skipped:market_closed", async () => {

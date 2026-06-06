@@ -13,6 +13,7 @@ export interface KillSwitchDeps {
   };
   alpaca: {
     getClock: () => Promise<{ isOpen: boolean }>;
+    getPosition: (symbol: string) => Promise<number>;
     liquidate: (symbol: string) => Promise<Fill | null>;
   };
   db: {
@@ -50,6 +51,9 @@ export interface KillSwitchDeps {
     }) => Promise<void>;
     notifyTradeFailed: (p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string }) => Promise<void>;
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
+    notifyStateDesync: (
+      p: { dbState: "LONG" | "CASH"; brokerState: "LONG" | "CASH"; symbol: string; actionTaken: string },
+    ) => Promise<void>;
   };
 }
 
@@ -63,9 +67,35 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
 
   try {
     const latest = await db.getLatestRegimeState();
-    if (!latest || latest.current_state !== "LONG") {
+
+    // Reconcile against broker truth: the kill-switch protects the ACTUAL
+    // position, not the DB's belief, so a DB/broker desync can't leave a real
+    // position unprotected (#237). The broker is the source of truth for
+    // "is there a position".
+    const qty = await alpaca.getPosition(config.botTicker);
+    if (qty <= 0) {
       await finish("success:no_position");
       return "success:no_position";
+    }
+
+    // Broker holds a position. If the DB didn't know, surface the desync.
+    const dbState: "LONG" | "CASH" = latest?.current_state === "LONG" ? "LONG" : "CASH";
+    if (dbState !== "LONG") {
+      await notifications.notifyStateDesync({
+        dbState,
+        brokerState: "LONG",
+        symbol: config.botTicker,
+        actionTaken: "kill-switch protecting live broker position",
+      });
+    }
+
+    if (!latest) {
+      // Position exists but there is no regime_state row to carry forward
+      // (spy_close/spy_sma200 are NOT NULL). Anomalous — daily-check writes a row
+      // every weekday — so surface it (desync already notified) and skip rather
+      // than fabricate regime values for the audit row.
+      await finish("skipped:no_regime_state", `broker qty=${qty} but no regime_state row`);
+      return "skipped:no_regime_state";
     }
 
     if (!(await alpaca.getClock()).isOpen) {
