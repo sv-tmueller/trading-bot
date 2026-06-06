@@ -140,9 +140,8 @@ export default async function Page() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <Stat label="Equity" value={money(account.equity)} accent="zinc" />
-              <Stat label="Buying power" value={money(account.buyingPower)} accent="zinc" />
               <Stat label="Cash" value={money(account.cash)} accent="zinc" />
             </div>
             <Table

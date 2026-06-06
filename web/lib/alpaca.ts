@@ -24,7 +24,6 @@ function num(v: unknown): number | null {
 
 export interface AlpacaAccount {
   equity: number | null;
-  buyingPower: number | null;
   cash: number | null;
   paper: boolean;
 }
@@ -46,7 +45,7 @@ export async function getAccount(): Promise<AlpacaAccount | null> {
     const r = await fetch(`${BASE}/v2/account`, { headers: h, cache: "no-store" });
     if (!r.ok) return null;
     const j = await r.json();
-    return { equity: num(j.equity), buyingPower: num(j.buying_power), cash: num(j.cash), paper };
+    return { equity: num(j.equity), cash: num(j.cash), paper };
   } catch {
     return null;
   }
