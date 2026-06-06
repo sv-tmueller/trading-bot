@@ -79,3 +79,18 @@ Deno.test("notify failure does not corrupt a successful outcome", async () => {
   assertEquals(r, "paused");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:panic");
 });
+
+Deno.test("liquidate broker failure -> error result + error audit outcome, no trade", async () => {
+  // liquidate throws; runPanic returns an error:-prefixed string (which index.ts
+  // maps to HTTP 500) and the audit row outcome is error-prefixed. No trade is
+  // recorded because the throw precedes insertTrade.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      liquidate: () => Promise.reject(new Error("alpaca timeout")),
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(r.startsWith("error:"), true);
+  assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
+  assertEquals(calls.insertTrade, undefined);
+});

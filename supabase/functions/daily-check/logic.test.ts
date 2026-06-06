@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { runDailyCheck } from "./logic.ts";
 import type { DailyCheckDeps } from "./logic.ts";
+import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(closes: number[]): DailyBar[] {
@@ -131,7 +132,9 @@ Deno.test("no flip needed -> success, idempotent no-op", async () => {
   });
   assertEquals(await runDailyCheck(deps), "success");
   assertEquals(calls.placeMarketOrder, undefined);
+  assertEquals(calls.insertTrade, undefined); // no-op day must not record a trade
   assertEquals((calls.upsert as { currentState: string }).currentState, "LONG");
+  assertEquals((calls.audit as { outcome: string }).outcome, "success");
 });
 
 Deno.test("bearish from LONG -> liquidate to CASH", async () => {
@@ -177,4 +180,27 @@ Deno.test("liquidate returns null -> error:liquidate_failed", async () => {
   assertEquals(calls.tradeFailed, true);
   // current_state must be pinned: no regime_state row is written on a failed liquidation.
   assertEquals(calls.upsert, undefined);
+});
+
+Deno.test("broker error -> error outcome + notifyBrokerError(daily-check)", async () => {
+  // getPosition throws AlpacaError during reconciliation; the catch reports the
+  // error and fires notifyBrokerError with context "daily-check". NOTE: the
+  // outcome is "error:Error" because the AlpacaError subclass does not set .name.
+  let brokerError: { context: string; errorMsg: string } | undefined;
+  const { deps } = makeDeps({
+    alpaca: {
+      getPosition: () => Promise.reject(new AlpacaError("alpaca down")),
+    } as unknown as DailyCheckDeps["alpaca"],
+    notifications: {
+      notifyRegimeFlip: () => Promise.resolve(),
+      notifyStateDesync: () => Promise.resolve(),
+      notifyTradeFailed: () => Promise.resolve(),
+      notifyBrokerError: (p: { context: string; errorMsg: string }) => {
+        brokerError = p;
+        return Promise.resolve();
+      },
+    } as unknown as DailyCheckDeps["notifications"],
+  });
+  assertEquals(await runDailyCheck(deps), "error:Error");
+  assertEquals(brokerError?.context, "daily-check");
 });
