@@ -226,3 +226,23 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
   assertEquals(await runKillSwitch(deps), "error:Error");
   assertEquals(brokerError?.context, "kill-switch");
 });
+
+Deno.test("liquidate ok but insertTrade fails -> kill_switch flag persisted before the error (#238)", async () => {
+  // The CASH flip + kill_switch_active is upserted BEFORE insertTrade, so a
+  // failure recording the trade cannot erase the fact that the kill-switch fired.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as KillSwitchDeps["marketdata"],
+    db: {
+      insertTrade: () => Promise.reject(new Error("insert failed")),
+    } as unknown as KillSwitchDeps["db"],
+  });
+  const outcome = await runKillSwitch(deps);
+  assertEquals(outcome.startsWith("error:"), true);
+  const upserts = calls.upserts as Array<{ currentState: string; killSwitchActive: boolean }>;
+  assertEquals(upserts.length, 2);
+  assertEquals(upserts[1].currentState, "CASH");
+  assertEquals(upserts[1].killSwitchActive, true);
+});
