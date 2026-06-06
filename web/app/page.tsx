@@ -41,6 +41,10 @@ async function getData() {
     getAccount(),
     getPositions(),
   ]);
+  // A failed Supabase read returns { data: null, error } — without this check it
+  // would render identically to "empty / all clear", a misleading signal on a
+  // status page. Surface it as a distinct degraded banner.
+  const dbError = [rs.error, cfg.error, tr.error, al.error].some((e) => e != null);
   return {
     regime: (rs.data as RegimeState | null) ?? null,
     paused: (cfg.data as { value: string } | null)?.value === "true",
@@ -48,16 +52,18 @@ async function getData() {
     audit: (al.data as Audit[] | null) ?? [],
     account: account as AlpacaAccount | null,
     positions: positions as AlpacaPosition[],
+    dbError,
   };
 }
 
 const pct = (n: number | null) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
-const money = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+const money = (n: number | null) =>
+  n == null ? "—" : `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const fmt = (s: string | null) =>
   s ? `${new Date(s).toISOString().replace("T", " ").slice(0, 19)}Z` : "—";
 
 export default async function Page() {
-  const { regime, paused, trades, audit, account, positions } = await getData();
+  const { regime, paused, trades, audit, account, positions, dbError } = await getData();
   const bullish = regime ? regime.spy_close > regime.spy_sma200 : false;
 
   return (
@@ -66,6 +72,13 @@ export default async function Page() {
         <h1 className="text-xl font-semibold">Trading Bot — Status</h1>
         <span className="text-xs text-zinc-500">read-only · refresh to update</span>
       </header>
+
+      {dbError && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/15 px-4 py-2 text-sm text-red-300">
+          ⚠ Data load partially failed — one or more Supabase reads errored. Values
+          below may be stale or missing; do not treat blanks as “all clear”.
+        </div>
+      )}
 
       <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Stat label="Position" value={regime?.current_state ?? "—"} accent={regime?.current_state === "LONG" ? "emerald" : "zinc"} />
@@ -110,11 +123,13 @@ export default async function Page() {
               cols={["symbol", "qty", "avg entry", "current", "market value", "unrealized P&L"]}
               rows={positions.map((p) => [
                 p.symbol,
-                String(p.qty),
+                p.qty == null ? "—" : String(p.qty),
                 money(p.avgEntry),
                 money(p.currentPrice),
                 money(p.marketValue),
-                `${p.unrealizedPl >= 0 ? "+" : ""}${money(p.unrealizedPl)} (${(p.unrealizedPlpc * 100).toFixed(2)}%)`,
+                p.unrealizedPl == null
+                  ? "—"
+                  : `${p.unrealizedPl >= 0 ? "+" : ""}${money(p.unrealizedPl)} (${pct(p.unrealizedPlpc)})`,
               ])}
               empty="No open positions."
             />
