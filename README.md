@@ -179,3 +179,11 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |   |-- CURRENT_CONFIG.md          # Current deployed secrets/values
 |   |-- runbooks/                  # Deploy & decommission runbook
 ```
+
+## License
+
+**Copyright © 2026 Thomas Mueller. All rights reserved.**
+
+This is proprietary software. No license is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell any part of this software, in whole or in part, in any other project — public or private — without prior written permission from the copyright holder.
+
+Unauthorized reuse of any portion of this code constitutes copyright infringement and will be pursued accordingly.
