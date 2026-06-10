@@ -23,9 +23,11 @@ Each function (`supabase/functions/<name>/`) is split into `logic.ts` (pure, tes
 `regime`, `config`, `alpaca`, `marketdata`, `db`, `notifications`, `num`, `supabase_client`.
 
 **Decision rule.** `daily-check` runs shortly after the US open — two pg_cron slots (`37 13 * * 1-5`
-and `37 14 * * 1-5` UTC); the function calls Alpaca `/v2/clock` and exits `skipped:market_closed`
-unless the market is open, so exactly one slot executes per trading day (13:37 during EDT, 14:37
-during EST) and holidays skip entirely. It fetches SPY daily bars from Alpaca, drops today's
+and `37 14 * * 1-5` UTC) cover US DST; the function calls Alpaca `/v2/clock` and exits
+`skipped:market_closed` when the market is closed. During EDT (open 13:30 UTC) the 13:37 run acts
+and the 14:37 run, with the market already open, repeats the pipeline as an idempotent no-op
+(`success`, no second trade); during EST (open 14:30 UTC) the 13:37 run gate-exits and the 14:37
+run acts; on market holidays both runs gate-exit. It fetches SPY daily bars from Alpaca, drops today's
 in-progress bar, computes the 200-day SMA on the previous completed trading day's close (the same
 information set as a post-close run, with execution at the next open — exactly what the backtest
 models), and calls `computeTargetState({ spyClose, spySma200, currentState, killSwitchActive })`:
@@ -171,6 +173,7 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |   |-- migrations/
 |   |   |-- 0001_init.sql          # Postgres schema (regime_state, trades, audit_log, bot_config)
 |   |   |-- 0002_schedule.sql      # pg_cron jobs + Vault-backed cron auth
+|   |   |-- ...
 |   |   |-- 0006_daily_check_open_schedule.sql  # daily-check post-open slots (13:37/14:37 UTC)
 |   |-- functions/
 |   |   |-- _shared/               # regime, config, alpaca, marketdata, db, notifications, num, ...

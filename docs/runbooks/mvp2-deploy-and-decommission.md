@@ -16,7 +16,7 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
    `supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true N8N_WEBHOOK_URL=... PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY`
    (Strategy params `REGIME_SMA_DAYS`/`KILL_SWITCH_DRAWDOWN_PCT`/`KILL_SWITCH_LOOKBACK_DAYS` default to 200/0.25/30 — set only to override.)
 3. `supabase db push` (applies all migrations, `0001_init.sql` through `0006_daily_check_open_schedule.sql`).
-4. In the SQL editor, store **two** secrets in Vault (one-time per project, not committed — the same migration works for dev and prod, only these differ):
+4. In the SQL editor, store **two** secrets in Vault (one-time per project, not committed — the same migrations work for dev and prod, only these differ):
    ```sql
    select vault.create_secret('<service_role_key>', 'service_role_key');
    select vault.create_secret('https://<ref>.supabase.co/functions/v1', 'functions_base_url');

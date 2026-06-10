@@ -10,7 +10,7 @@ as Supabase secrets (`supabase secrets set`), not a local `.env`.
 Registered by `supabase/migrations/0002_schedule.sql`; daily-check rescheduled by
 `0006_daily_check_open_schedule.sql` (`pg_cron`):
 
-- `37 13 * * 1-5` + `37 14 * * 1-5` — `daily-check` Edge Function, jobs `daily-check-1337`/`daily-check-1437` (post-open; calls Alpaca `/v2/clock` and exits `skipped:market_closed` unless the US market is open, so exactly one slot executes per trading day — 13:37 during EDT, 14:37 during EST — and holidays skip entirely. Signals on the previous completed trading day's SPY close; if the last completed bar doesn't match the most recent trading day from Alpaca's calendar, it exits `skipped:stale_data`)
+- `37 13 * * 1-5` + `37 14 * * 1-5` — `daily-check` Edge Function, jobs `daily-check-1337`/`daily-check-1437` (post-open; calls Alpaca `/v2/clock` and exits `skipped:market_closed` when the US market is closed. During EDT (open 13:30 UTC) the 13:37 run acts and the 14:37 run is an idempotent no-op `success`; during EST (open 14:30 UTC) the 13:37 run gate-exits and the 14:37 run acts; on holidays both runs gate-exit. Signals on the previous completed trading day's SPY close; if the last completed bar doesn't match the most recent trading day from Alpaca's calendar, it exits `skipped:stale_data`)
 - `*/5 13-21 * * 1-5` — `kill-switch` Edge Function (every 5 min; calls Alpaca `/v2/clock` and exits `skipped:market_closed` when the market is shut)
 
 ## Secrets (`supabase secrets set`)
