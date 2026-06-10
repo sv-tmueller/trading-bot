@@ -525,4 +525,4 @@ Re-read `docs/superpowers/specs/2026-06-10-daily-check-open-execution-design.md`
 
 - `superpowers:finishing-a-development-branch` → PR referencing #256, lead-gated merge.
 - Deploy to **dev**: `supabase db push` (applies 0006) + `supabase functions deploy daily-check`. Confirm in the dashboard/SQL editor that `cron.job` now lists `daily-check-1337`/`daily-check-1437` and no `daily-check`.
-- Acceptance (closes #256): next trading morning on the dev paper soak, with SPY > 200-DMA and the account flat — `trades` row written, `regime_state` advanced to LONG, audit `success`. The off-slot run shows `skipped:market_closed`.
+- Acceptance (closes #256): next trading morning on the dev paper soak, with SPY > 200-DMA and the account flat — `trades` row written, `regime_state` advanced to LONG, audit `success`. The off-slot run's audit row depends on season: during EDT (e.g. June) the 14:37 slot passes the clock gate and is an idempotent no-op `success` (no second trade); during EST the 13:37 slot exits `skipped:market_closed`.
