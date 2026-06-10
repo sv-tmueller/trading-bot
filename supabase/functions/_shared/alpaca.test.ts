@@ -35,6 +35,44 @@ Deno.test("getClock maps is_open", async () => {
   }
 });
 
+Deno.test("getCalendar returns session dates in range", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/calendar?start=2026-06-01&end=2026-06-05"), true);
+    return Promise.resolve(jsonResponse([
+      { date: "2026-06-01", open: "09:30", close: "16:00" },
+      { date: "2026-06-02", open: "09:30", close: "16:00" },
+      { date: "2026-06-04", open: "09:30", close: "16:00" },
+      { date: "2026-06-05", open: "09:30", close: "16:00" },
+    ]));
+  });
+  try {
+    assertEquals(await createAlpacaClient().getCalendar("2026-06-01", "2026-06-05"), [
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-04",
+      "2026-06-05",
+    ]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendar throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "boom" }, 500)));
+  try {
+    await assertRejects(
+      () => createAlpacaClient().getCalendar("2026-06-01", "2026-06-05"),
+      AlpacaError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 Deno.test("getAccountValue parses equity", async () => {
   setKeys();
   const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: "12345.67" })));
