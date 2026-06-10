@@ -13,6 +13,7 @@ export interface DailyCheckDeps {
     getLatestTradePrice: (symbol: string) => Promise<number>;
   };
   alpaca: {
+    getClock: () => Promise<{ isOpen: boolean }>;
     getPosition: (symbol: string) => Promise<number>;
     getAccountValue: () => Promise<number>;
     placeMarketOrder: (a: { symbol: string; side: "BUY" | "SELL"; qty: number }) => Promise<Fill>;
@@ -78,6 +79,14 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     if (paused) {
       await finish("skipped:trading_paused", "bot_config.paused is true");
       return "skipped:trading_paused";
+    }
+
+    // Post-open execution (#256): the cron fires at 13:37 and 14:37 UTC
+    // year-round; the off-season slot, weekends-after-holiday edge cases, and
+    // market holidays all exit here. Same gate pattern as kill-switch.
+    if (!(await alpaca.getClock()).isOpen) {
+      await finish("skipped:market_closed");
+      return "skipped:market_closed";
     }
 
     const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);

@@ -21,6 +21,7 @@ function makeDeps(over: Partial<DailyCheckDeps> = {}): { deps: DailyCheckDeps; c
     getLatestTradePrice: () => Promise.resolve(70),
   };
   const defaultAlpaca: DailyCheckDeps["alpaca"] = {
+    getClock: () => Promise.resolve({ isOpen: true }),
     getPosition: () => Promise.resolve(0),
     getAccountValue: () => Promise.resolve(7000),
     placeMarketOrder: (a) => {
@@ -238,5 +239,14 @@ Deno.test("account-value read fails before liquidate -> error, no trade, no stat
   const outcome = await runDailyCheck(deps);
   assertEquals(outcome.startsWith("error:"), true);
   assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.upsert, undefined);
+});
+
+Deno.test("market closed -> skipped:market_closed, no broker mutation, no state write (#256)", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: { getClock: () => Promise.resolve({ isOpen: false }) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:market_closed");
+  assertEquals(calls.placeMarketOrder, undefined);
   assertEquals(calls.upsert, undefined);
 });
