@@ -5,9 +5,10 @@ import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(closes: number[]): DailyBar[] {
-  // oldest-first; dates ascending ending "today" 2026-06-05
+  // oldest-first; dates ascending ending 2026-06-04 — the most recent
+  // COMPLETED session relative to the test clock (2026-06-05 13:37 UTC).
   return closes.map((c, i) => ({
-    date: new Date(Date.UTC(2026, 5, 5) - (closes.length - 1 - i) * 86400000).toISOString().slice(0, 10),
+    date: new Date(Date.UTC(2026, 5, 4) - (closes.length - 1 - i) * 86400000).toISOString().slice(0, 10),
     close: c,
     high: c,
   }));
@@ -22,6 +23,7 @@ function makeDeps(over: Partial<DailyCheckDeps> = {}): { deps: DailyCheckDeps; c
   };
   const defaultAlpaca: DailyCheckDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
+    getCalendar: () => Promise.resolve(["2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"]),
     getPosition: () => Promise.resolve(0),
     getAccountValue: () => Promise.resolve(7000),
     placeMarketOrder: (a) => {
@@ -58,7 +60,7 @@ function makeDeps(over: Partial<DailyCheckDeps> = {}): { deps: DailyCheckDeps; c
       botTicker: "UPRO",
       botBenchmark: "SPY",
     },
-    now: () => new Date(Date.UTC(2026, 5, 5, 22, 30)),
+    now: () => new Date(Date.UTC(2026, 5, 5, 13, 37)),
     marketdata: defaultMarketdata,
     alpaca: defaultAlpaca,
     db: defaultDb,
@@ -249,4 +251,56 @@ Deno.test("market closed -> skipped:market_closed, no broker mutation, no state 
   assertEquals(await runDailyCheck(deps), "skipped:market_closed");
   assertEquals(calls.placeMarketOrder, undefined);
   assertEquals(calls.upsert, undefined);
+  assertEquals((calls.audit as { outcome: string }).outcome, "skipped:market_closed");
+});
+
+Deno.test("today's in-progress bar is excluded from the signal (#256)", async () => {
+  // Feed ends with a partial bar dated today whose close would poison the SMA
+  // and trip the staleness guard if it were used. It must be dropped first.
+  const withPartial = [...bars([390, 400, 410]), { date: "2026-06-05", close: 1, high: 1 }];
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(withPartial),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+  // Signal used yesterday's completed close (410), not the partial bar.
+  assertEquals((calls.upsert as { spyClose: number }).spyClose, 410);
+  assertEquals((calls.placeMarketOrder as { side: string }).side, "BUY");
+});
+
+Deno.test("holiday gap: feed ends on the previous SESSION, not previous day -> proceeds (#256)", async () => {
+  // 2026-06-04 is a holiday per the calendar; the most recent session before
+  // today is 2026-06-03 and the feed ends there. Not stale.
+  const holidayBars = [
+    { date: "2026-06-01", close: 390, high: 390 },
+    { date: "2026-06-02", close: 400, high: 400 },
+    { date: "2026-06-03", close: 410, high: 410 },
+  ];
+  const { deps } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(holidayBars),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    alpaca: {
+      getCalendar: () => Promise.resolve(["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-05"]),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+});
+
+Deno.test("yesterday's bar missing from the feed -> skipped:stale_data (#256)", async () => {
+  // Default calendar says the most recent session before today is 2026-06-04,
+  // but the feed ends 2026-06-03: genuine staleness, do not trade.
+  const staleBars = [
+    { date: "2026-06-01", close: 390, high: 390 },
+    { date: "2026-06-02", close: 400, high: 400 },
+    { date: "2026-06-03", close: 410, high: 410 },
+  ];
+  const { deps, calls } = makeDeps({
+    marketdata: { getDailyCloses: () => Promise.resolve(staleBars) } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:stale_data");
+  assertEquals(calls.placeMarketOrder, undefined);
 });

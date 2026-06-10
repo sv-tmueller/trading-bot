@@ -14,6 +14,7 @@ export interface DailyCheckDeps {
   };
   alpaca: {
     getClock: () => Promise<{ isOpen: boolean }>;
+    getCalendar: (start: string, end: string) => Promise<string[]>;
     getPosition: (symbol: string) => Promise<number>;
     getAccountValue: () => Promise<number>;
     placeMarketOrder: (a: { symbol: string; side: "BUY" | "SELL"; qty: number }) => Promise<Fill>;
@@ -89,14 +90,28 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
       return "skipped:market_closed";
     }
 
-    const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    const barsRaw = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    // The daily-bars feed can include today's in-progress bar during market
+    // hours; the signal must only ever see completed sessions (#256).
+    const today = ymd(deps.now());
+    const barsArr = barsRaw.filter((b) => b.date < today);
     if (barsArr.length === 0) {
-      await finish("skipped:stale_data", "no bars returned");
+      await finish("skipped:stale_data", "no completed bars returned");
       return "skipped:stale_data";
     }
     const lastBar = barsArr[barsArr.length - 1];
-    if (lastBar.date < ymd(deps.now())) {
-      await finish("skipped:stale_data", `last bar=${lastBar.date}, today=${ymd(deps.now())}`);
+    // Staleness: the last completed bar must be the most recent trading day
+    // strictly before today (calendar-aware: holidays, long weekends). At
+    // 13:37/14:37 UTC the UTC date equals the US-Eastern session date, so
+    // `today` bounds both the filter above and the calendar query.
+    const calStart = new Date(deps.now().getTime() - 10 * 86400000).toISOString().slice(0, 10);
+    const sessions = await alpaca.getCalendar(calStart, today);
+    const prevTradingDay = sessions.filter((d) => d < today).pop();
+    if (!prevTradingDay || lastBar.date !== prevTradingDay) {
+      await finish(
+        "skipped:stale_data",
+        `last bar=${lastBar.date}, prev trading day=${prevTradingDay ?? "none"}`,
+      );
       return "skipped:stale_data";
     }
 
