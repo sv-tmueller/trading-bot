@@ -39,8 +39,9 @@ was never the backtested behaviour.
 
 ### 1. Scheduling
 
-New migration `supabase/migrations/0005_daily_check_open_schedule.sql` (0004 is the #248
-idempotency migration; follow its guarded-unschedule pattern):
+New migration `supabase/migrations/0006_daily_check_open_schedule.sql` (0004 is the #248
+idempotency migration — follow its guarded-unschedule pattern; 0005 is already taken by the #252
+numeric-money migration):
 
 - Unschedule the old `daily-check` job (guarded so the migration is re-runnable when the job is
   already gone — same idempotency bar as #248/0004).
@@ -129,13 +130,13 @@ safe.
 
 | File | Change |
 |---|---|
-| `supabase/migrations/0005_daily_check_open_schedule.sql` | new — unschedule `daily-check`, schedule `daily-check-1337` + `daily-check-1437` |
+| `supabase/migrations/0006_daily_check_open_schedule.sql` | new — unschedule `daily-check`, schedule `daily-check-1337` + `daily-check-1437` |
 | `supabase/functions/_shared/alpaca.ts` | add read-only `getCalendar` |
 | `supabase/functions/daily-check/logic.ts` | clock gate, completed-bars filter, calendar-based staleness guard, new deps (`getClock`, `getCalendar`) |
 | `supabase/functions/daily-check/*.test.ts` | new/updated tests (see below) |
 | `CLAUDE.md`, `README.md`, `docs/runbooks/mvp2-deploy-and-decommission.md`, `CURRENT_CONFIG` | "post-close" doctrine → "post-open on the previous completed bar"; cron times; outcome list |
 
-Deploy after merge: `supabase db push` (0005) + `supabase functions deploy daily-check` on **dev**
+Deploy after merge: `supabase db push` (0006) + `supabase functions deploy daily-check` on **dev**
 first; prod picks it up at go-live (#230).
 
 ## Testing & acceptance

@@ -23,7 +23,7 @@
 | `supabase/functions/daily-check/logic.ts` | Pure orchestration (deps-injected) | clock gate; completed-bars filter; calendar staleness guard; 2 new deps |
 | `supabase/functions/daily-check/logic.test.ts` | Logic unit tests | harness date rework + 4 new tests |
 | `supabase/functions/daily-check/index.ts` | HTTP entry, real deps wiring | wire `getClock` + `getCalendar` |
-| `supabase/migrations/0005_daily_check_open_schedule.sql` | Cron re-schedule | new file |
+| `supabase/migrations/0006_daily_check_open_schedule.sql` | Cron re-schedule | new file |
 | `CLAUDE.md`, `README.md`, `docs/CURRENT_CONFIG.md`, `docs/runbooks/mvp2-deploy-and-decommission.md` | Docs | post-close → post-open doctrine |
 
 Files NOT to touch: `kill-switch/*`, `panic/*`, `regime.ts`, `db.ts`, migrations 0001–0004, anything under `docs/superpowers/specs/` other than reading, and historical docs (`docs/operations/ibkr-vps-setup.md` describes the retired IBKR system — its 22:30 references are historical record, leave them).
@@ -387,16 +387,16 @@ git commit -m "feat(daily-check): signal on last completed bar with calendar sta
 
 ---
 
-### Task 4: migration 0005 — post-open cron slots
+### Task 4: migration 0006 — post-open cron slots
 
 **Files:**
-- Create: `supabase/migrations/0005_daily_check_open_schedule.sql`
+- Create: `supabase/migrations/0006_daily_check_open_schedule.sql`
 
 No automated test (no CI; pg_cron is not available in the local Deno test setup — `deno task test:db` covers tables, not cron). Verification is review against 0004's pattern plus `supabase db push` at deploy time.
 
 - [ ] **Step 1: Write the migration**
 
-Create `supabase/migrations/0005_daily_check_open_schedule.sql` with exactly:
+Create `supabase/migrations/0006_daily_check_open_schedule.sql` with exactly:
 
 ```sql
 -- #256: daily-check moves from post-close (22:30 UTC, where market/day orders
@@ -457,12 +457,12 @@ select cron.schedule(
 
 - [ ] **Step 2: Review against conventions**
 
-Compare side-by-side with `supabase/migrations/0004_cron_idempotent.sql`: guarded unschedule shape, `cron.schedule` argument order, `net.http_post` body identical (only the job names and cron expressions differ). The kill-switch job is NOT touched by 0005.
+Compare side-by-side with `supabase/migrations/0004_cron_idempotent.sql`: guarded unschedule shape, `cron.schedule` argument order, `net.http_post` body identical (only the job names and cron expressions differ). The kill-switch job is NOT touched by 0006.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/0005_daily_check_open_schedule.sql
+git add supabase/migrations/0006_daily_check_open_schedule.sql
 git commit -m "feat(cron): reschedule daily-check to post-open 13:37/14:37 UTC slots (#256)"
 ```
 
@@ -524,5 +524,5 @@ Re-read `docs/superpowers/specs/2026-06-10-daily-check-open-execution-design.md`
 ## After the plan (Team Leader, not a plan task)
 
 - `superpowers:finishing-a-development-branch` → PR referencing #256, lead-gated merge.
-- Deploy to **dev**: `supabase db push` (applies 0005) + `supabase functions deploy daily-check`. Confirm in the dashboard/SQL editor that `cron.job` now lists `daily-check-1337`/`daily-check-1437` and no `daily-check`.
+- Deploy to **dev**: `supabase db push` (applies 0006) + `supabase functions deploy daily-check`. Confirm in the dashboard/SQL editor that `cron.job` now lists `daily-check-1337`/`daily-check-1437` and no `daily-check`.
 - Acceptance (closes #256): next trading morning on the dev paper soak, with SPY > 200-DMA and the account flat — `trades` row written, `regime_state` advanced to LONG, audit `success`. The off-slot run shows `skipped:market_closed`.
