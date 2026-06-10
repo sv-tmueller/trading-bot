@@ -54,7 +54,7 @@ deno task test:db
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
-supabase db push                                      # applies 0001_init + 0002_schedule
+supabase db push                                      # applies migrations 0001-0006 (schema + cron schedule)
 
 # Panic kill button (token-auth Edge Function — deterministic, no LLM)
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"
@@ -82,11 +82,21 @@ shared TS modules in `supabase/functions/_shared/` (`regime`, `config`, `alpaca`
 
 ### Daily flow
 
-`daily-check` runs once per weekday (`pg_cron` `30 22 * * 1-5` UTC, post-US-close). It fetches SPY
-daily bars from Alpaca, computes the 200-DMA regime filter, reconciles against the Alpaca position,
-and flips between LONG (`BOT_TICKER`=UPRO) and CASH if needed. Account value is read in **USD**
-(Alpaca accounts are USD-denominated). Wraps the flow in an `audit_log` row; every exit path writes
-a deterministic `outcome` string (`success`, `success:*`, `skipped:*`, `error:*`).
+`daily-check` acts at most once per trading day, shortly after the US open (`pg_cron` `37 13 * * 1-5`
+and `37 14 * * 1-5` UTC — two slots cover US DST without code changes; the function calls Alpaca
+`/v2/clock` and exits `skipped:market_closed` when the US market is closed. During EDT — open 13:30
+UTC — the 13:37 run acts and the 14:37 run, with the market already open, re-runs the full pipeline
+as an idempotent no-op (`success`, no second trade); during EST — open 14:30 UTC — the 13:37 run
+exits at the clock gate and the 14:37 run acts; on market holidays both runs gate-exit). It fetches
+SPY daily bars from Alpaca, drops today's in-progress bar, and computes the 200-DMA regime filter
+on the **previous completed trading day's** close — the same information set a post-close run
+would have, with execution at the next open, which is exactly what the backtest models. It then
+reconciles against the Alpaca position and flips between LONG (`BOT_TICKER`=UPRO) and CASH if
+needed; the `regime_state` row for a given date carries the previous session's
+`spy_close`/`spy_sma200`.
+Account value is read in **USD** (Alpaca accounts are USD-denominated). Wraps the flow in an
+`audit_log` row; every exit path writes a deterministic `outcome` string (`success`, `success:*`,
+`skipped:*`, `error:*`).
 
 ### Intraday kill-switch
 
@@ -110,9 +120,10 @@ Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `bot_config` — key/value config; holds the runtime `paused` flag (replaces the old `TRADING_PAUSED` env var).
 
 All tables are RLS-deny-all; the Edge Functions connect with the **service-role key** (bypasses RLS).
-The cron jobs (`0002_schedule.sql`) read the service-role key and the functions base URL from
-**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migration works
-for both dev and prod — only the Vault values differ.
+The cron jobs (`0002_schedule.sql`; daily-check rescheduled by `0006_daily_check_open_schedule.sql`)
+read the service-role key and the functions base URL from **Vault** secrets (`service_role_key`,
+`functions_base_url`), so the same committed migrations work for both dev and prod — only the Vault
+values differ.
 
 ### Notifications
 
@@ -148,7 +159,8 @@ injected `deps` object, so tests pass mocks directly.
 ## Key constraints
 
 - `REGIME_SMA_DAYS`, `KILL_SWITCH_DRAWDOWN_PCT`, `KILL_SWITCH_LOOKBACK_DAYS`, `BOT_TICKER`, `BOT_BENCHMARK`, and the Alpaca credentials are validated by `config.ts` at function start — invalid values throw immediately.
-- `daily-check` must run **post-US-close** (`pg_cron` `30 22 * * 1-5` UTC). If Alpaca's latest SPY daily bar predates today (UTC), it hits the stale-data guard and exits with `skipped:stale_data` in `audit_log`.
+- `daily-check` runs **post-open** (`pg_cron` `37 13 * * 1-5` and `37 14 * * 1-5` UTC). The function calls Alpaca `/v2/clock` and exits `skipped:market_closed` when the US market is closed: during EDT (open 13:30 UTC) the 13:37 run acts and the 14:37 run, with the market already open, re-runs the full pipeline as an idempotent no-op (`success`, no second trade); during EST (open 14:30 UTC) the 13:37 run gate-exits and the 14:37 run acts; on market holidays both runs gate-exit.
+- The signal is the **previous completed trading day's** SPY close vs its 200-DMA. Today's in-progress bar is dropped; if the last completed SPY bar does not match the most recent trading day strictly before today per Alpaca's calendar, the run hits the stale-data guard and exits with `skipped:stale_data` in `audit_log`.
 - `daily-check` is idempotent: re-running on the same trading day computes the same `target_state`, sees `current_state` already matches, and writes a no-op `regime_state` row.
 - The bot has one decision rule. It is testable as a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`). Do not add second decision rules without a fresh brainstorm and spec.
 - `daily-check` honors `bot_config.paused` — the `panic` Edge Function (`action=pause`) is the operational kill switch.

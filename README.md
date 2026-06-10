@@ -1,13 +1,13 @@
 # Trading Bot
 
-A deterministic rules-engine swing trading bot. Each weekday after the US close it computes a 200-day SMA on SPY, decides whether to be LONG (in UPRO, a 3x leveraged S&P 500 ETF) or in CASH, reconciles with Alpaca, and flips the position via a market order if needed. A 5-minute kill switch liquidates intraday if drawdown breaches a threshold. The bot runs serverlessly on Supabase (`pg_cron` -> Edge Functions -> Postgres) and trades through Alpaca's REST API.
+A deterministic rules-engine swing trading bot. Each trading day shortly after the US open it computes a 200-day SMA on SPY as of the previous completed close, decides whether to be LONG (in UPRO, a 3x leveraged S&P 500 ETF) or in CASH, reconciles with Alpaca, and flips the position via a market order if needed. A 5-minute kill switch liquidates intraday if drawdown breaches a threshold. The bot runs serverlessly on Supabase (`pg_cron` -> Edge Functions -> Postgres) and trades through Alpaca's REST API.
 
 No LLM is in the trading path. The strategy is a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`); every decision is reproducible from the SPY history alone.
 
 ## Architecture
 
 ```
-pg_cron (30 22 * * 1-5 UTC)    -> Edge Fn: daily-check   --+
+pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check   --+
 pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch   --+-> shared TS modules -> Alpaca REST
 operator HTTP + x-panic-token   -> Edge Fn: panic         --+                       -> Postgres
                                                                                     -> n8n -> Discord
@@ -22,8 +22,15 @@ Each function (`supabase/functions/<name>/`) is split into `logic.ts` (pure, tes
 `index.ts` (HTTP entry) over shared modules in `supabase/functions/_shared/`:
 `regime`, `config`, `alpaca`, `marketdata`, `db`, `notifications`, `num`, `supabase_client`.
 
-**Decision rule.** `daily-check` fetches SPY daily bars from Alpaca, computes the 200-day SMA,
-and calls `computeTargetState({ spyClose, spySma200, currentState, killSwitchActive })`:
+**Decision rule.** `daily-check` runs shortly after the US open — two pg_cron slots (`37 13 * * 1-5`
+and `37 14 * * 1-5` UTC) cover US DST; the function calls Alpaca `/v2/clock` and exits
+`skipped:market_closed` when the market is closed. During EDT (open 13:30 UTC) the 13:37 run acts
+and the 14:37 run, with the market already open, repeats the pipeline as an idempotent no-op
+(`success`, no second trade); during EST (open 14:30 UTC) the 13:37 run gate-exits and the 14:37
+run acts; on market holidays both runs gate-exit. It fetches SPY daily bars from Alpaca, drops today's
+in-progress bar, computes the 200-day SMA on the previous completed trading day's close (the same
+information set as a post-close run, with execution at the next open — exactly what the backtest
+models), and calls `computeTargetState({ spyClose, spySma200, currentState, killSwitchActive })`:
 
 - **LONG** when `spyClose > spySma200` (the kill-switch flag, if set, is cleared on this transition).
 - **CASH** otherwise (when SPY is at or below the 200-DMA — the kill-switch flag, if set, is preserved).
@@ -50,7 +57,8 @@ fire does not lock the bot out of the next bull run.
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 
 - `regime_state` — one row per trading day (`spy_close`, `spy_sma200`, `target_state`,
-  `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`).
+  `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`);
+  `spy_close`/`spy_sma200` hold the previous completed session's values (the signal bar).
 - `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`,
   `broker_order_id`, `reason`).
 - `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`,
@@ -58,8 +66,9 @@ Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `bot_config` — key/value config; holds the runtime `paused` flag.
 
 All tables are RLS-deny-all; the Edge Functions connect with the service-role key (which bypasses
-RLS). The cron jobs (`0002_schedule.sql`) read the service-role key and the functions base URL from
-**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migration works
+RLS). The cron jobs (`0002_schedule.sql`; daily-check rescheduled by
+`0006_daily_check_open_schedule.sql`) read the service-role key and the functions base URL from
+**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migrations work
 for both dev and prod — only the Vault values differ.
 
 ## Configuration
@@ -90,7 +99,7 @@ The short version:
 supabase link --project-ref <ref>
 supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true \
   PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY
-supabase db push                                          # applies 0001_init + 0002_schedule
+supabase db push                                          # applies migrations 0001-0006 (schema + cron schedule)
 supabase functions deploy daily-check kill-switch         # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt           # auth = x-panic-token header
 ```
@@ -164,6 +173,8 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |   |-- migrations/
 |   |   |-- 0001_init.sql          # Postgres schema (regime_state, trades, audit_log, bot_config)
 |   |   |-- 0002_schedule.sql      # pg_cron jobs + Vault-backed cron auth
+|   |   |-- ...
+|   |   |-- 0006_daily_check_open_schedule.sql  # daily-check post-open slots (13:37/14:37 UTC)
 |   |-- functions/
 |   |   |-- _shared/               # regime, config, alpaca, marketdata, db, notifications, num, ...
 |   |   |-- daily-check/           # logic.ts + index.ts — daily regime flip (cron)

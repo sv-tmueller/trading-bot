@@ -18,6 +18,8 @@ function buildDeps(): DailyCheckDeps {
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice },
     alpaca: {
+      getClock: () => alpaca.getClock(),
+      getCalendar: (s, e) => alpaca.getCalendar(s, e),
       getPosition: (s) => alpaca.getPosition(s),
       getAccountValue: () => alpaca.getAccountValue(),
       placeMarketOrder: (a) => alpaca.placeMarketOrder(a),
