@@ -170,7 +170,10 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     await db.upsertRegimeState({
       date: ymd(deps.now()), spyClose, spySma200, targetState, currentState: newCurrentState,
       positionDrawdownPct: null, killSwitchActive: newKs,
-      killSwitchFiredAt: latest && newKs ? latest.kill_switch_fired_at : null,
+      // Forensic timestamp of the last kill-switch fire (finding 10): carry it
+      // through even when the flag clears (e.g. same-day bullish re-entry) —
+      // never overwrite it with null once it exists.
+      killSwitchFiredAt: latest?.kill_switch_fired_at ?? null,
     });
     await finish(outcome, `target=${targetState} current=${newCurrentState}`);
     return outcome;

@@ -171,6 +171,27 @@ Deno.test("desync (broker LONG, db CASH) reconciles + notifies", async () => {
   assertEquals((calls.upsert as { currentState: string }).currentState, "LONG");
 });
 
+Deno.test("same-day re-entry preserves kill_switch_fired_at (finding 10)", async () => {
+  // The kill switch fired earlier today (flag set, forensic timestamp written);
+  // SPY is still bullish so daily-check clears the flag and re-enters LONG.
+  // The fired_at timestamp must be carried through, not nulled out.
+  const firedAt = "2026-06-05T14:05:00Z";
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({
+          current_state: "CASH",
+          kill_switch_active: true,
+          kill_switch_fired_at: firedAt,
+        } as never),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+  assertEquals((calls.upsert as { currentState: string }).currentState, "LONG");
+  assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, false);
+  assertEquals((calls.upsert as { killSwitchFiredAt: string | null }).killSwitchFiredAt, firedAt);
+});
+
 Deno.test("insufficient buying power -> error:insufficient_funds", async () => {
   const { deps, calls } = makeDeps({
     alpaca: { getAccountValue: () => Promise.resolve(10) } as unknown as DailyCheckDeps["alpaca"], // 10*0.99/70 = 0 shares
