@@ -6,13 +6,18 @@ import type { DailyBar } from "../_shared/marketdata.ts";
 function bars(closes: number[]): DailyBar[] {
   // oldest-first; dates ascending ending "today" 2026-06-05
   return closes.map((c, i) => ({
-    date: new Date(Date.UTC(2026, 5, 5) - (closes.length - 1 - i) * 86400000).toISOString().slice(0, 10),
+    date: new Date(Date.UTC(2026, 5, 5) - (closes.length - 1 - i) * 86400000).toISOString().slice(
+      0,
+      10,
+    ),
     close: c,
     high: c,
   }));
 }
 
-function makeDeps(over: Partial<DailyCheckDeps> = {}): { deps: DailyCheckDeps; calls: Record<string, unknown> } {
+function makeDeps(
+  over: Partial<DailyCheckDeps> = {},
+): { deps: DailyCheckDeps; calls: Record<string, unknown> } {
   const calls: Record<string, unknown> = {};
   const defaultMarketdata: DailyCheckDeps["marketdata"] = {
     // default: bullish (last close 410 > sma of [390,400,410]=400)
@@ -82,7 +87,9 @@ function makeDeps(over: Partial<DailyCheckDeps> = {}): { deps: DailyCheckDeps; c
 }
 
 Deno.test("paused -> skipped:trading_paused, no broker", async () => {
-  const { deps, calls } = makeDeps({ db: { getConfig: () => Promise.resolve("true") } as unknown as DailyCheckDeps["db"] });
+  const { deps, calls } = makeDeps({
+    db: { getConfig: () => Promise.resolve("true") } as unknown as DailyCheckDeps["db"],
+  });
   const outcome = await runDailyCheck(deps);
   assertEquals(outcome, "skipped:trading_paused");
   assertEquals(calls.placeMarketOrder, undefined);
@@ -90,7 +97,9 @@ Deno.test("paused -> skipped:trading_paused, no broker", async () => {
 
 Deno.test("paused-flag DB read throws -> error:* recorded in the audit row (finding 11)", async () => {
   const { deps, calls } = makeDeps({
-    db: { getConfig: () => Promise.reject(new Error("db down")) } as unknown as DailyCheckDeps["db"],
+    db: {
+      getConfig: () => Promise.reject(new Error("db down")),
+    } as unknown as DailyCheckDeps["db"],
   });
   assertEquals(await runDailyCheck(deps), "error:Error");
   // The audit row must be closed with an error outcome, not left open.
@@ -100,14 +109,19 @@ Deno.test("paused-flag DB read throws -> error:* recorded in the audit row (find
 
 Deno.test("stale data -> skipped:stale_data", async () => {
   const { deps } = makeDeps({
-    marketdata: { getDailyCloses: () => Promise.resolve(bars([390, 400, 410]).map((b) => ({ ...b, date: "2026-06-03" }))) } as unknown as DailyCheckDeps["marketdata"],
+    marketdata: {
+      getDailyCloses: () =>
+        Promise.resolve(bars([390, 400, 410]).map((b) => ({ ...b, date: "2026-06-03" }))),
+    } as unknown as DailyCheckDeps["marketdata"],
   });
   assertEquals(await runDailyCheck(deps), "skipped:stale_data");
 });
 
 Deno.test("no bars -> skipped:stale_data", async () => {
   const { deps, calls } = makeDeps({
-    marketdata: { getDailyCloses: () => Promise.resolve([]) } as unknown as DailyCheckDeps["marketdata"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve([]),
+    } as unknown as DailyCheckDeps["marketdata"],
   });
   assertEquals(await runDailyCheck(deps), "skipped:stale_data");
   assertEquals(calls.placeMarketOrder, undefined);
@@ -116,7 +130,9 @@ Deno.test("no bars -> skipped:stale_data", async () => {
 Deno.test("insufficient history (bars < SMA window) -> skipped:insufficient_history", async () => {
   // config.regimeSmaDays is 3 in makeDeps; supply only 2 bars (last dated today).
   const { deps, calls } = makeDeps({
-    marketdata: { getDailyCloses: () => Promise.resolve(bars([400, 410])) } as unknown as DailyCheckDeps["marketdata"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([400, 410])),
+    } as unknown as DailyCheckDeps["marketdata"],
   });
   assertEquals(await runDailyCheck(deps), "skipped:insufficient_history");
   assertEquals(calls.placeMarketOrder, undefined);
@@ -149,7 +165,10 @@ Deno.test("partial fill: trades row records the actually-filled qty (#267)", asy
 
 Deno.test("no flip needed -> success, idempotent no-op", async () => {
   const { deps, calls } = makeDeps({
-    db: { getLatestRegimeState: () => Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never) } as unknown as DailyCheckDeps["db"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
     alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
   });
   assertEquals(await runDailyCheck(deps), "success");
@@ -159,8 +178,14 @@ Deno.test("no flip needed -> success, idempotent no-op", async () => {
 
 Deno.test("bearish from LONG -> liquidate to CASH", async () => {
   const { deps, calls } = makeDeps({
-    marketdata: { getDailyCloses: () => Promise.resolve(bars([410, 400, 390])), getLatestTradePrice: () => Promise.resolve(70) } as unknown as DailyCheckDeps["marketdata"],
-    db: { getLatestRegimeState: () => Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never) } as unknown as DailyCheckDeps["db"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([410, 400, 390])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
     alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
   });
   assertEquals(await runDailyCheck(deps), "success");
@@ -213,9 +238,18 @@ Deno.test("insufficient buying power -> error:insufficient_funds", async () => {
 
 Deno.test("liquidate returns null -> error:liquidate_failed", async () => {
   const { deps, calls } = makeDeps({
-    marketdata: { getDailyCloses: () => Promise.resolve(bars([410, 400, 390])), getLatestTradePrice: () => Promise.resolve(70) } as unknown as DailyCheckDeps["marketdata"],
-    db: { getLatestRegimeState: () => Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never) } as unknown as DailyCheckDeps["db"],
-    alpaca: { getPosition: () => Promise.resolve(99), liquidate: () => Promise.resolve(null) } as unknown as DailyCheckDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([410, 400, 390])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: {
+      getPosition: () => Promise.resolve(99),
+      liquidate: () => Promise.resolve(null),
+    } as unknown as DailyCheckDeps["alpaca"],
   });
   assertEquals(await runDailyCheck(deps), "error:liquidate_failed");
   assertEquals(calls.tradeFailed, true);

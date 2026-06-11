@@ -1,9 +1,15 @@
-import { runKillSwitch, type KillSwitchDeps } from "./logic.ts";
+import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
 import { getStrategyConfig } from "../_shared/config.ts";
 import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
-import { getLatestRegimeState, insertAuditLog, insertTrade, updateAuditLog, upsertRegimeState } from "../_shared/db.ts";
+import {
+  getLatestRegimeState,
+  insertAuditLog,
+  insertTrade,
+  updateAuditLog,
+  upsertRegimeState,
+} from "../_shared/db.ts";
 import {
   notifyBrokerError,
   notifyError,
@@ -43,5 +49,7 @@ function buildDeps(): KillSwitchDeps {
 
 Deno.serve(async () => {
   const outcome = await runKillSwitch(buildDeps());
-  return new Response(JSON.stringify({ outcome }), { headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify({ outcome }), {
+    headers: { "content-type": "application/json" },
+  });
 });

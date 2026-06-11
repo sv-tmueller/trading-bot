@@ -1,7 +1,7 @@
 // HTTP layer for the panic Edge Function. Split out of index.ts so the
 // method/auth/status mapping is unit-testable without Deno.serve; the action
 // runner is injectable for the same reason (defaults to the real deps).
-import { runPanic, type PanicAction } from "./logic.ts";
+import { type PanicAction, runPanic } from "./logic.ts";
 import { getStrategyConfig } from "../_shared/config.ts";
 import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
@@ -32,7 +32,10 @@ function runWithRealDeps(action: PanicAction): Promise<string> {
   return runPanic({
     config: getStrategyConfig(),
     now: () => new Date(),
-    alpaca: { cancelAllOrders: () => alpaca.cancelAllOrders(), liquidate: (s) => alpaca.liquidate(s) },
+    alpaca: {
+      cancelAllOrders: () => alpaca.cancelAllOrders(),
+      liquidate: (s) => alpaca.liquidate(s),
+    },
     db: {
       setConfig: (k, v) => setConfig(sb, k, v),
       insertTrade: (p) => insertTrade(sb, p),

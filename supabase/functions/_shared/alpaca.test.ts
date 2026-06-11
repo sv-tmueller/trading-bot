@@ -232,8 +232,8 @@ Deno.test("placeMarketOrder validates side and qty", async () => {
   liftBrokerGuard();
   try {
     const c = createAlpacaClient();
-    // deno-lint-ignore no-explicit-any
     await assertRejects(
+      // deno-lint-ignore no-explicit-any
       () => c.placeMarketOrder({ symbol: "UPRO", side: "HOLD" as any, qty: 1 }),
       Error,
       "side",

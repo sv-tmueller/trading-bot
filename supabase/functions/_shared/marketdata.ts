@@ -27,8 +27,7 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
   // adjustment=all (#265): the backtest that validated the strategy uses fully
   // adjusted data, so the live SMA must too — and split-adjusting the bars stops
   // a forward split of the bot ticker from faking a -50% kill-switch drawdown.
-  const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
+  const url = `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
     `?timeframe=1Day&start=${start}&limit=10000&adjustment=all&sort=asc&feed=iex`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
@@ -45,8 +44,7 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
 
 export async function getLatestTradePrice(symbol: string): Promise<number> {
   const cfg = getAlpacaConfig();
-  const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`;
+  const url = `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET latest trade ${symbol} -> ${res.status}: ${await res.text()}`);

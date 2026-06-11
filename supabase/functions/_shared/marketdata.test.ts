@@ -40,7 +40,9 @@ Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
 
 Deno.test("getDailyCloses returns [] on empty history", async () => {
   setKeys();
-  const restore = stubFetch(() => Promise.resolve(jsonResponse({ bars: null, next_page_token: null })));
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ bars: null, next_page_token: null }))
+  );
   try {
     assertEquals(await getDailyCloses("SPY", 250), []);
   } finally {

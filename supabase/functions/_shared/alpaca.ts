@@ -69,7 +69,9 @@ export function createAlpacaClient(): AlpacaClient {
   async function tradeJson(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
     const res = await trade(path, init);
     if (!res.ok) {
-      throw new AlpacaError(`${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`);
+      throw new AlpacaError(
+        `${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`,
+      );
     }
     return await res.json();
   }
@@ -87,7 +89,9 @@ export function createAlpacaClient(): AlpacaClient {
   async function getPosition(symbol: string): Promise<number> {
     const res = await trade(`/v2/positions/${encodeURIComponent(symbol)}`);
     if (res.status === 404) return 0;
-    if (!res.ok) throw new AlpacaError(`GET position ${symbol} -> ${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+      throw new AlpacaError(`GET position ${symbol} -> ${res.status}: ${await res.text()}`);
+    }
     const j = await res.json();
     return Math.trunc(requireNumber(j.qty, "position qty"));
   }

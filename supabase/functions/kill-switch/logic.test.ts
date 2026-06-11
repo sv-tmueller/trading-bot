@@ -1,12 +1,18 @@
 import { assertEquals } from "@std/assert";
-import { runKillSwitch, type KillSwitchDeps } from "./logic.ts";
+import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(highs: number[]): DailyBar[] {
-  return highs.map((h, i) => ({ date: `2026-05-${String(i + 1).padStart(2, "0")}`, close: h, high: h }));
+  return highs.map((h, i) => ({
+    date: `2026-05-${String(i + 1).padStart(2, "0")}`,
+    close: h,
+    high: h,
+  }));
 }
 
-function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
+function makeDeps(
+  over: Partial<KillSwitchDeps> = {},
+): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
   const calls: Record<string, unknown> = { upserts: [] };
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -165,7 +171,9 @@ Deno.test("no DB row at all but broker holds a position -> still protects it", a
 
 Deno.test("market closed -> skipped:market_closed", async () => {
   const { deps, calls } = makeDeps({
-    alpaca: { getClock: () => Promise.resolve({ isOpen: false }) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: false }),
+    } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "skipped:market_closed");
   assertEquals((calls.audit as { outcome: string }).outcome, "skipped:market_closed");

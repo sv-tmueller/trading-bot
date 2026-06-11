@@ -65,7 +65,10 @@ Deno.test("wrong token -> 401", async () => {
 
 Deno.test("unset PANIC_TOKEN fails closed (even with an empty token header)", async () => {
   await withPanicToken(null, async () => {
-    const res = await handlePanic(req({ action: "pause", token: "" }), () => Promise.resolve("paused"));
+    const res = await handlePanic(
+      req({ action: "pause", token: "" }),
+      () => Promise.resolve("paused"),
+    );
     assertEquals(res.status, 401);
     await res.body?.cancel();
   });

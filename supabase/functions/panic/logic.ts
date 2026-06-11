@@ -13,11 +13,18 @@ export interface PanicDeps {
   db: {
     setConfig: (key: string, value: string) => Promise<void>;
     insertTrade: (p: {
-      symbol: string; side: "BUY" | "SELL"; qty: number; fillPrice: number; fillTime: string;
-      brokerOrderId: string; reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
+      symbol: string;
+      side: "BUY" | "SELL";
+      qty: number;
+      fillPrice: number;
+      fillTime: string;
+      brokerOrderId: string;
+      reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
-    updateAuditLog: (p: { id: number; finishedAt: string; outcome: string; notes?: string | null }) => Promise<void>;
+    updateAuditLog: (
+      p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
+    ) => Promise<void>;
   };
   notifications: { notifyPanic: (p: { action: string; result: string }) => Promise<void> };
 }
@@ -47,8 +54,13 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
         const fill = await alpaca.liquidate(config.botTicker);
         if (fill) {
           await db.insertTrade({
-            symbol: config.botTicker, side: "SELL", qty: fill.qty, fillPrice: fill.fillPrice,
-            fillTime: fill.fillTime, brokerOrderId: fill.orderId, reason: "panic_cli",
+            symbol: config.botTicker,
+            side: "SELL",
+            qty: fill.qty,
+            fillPrice: fill.fillPrice,
+            fillTime: fill.fillTime,
+            brokerOrderId: fill.orderId,
+            reason: "panic_cli",
           });
           result = `liquidated ${fill.qty} ${config.botTicker} @ ${fill.fillPrice}`;
         } else {
@@ -66,7 +78,12 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
     }
     // Close the audit row FIRST, then notify fire-and-forget — a notification
     // failure must not flip a successful action's outcome to error.
-    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome: "success:panic", notes: `${action}: ${result}` });
+    await db.updateAuditLog({
+      id: auditId,
+      finishedAt: iso(deps.now()),
+      outcome: "success:panic",
+      notes: `${action}: ${result}`,
+    });
     try {
       await deps.notifications.notifyPanic({ action, result });
     } catch (_e) { /* fire-and-forget */ }
@@ -74,7 +91,12 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
   } catch (e) {
     const err = e as Error;
     const outcome = `error:${err.name}`;
-    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes: `${action}: ${err.message}`.slice(0, 500) });
+    await db.updateAuditLog({
+      id: auditId,
+      finishedAt: iso(deps.now()),
+      outcome,
+      notes: `${action}: ${err.message}`.slice(0, 500),
+    });
     return `${outcome}: ${err.message}`;
   }
 }

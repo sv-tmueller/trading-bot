@@ -38,7 +38,9 @@ export interface KillSwitchDeps {
       reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
-    updateAuditLog: (p: { id: number; finishedAt: string; outcome: string; notes?: string | null }) => Promise<void>;
+    updateAuditLog: (
+      p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
+    ) => Promise<void>;
   };
   notifications: {
     notifyKillSwitchFired: (p: {
@@ -49,7 +51,9 @@ export interface KillSwitchDeps {
       qty: number;
       fillPrice: number;
     }) => Promise<void>;
-    notifyTradeFailed: (p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string }) => Promise<void>;
+    notifyTradeFailed: (
+      p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string },
+    ) => Promise<void>;
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
     notifyStateDesync: (p: {
       dbState: "LONG" | "CASH";
@@ -65,7 +69,10 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
   const { config, db, alpaca, marketdata, notifications } = deps;
   const iso = (d: Date) => d.toISOString();
   const ymd = (d: Date) => d.toISOString().slice(0, 10);
-  const auditId = await db.insertAuditLog({ scriptName: "kill-switch", startedAt: iso(deps.now()) });
+  const auditId = await db.insertAuditLog({
+    scriptName: "kill-switch",
+    startedAt: iso(deps.now()),
+  });
   // desyncNote (#266) is prepended to every audit-notes write once a DB/broker
   // state desync is detected, so the forensic trail survives in audit_log.
   let desyncNote = "";
@@ -88,7 +95,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         await finish("success:no_position");
         return "success:no_position";
       }
-      desyncNote = `state_desync db=${latest?.current_state ?? "none"} broker=LONG qty=${liveQty}; `;
+      desyncNote = `state_desync db=${
+        latest?.current_state ?? "none"
+      } broker=LONG qty=${liveQty}; `;
       await notifications.notifyStateDesync({
         dbState: "CASH",
         brokerState: "LONG",
@@ -102,9 +111,15 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       return "skipped:market_closed";
     }
 
-    const barsArr = await marketdata.getDailyCloses(config.botTicker, config.killSwitchLookbackDays + 10);
+    const barsArr = await marketdata.getDailyCloses(
+      config.botTicker,
+      config.killSwitchLookbackDays + 10,
+    );
     if (barsArr.length < config.killSwitchLookbackDays) {
-      await finish("skipped:insufficient_data", `only ${barsArr.length} bars, need ${config.killSwitchLookbackDays}`);
+      await finish(
+        "skipped:insufficient_data",
+        `only ${barsArr.length} bars, need ${config.killSwitchLookbackDays}`,
+      );
       return "skipped:insufficient_data";
     }
 
@@ -123,7 +138,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     // alert the operator and exit non-fatally instead.
     if (refHigh / lastPrice > 2) {
       const msg = `kill-switch: implausible drawdown for ${config.botTicker}: ` +
-        `refHigh=${refHigh} lastPrice=${lastPrice} (ratio ${(refHigh / lastPrice).toFixed(2)} > 2); ` +
+        `refHigh=${refHigh} lastPrice=${lastPrice} (ratio ${
+          (refHigh / lastPrice).toFixed(2)
+        } > 2); ` +
         `suspected corporate action or bad data — NOT liquidating`;
       await notifications.notifyError(msg);
       await finish("error:implausible_drawdown", msg);
