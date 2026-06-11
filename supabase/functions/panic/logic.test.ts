@@ -55,11 +55,30 @@ Deno.test("liquidate sells + writes panic_cli trade", async () => {
   assertEquals(r.includes("liquidated"), true);
 });
 
-Deno.test("liquidate with no position reports no position", async () => {
+Deno.test("liquidate also pauses trading (finding 13)", async () => {
+  // Without the pause, a still-bullish SPY would make the next daily-check
+  // re-buy the position the operator just dumped.
+  const { deps, calls } = makeDeps();
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(calls.setConfig, ["paused", "true"]);
+  assertEquals(r.includes("trading paused"), true);
+});
+
+Deno.test("liquidate with no position reports no position and still pauses", async () => {
   const { deps, calls } = makeDeps({ alpaca: { liquidate: () => Promise.resolve(null) } as unknown as PanicDeps["alpaca"] });
   const r = await runPanic(deps, "liquidate");
-  assertEquals(r, "no position to liquidate");
+  assertEquals(r, "no position to liquidate; trading paused");
   assertEquals(calls.insertTrade, undefined);
+  assertEquals(calls.setConfig, ["paused", "true"]);
+});
+
+Deno.test("a failed liquidation does NOT pause", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: { liquidate: () => Promise.reject(new Error("timeout")) } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(r.startsWith("error:"), true);
+  assertEquals(calls.setConfig, undefined);
 });
 
 Deno.test("unknown action -> error", async () => {

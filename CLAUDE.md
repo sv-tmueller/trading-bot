@@ -54,11 +54,12 @@ deno task test:db
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
-supabase db push                                      # applies 0001_init + 0002_schedule
+supabase db push                                      # applies 0001_init + 0002_schedule + 0003_vault_fn_grants
 
 # Panic kill button (token-auth Edge Function — deterministic, no LLM)
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"
 #   actions: pause | resume | cancel-orders | liquidate   (500 + error: result = action failed)
+#   liquidate also sets bot_config.paused=true (no re-buy next daily-check); clear via action=resume
 
 # Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5

@@ -15,7 +15,7 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 2. Set secrets:
    `supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true N8N_WEBHOOK_URL=... PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY`
    (Strategy params `REGIME_SMA_DAYS`/`KILL_SWITCH_DRAWDOWN_PCT`/`KILL_SWITCH_LOOKBACK_DAYS` default to 200/0.25/30 — set only to override.)
-3. `supabase db push` (applies `0001_init.sql` + `0002_schedule.sql`).
+3. `supabase db push` (applies `0001_init.sql` + `0002_schedule.sql` + `0003_vault_fn_grants.sql`).
 4. In the SQL editor, store **two** secrets in Vault (one-time per project, not committed — the same migration works for dev and prod, only these differ):
    ```sql
    select vault.create_secret('<service_role_key>', 'service_role_key');
@@ -32,7 +32,7 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 - [ ] Manually invoke `daily-check` once; confirm an `audit_log` row + a `regime_state` row appear with a sane `target_state`.
 - [ ] Test the kill button:
   `curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"`
-  → HTTP 200, `bot_config.paused` flips to `true`; then `?action=resume`. (A failed action returns **HTTP 500** with an `error:` result — don't treat a 500 as success.)
+  → HTTP 200, `bot_config.paused` flips to `true`; then `?action=resume`. (A failed action returns **HTTP 500** with an `error:` result — don't treat a 500 as success. Note: `?action=liquidate` also sets `paused=true` so daily-check can't re-buy the dumped position — `resume` to re-enable trading.)
 - [ ] Let the cron run for a full week; verify daily flips and 5-min kill-switch ticks land in `audit_log` with expected outcomes; confirm Discord notifications arrive (the n8n flow renders `body.message` — the TS payloads carry it).
 - [ ] If alerts are missing or daily-check seems to no-op, check for cron→function HTTP failures:
   `select * from net._http_response order by created desc limit 20;` (a wrong `PROJECT_REF` makes cron fire silent no-ops).

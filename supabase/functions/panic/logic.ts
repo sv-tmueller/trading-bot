@@ -54,6 +54,11 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
         } else {
           result = "no position to liquidate";
         }
+        // Finding 13: a successful liquidate also pauses, otherwise a still-
+        // bullish SPY would make the next daily-check re-buy the position the
+        // operator just dumped. Clear with action=resume.
+        await db.setConfig("paused", "true");
+        result += "; trading paused";
         break;
       }
       default:
