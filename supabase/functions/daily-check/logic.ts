@@ -70,14 +70,15 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
   const finish = (outcome: string, notes?: string) =>
     db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
 
-  // Operational pause.
-  const paused = (await db.getConfig("paused"))?.toLowerCase() === "true";
-  if (paused) {
-    await finish("skipped:trading_paused", "bot_config.paused is true");
-    return "skipped:trading_paused";
-  }
-
   try {
+    // Operational pause. Inside the try (finding 11) so a DB throw records an
+    // error:* outcome in the audit row instead of escaping and leaving it open.
+    const paused = (await db.getConfig("paused"))?.toLowerCase() === "true";
+    if (paused) {
+      await finish("skipped:trading_paused", "bot_config.paused is true");
+      return "skipped:trading_paused";
+    }
+
     const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
     if (barsArr.length === 0) {
       await finish("skipped:stale_data", "no bars returned");

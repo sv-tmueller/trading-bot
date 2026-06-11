@@ -88,6 +88,16 @@ Deno.test("paused -> skipped:trading_paused, no broker", async () => {
   assertEquals(calls.placeMarketOrder, undefined);
 });
 
+Deno.test("paused-flag DB read throws -> error:* recorded in the audit row (finding 11)", async () => {
+  const { deps, calls } = makeDeps({
+    db: { getConfig: () => Promise.reject(new Error("db down")) } as unknown as DailyCheckDeps["db"],
+  });
+  assertEquals(await runDailyCheck(deps), "error:Error");
+  // The audit row must be closed with an error outcome, not left open.
+  assertEquals((calls.audit as { outcome: string }).outcome, "error:Error");
+  assertEquals(calls.placeMarketOrder, undefined);
+});
+
 Deno.test("stale data -> skipped:stale_data", async () => {
   const { deps } = makeDeps({
     marketdata: { getDailyCloses: () => Promise.resolve(bars([390, 400, 410]).map((b) => ({ ...b, date: "2026-06-03" }))) } as unknown as DailyCheckDeps["marketdata"],
