@@ -5,6 +5,29 @@ migrations, and the `web/` dashboard, plus answers to the operator's status ques
 Companion doc: [`2026-06-11-margin-increase-assessment.md`](2026-06-11-margin-increase-assessment.md)
 (verdict: **do not increase margin** — defer pending evidence).
 
+## Resolution status (2026-06-11)
+
+Fixed on branch `claude/code-review-margin-analysis-yaxilr`:
+
+- **1** (#265) — `adjustment=all` bars + kill-switch implausible-drawdown guard (`error:implausible_drawdown`).
+- **2** (#266) — kill-switch reconciles against `alpaca.getPosition()` when the DB says no position.
+- **3 + 4** (#267) — poll loop breaks on `rejected`/`canceled`/`expired` (`OrderRejectedError`); timeout path re-checks after the cancel and returns full/partial fills so callers record them.
+- **5** — panic requires POST; constant-time (SHA-256 digest) token comparison; HTTP-layer tests added.
+- **6** (#268) — `deno task test` sets `CLAUDE_AGENT_NO_BROKER=1`; `alpaca.test.ts` only lifts the guard in the specific tests that exercise the mutating helpers' stub-fetched HTTP path.
+- **9** — migration `0003_vault_fn_grants.sql` revokes EXECUTE from `anon`/`authenticated`.
+- **10** — `kill_switch_fired_at` carried through on re-entry.
+- **11** — paused check moved inside the try/catch.
+- **13** — panic `liquidate` also sets `paused=true`.
+- **14** — `requireNumber` rejects whitespace-only strings.
+- **15 (partial)** — added: rejected-order, timeout-race partial-fill, recorded-partial-fill, and panic HTTP-layer tests.
+
+Still open (not addressed here):
+
+- **7** — anon-key invocability + concurrency guard (architecturally significant; needs its own design pass).
+- **8** — kill switch fires on a single IEX print (needs a confirmation-read design decision).
+- **12** — dashboard auth + key-scoping wording.
+- **15 (rest)** — "order filled but DB write throws" and kill-switch "liquidate succeeds, `insertTrade` fails" tests.
+
 ## Operator questions
 
 ### Is the bot running?
