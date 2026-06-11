@@ -8,6 +8,7 @@ import {
   notifyBrokerError,
   notifyError,
   notifyKillSwitchFired,
+  notifyStateDesync,
   notifyTradeFailed,
 } from "../_shared/notifications.ts";
 
@@ -18,7 +19,11 @@ function buildDeps(): KillSwitchDeps {
     config: getStrategyConfig(),
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice },
-    alpaca: { getClock: () => alpaca.getClock(), liquidate: (s) => alpaca.liquidate(s) },
+    alpaca: {
+      getClock: () => alpaca.getClock(),
+      getPosition: (s) => alpaca.getPosition(s),
+      liquidate: (s) => alpaca.liquidate(s),
+    },
     db: {
       getLatestRegimeState: () => getLatestRegimeState(sb),
       upsertRegimeState: (p) => upsertRegimeState(sb, p),
@@ -26,7 +31,13 @@ function buildDeps(): KillSwitchDeps {
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),
     },
-    notifications: { notifyKillSwitchFired, notifyTradeFailed, notifyBrokerError, notifyError },
+    notifications: {
+      notifyKillSwitchFired,
+      notifyTradeFailed,
+      notifyBrokerError,
+      notifyStateDesync,
+      notifyError,
+    },
   };
 }
 
