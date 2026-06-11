@@ -50,6 +50,7 @@ export interface KillSwitchDeps {
     }) => Promise<void>;
     notifyTradeFailed: (p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string }) => Promise<void>;
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
+    notifyError: (message: string) => Promise<void>;
   };
 }
 
@@ -87,6 +88,20 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     const lastPrice = await marketdata.getLatestTradePrice(config.botTicker);
     const recentHighs = barsArr.slice(-config.killSwitchLookbackDays).map((b) => b.high);
     const refHigh = Math.max(...recentHighs, lastPrice);
+
+    // Plausibility guard (#265): a >50% drop from the lookback high is impossible
+    // for a 3x ETF inside a ~30-day window without a corporate action (e.g. an
+    // unadjusted forward split) or a bad print. Do NOT liquidate on such data —
+    // alert the operator and exit non-fatally instead.
+    if (refHigh / lastPrice > 2) {
+      const msg = `kill-switch: implausible drawdown for ${config.botTicker}: ` +
+        `refHigh=${refHigh} lastPrice=${lastPrice} (ratio ${(refHigh / lastPrice).toFixed(2)} > 2); ` +
+        `suspected corporate action or bad data — NOT liquidating`;
+      await notifications.notifyError(msg);
+      await finish("error:implausible_drawdown", msg);
+      return "error:implausible_drawdown";
+    }
+
     const drawdown = lastPrice / refHigh - 1;
 
     // Persist drawdown update (still LONG at this point).

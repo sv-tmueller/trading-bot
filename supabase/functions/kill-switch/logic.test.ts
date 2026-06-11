@@ -63,6 +63,10 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
       },
       notifyTradeFailed: () => Promise.resolve(),
       notifyBrokerError: () => Promise.resolve(),
+      notifyError: (m) => {
+        calls.error = m;
+        return Promise.resolve();
+      },
     },
     ...over,
   };
@@ -124,6 +128,35 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
   const upserts = calls.upserts as Array<{ currentState: string }>;
   assertEquals(upserts.length, 2);
   assertEquals(upserts[0].currentState, "LONG");
+});
+
+Deno.test("implausible ratio (refHigh/lastPrice > 2) -> error:implausible_drawdown, no liquidation", async () => {
+  // 100 -> 40 is a -60% intraday move on a 3x ETF inside the lookback window —
+  // impossible without a corporate action (e.g. an unadjusted forward split).
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(40),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "error:implausible_drawdown");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(typeof calls.error, "string"); // notifyError fired
+  assertEquals((calls.audit as { outcome: string }).outcome, "error:implausible_drawdown");
+  // No bogus drawdown row is persisted.
+  assertEquals(calls.upsert, undefined);
+});
+
+Deno.test("plausible deep breach (ratio <= 2) still liquidates", async () => {
+  // 100 -> 60 = -40% drawdown, ratio 1.67 — plausible for a 3x ETF, must fire.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(60),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
 });
 
 Deno.test("breach but position vanished -> success:no_position_to_liquidate", async () => {

@@ -4,7 +4,12 @@ import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import { getLatestRegimeState, insertAuditLog, insertTrade, updateAuditLog, upsertRegimeState } from "../_shared/db.ts";
-import { notifyBrokerError, notifyKillSwitchFired, notifyTradeFailed } from "../_shared/notifications.ts";
+import {
+  notifyBrokerError,
+  notifyError,
+  notifyKillSwitchFired,
+  notifyTradeFailed,
+} from "../_shared/notifications.ts";
 
 function buildDeps(): KillSwitchDeps {
   const sb = getServiceClient();
@@ -21,7 +26,7 @@ function buildDeps(): KillSwitchDeps {
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),
     },
-    notifications: { notifyKillSwitchFired, notifyTradeFailed, notifyBrokerError },
+    notifications: { notifyKillSwitchFired, notifyTradeFailed, notifyBrokerError, notifyError },
   };
 }
 
