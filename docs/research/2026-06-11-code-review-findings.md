@@ -18,14 +18,14 @@ Fixed on branch `claude/code-review-margin-analysis-yaxilr`:
 - **10** — `kill_switch_fired_at` carried through on re-entry.
 - **11** — paused check moved inside the try/catch.
 - **13** — panic `liquidate` also sets `paused=true`.
+- **12** — dashboard requires HTTP Basic Auth (fail-closed `web/middleware.ts`); Alpaca key-scope wording corrected.
 - **14** — `requireNumber` rejects whitespace-only strings.
 - **15 (partial)** — added: rejected-order, timeout-race partial-fill, recorded-partial-fill, and panic HTTP-layer tests.
 
 Still open (not addressed here):
 
-- **7** — anon-key invocability + concurrency guard (architecturally significant; needs its own design pass).
-- **8** — kill switch fires on a single IEX print (needs a confirmation-read design decision).
-- **12** — dashboard auth + key-scoping wording.
+- **7** — anon-key invocability + concurrency guard (design proposal: [`docs/plans/2026-06-11-invocation-hardening-and-killswitch-confirmation-design.md`](../plans/2026-06-11-invocation-hardening-and-killswitch-confirmation-design.md); needs brainstorm sign-off).
+- **8** — kill switch fires on a single IEX print (design proposal in the same doc; needs brainstorm sign-off).
 - **15 (rest)** — "order filled but DB write throws" and kill-switch "liquidate succeeds, `insertTrade` fails" tests.
 
 ## Operator questions

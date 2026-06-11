@@ -1,6 +1,8 @@
-// Server-side, READ-ONLY Alpaca access for the dashboard (account + positions).
-// Uses only GET endpoints — no order placement. Keys are read from the
-// environment and never reach the browser. Degrades gracefully: if keys are
+// Server-side Alpaca access for the dashboard (account + positions). This
+// module only calls GET endpoints — no order placement — but Alpaca API keys
+// are UNSCOPED full-trading keys (Alpaca offers no read-only scope), so they
+// must be treated as trading credentials: server-side env only, never
+// NEXT_PUBLIC_, never shipped to the browser. Degrades gracefully: if keys are
 // missing or a request fails, returns null/[] so the page still renders.
 
 const paper = (process.env.ALPACA_PAPER ?? "true").toLowerCase() !== "false";
