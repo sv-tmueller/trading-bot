@@ -3,6 +3,7 @@ import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
   BrokerCallBlockedError,
   createAlpacaClient,
+  OrderRejectedError,
   OrderTimeoutError,
 } from "./alpaca.ts";
 import { DataError } from "./num.ts";
@@ -117,6 +118,80 @@ Deno.test("placeMarketOrder times out and cancels", async () => {
       OrderTimeoutError,
     );
     assertEquals(cancelled, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeMarketOrder throws OrderRejectedError promptly on a rejected order", async () => {
+  setKeys();
+  let polls = 0;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    polls += 1;
+    return Promise.resolve(jsonResponse({
+      id: "o1",
+      status: "rejected",
+      reject_reason: "insufficient buying power",
+      filled_qty: "0",
+    }));
+  });
+  try {
+    // timeoutMs 30s + intervalMs 1s: if the loop did not break on the terminal
+    // status this test would spin for the full 30s.
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 30_000, intervalMs: 1000 },
+        ),
+      OrderRejectedError,
+      "rejected",
+    );
+    assertEquals(polls, 1); // broke on the first poll, no spin
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeMarketOrder timeout race: order filled after cancel -> returns the fill", async () => {
+  setKeys();
+  let cancelled = false;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") {
+      cancelled = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (cancelled) {
+      // The order (partially) filled in the race window before the cancel took
+      // effect: 40 of 100 shares are owned and must be reported to the caller.
+      return Promise.resolve(jsonResponse({
+        id: "o1",
+        status: "canceled",
+        filled_qty: "40",
+        filled_avg_price: "70.1",
+        filled_at: null,
+        updated_at: "2026-06-05T14:00:01Z",
+      }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" })); // never fills in time
+  });
+  try {
+    const fill = await createAlpacaClient().placeMarketOrder(
+      { symbol: "UPRO", side: "BUY", qty: 100 },
+      { timeoutMs: 5, intervalMs: 1 },
+    );
+    assertEquals(cancelled, true);
+    assertEquals(fill, { orderId: "o1", fillPrice: 70.1, qty: 40, fillTime: "2026-06-05T14:00:01Z" });
   } finally {
     restore();
     clearKeys();

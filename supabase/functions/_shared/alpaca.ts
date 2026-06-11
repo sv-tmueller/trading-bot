@@ -8,6 +8,15 @@ import { requireNumber } from "./num.ts";
 export class BrokerCallBlockedError extends Error {}
 export class AlpacaError extends Error {}
 export class OrderTimeoutError extends Error {}
+// Terminal non-fill (rejected/canceled/expired) detected while polling (#267).
+// Carries Alpaca's order status, plus its reason in the message when present.
+export class OrderRejectedError extends Error {
+  readonly status: string;
+  constructor(message: string, status: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export interface Fill {
   orderId: string;
@@ -109,6 +118,24 @@ export function createAlpacaClient(): AlpacaClient {
     });
     const orderId = String(created.id);
 
+    // Extracts a Fill from an order body when any shares actually filled
+    // (full or partial); null otherwise. Partial fills must reach the caller
+    // so the trades table records the shares really owned (#267).
+    const partialOrFullFill = (o: Record<string, unknown>): Fill | null => {
+      const raw = o.filled_qty;
+      const qty = raw === null || raw === undefined || raw === "" ? 0 : Math.trunc(Number(raw));
+      if (!Number.isFinite(qty) || qty <= 0) return null;
+      return {
+        orderId,
+        fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
+        qty,
+        // filled_at is only set on a full fill; fall back for partials.
+        fillTime: String(o.filled_at ?? o.updated_at ?? new Date().toISOString()),
+      };
+    };
+
+    const TERMINAL_NON_FILL = ["rejected", "canceled", "expired"];
+
     let waited = 0;
     while (waited < timeoutMs) {
       const o = await tradeJson(`/v2/orders/${orderId}`);
@@ -120,15 +147,38 @@ export function createAlpacaClient(): AlpacaClient {
           fillTime: String(o.filled_at),
         };
       }
+      if (TERMINAL_NON_FILL.includes(String(o.status))) {
+        // Terminal without a full fill: break immediately (#267) — no point
+        // spinning out the timeout. A partial fill (e.g. canceled after a
+        // partial execution) is still returned so the caller records it.
+        const partial = partialOrFullFill(o);
+        if (partial) return partial;
+        const reason = o.reject_reason ? `: ${o.reject_reason}` : "";
+        throw new OrderRejectedError(
+          `${args.side} ${args.qty} ${args.symbol} order ${orderId} ` +
+            `terminal status '${o.status}'${reason}`,
+          String(o.status),
+        );
+      }
       await sleep(intervalMs);
       waited += intervalMs;
     }
-    // Timed out — best-effort cancel, then raise.
+    // Timed out — best-effort cancel, then re-check once: the order can fill
+    // (fully or partially) in the race window between the last poll and the
+    // cancel, and those shares must be reported, not swallowed (#267).
     try {
       await trade(`/v2/orders/${orderId}`, { method: "DELETE" });
-    } catch (_e) { /* best effort */ }
+    } catch (_e) { /* best effort — fetch-level failure only */ }
+    let raceNote = "";
+    try {
+      const final = await tradeJson(`/v2/orders/${orderId}`);
+      const fill = partialOrFullFill(final);
+      if (fill) return fill;
+    } catch (e) {
+      raceNote = `; post-cancel status check failed (${(e as Error).message}) — fill state unknown`;
+    }
     throw new OrderTimeoutError(
-      `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; cancelled`,
+      `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; cancelled${raceNote}`,
     );
   }
 

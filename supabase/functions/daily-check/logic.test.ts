@@ -124,6 +124,19 @@ Deno.test("bullish from CASH -> BUY and success", async () => {
   assertEquals((calls.upsert as { currentState: string }).currentState, "LONG");
 });
 
+Deno.test("partial fill: trades row records the actually-filled qty (#267)", async () => {
+  // placeMarketOrder asked for 99 shares but only 40 filled before the order
+  // timed out and was cancelled; the broker layer returns the real fill.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      placeMarketOrder: () =>
+        Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 40, fillTime: "t" }),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+  assertEquals((calls.insertTrade as { qty: number }).qty, 40);
+});
+
 Deno.test("no flip needed -> success, idempotent no-op", async () => {
   const { deps, calls } = makeDeps({
     db: { getLatestRegimeState: () => Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never) } as unknown as DailyCheckDeps["db"],
