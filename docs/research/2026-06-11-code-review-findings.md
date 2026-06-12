@@ -7,17 +7,28 @@ Companion doc: [`2026-06-11-margin-increase-assessment.md`](2026-06-11-margin-in
 
 ## Resolution status (2026-06-11)
 
+> **Stale-base correction (2026-06-11, merge pass):** the review was performed against a stale
+> clone at `70b73cd` (#236); `origin/main` was in fact 17 commits ahead. Three findings had been
+> independently fixed upstream before this review: finding **2** ≈ #237 (`e49a04e`, kill-switch
+> broker-truth), parts of **11** ≈ #238 (`b906e21`, audit seams), parts of **15** ≈ #239
+> (`7eed6dd`, money-path tests). The review also missed #256's post-open execution rework and the
+> `0003`–`0006` migrations (our Vault-grants migration is renumbered to `0007`). The branch has
+> been semantically merged with `origin/main`: where upstream already fixed a finding, upstream's
+> implementation was kept as the base and only the genuinely additive parts of ours (desync
+> notification + protection-continuation on a missing `regime_state` row, implausible-drawdown
+> guard) were layered on top. The list below reflects the post-merge state.
+
 Fixed on branch `claude/code-review-margin-analysis-yaxilr`:
 
 - **1** (#265) — `adjustment=all` bars + kill-switch implausible-drawdown guard (`error:implausible_drawdown`).
-- **2** (#266) — kill-switch reconciles against `alpaca.getPosition()` when the DB says no position.
+- **2** (#266) — broker-truth sourcing was already upstream (#237); this branch adds the `notifyStateDesync` alert + `state_desync` audit note, and continues the drawdown check (instead of `skipped:no_regime_state`) when no `regime_state` row exists, so the live position stays protected.
 - **3 + 4** (#267) — poll loop breaks on `rejected`/`canceled`/`expired` (`OrderRejectedError`); timeout path re-checks after the cancel and returns full/partial fills so callers record them.
 - **5** — panic requires POST; constant-time (SHA-256 digest) token comparison; HTTP-layer tests added.
 - **6** (#268) — `deno task test` sets `CLAUDE_AGENT_NO_BROKER=1`; `alpaca.test.ts` only lifts the guard in the specific tests that exercise the mutating helpers' stub-fetched HTTP path.
 - **9** — migration `0003_vault_fn_grants.sql` revokes EXECUTE from `anon`/`authenticated`.
 - **10** — `kill_switch_fired_at` carried through on re-entry.
 - **11** — paused check moved inside the try/catch.
-- **13** — panic `liquidate` also sets `paused=true`.
+- **13** (#185, option 1) — panic `liquidate` also sets `paused=true` by default; `?pause=false` opts out for a flatten-and-resume; the result string says which happened.
 - **12** — dashboard requires HTTP Basic Auth (fail-closed `web/middleware.ts`); Alpaca key-scope wording corrected.
 - **14** — `requireNumber` rejects whitespace-only strings.
 - **15 (partial)** — added: rejected-order, timeout-race partial-fill, recorded-partial-fill, and panic HTTP-layer tests.

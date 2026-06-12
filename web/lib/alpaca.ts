@@ -1,3 +1,5 @@
+import "server-only";
+
 // Server-side Alpaca access for the dashboard (account + positions). This
 // module only calls GET endpoints — no order placement — but Alpaca API keys
 // are UNSCOPED full-trading keys (Alpaca offers no read-only scope), so they
@@ -15,21 +17,27 @@ function headers(): Record<string, string> | null {
   return { "APCA-API-KEY-ID": id, "APCA-API-SECRET-KEY": secret };
 }
 
+// Coerce a value to a finite number, or null if it is missing/NaN/Infinity.
+// A malformed-but-200 Alpaca payload would otherwise yield NaN and render $NaN.
+function num(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface AlpacaAccount {
-  equity: number;
-  buyingPower: number;
-  cash: number;
+  equity: number | null;
+  cash: number | null;
   paper: boolean;
 }
 
 export interface AlpacaPosition {
   symbol: string;
-  qty: number;
-  avgEntry: number;
-  currentPrice: number;
-  marketValue: number;
-  unrealizedPl: number;
-  unrealizedPlpc: number;
+  qty: number | null;
+  avgEntry: number | null;
+  currentPrice: number | null;
+  marketValue: number | null;
+  unrealizedPl: number | null;
+  unrealizedPlpc: number | null;
 }
 
 export async function getAccount(): Promise<AlpacaAccount | null> {
@@ -39,7 +47,7 @@ export async function getAccount(): Promise<AlpacaAccount | null> {
     const r = await fetch(`${BASE}/v2/account`, { headers: h, cache: "no-store" });
     if (!r.ok) return null;
     const j = await r.json();
-    return { equity: Number(j.equity), buyingPower: Number(j.buying_power), cash: Number(j.cash), paper };
+    return { equity: num(j.equity), cash: num(j.cash), paper };
   } catch {
     return null;
   }
@@ -56,12 +64,12 @@ export async function getPositions(): Promise<AlpacaPosition[]> {
     // deno-lint-ignore no-explicit-any
     return j.map((p: any) => ({
       symbol: String(p.symbol),
-      qty: Number(p.qty),
-      avgEntry: Number(p.avg_entry_price),
-      currentPrice: Number(p.current_price),
-      marketValue: Number(p.market_value),
-      unrealizedPl: Number(p.unrealized_pl),
-      unrealizedPlpc: Number(p.unrealized_plpc),
+      qty: num(p.qty),
+      avgEntry: num(p.avg_entry_price),
+      currentPrice: num(p.current_price),
+      marketValue: num(p.market_value),
+      unrealizedPl: num(p.unrealized_pl),
+      unrealizedPlpc: num(p.unrealized_plpc),
     }));
   } catch {
     return [];

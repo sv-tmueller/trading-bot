@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
+  AlpacaError,
   BrokerCallBlockedError,
   createAlpacaClient,
   OrderRejectedError,
@@ -41,6 +42,44 @@ Deno.test("getClock maps is_open", async () => {
   try {
     const client = createAlpacaClient();
     assertEquals((await client.getClock()).isOpen, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendar returns session dates in range", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/calendar?start=2026-06-01&end=2026-06-05"), true);
+    return Promise.resolve(jsonResponse([
+      { date: "2026-06-01", open: "09:30", close: "16:00" },
+      { date: "2026-06-02", open: "09:30", close: "16:00" },
+      { date: "2026-06-04", open: "09:30", close: "16:00" },
+      { date: "2026-06-05", open: "09:30", close: "16:00" },
+    ]));
+  });
+  try {
+    assertEquals(await createAlpacaClient().getCalendar("2026-06-01", "2026-06-05"), [
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-04",
+      "2026-06-05",
+    ]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendar throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "boom" }, 500)));
+  try {
+    await assertRejects(
+      () => createAlpacaClient().getCalendar("2026-06-01", "2026-06-05"),
+      AlpacaError,
+    );
   } finally {
     restore();
     clearKeys();
@@ -301,19 +340,37 @@ Deno.test("liquidate sells the full position and returns the fill", async () => 
   }
 });
 
-Deno.test("cancelAllOrders returns count of successful cancels", async () => {
+Deno.test("cancelAllOrders returns count when all cancels succeed", async () => {
   setKeys();
   const restore = stubFetch((i, init) => {
     assertEquals(init?.method, "DELETE");
     assertEquals(urlOf(i).endsWith("/v2/orders"), true);
     return Promise.resolve(jsonResponse(
-      [{ id: "a", status: 200 }, { id: "b", status: 500 }, { id: "c", status: 200 }],
+      [{ id: "a", status: 200 }, { id: "b", status: 200 }],
       207,
     ));
   });
   liftBrokerGuard();
   try {
     assertEquals(await createAlpacaClient().cancelAllOrders(), 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelAllOrders throws when any order fails to cancel", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse(
+      [{ id: "a", status: 200 }, { id: "b", status: 500 }],
+      207,
+    ))
+  );
+  liftBrokerGuard();
+  try {
+    // A partial cancel must not be reported as success.
+    await assertRejects(() => createAlpacaClient().cancelAllOrders(), AlpacaError, "failed");
   } finally {
     restore();
     clearKeys();

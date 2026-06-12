@@ -13,6 +13,8 @@ export interface DailyCheckDeps {
     getLatestTradePrice: (symbol: string) => Promise<number>;
   };
   alpaca: {
+    getClock: () => Promise<{ isOpen: boolean }>;
+    getCalendar: (start: string, end: string) => Promise<string[]>;
     getPosition: (symbol: string) => Promise<number>;
     getAccountValue: () => Promise<number>;
     placeMarketOrder: (a: { symbol: string; side: "BUY" | "SELL"; qty: number }) => Promise<Fill>;
@@ -83,22 +85,45 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
 
   try {
-    // Operational pause. Inside the try (finding 11) so a DB throw records an
-    // error:* outcome in the audit row instead of escaping and leaving it open.
+    // Operational pause. Read inside the try so a DB failure here yields an
+    // error:* audit outcome instead of an unhandled throw that escapes with no
+    // outcome written (the index.ts handler has no top-level catch).
     const paused = (await db.getConfig("paused"))?.toLowerCase() === "true";
     if (paused) {
       await finish("skipped:trading_paused", "bot_config.paused is true");
       return "skipped:trading_paused";
     }
 
-    const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    // Post-open execution (#256): the cron fires at 13:37 and 14:37 UTC
+    // year-round; the off-season slot, weekends-after-holiday edge cases, and
+    // market holidays all exit here. Same gate pattern as kill-switch.
+    if (!(await alpaca.getClock()).isOpen) {
+      await finish("skipped:market_closed");
+      return "skipped:market_closed";
+    }
+
+    const barsRaw = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    // The daily-bars feed can include today's in-progress bar during market
+    // hours; the signal must only ever see completed sessions (#256).
+    const today = ymd(deps.now());
+    const barsArr = barsRaw.filter((b) => b.date < today);
     if (barsArr.length === 0) {
-      await finish("skipped:stale_data", "no bars returned");
+      await finish("skipped:stale_data", "no completed bars returned");
       return "skipped:stale_data";
     }
     const lastBar = barsArr[barsArr.length - 1];
-    if (lastBar.date < ymd(deps.now())) {
-      await finish("skipped:stale_data", `last bar=${lastBar.date}, today=${ymd(deps.now())}`);
+    // Staleness: the last completed bar must be the most recent trading day
+    // strictly before today (calendar-aware: holidays, long weekends). At
+    // 13:37/14:37 UTC the UTC date equals the US-Eastern session date, so
+    // `today` bounds both the filter above and the calendar query.
+    const calStart = new Date(deps.now().getTime() - 10 * 86400000).toISOString().slice(0, 10);
+    const sessions = await alpaca.getCalendar(calStart, today);
+    const prevTradingDay = sessions.filter((d) => d < today).pop();
+    if (!prevTradingDay || lastBar.date !== prevTradingDay) {
+      await finish(
+        "skipped:stale_data",
+        `last bar=${lastBar.date}, prev trading day=${prevTradingDay ?? "none"}`,
+      );
       return "skipped:stale_data";
     }
 
@@ -152,8 +177,12 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     const outcome = "success";
 
     if (targetState !== currentState) {
+      // Read account value once, before any order, so a transient read failure
+      // errors cleanly pre-trade rather than after a fill — a post-fill read
+      // failure would skip the state write and mislabel a completed trade as
+      // error. Reused by both the LONG (sizing) and CASH (notification) paths.
+      const accountValue = await alpaca.getAccountValue();
       if (targetState === "LONG") {
-        const accountValue = await alpaca.getAccountValue();
         const vehiclePrice = await marketdata.getLatestTradePrice(config.botTicker);
         const targetQty = Math.floor((accountValue * 0.99) / vehiclePrice);
         if (targetQty <= 0) {
@@ -209,7 +238,7 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
             ticker: config.botTicker,
             fillPrice: fill.fillPrice,
             qty: fill.qty,
-            accountValue: await alpaca.getAccountValue(),
+            accountValue,
           });
           newCurrentState = "CASH";
         } else {

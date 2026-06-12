@@ -14,6 +14,26 @@
 
 ---
 
+> **Stale-base correction (2026-06-11, post-review):** this note was written from a repo snapshot
+> that predated PR #254 (long-horizon backtest, 2009-06-25 → 2026-06-06 real data) and issue #255.
+> Those artifacts materially strengthen the conclusion below and partially supersede §1:
+>
+> - Over the **full real leveraged-ETF era** the bot did **not** beat SPY risk-adjusted: bot
+>   UPRO+200DMA @100% returned +1,119% (15.9% CAGR) at **−58.3%** max drawdown vs SPY buy-and-hold
+>   +1,008% (15.3% CAGR) at **−33.7%** — roughly SPY's return at ~2× the drawdown. The favourable
+>   5y/10y windows in §1 are the strategy's *best* windows, not its expected performance.
+> - So the operator's feeling that "the results are not sufficient" **is supported** on the
+>   long-horizon evidence — but the deficiency is *too much drawdown per unit of return*, which
+>   more margin makes strictly worse. PR #254's lower-leverage variants show the efficient
+>   direction: bot at 50% allocation cuts max DD to −34.5% (≈ SPY's), and SSO (2×) @100% lands
+>   between (−43.6%).
+> - Issue #255 records the operator decision to **not build further on / go live with the
+>   leveraged regime approach** pending a goals-first strategy brainstorm (beat SPY risk-adjusted,
+>   Calmar/Sharpe — explicitly not raw CAGR). Any margin decision belongs inside that process.
+>
+> The recommendation in §4 (defer; do not increase margin) is therefore *reinforced*: the
+> evidence-backed lever for "insufficient results" is the #255 strategy review, not leverage.
+
 ## 1. Are the results actually insufficient?
 
 ### What the backtests say (2026-06-05 run, `backtest/regime.py`)

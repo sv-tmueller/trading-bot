@@ -1,7 +1,7 @@
 // HTTP layer for the panic Edge Function. Split out of index.ts so the
 // method/auth/status mapping is unit-testable without Deno.serve; the action
 // runner is injectable for the same reason (defaults to the real deps).
-import { type PanicAction, runPanic } from "./logic.ts";
+import { type PanicAction, type PanicOpts, type PanicResult, runPanic } from "./logic.ts";
 import { getStrategyConfig } from "../_shared/config.ts";
 import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
@@ -26,29 +26,33 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-function runWithRealDeps(action: PanicAction): Promise<string> {
+function runWithRealDeps(action: PanicAction, opts: PanicOpts): Promise<PanicResult> {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient();
-  return runPanic({
-    config: getStrategyConfig(),
-    now: () => new Date(),
-    alpaca: {
-      cancelAllOrders: () => alpaca.cancelAllOrders(),
-      liquidate: (s) => alpaca.liquidate(s),
+  return runPanic(
+    {
+      config: getStrategyConfig(),
+      now: () => new Date(),
+      alpaca: {
+        cancelAllOrders: () => alpaca.cancelAllOrders(),
+        liquidate: (s) => alpaca.liquidate(s),
+      },
+      db: {
+        setConfig: (k, v) => setConfig(sb, k, v),
+        insertTrade: (p) => insertTrade(sb, p),
+        insertAuditLog: (p) => insertAuditLog(sb, p),
+        updateAuditLog: (p) => updateAuditLog(sb, p),
+      },
+      notifications: { notifyPanic },
     },
-    db: {
-      setConfig: (k, v) => setConfig(sb, k, v),
-      insertTrade: (p) => insertTrade(sb, p),
-      insertAuditLog: (p) => insertAuditLog(sb, p),
-      updateAuditLog: (p) => updateAuditLog(sb, p),
-    },
-    notifications: { notifyPanic },
-  }, action);
+    action,
+    opts,
+  );
 }
 
 export async function handlePanic(
   req: Request,
-  run: (action: PanicAction) => Promise<string> = runWithRealDeps,
+  run: (action: PanicAction, opts: PanicOpts) => Promise<PanicResult> = runWithRealDeps,
 ): Promise<Response> {
   const json = (body: unknown, status: number) =>
     new Response(JSON.stringify(body), {
@@ -74,8 +78,11 @@ export async function handlePanic(
     return json({ error: `action must be one of ${VALID.join("|")}` }, 400);
   }
 
-  const result = await run(action);
+  // Finding 13 / #185 option 1: liquidate auto-pauses unless ?pause=false.
+  const pauseOnLiquidate = url.searchParams.get("pause") !== "false";
+
+  const result = await run(action, { pauseOnLiquidate });
   // Surface a failed action (e.g. liquidate timeout) as 500 so the operator
   // can't mistake an error result for success.
-  return json({ result }, result.startsWith("error:") ? 500 : 200);
+  return json({ result: result.result }, result.ok ? 200 : 500);
 }

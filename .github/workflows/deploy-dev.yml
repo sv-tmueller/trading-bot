@@ -1,0 +1,54 @@
+# Auto-deploy to the Supabase DEV project on every merge to main that touches
+# supabase/. Exists because the paper soak drifted from main twice in one week
+# (4 unpushed migrations found during the #256 deploy; a stale pre-#237
+# kill-switch "protected" a phantom position for 3 sessions — see the soak
+# post-mortem issue). The soak only validates what is actually deployed.
+#
+# PROD (yomamlrozydhgleumnon) is deliberately NOT touched here — go-live (#230)
+# stays a manual, runbook-driven step.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_ACCESS_TOKEN  - personal access token (dedicated token recommended)
+#   SUPABASE_DB_PASSWORD   - dev project database password (for db push)
+name: deploy-dev
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+  # Dev / paper project (trading-bot-dev). Live keys never touch this workflow.
+  PROJECT_REF: qdaxxsuicyiscdvsdowc
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Order matters (#256 final-review finding): functions BEFORE db push.
+      # New function + old cron is fail-closed (clock gate / stale guard);
+      # new cron + old function could trade on a partial bar during RTH.
+      - name: Deploy functions (JWT-verified)
+        run: supabase functions deploy daily-check kill-switch --project-ref "$PROJECT_REF"
+
+      - name: Deploy panic (x-panic-token auth, no JWT)
+        run: supabase functions deploy panic --no-verify-jwt --project-ref "$PROJECT_REF"
+
+      - name: Apply migrations
+        run: |
+          supabase link --project-ref "$PROJECT_REF"
+          supabase db push -p "$SUPABASE_DB_PASSWORD"
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}

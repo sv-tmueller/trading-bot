@@ -29,12 +29,33 @@ export interface PanicDeps {
   notifications: { notifyPanic: (p: { action: string; result: string }) => Promise<void> };
 }
 
-export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<string> {
+export interface PanicResult {
+  ok: boolean;
+  result: string;
+}
+
+export interface PanicOpts {
+  // Finding 13 (2026-06-11 review) / issue #185 option 1: a successful
+  // liquidate ALSO pauses trading by default, so the next daily-check cannot
+  // re-buy the position the operator just dumped while SPY is still bullish.
+  // Explicit opt-out (?pause=false) supports the brief-flatten-then-auto-resume
+  // workflow. A failed liquidation never pauses.
+  pauseOnLiquidate?: boolean;
+}
+
+export async function runPanic(
+  deps: PanicDeps,
+  action: PanicAction,
+  opts: PanicOpts = {},
+): Promise<PanicResult> {
   const { db, alpaca, config } = deps;
+  const pauseOnLiquidate = opts.pauseOnLiquidate ?? true;
   const iso = (d: Date) => d.toISOString();
   // Audit row is written BEFORE any broker call (recoverable on partial run).
   const auditId = await db.insertAuditLog({ scriptName: "panic", startedAt: iso(deps.now()) });
+  let ok = false;
   let result = "";
+  let err: Error | null = null;
   try {
     switch (action) {
       case "pause":
@@ -66,37 +87,35 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<st
         } else {
           result = "no position to liquidate";
         }
-        // Finding 13: a successful liquidate also pauses, otherwise a still-
-        // bullish SPY would make the next daily-check re-buy the position the
-        // operator just dumped. Clear with action=resume.
-        await db.setConfig("paused", "true");
-        result += "; trading paused";
+        // Finding 13 / #185 option 1: pause AFTER a successful liquidation (a
+        // throw above skips this), unless explicitly opted out via pause=false.
+        // The result string always says which happened.
+        if (pauseOnLiquidate) {
+          await db.setConfig("paused", "true");
+          result += "; trading paused";
+        } else {
+          result += "; trading NOT paused (pause=false)";
+        }
         break;
       }
       default:
         throw new Error(`unknown action: ${action}`);
     }
-    // Close the audit row FIRST, then notify fire-and-forget — a notification
-    // failure must not flip a successful action's outcome to error.
-    await db.updateAuditLog({
-      id: auditId,
-      finishedAt: iso(deps.now()),
-      outcome: "success:panic",
-      notes: `${action}: ${result}`,
-    });
+    ok = true;
+    // Notify fire-and-forget — a notification failure must not flip a
+    // successful action's outcome to error.
     try {
       await deps.notifications.notifyPanic({ action, result });
     } catch (_e) { /* fire-and-forget */ }
-    return result;
   } catch (e) {
-    const err = e as Error;
-    const outcome = `error:${err.name}`;
-    await db.updateAuditLog({
-      id: auditId,
-      finishedAt: iso(deps.now()),
-      outcome,
-      notes: `${action}: ${err.message}`.slice(0, 500),
-    });
-    return `${outcome}: ${err.message}`;
+    err = e as Error;
+    result = `${err.name}: ${err.message}`;
+  } finally {
+    // Single point that closes the audit row — matches the documented
+    // "updated in a finally" contract and avoids a double-update.
+    const outcome = ok ? "success:panic" : `error:${err?.name}`;
+    const notes = ok ? `${action}: ${result}` : `${action}: ${err?.message}`.slice(0, 500);
+    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
   }
+  return { ok, result };
 }

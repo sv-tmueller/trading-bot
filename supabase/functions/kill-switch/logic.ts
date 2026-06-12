@@ -86,25 +86,34 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
 
   try {
     const latest = await db.getLatestRegimeState();
-    if (!latest || latest.current_state !== "LONG") {
-      // #266: the DB can lag broker truth (e.g. a BUY filled but the DB write
-      // failed). Reconcile against the broker before declaring "no position" —
-      // a real position must stay protected until daily-check resyncs the DB.
-      const liveQty = await alpaca.getPosition(config.botTicker);
-      if (liveQty <= 0) {
-        await finish("success:no_position");
-        return "success:no_position";
-      }
-      desyncNote = `state_desync db=${
-        latest?.current_state ?? "none"
-      } broker=LONG qty=${liveQty}; `;
+
+    // Reconcile against broker truth: the kill-switch protects the ACTUAL
+    // position, not the DB's belief, so a DB/broker desync can't leave a real
+    // position unprotected (#237). The broker is the source of truth for
+    // "is there a position".
+    const qty = await alpaca.getPosition(config.botTicker);
+    if (qty <= 0) {
+      await finish("success:no_position");
+      return "success:no_position";
+    }
+
+    // Broker holds a position. If the DB didn't know, surface the desync.
+    const dbState: "LONG" | "CASH" = latest?.current_state === "LONG" ? "LONG" : "CASH";
+    if (dbState !== "LONG") {
+      desyncNote = `state_desync db=${latest?.current_state ?? "none"} broker=LONG qty=${qty}; `;
       await notifications.notifyStateDesync({
-        dbState: "CASH",
+        dbState,
         brokerState: "LONG",
         symbol: config.botTicker,
         actionTaken: "kill-switch continuing drawdown check on the live position",
       });
     }
+
+    // With no regime_state row at all (anomalous — daily-check writes a row
+    // every weekday) the drawdown check still continues so the live position
+    // stays protected (#266): the regime_state upserts below are skipped (no
+    // SPY data here to satisfy the NOT NULL spy_close/spy_sma200 columns) and
+    // daily-check resyncs the DB on its next run.
 
     if (!(await alpaca.getClock()).isOpen) {
       await finish("skipped:market_closed");
@@ -172,20 +181,26 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
 
     // Threshold breached — liquidate.
     const fill = await alpaca.liquidate(config.botTicker);
+
+    // Persist the flip to CASH + kill_switch_active FIRST, before insertTrade or
+    // the notification, so a later DB/notify failure cannot erase the fact that
+    // the kill-switch fired (#238). Runs whether or not there was a position to
+    // sell, but is skipped when no regime_state row exists (#266 desync path).
+    if (latest) {
+      await db.upsertRegimeState({
+        date: ymd(deps.now()),
+        spyClose: latest.spy_close,
+        spySma200: latest.spy_sma200,
+        targetState: "CASH",
+        currentState: "CASH",
+        positionDrawdownPct: drawdown,
+        killSwitchActive: true,
+        killSwitchFiredAt: iso(deps.now()),
+      });
+    }
+
     if (fill === null) {
-      // Position already gone — still flip state to CASH and set kill_switch_active.
-      if (latest) {
-        await db.upsertRegimeState({
-          date: ymd(deps.now()),
-          spyClose: latest.spy_close,
-          spySma200: latest.spy_sma200,
-          targetState: "CASH",
-          currentState: "CASH",
-          positionDrawdownPct: drawdown,
-          killSwitchActive: true,
-          killSwitchFiredAt: iso(deps.now()),
-        });
-      }
+      // Position already gone — state is flipped above; no fill to record.
       await finish("success:no_position_to_liquidate");
       return "success:no_position_to_liquidate";
     }
@@ -199,18 +214,6 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       brokerOrderId: fill.orderId,
       reason: "kill_switch",
     });
-    if (latest) {
-      await db.upsertRegimeState({
-        date: ymd(deps.now()),
-        spyClose: latest.spy_close,
-        spySma200: latest.spy_sma200,
-        targetState: "CASH",
-        currentState: "CASH",
-        positionDrawdownPct: drawdown,
-        killSwitchActive: true,
-        killSwitchFiredAt: iso(deps.now()),
-      });
-    }
     await notifications.notifyKillSwitchFired({
       ticker: config.botTicker,
       drawdownPct: drawdown,

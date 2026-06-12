@@ -19,36 +19,24 @@ async function digestsEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-// Parses an `Authorization: Basic <base64(user:password)>` header. Returns null
-// on a missing/malformed header.
-export function parseBasicAuth(header: string | null): { user: string; password: string } | null {
+// Decodes an `Authorization: Basic <base64(user:password)>` header to the raw
+// "user:password" string. Returns null on a missing/malformed header.
+export function decodeBasicAuth(header: string | null): string | null {
   if (!header) return null;
   const m = header.match(/^Basic\s+(.+)$/i);
   if (!m) return null;
-  let decoded: string;
   try {
-    decoded = atob(m[1]);
+    return atob(m[1]);
   } catch {
     return null;
   }
-  const sep = decoded.indexOf(":");
-  if (sep === -1) return null;
-  return { user: decoded.slice(0, sep), password: decoded.slice(sep + 1) };
 }
 
-// True iff the Authorization header carries the expected Basic credentials.
-// Both comparisons always run (no short-circuit on a wrong username) and each
-// is constant-time over the SHA-256 digests.
-export async function isAuthorized(
-  header: string | null,
-  expectedUser: string,
-  expectedPassword: string,
-): Promise<boolean> {
-  const creds = parseBasicAuth(header);
-  if (!creds) return false;
-  const [userOk, passwordOk] = await Promise.all([
-    digestsEqual(creds.user, expectedUser),
-    digestsEqual(creds.password, expectedPassword),
-  ]);
-  return userOk && passwordOk;
+// True iff the Authorization header carries Basic credentials matching the
+// expected "user:pass" string (DASHBOARD_BASIC_AUTH). The comparison is
+// constant-time over the SHA-256 digests (finding 12, 2026-06-11 review).
+export async function isAuthorized(header: string | null, expected: string): Promise<boolean> {
+  const decoded = decodeBasicAuth(header);
+  if (decoded === null) return false;
+  return await digestsEqual(decoded, expected);
 }

@@ -5,12 +5,21 @@
 import { getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
 import { requireNumber } from "./num.ts";
 
-export class BrokerCallBlockedError extends Error {}
-export class AlpacaError extends Error {}
-export class OrderTimeoutError extends Error {}
+// Set .name so the deterministic `error:${err.name}` audit outcomes distinguish
+// broker errors (e.g. error:AlpacaError) instead of collapsing to error:Error.
+export class BrokerCallBlockedError extends Error {
+  override name = "BrokerCallBlockedError";
+}
+export class AlpacaError extends Error {
+  override name = "AlpacaError";
+}
+export class OrderTimeoutError extends Error {
+  override name = "OrderTimeoutError";
+}
 // Terminal non-fill (rejected/canceled/expired) detected while polling (#267).
 // Carries Alpaca's order status, plus its reason in the message when present.
 export class OrderRejectedError extends Error {
+  override name = "OrderRejectedError";
   readonly status: string;
   constructor(message: string, status: string) {
     super(message);
@@ -32,6 +41,8 @@ export interface PollOpts {
 
 export interface AlpacaClient {
   getClock(): Promise<{ isOpen: boolean }>;
+  /** US trading-session dates (YYYY-MM-DD) in [start, end], oldest-first. */
+  getCalendar(start: string, end: string): Promise<string[]>;
   getAccountValue(): Promise<number>;
   getPosition(symbol: string): Promise<number>;
   placeMarketOrder(
@@ -79,6 +90,18 @@ export function createAlpacaClient(): AlpacaClient {
   async function getClock() {
     const j = await tradeJson("/v2/clock");
     return { isOpen: Boolean(j.is_open) };
+  }
+
+  async function getCalendar(start: string, end: string): Promise<string[]> {
+    const res = await trade(`/v2/calendar?start=${start}&end=${end}`);
+    if (!res.ok) {
+      throw new AlpacaError(`GET calendar -> ${res.status}: ${await res.text()}`);
+    }
+    const arr = await res.json();
+    if (!Array.isArray(arr)) {
+      throw new AlpacaError("GET calendar -> unexpected non-array body");
+    }
+    return arr.map((e) => String((e as { date: unknown }).date));
   }
 
   async function getAccountValue() {
@@ -200,8 +223,25 @@ export function createAlpacaClient(): AlpacaClient {
     if (!res.ok) throw new AlpacaError(`DELETE orders -> ${res.status}: ${await res.text()}`);
     const arr = await res.json();
     if (!Array.isArray(arr)) return 0;
-    return arr.filter((e) => Number((e as { status?: number }).status) === 200).length;
+    const cancelled = arr.filter((e) => Number((e as { status?: number }).status) === 200).length;
+    const failed = arr.length - cancelled;
+    if (failed > 0) {
+      // Don't report a partial cancel as success — surface it so the panic
+      // operator sees a 500 instead of "cancelled N orders".
+      throw new AlpacaError(
+        `cancel-all: ${cancelled} cancelled, ${failed} failed of ${arr.length}`,
+      );
+    }
+    return cancelled;
   }
 
-  return { getClock, getAccountValue, getPosition, placeMarketOrder, liquidate, cancelAllOrders };
+  return {
+    getClock,
+    getCalendar,
+    getAccountValue,
+    getPosition,
+    placeMarketOrder,
+    liquidate,
+    cancelAllOrders,
+  };
 }

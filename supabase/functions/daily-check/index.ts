@@ -1,13 +1,21 @@
-import { runDailyCheck, type DailyCheckDeps } from "./logic.ts";
+import { type DailyCheckDeps, runDailyCheck } from "./logic.ts";
 import { getStrategyConfig } from "../_shared/config.ts";
 import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import {
-  getConfig, getLatestRegimeState, insertAuditLog, insertTrade, updateAuditLog, upsertRegimeState,
+  getConfig,
+  getLatestRegimeState,
+  insertAuditLog,
+  insertTrade,
+  updateAuditLog,
+  upsertRegimeState,
 } from "../_shared/db.ts";
 import {
-  notifyBrokerError, notifyRegimeFlip, notifyStateDesync, notifyTradeFailed,
+  notifyBrokerError,
+  notifyRegimeFlip,
+  notifyStateDesync,
+  notifyTradeFailed,
 } from "../_shared/notifications.ts";
 
 function buildDeps(): DailyCheckDeps {
@@ -18,6 +26,8 @@ function buildDeps(): DailyCheckDeps {
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice },
     alpaca: {
+      getClock: () => alpaca.getClock(),
+      getCalendar: (s, e) => alpaca.getCalendar(s, e),
       getPosition: (s) => alpaca.getPosition(s),
       getAccountValue: () => alpaca.getAccountValue(),
       placeMarketOrder: (a) => alpaca.placeMarketOrder(a),

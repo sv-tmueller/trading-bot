@@ -1,6 +1,7 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
+  coerceRegimeRow,
   getConfig,
   getLatestRegimeState,
   insertAuditLog,
@@ -9,6 +10,7 @@ import {
   updateAuditLog,
   upsertRegimeState,
 } from "./db.ts";
+import { DataError } from "./num.ts";
 
 const RUN = Deno.env.get("RUN_DB_TESTS") === "1";
 
@@ -104,4 +106,67 @@ Deno.test({
     await setConfig(sb, "paused", "false");
     assertEquals(await getConfig(sb, "paused"), "false");
   },
+});
+
+Deno.test("coerceRegimeRow: numeric strings -> numbers (PostgREST returns numeric as string)", () => {
+  const row = coerceRegimeRow({
+    date: "2026-06-06",
+    spy_close: "412.3400",
+    spy_sma200: "400.1267",
+    target_state: "LONG",
+    current_state: "LONG",
+    position_drawdown_pct: "-0.250000",
+    kill_switch_active: true,
+    kill_switch_fired_at: null,
+  });
+  assertEquals(row.spy_close, 412.34);
+  assertEquals(row.spy_sma200, 400.1267);
+  assertEquals(row.position_drawdown_pct, -0.25);
+  assertEquals(row.current_state, "LONG");
+});
+
+Deno.test("coerceRegimeRow: null drawdown stays null", () => {
+  const row = coerceRegimeRow({
+    date: "2026-06-06",
+    spy_close: "400",
+    spy_sma200: "380",
+    target_state: "CASH",
+    current_state: "CASH",
+    position_drawdown_pct: null,
+    kill_switch_active: false,
+    kill_switch_fired_at: null,
+  });
+  assertEquals(row.position_drawdown_pct, null);
+});
+
+Deno.test("coerceRegimeRow: also accepts numbers (pre-migration doubles round-trip)", () => {
+  const row = coerceRegimeRow({
+    date: "2026-06-06",
+    spy_close: 400,
+    spy_sma200: 380,
+    target_state: "LONG",
+    current_state: "LONG",
+    position_drawdown_pct: -0.1,
+    kill_switch_active: false,
+    kill_switch_fired_at: null,
+  });
+  assertEquals(row.spy_close, 400);
+  assertEquals(row.position_drawdown_pct, -0.1);
+});
+
+Deno.test("coerceRegimeRow: non-numeric spy_close throws", () => {
+  assertThrows(
+    () =>
+      coerceRegimeRow({
+        date: "x",
+        spy_close: "not-a-number",
+        spy_sma200: "380",
+        target_state: "LONG",
+        current_state: "LONG",
+        position_drawdown_pct: null,
+        kill_switch_active: false,
+        kill_switch_fired_at: null,
+      }),
+    DataError,
+  );
 });

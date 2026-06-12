@@ -2,33 +2,31 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { isAuthorized } from "@/lib/auth";
 
-// HTTP Basic Auth for the whole dashboard (2026-06-11 code review, finding 12).
-// The page renders live account equity, positions, trades, and kill-switch
-// state, so it must never be served unauthenticated. Credentials come from the
-// server-side env vars DASHBOARD_USER / DASHBOARD_PASSWORD (never NEXT_PUBLIC_).
+// Optional HTTP Basic auth gate — DEFAULT-OFF (opt-in / default-OFF pattern).
 //
-// Fails closed: if DASHBOARD_PASSWORD is unset, every request gets a 503
-// instead of data. Wrong/missing credentials get a 401 with a Basic challenge.
-
+// When DASHBOARD_BASIC_AUTH is set (format "user:pass"), every request must
+// carry matching Basic credentials or it is rejected with 401. When the env var
+// is UNSET (the default), requests pass through unchanged so the current paper-
+// soak deployment stays open. Turn this on as the go-live step before pointing
+// the dashboard at live/prod keys (URL secrecy is not access control).
+//
+// The credential comparison is constant-time over SHA-256 digests (finding 12,
+// 2026-06-11 review) — see lib/auth.ts.
 export async function middleware(req: NextRequest) {
-  const user = process.env.DASHBOARD_USER;
-  const password = process.env.DASHBOARD_PASSWORD;
+  const expected = process.env.DASHBOARD_BASIC_AUTH;
+  if (!expected) return NextResponse.next();
 
-  if (!password) {
-    return new NextResponse("dashboard auth not configured", { status: 503 });
-  }
-
-  if (await isAuthorized(req.headers.get("authorization"), user ?? "", password)) {
+  if (await isAuthorized(req.headers.get("authorization"), expected)) {
     return NextResponse.next();
   }
 
-  return new NextResponse("Unauthorized", {
+  return new NextResponse("Authentication required.", {
     status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="trading-bot"' },
+    headers: { "WWW-Authenticate": 'Basic realm="Trading Bot Dashboard"' },
   });
 }
 
+// Apply to all routes except Next internals and static assets.
 export const config = {
-  // Everything except Next.js static assets and the favicon.
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
