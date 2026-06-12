@@ -13,11 +13,18 @@ export interface PanicDeps {
   db: {
     setConfig: (key: string, value: string) => Promise<void>;
     insertTrade: (p: {
-      symbol: string; side: "BUY" | "SELL"; qty: number; fillPrice: number; fillTime: string;
-      brokerOrderId: string; reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
+      symbol: string;
+      side: "BUY" | "SELL";
+      qty: number;
+      fillPrice: number;
+      fillTime: string;
+      brokerOrderId: string;
+      reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
-    updateAuditLog: (p: { id: number; finishedAt: string; outcome: string; notes?: string | null }) => Promise<void>;
+    updateAuditLog: (
+      p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
+    ) => Promise<void>;
   };
   notifications: { notifyPanic: (p: { action: string; result: string }) => Promise<void> };
 }
@@ -27,8 +34,22 @@ export interface PanicResult {
   result: string;
 }
 
-export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<PanicResult> {
+export interface PanicOpts {
+  // Finding 13 (2026-06-11 review) / issue #185 option 1: a successful
+  // liquidate ALSO pauses trading by default, so the next daily-check cannot
+  // re-buy the position the operator just dumped while SPY is still bullish.
+  // Explicit opt-out (?pause=false) supports the brief-flatten-then-auto-resume
+  // workflow. A failed liquidation never pauses.
+  pauseOnLiquidate?: boolean;
+}
+
+export async function runPanic(
+  deps: PanicDeps,
+  action: PanicAction,
+  opts: PanicOpts = {},
+): Promise<PanicResult> {
   const { db, alpaca, config } = deps;
+  const pauseOnLiquidate = opts.pauseOnLiquidate ?? true;
   const iso = (d: Date) => d.toISOString();
   // Audit row is written BEFORE any broker call (recoverable on partial run).
   const auditId = await db.insertAuditLog({ scriptName: "panic", startedAt: iso(deps.now()) });
@@ -54,12 +75,26 @@ export async function runPanic(deps: PanicDeps, action: PanicAction): Promise<Pa
         const fill = await alpaca.liquidate(config.botTicker);
         if (fill) {
           await db.insertTrade({
-            symbol: config.botTicker, side: "SELL", qty: fill.qty, fillPrice: fill.fillPrice,
-            fillTime: fill.fillTime, brokerOrderId: fill.orderId, reason: "panic_cli",
+            symbol: config.botTicker,
+            side: "SELL",
+            qty: fill.qty,
+            fillPrice: fill.fillPrice,
+            fillTime: fill.fillTime,
+            brokerOrderId: fill.orderId,
+            reason: "panic_cli",
           });
           result = `liquidated ${fill.qty} ${config.botTicker} @ ${fill.fillPrice}`;
         } else {
           result = "no position to liquidate";
+        }
+        // Finding 13 / #185 option 1: pause AFTER a successful liquidation (a
+        // throw above skips this), unless explicitly opted out via pause=false.
+        // The result string always says which happened.
+        if (pauseOnLiquidate) {
+          await db.setConfig("paused", "true");
+          result += "; trading paused";
+        } else {
+          result += "; trading NOT paused (pause=false)";
         }
         break;
       }

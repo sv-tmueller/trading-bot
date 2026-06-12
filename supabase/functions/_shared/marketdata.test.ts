@@ -18,6 +18,8 @@ Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
     assertEquals(urlOf(i).includes("/v2/stocks/SPY/bars"), true);
     assertEquals(urlOf(i).includes("feed=iex"), true);
     assertEquals(urlOf(i).includes("sort=asc"), true);
+    // #265: must match the backtest's auto-adjusted data (dividends + splits).
+    assertEquals(urlOf(i).includes("adjustment=all"), true);
     return Promise.resolve(jsonResponse({
       bars: [
         { t: "2026-06-03T04:00:00Z", o: 1, h: 401, l: 1, c: 400, v: 1 },
@@ -38,7 +40,9 @@ Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
 
 Deno.test("getDailyCloses returns [] on empty history", async () => {
   setKeys();
-  const restore = stubFetch(() => Promise.resolve(jsonResponse({ bars: null, next_page_token: null })));
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ bars: null, next_page_token: null }))
+  );
   try {
     assertEquals(await getDailyCloses("SPY", 250), []);
   } finally {

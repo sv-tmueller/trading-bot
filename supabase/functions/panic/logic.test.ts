@@ -1,28 +1,58 @@
 import { assertEquals } from "@std/assert";
-import { runPanic, type PanicDeps } from "./logic.ts";
+import { type PanicDeps, runPanic } from "./logic.ts";
 
-function makeDeps(over: Partial<PanicDeps> = {}): { deps: PanicDeps; calls: Record<string, unknown> } {
+function makeDeps(
+  over: Partial<PanicDeps> = {},
+): { deps: PanicDeps; calls: Record<string, unknown> } {
   const calls: Record<string, unknown> = {};
   const defaultAlpaca: PanicDeps["alpaca"] = {
-    cancelAllOrders: () => { calls.cancel = true; return Promise.resolve(3); },
-    liquidate: () => { calls.liquidate = true; return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" }); },
+    cancelAllOrders: () => {
+      calls.cancel = true;
+      return Promise.resolve(3);
+    },
+    liquidate: () => {
+      calls.liquidate = true;
+      return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
+    },
   };
   const defaultDb: PanicDeps["db"] = {
-    setConfig: (k, v) => { calls.setConfig = [k, v]; return Promise.resolve(); },
-    insertTrade: (p) => { calls.insertTrade = p; return Promise.resolve(1); },
+    setConfig: (k, v) => {
+      calls.setConfig = [k, v];
+      return Promise.resolve();
+    },
+    insertTrade: (p) => {
+      calls.insertTrade = p;
+      return Promise.resolve(1);
+    },
     insertAuditLog: () => Promise.resolve(5),
-    updateAuditLog: (p) => { calls.audit = p; return Promise.resolve(); },
+    updateAuditLog: (p) => {
+      calls.audit = p;
+      return Promise.resolve();
+    },
   };
   const deps: PanicDeps = {
-    config: { regimeSmaDays: 200, killSwitchDrawdownPct: 0.25, killSwitchLookbackDays: 30, botTicker: "UPRO", botBenchmark: "SPY" },
+    config: {
+      regimeSmaDays: 200,
+      killSwitchDrawdownPct: 0.25,
+      killSwitchLookbackDays: 30,
+      botTicker: "UPRO",
+      botBenchmark: "SPY",
+    },
     now: () => new Date(Date.UTC(2026, 5, 5, 15, 0)),
     alpaca: { ...defaultAlpaca, ...(over.alpaca as unknown as PanicDeps["alpaca"]) },
     db: { ...defaultDb, ...(over.db as unknown as PanicDeps["db"]) },
-    notifications: { notifyPanic: () => { calls.panic = true; return Promise.resolve(); } },
+    notifications: {
+      notifyPanic: () => {
+        calls.panic = true;
+        return Promise.resolve();
+      },
+    },
     ...over,
   };
   // Re-apply merges: spread over captured defaults (not over itself)
-  if (over.alpaca) deps.alpaca = { ...defaultAlpaca, ...over.alpaca as unknown as PanicDeps["alpaca"] };
+  if (over.alpaca) {
+    deps.alpaca = { ...defaultAlpaca, ...over.alpaca as unknown as PanicDeps["alpaca"] };
+  }
   if (over.db) deps.db = { ...defaultDb, ...over.db as unknown as PanicDeps["db"] };
   return { deps, calls };
 }
@@ -60,12 +90,35 @@ Deno.test("liquidate sells + writes panic_cli trade", async () => {
   assertEquals(r.result.includes("liquidated"), true);
 });
 
-Deno.test("liquidate with no position reports no position", async () => {
-  const { deps, calls } = makeDeps({ alpaca: { liquidate: () => Promise.resolve(null) } as unknown as PanicDeps["alpaca"] });
+Deno.test("liquidate also pauses trading by default (finding 13 / #185 option 1)", async () => {
+  // Without the pause, a still-bullish SPY would make the next daily-check
+  // re-buy the position the operator just dumped.
+  const { deps, calls } = makeDeps();
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(calls.setConfig, ["paused", "true"]);
+  assertEquals(r.ok, true);
+  assertEquals(r.result.includes("trading paused"), true);
+});
+
+Deno.test("liquidate with pauseOnLiquidate=false does NOT pause and says so", async () => {
+  // #185 option 1 opt-out (?pause=false): brief flatten without locking the bot
+  // out; the result string makes the choice explicit.
+  const { deps, calls } = makeDeps();
+  const r = await runPanic(deps, "liquidate", { pauseOnLiquidate: false });
+  assertEquals(calls.setConfig, undefined);
+  assertEquals(r.ok, true);
+  assertEquals(r.result.includes("NOT paused"), true);
+});
+
+Deno.test("liquidate with no position reports no position and still pauses", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: { liquidate: () => Promise.resolve(null) } as unknown as PanicDeps["alpaca"],
+  });
   const r = await runPanic(deps, "liquidate");
   assertEquals(r.ok, true);
-  assertEquals(r.result, "no position to liquidate");
+  assertEquals(r.result, "no position to liquidate; trading paused");
   assertEquals(calls.insertTrade, undefined);
+  assertEquals(calls.setConfig, ["paused", "true"]);
 });
 
 Deno.test("unknown action -> error", async () => {
@@ -100,6 +153,9 @@ Deno.test("liquidate broker failure -> ok:false + error audit outcome, no trade"
   assertEquals(r.ok, false);
   assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
   assertEquals(calls.insertTrade, undefined);
+  // A failed liquidation must NOT pause (finding 13): the throw precedes the
+  // pause write, so the operator retries from a known state.
+  assertEquals(calls.setConfig, undefined);
 });
 
 Deno.test("cancel-orders broker failure -> ok:false + error audit outcome", async () => {

@@ -47,10 +47,12 @@ trade — exceeds `KILL_SWITCH_DRAWDOWN_PCT` (default 25%), it liquidates the po
 back above the 200-DMA, at which point the bot re-enters LONG — so a single bad-week kill-switch
 fire does not lock the bot out of the next bull run.
 
-**Panic kill button.** `panic` is a token-authenticated Edge Function (header `x-panic-token`).
-`action=pause|resume|cancel-orders|liquidate`. The `pause` flag lives in the `bot_config` DB row
-(serverless env vars are not runtime-writable), so `pause`/`resume` toggle it; `cancel-orders` and
-`liquidate` call Alpaca directly. No LLM is in this path.
+**Panic kill button.** `panic` is a token-authenticated Edge Function (header `x-panic-token`,
+POST only). `action=pause|resume|cancel-orders|liquidate`. The `pause` flag lives in the
+`bot_config` DB row (serverless env vars are not runtime-writable), so `pause`/`resume` toggle it;
+`cancel-orders` and `liquidate` call Alpaca directly. A successful `liquidate` **also sets
+`paused=true`** so the next daily-check cannot re-buy the position you just dumped — clear it with
+`action=resume` when you want the bot trading again. No LLM is in this path.
 
 ## Database
 
@@ -112,7 +114,7 @@ Invoke the panic kill button over HTTP:
 ```bash
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" \
   -H "x-panic-token: <token>"
-# actions: pause | resume | cancel-orders | liquidate
+# actions: pause | resume | cancel-orders | liquidate (liquidate also sets paused=true)
 # 200 = success; 500 with an error: result = the action failed (don't treat it as success)
 ```
 

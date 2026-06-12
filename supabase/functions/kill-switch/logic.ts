@@ -38,7 +38,9 @@ export interface KillSwitchDeps {
       reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
-    updateAuditLog: (p: { id: number; finishedAt: string; outcome: string; notes?: string | null }) => Promise<void>;
+    updateAuditLog: (
+      p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
+    ) => Promise<void>;
   };
   notifications: {
     notifyKillSwitchFired: (p: {
@@ -49,11 +51,17 @@ export interface KillSwitchDeps {
       qty: number;
       fillPrice: number;
     }) => Promise<void>;
-    notifyTradeFailed: (p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string }) => Promise<void>;
-    notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
-    notifyStateDesync: (
-      p: { dbState: "LONG" | "CASH"; brokerState: "LONG" | "CASH"; symbol: string; actionTaken: string },
+    notifyTradeFailed: (
+      p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string },
     ) => Promise<void>;
+    notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
+    notifyStateDesync: (p: {
+      dbState: "LONG" | "CASH";
+      brokerState: "LONG" | "CASH";
+      symbol: string;
+      actionTaken: string;
+    }) => Promise<void>;
+    notifyError: (message: string) => Promise<void>;
   };
 }
 
@@ -61,9 +69,20 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
   const { config, db, alpaca, marketdata, notifications } = deps;
   const iso = (d: Date) => d.toISOString();
   const ymd = (d: Date) => d.toISOString().slice(0, 10);
-  const auditId = await db.insertAuditLog({ scriptName: "kill-switch", startedAt: iso(deps.now()) });
+  const auditId = await db.insertAuditLog({
+    scriptName: "kill-switch",
+    startedAt: iso(deps.now()),
+  });
+  // desyncNote (#266) is prepended to every audit-notes write once a DB/broker
+  // state desync is detected, so the forensic trail survives in audit_log.
+  let desyncNote = "";
   const finish = (outcome: string, notes?: string) =>
-    db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
+    db.updateAuditLog({
+      id: auditId,
+      finishedAt: iso(deps.now()),
+      outcome,
+      notes: desyncNote === "" ? notes : `${desyncNote}${notes ?? ""}`,
+    });
 
   try {
     const latest = await db.getLatestRegimeState();
@@ -81,31 +100,35 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     // Broker holds a position. If the DB didn't know, surface the desync.
     const dbState: "LONG" | "CASH" = latest?.current_state === "LONG" ? "LONG" : "CASH";
     if (dbState !== "LONG") {
+      desyncNote = `state_desync db=${latest?.current_state ?? "none"} broker=LONG qty=${qty}; `;
       await notifications.notifyStateDesync({
         dbState,
         brokerState: "LONG",
         symbol: config.botTicker,
-        actionTaken: "kill-switch protecting live broker position",
+        actionTaken: "kill-switch continuing drawdown check on the live position",
       });
     }
 
-    if (!latest) {
-      // Position exists but there is no regime_state row to carry forward
-      // (spy_close/spy_sma200 are NOT NULL). Anomalous — daily-check writes a row
-      // every weekday — so surface it (desync already notified) and skip rather
-      // than fabricate regime values for the audit row.
-      await finish("skipped:no_regime_state", `broker qty=${qty} but no regime_state row`);
-      return "skipped:no_regime_state";
-    }
+    // With no regime_state row at all (anomalous — daily-check writes a row
+    // every weekday) the drawdown check still continues so the live position
+    // stays protected (#266): the regime_state upserts below are skipped (no
+    // SPY data here to satisfy the NOT NULL spy_close/spy_sma200 columns) and
+    // daily-check resyncs the DB on its next run.
 
     if (!(await alpaca.getClock()).isOpen) {
       await finish("skipped:market_closed");
       return "skipped:market_closed";
     }
 
-    const barsArr = await marketdata.getDailyCloses(config.botTicker, config.killSwitchLookbackDays + 10);
+    const barsArr = await marketdata.getDailyCloses(
+      config.botTicker,
+      config.killSwitchLookbackDays + 10,
+    );
     if (barsArr.length < config.killSwitchLookbackDays) {
-      await finish("skipped:insufficient_data", `only ${barsArr.length} bars, need ${config.killSwitchLookbackDays}`);
+      await finish(
+        "skipped:insufficient_data",
+        `only ${barsArr.length} bars, need ${config.killSwitchLookbackDays}`,
+      );
       return "skipped:insufficient_data";
     }
 
@@ -117,19 +140,39 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     const lastPrice = await marketdata.getLatestTradePrice(config.botTicker);
     const recentHighs = barsArr.slice(-config.killSwitchLookbackDays).map((b) => b.high);
     const refHigh = Math.max(...recentHighs, lastPrice);
+
+    // Plausibility guard (#265): a >50% drop from the lookback high is impossible
+    // for a 3x ETF inside a ~30-day window without a corporate action (e.g. an
+    // unadjusted forward split) or a bad print. Do NOT liquidate on such data —
+    // alert the operator and exit non-fatally instead.
+    if (refHigh / lastPrice > 2) {
+      const msg = `kill-switch: implausible drawdown for ${config.botTicker}: ` +
+        `refHigh=${refHigh} lastPrice=${lastPrice} (ratio ${
+          (refHigh / lastPrice).toFixed(2)
+        } > 2); ` +
+        `suspected corporate action or bad data — NOT liquidating`;
+      await notifications.notifyError(msg);
+      await finish("error:implausible_drawdown", msg);
+      return "error:implausible_drawdown";
+    }
+
     const drawdown = lastPrice / refHigh - 1;
 
-    // Persist drawdown update (still LONG at this point).
-    await db.upsertRegimeState({
-      date: ymd(deps.now()),
-      spyClose: latest.spy_close,
-      spySma200: latest.spy_sma200,
-      targetState: latest.target_state,
-      currentState: "LONG",
-      positionDrawdownPct: drawdown,
-      killSwitchActive: latest.kill_switch_active,
-      killSwitchFiredAt: latest.kill_switch_fired_at,
-    });
+    // Persist drawdown update (still LONG at this point). Skipped only when no
+    // regime_state row exists at all (#266 desync path) — there is no SPY data
+    // in this function to seed one, and daily-check resyncs on its next run.
+    if (latest) {
+      await db.upsertRegimeState({
+        date: ymd(deps.now()),
+        spyClose: latest.spy_close,
+        spySma200: latest.spy_sma200,
+        targetState: latest.target_state,
+        currentState: "LONG",
+        positionDrawdownPct: drawdown,
+        killSwitchActive: latest.kill_switch_active,
+        killSwitchFiredAt: latest.kill_switch_fired_at,
+      });
+    }
 
     if (drawdown > -config.killSwitchDrawdownPct) {
       await finish("success:within_threshold", `dd=${drawdown.toFixed(4)}`);
@@ -141,17 +184,20 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
 
     // Persist the flip to CASH + kill_switch_active FIRST, before insertTrade or
     // the notification, so a later DB/notify failure cannot erase the fact that
-    // the kill-switch fired. Runs whether or not there was a position to sell.
-    await db.upsertRegimeState({
-      date: ymd(deps.now()),
-      spyClose: latest.spy_close,
-      spySma200: latest.spy_sma200,
-      targetState: "CASH",
-      currentState: "CASH",
-      positionDrawdownPct: drawdown,
-      killSwitchActive: true,
-      killSwitchFiredAt: iso(deps.now()),
-    });
+    // the kill-switch fired (#238). Runs whether or not there was a position to
+    // sell, but is skipped when no regime_state row exists (#266 desync path).
+    if (latest) {
+      await db.upsertRegimeState({
+        date: ymd(deps.now()),
+        spyClose: latest.spy_close,
+        spySma200: latest.spy_sma200,
+        targetState: "CASH",
+        currentState: "CASH",
+        positionDrawdownPct: drawdown,
+        killSwitchActive: true,
+        killSwitchFiredAt: iso(deps.now()),
+      });
+    }
 
     if (fill === null) {
       // Position already gone — state is flipped above; no fill to record.

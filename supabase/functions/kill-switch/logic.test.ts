@@ -1,13 +1,19 @@
 import { assertEquals } from "@std/assert";
-import { runKillSwitch, type KillSwitchDeps } from "./logic.ts";
+import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
 import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(highs: number[]): DailyBar[] {
-  return highs.map((h, i) => ({ date: `2026-05-${String(i + 1).padStart(2, "0")}`, close: h, high: h }));
+  return highs.map((h, i) => ({
+    date: `2026-05-${String(i + 1).padStart(2, "0")}`,
+    close: h,
+    high: h,
+  }));
 }
 
-function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
+function makeDeps(
+  over: Partial<KillSwitchDeps> = {},
+): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
   const calls: Record<string, unknown> = { upserts: [] };
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -69,6 +75,10 @@ function makeDeps(over: Partial<KillSwitchDeps> = {}): { deps: KillSwitchDeps; c
         calls.desync = true;
         return Promise.resolve();
       },
+      notifyError: (m) => {
+        calls.error = m;
+        return Promise.resolve();
+      },
     },
     ...over,
   };
@@ -86,6 +96,35 @@ Deno.test("broker flat -> success:no_position (broker is source of truth)", asyn
   assertEquals(await runKillSwitch(deps), "success:no_position");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:no_position");
   assertEquals(calls.liquidate, undefined);
+});
+
+Deno.test("DB says CASH but broker holds a position -> desync notified, drawdown check continues", async () => {
+  // The desync alone must not fire the kill-switch: within the threshold the run
+  // ends success:within_threshold, with the desync notified AND recorded in the
+  // audit notes for forensics (#266).
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({
+          current_state: "CASH",
+          kill_switch_active: false,
+          spy_close: 400,
+          spy_sma200: 380,
+          target_state: "CASH",
+          kill_switch_fired_at: null,
+        } as never),
+    } as unknown as KillSwitchDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(90), // -10%, within threshold
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.desync, true);
+  assertEquals(calls.liquidate, undefined);
+  // Audit notes carry the desync for forensics.
+  assertEquals(String((calls.audit as { notes: string }).notes).includes("state_desync"), true);
 });
 
 Deno.test("DB says CASH but broker holds a position -> protects it + notifies desync (#237)", async () => {
@@ -113,24 +152,38 @@ Deno.test("DB says CASH but broker holds a position -> protects it + notifies de
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
   assertEquals(calls.desync, true);
   assertEquals(calls.liquidate, true);
+  assertEquals((calls.insertTrade as { reason: string }).reason, "kill_switch");
   assertEquals((calls.upsert as { currentState: string }).currentState, "CASH");
   assertEquals((calls.upsert as { killSwitchActive: boolean }).killSwitchActive, true);
 });
 
-Deno.test("no regime_state row but broker holds a position -> skipped:no_regime_state + desync (#237)", async () => {
+Deno.test("no regime_state row but broker holds a position -> still protects it (#266)", async () => {
+  // With no regime_state row the kill-switch can't carry regime values forward
+  // (NOT NULL spy_close/spy_sma200), but the live position must stay protected:
+  // the drawdown check continues, the regime_state upserts are skipped, and a
+  // breach still liquidates. daily-check resyncs the DB on its next run.
   const { deps, calls } = makeDeps({
     db: { getLatestRegimeState: () => Promise.resolve(null) } as unknown as KillSwitchDeps["db"],
     alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+    } as unknown as KillSwitchDeps["marketdata"],
   });
-  assertEquals(await runKillSwitch(deps), "skipped:no_regime_state");
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
   assertEquals(calls.desync, true);
-  assertEquals(calls.liquidate, undefined);
-  assertEquals(calls.upsert, undefined);
+  assertEquals(calls.liquidate, true);
+  assertEquals((calls.insertTrade as { reason: string }).reason, "kill_switch");
+  // No regime_state writes — there is no SPY data here to seed one.
+  assertEquals((calls.upserts as unknown[]).length, 0);
+  assertEquals(String((calls.audit as { notes: string }).notes).includes("state_desync"), true);
 });
 
 Deno.test("market closed -> skipped:market_closed", async () => {
   const { deps, calls } = makeDeps({
-    alpaca: { getClock: () => Promise.resolve({ isOpen: false }) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: false }),
+    } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "skipped:market_closed");
   assertEquals((calls.audit as { outcome: string }).outcome, "skipped:market_closed");
@@ -170,6 +223,35 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
   const upserts = calls.upserts as Array<{ currentState: string }>;
   assertEquals(upserts.length, 2);
   assertEquals(upserts[0].currentState, "LONG");
+});
+
+Deno.test("implausible ratio (refHigh/lastPrice > 2) -> error:implausible_drawdown, no liquidation", async () => {
+  // 100 -> 40 is a -60% intraday move on a 3x ETF inside the lookback window —
+  // impossible without a corporate action (e.g. an unadjusted forward split).
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(40),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "error:implausible_drawdown");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(typeof calls.error, "string"); // notifyError fired
+  assertEquals((calls.audit as { outcome: string }).outcome, "error:implausible_drawdown");
+  // No bogus drawdown row is persisted.
+  assertEquals(calls.upsert, undefined);
+});
+
+Deno.test("plausible deep breach (ratio <= 2) still liquidates", async () => {
+  // 100 -> 60 = -40% drawdown, ratio 1.67 — plausible for a 3x ETF, must fire.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(60),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
 });
 
 Deno.test("breach but position vanished -> success:no_position_to_liquidate", async () => {

@@ -1,4 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { isAuthorized } from "@/lib/auth";
 
 // Optional HTTP Basic auth gate — DEFAULT-OFF (opt-in / default-OFF pattern).
 //
@@ -7,14 +9,15 @@ import { NextRequest, NextResponse } from "next/server";
 // is UNSET (the default), requests pass through unchanged so the current paper-
 // soak deployment stays open. Turn this on as the go-live step before pointing
 // the dashboard at live/prod keys (URL secrecy is not access control).
-export function middleware(req: NextRequest) {
+//
+// The credential comparison is constant-time over SHA-256 digests (finding 12,
+// 2026-06-11 review) — see lib/auth.ts.
+export async function middleware(req: NextRequest) {
   const expected = process.env.DASHBOARD_BASIC_AUTH;
   if (!expected) return NextResponse.next();
 
-  const header = req.headers.get("authorization");
-  if (header?.startsWith("Basic ")) {
-    const decoded = atob(header.slice("Basic ".length));
-    if (decoded === expected) return NextResponse.next();
+  if (await isAuthorized(req.headers.get("authorization"), expected)) {
+    return NextResponse.next();
   }
 
   return new NextResponse("Authentication required.", {

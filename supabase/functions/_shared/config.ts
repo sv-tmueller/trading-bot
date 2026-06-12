@@ -95,9 +95,7 @@ export function getAlpacaConfig(): AlpacaConfig {
     apiKeyId,
     apiSecretKey,
     paper,
-    tradingBaseUrl: paper
-      ? "https://paper-api.alpaca.markets"
-      : "https://api.alpaca.markets",
+    tradingBaseUrl: paper ? "https://paper-api.alpaca.markets" : "https://api.alpaca.markets",
     dataBaseUrl: "https://data.alpaca.markets",
   };
 }

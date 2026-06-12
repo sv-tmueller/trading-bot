@@ -9,7 +9,8 @@ export class DataError extends Error {
 }
 
 export function requireNumber(val: unknown, field: string): number {
-  if (val === null || val === undefined || val === "") {
+  // Trim before the empty check (finding 14): Number(" ") === 0 too.
+  if (val === null || val === undefined || (typeof val === "string" && val.trim() === "")) {
     throw new DataError(`expected numeric ${field}, got ${JSON.stringify(val)}`);
   }
   const n = Number(val);

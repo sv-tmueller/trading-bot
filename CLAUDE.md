@@ -54,11 +54,12 @@ deno task test:db
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
-supabase db push                                      # applies migrations 0001-0006 (schema + cron schedule)
+supabase db push                                      # applies migrations 0001-0007 (schema + cron + vault fn grants)
 
 # Panic kill button (token-auth Edge Function — deterministic, no LLM)
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"
 #   actions: pause | resume | cancel-orders | liquidate   (500 + error: result = action failed)
+#   liquidate also sets bot_config.paused=true (no re-buy next daily-check); clear via action=resume
 
 # Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5
@@ -107,9 +108,12 @@ including today's running high / last trade — exceeds `KILL_SWITCH_DRAWDOWN_PC
 sets `kill_switch_active=true` in `regime_state`.
 
 It sources the position from the broker (`getPosition`), **not** `regime_state.current_state`, so a
-DB/broker desync can't leave a real position unprotected: a position the DB recorded as CASH is still
-protected and raises `notifyStateDesync`, while a position with no `regime_state` row to carry forward
-exits `skipped:no_regime_state`.
+DB/broker desync can't leave a real position unprotected: a position the DB recorded as CASH (or has
+no `regime_state` row for at all) is still protected — the run raises `notifyStateDesync`, records a
+`state_desync` note in `audit_log`, and continues the drawdown check on the live position; only the
+`regime_state` upserts are skipped when there is no row to carry forward (daily-check resyncs the DB
+on its next run). A >2x refHigh/lastPrice ratio is treated as implausible (unadjusted corporate action
+or bad print) and exits `error:implausible_drawdown` with an alert instead of liquidating.
 
 ### Database
 
