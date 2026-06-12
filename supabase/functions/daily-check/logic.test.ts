@@ -376,3 +376,36 @@ Deno.test("yesterday's bar missing from the feed -> skipped:stale_data (#256)", 
   assertEquals(await runDailyCheck(deps), "skipped:stale_data");
   assertEquals(calls.placeMarketOrder, undefined);
 });
+
+Deno.test("BUY filled but insertTrade throws -> error outcome, state NOT flipped (#269 finding 15)", async () => {
+  // The fill succeeded at the broker but the trades write failed. The run must
+  // close the audit row with error:* and must NOT flip regime_state to LONG
+  // (upsertRegimeState runs after the trade write), leaving the DB/broker
+  // desync to the kill-switch broker-truth backstop (#237/#266) and the next
+  // daily-check reconcile.
+  const { deps, calls } = makeDeps({
+    db: {
+      insertTrade: () => Promise.reject(new Error("db write failed")),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome, "error:Error");
+  assertEquals(calls.placeMarketOrder !== undefined, true); // the order really filled
+  assertEquals(calls.upsert, undefined); // DB still says CASH — kill-switch protects the live position
+  assertEquals((calls.audit as { outcome: string }).outcome, "error:Error");
+});
+
+Deno.test("trade recorded but upsertRegimeState throws -> error outcome, trade row intact (#269 finding 15)", async () => {
+  // Inverse seam: the trades row landed but the state flip write failed. The
+  // audit row must close with error:*; the recorded fill is the forensic
+  // anchor for the partial-recovery described in CLAUDE.md.
+  const { deps, calls } = makeDeps({
+    db: {
+      upsertRegimeState: () => Promise.reject(new Error("db write failed")),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome, "error:Error");
+  assertEquals((calls.insertTrade as { reason: string }).reason, "regime_flip_long");
+  assertEquals((calls.audit as { outcome: string }).outcome, "error:Error");
+});
