@@ -4,5 +4,8 @@
       "Bash(python3 *)",
       "Bash(sqlite3 *)"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
   }
 }
