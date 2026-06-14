@@ -35,10 +35,17 @@ cash earns 0%. **Sharpe**: annualised daily Sharpe = `mean(daily_rets) / std(dai
 
 ## Walk-forward design (Trap A — per-window warm-up pre-roll)
 
-Each 12-month OOS window carries a 300-trading-day pre-roll prepended before the test window start.
-This gives the 200-DMA its full 200-bar warm-up and TSMOM its 12-month lookback before the first
-measured day. **Metrics (return, vol, maxDD, Sharpe) are computed exclusively on the test
-sub-window `[test_start, test_end]`**; the pre-roll is signal warm-up only.
+Each 12-month OOS window carries **up to** 300-trading-day pre-roll prepended before the test
+window start. This gives the 200-DMA its full 200-bar warm-up and TSMOM its 12-month lookback
+before the first measured day. **Metrics (return, vol, maxDD, Sharpe) are computed exclusively on
+the test sub-window `[test_start, test_end]`**; the pre-roll is signal warm-up only.
+
+**Inception-boundary caveat**: at the start of the data series (SPY data begins 1993-01-29), the
+first test window's pre-roll cannot reach back a full 300 trading days. In the 1993 window the
+200-DMA warm-up is incomplete; the rule is effectively flat for most of the year. The 1993 200-DMA
+result (+0.8%, 0 flips) and the 1993–1994 TSMOM results (incomplete 12-month lookback) are included
+in the table for completeness but are marked in the caveats as warm-up limited. Excluding 1993 from
+the 200-DMA count gives 21/33 positive windows (+8.0% avg) — the headline story is unchanged.
 
 ---
 
@@ -153,7 +160,9 @@ window                       strategy          return     vol    maxDD  sharpe  
 
 **Tie-out**: `run_regime_backtest` over the same 2021-05-07→2026-05-07 window gives +128.9% total /
 −38.1% max DD, consistent with the prior findings doc (~+150% / ~−35%; small difference from
-yfinance data revision). The walkforward 200-DMA arm sums to similar aggregate returns.
+yfinance data revision). Each walkforward window resets to `starting_cash`, so per-window returns
+are not directly summed to reproduce the full-period compound return; they are used only to assess
+per-window edge distribution.
 
 ---
 
@@ -191,6 +200,11 @@ destroys value. This is not a viable signal.
 
 ## Caveats (carry forward from prior docs)
 
+- **Inception-boundary windows (1993, partial 1994 TSMOM)**: SPY data starts 1993-01-29, so the
+  first test window has no pre-roll and the 200-DMA warm-up is incomplete (the rule is flat for
+  most of 1993). TSMOM requires 12 monthly closes, so 1993-end = ≈0 months available; its signal
+  activates mid-1994. These windows are warm-up-limited and should be read with that context. The
+  aggregate counts include them; excluding 1993 gives 21/33 positive 200-DMA windows (story unchanged).
 - **Kill-switch not modelled** (no intraday bars). Live bot's kill-switch caps intraday drawdowns;
   real max-DD should be better than shown at some whipsaw cost.
 - **Cash earns 0%** (conservative). Real T-bill yield in 2022–2024 would add ~3–4% to cash-period returns.
