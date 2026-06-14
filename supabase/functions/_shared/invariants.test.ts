@@ -29,29 +29,27 @@ const FORBIDDEN = [
  * or null if the source is clean.
  *
  * Matches:
- *   import … from "X"      (named / default / namespace import)
+ *   import … from "X"      (named / default / namespace import, including multi-line)
  *   export … from "X"      (re-export)
  *   import "X"              (side-effect import)
  *   import("X")             (dynamic import)
  *   require("X")            (CommonJS)
- * Single and double quoted.  Does NOT match specifiers inside // or block comments.
+ * Single and double quoted.  Does NOT match specifiers that appear only inside
+ * comments (a forbidden word in "// comment" prose is not an import statement).
  */
 export function findForbiddenImport(source: string): string | null {
-  // Remove line comments first to avoid matching "anthropic" inside a //-comment.
-  // Block comments (/* … */) are not stripped — they are unusual in import lines.
-  const stripped = source.replace(/\/\/[^\n]*/g, "");
-
-  // Pattern 1: static imports/exports with an optional "... from" clause
+  // Pattern 1: static imports/exports with an optional "... from" clause.
+  // [^"';]* (no \n restriction) allows multi-line { … } clauses.
   //   import …from "X"  |  import "X"  |  export … from "X"
-  const staticRe = /(?:import|export)\s+(?:[^"'\n;]*?\s+from\s+)?["']([^"']+)["']/g;
+  const staticRe = /(?:import|export)\s+(?:[^"';]*?\s+from\s+)?["']([^"']+)["']/gs;
 
   // Pattern 2: dynamic import("X") and require("X")
   const dynamicRe = /(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
 
   for (const re of [staticRe, dynamicRe]) {
     let m: RegExpExecArray | null;
-    while ((m = re.exec(stripped)) !== null) {
-      const specifier = m[1].toLowerCase();
+    while ((m = re.exec(source)) !== null) {
+      const specifier = normalizeSpecifier(m[1]);
       for (const forbidden of FORBIDDEN) {
         // Match as a path segment so "openai/client" hits "openai" but
         // "@supabase/supabase-js" does not hit "supabase".
@@ -59,8 +57,7 @@ export function findForbiddenImport(source: string): string | null {
           specifier === forbidden ||
           specifier.startsWith(forbidden + "/") ||
           specifier.includes("/" + forbidden + "/") ||
-          specifier.startsWith("npm:" + forbidden) ||
-          specifier.startsWith("jsr:" + forbidden)
+          specifier.endsWith("/" + forbidden)
         ) {
           return forbidden;
         }
@@ -68,6 +65,27 @@ export function findForbiddenImport(source: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Normalize a raw import specifier for forbidden-term matching:
+ * 1. Lowercase.
+ * 2. Strip a leading scheme://host/ (e.g. "https://esm.sh/") so URL imports
+ *    are compared on their path only.
+ * 3. Strip a leading "npm:" or "jsr:" registry prefix.
+ * 4. Strip a trailing @version suffix (e.g. "@4", "@0.20.0") — but only when
+ *    it is a trailing segment, to preserve leading scopes like "@anthropic-ai".
+ *    Uses /@[^/@]+$/ so "@anthropic-ai/sdk@0.20.0" → "@anthropic-ai/sdk".
+ */
+function normalizeSpecifier(raw: string): string {
+  let s = raw.toLowerCase();
+  // Strip scheme://host/ prefix
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//, "");
+  // Strip npm: or jsr: prefix
+  s = s.replace(/^(?:npm|jsr):/, "");
+  // Strip trailing @version (not @scope — no slash before the @)
+  s = s.replace(/@[^/@]+$/, "");
+  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,4 +201,17 @@ Deno.test("findForbiddenImport: catches npm:-prefixed specifier", () => {
     findForbiddenImport(`import OpenAI from "npm:openai";`),
     null,
   );
+});
+
+Deno.test("findForbiddenImport: catches URL-prefixed specifier (esm.sh)", () => {
+  // "https://esm.sh/openai@4" — the forbidden term is a terminal path segment
+  assertNotEquals(
+    findForbiddenImport(`import OpenAI from "https://esm.sh/openai@4";`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport: catches multi-line static import", () => {
+  const source = `import {\n  OpenAI,\n} from "openai";`;
+  assertNotEquals(findForbiddenImport(source), null);
 });
