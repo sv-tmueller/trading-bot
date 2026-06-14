@@ -4,28 +4,32 @@
  * Scans every non-test .ts file under supabase/functions/ and fails if any
  * forbidden model-SDK import specifier appears. Enforces CLAUDE.md Architectural
  * invariant #1. See docs/superpowers/specs/2026-06-14-invariant-enforcement-in-template-model-design.md
+ *
+ * THREAT MODEL:
+ * This guard catches ACCIDENTAL / normal introduction of a model SDK into the
+ * trading path (Layer 1, "No LLM in the trading path"). It is NOT proof against
+ * deliberate obfuscation (e.g. `import("op"+"enai")`, unicode escapes) — that
+ * is owned by Layer 2 (the reviewer's invariant check) and the fact that this
+ * is first-party code.
  */
 import { assertEquals, assertNotEquals } from "@std/assert";
 
 // ---------------------------------------------------------------------------
-// Forbidden import specifiers (case-insensitive, matched on extracted specifier
-// — NOT on raw source text, so comments cannot trigger false positives).
+// Forbidden stems (case-insensitive substring match on the extracted specifier)
 // ---------------------------------------------------------------------------
-const FORBIDDEN = [
+const FORBIDDEN_STEMS = [
   "anthropic",
-  "@anthropic-ai",
   "openai",
   "cohere",
   "mistral",
-  "mistralai",
-  "generativeai",
-  "@google/genai",
+  "generative",
+  "genai",
   "langchain",
 ];
 
 /**
  * Extract module specifiers from an import / export / require expression and
- * test each against the forbidden set. Returns the matched forbidden term,
+ * test each against the forbidden stems. Returns the matched forbidden stem,
  * or null if the source is clean.
  *
  * Matches:
@@ -36,12 +40,18 @@ const FORBIDDEN = [
  *   require("X")            (CommonJS)
  * Single and double quoted.  Does NOT match specifiers that appear only inside
  * comments (a forbidden word in "// comment" prose is not an import statement).
+ *
+ * Decision logic per extracted specifier:
+ *   1. If the specifier starts with "." or "/" → first-party local path → NOT forbidden.
+ *   2. Otherwise, lowercase it and flag as forbidden if it CONTAINS any forbidden STEM.
+ *      (Optionally strip leading npm:/jsr:/scheme://host/ and trailing ?query/#fragment
+ *      for clarity, but the substring test works regardless.)
  */
 export function findForbiddenImport(source: string): string | null {
   // Pattern 1: static imports/exports with an optional "... from" clause.
   // [^"';]* (no \n restriction) allows multi-line { … } clauses.
   //   import …from "X"  |  import "X"  |  export … from "X"
-  const staticRe = /(?:import|export)\s+(?:[^"';]*?\s+from\s+)?["']([^"']+)["']/gs;
+  const staticRe = /(?:import|export)\s+(?:[^"';]*?\s+from\s+)?["']([^"']+)["']/g;
 
   // Pattern 2: dynamic import("X") and require("X")
   const dynamicRe = /(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g;
@@ -49,43 +59,23 @@ export function findForbiddenImport(source: string): string | null {
   for (const re of [staticRe, dynamicRe]) {
     let m: RegExpExecArray | null;
     while ((m = re.exec(source)) !== null) {
-      const specifier = normalizeSpecifier(m[1]);
-      for (const forbidden of FORBIDDEN) {
-        // Match as a path segment so "openai/client" hits "openai" but
-        // "@supabase/supabase-js" does not hit "supabase".
-        if (
-          specifier === forbidden ||
-          specifier.startsWith(forbidden + "/") ||
-          specifier.includes("/" + forbidden + "/") ||
-          specifier.endsWith("/" + forbidden)
-        ) {
-          return forbidden;
+      const raw = m[1];
+
+      // Step 1: first-party local path → never forbidden
+      if (raw.startsWith(".") || raw.startsWith("/")) {
+        continue;
+      }
+
+      // Step 2: substring-stem test (case-insensitive)
+      const normalized = raw.toLowerCase();
+      for (const stem of FORBIDDEN_STEMS) {
+        if (normalized.includes(stem)) {
+          return stem;
         }
       }
     }
   }
   return null;
-}
-
-/**
- * Normalize a raw import specifier for forbidden-term matching:
- * 1. Lowercase.
- * 2. Strip a leading scheme://host/ (e.g. "https://esm.sh/") so URL imports
- *    are compared on their path only.
- * 3. Strip a leading "npm:" or "jsr:" registry prefix.
- * 4. Strip a trailing @version suffix (e.g. "@4", "@0.20.0") — but only when
- *    it is a trailing segment, to preserve leading scopes like "@anthropic-ai".
- *    Uses /@[^/@]+$/ so "@anthropic-ai/sdk@0.20.0" → "@anthropic-ai/sdk".
- */
-function normalizeSpecifier(raw: string): string {
-  let s = raw.toLowerCase();
-  // Strip scheme://host/ prefix
-  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//, "");
-  // Strip npm: or jsr: prefix
-  s = s.replace(/^(?:npm|jsr):/, "");
-  // Strip trailing @version (not @scope — no slash before the @)
-  s = s.replace(/@[^/@]+$/, "");
-  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,74 +134,182 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Unit tests for findForbiddenImport helper
+// Unit tests: CAUGHT (findForbiddenImport returns non-null)
 // ---------------------------------------------------------------------------
 
-Deno.test("findForbiddenImport: clean import returns null", () => {
-  assertEquals(findForbiddenImport(`import { foo } from "./foo.ts";`), null);
+Deno.test("findForbiddenImport CAUGHT: bare openai import", () => {
+  assertNotEquals(findForbiddenImport(`import x from "openai"`), null);
+});
+
+Deno.test("findForbiddenImport CAUGHT: npm:openai", () => {
+  assertNotEquals(findForbiddenImport(`import x from "npm:openai"`), null);
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/openai", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "https://esm.sh/openai"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/openai@4", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "https://esm.sh/openai@4"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/openai@4/index.mjs", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "https://esm.sh/openai@4/index.mjs"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: npm:openai@4/client", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "npm:openai@4/client"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/openai?bundle", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "https://esm.sh/openai?bundle"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: @anthropic-ai/sdk", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "@anthropic-ai/sdk"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: npm:@anthropic-ai/sdk", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "npm:@anthropic-ai/sdk"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: jsr:@anthropic-ai/sdk@0.20.0", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "jsr:@anthropic-ai/sdk@0.20.0"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: @google/generative-ai", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "@google/generative-ai"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/@google/generative-ai@1/index", () => {
+  assertNotEquals(
+    findForbiddenImport(
+      `import x from "https://esm.sh/@google/generative-ai@1/index"`,
+    ),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: @google/genai", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "@google/genai"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: cohere-ai", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "cohere-ai"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: @mistralai/mistralai", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "@mistralai/mistralai"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: @langchain/core", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "@langchain/core"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: langchain", () => {
+  assertNotEquals(
+    findForbiddenImport(`import x from "langchain"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: https://esm.sh/langchain@0.1.0/chat_models", () => {
+  assertNotEquals(
+    findForbiddenImport(
+      `import x from "https://esm.sh/langchain@0.1.0/chat_models"`,
+    ),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport CAUGHT: multi-line import", () => {
+  const source = `import {\n  OpenAI,\n} from "openai"`;
+  assertNotEquals(findForbiddenImport(source), null);
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: NOT CAUGHT (findForbiddenImport returns null)
+// ---------------------------------------------------------------------------
+
+Deno.test("findForbiddenImport NOT caught: ./regime.ts", () => {
+  assertEquals(findForbiddenImport(`import x from "./regime.ts"`), null);
+});
+
+Deno.test("findForbiddenImport NOT caught: ./openai-helper.ts", () => {
   assertEquals(
-    findForbiddenImport(`import { createClient } from "@supabase/supabase-js";`),
-    null,
-  );
-  assertEquals(findForbiddenImport(`import { assertEquals } from "@std/assert";`), null);
-});
-
-Deno.test("findForbiddenImport: catches 'openai' specifier", () => {
-  assertNotEquals(findForbiddenImport(`import OpenAI from "openai";`), null);
-  assertNotEquals(
-    findForbiddenImport(`import { OpenAI } from "openai/client";`),
-    null,
-  );
-  assertNotEquals(
-    findForbiddenImport(`const o = await import("openai");`),
+    findForbiddenImport(`import x from "./openai-helper.ts"`),
     null,
   );
 });
 
-Deno.test("findForbiddenImport: catches '@anthropic-ai/sdk' specifier", () => {
-  assertNotEquals(
-    findForbiddenImport(`import Anthropic from "@anthropic-ai/sdk";`),
-    null,
-  );
-  assertNotEquals(
-    findForbiddenImport(`import { Anthropic } from "anthropic";`),
+Deno.test("findForbiddenImport NOT caught: ../shared/num.ts", () => {
+  assertEquals(
+    findForbiddenImport(`import x from "../shared/num.ts"`),
     null,
   );
 });
 
-Deno.test("findForbiddenImport: forbidden word in a line comment does not trigger", () => {
-  // The word "anthropic" appears only in a comment — not an import specifier.
+Deno.test("findForbiddenImport NOT caught: jsr:@supabase/supabase-js@^2.45.0", () => {
+  assertEquals(
+    findForbiddenImport(
+      `import x from "jsr:@supabase/supabase-js@^2.45.0"`,
+    ),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport NOT caught: @std/assert", () => {
+  assertEquals(
+    findForbiddenImport(`import { assertEquals } from "@std/assert"`),
+    null,
+  );
+});
+
+Deno.test("findForbiddenImport NOT caught: forbidden stem in plain comment (not import)", () => {
+  // "openai" appears only in a prose comment — not an import specifier.
   const source = `
-// This module does NOT use the anthropic SDK.
+// This module does NOT use the openai SDK.
 // See CLAUDE.md invariant: no LLM in the trading path.
 import { createClient } from "@supabase/supabase-js";
 `;
   assertEquals(findForbiddenImport(source), null);
-});
-
-Deno.test("findForbiddenImport: catches langchain specifier", () => {
-  assertNotEquals(
-    findForbiddenImport(`import { ChatOpenAI } from "langchain/chat_models/openai";`),
-    null,
-  );
-});
-
-Deno.test("findForbiddenImport: catches npm:-prefixed specifier", () => {
-  assertNotEquals(
-    findForbiddenImport(`import OpenAI from "npm:openai";`),
-    null,
-  );
-});
-
-Deno.test("findForbiddenImport: catches URL-prefixed specifier (esm.sh)", () => {
-  // "https://esm.sh/openai@4" — the forbidden term is a terminal path segment
-  assertNotEquals(
-    findForbiddenImport(`import OpenAI from "https://esm.sh/openai@4";`),
-    null,
-  );
-});
-
-Deno.test("findForbiddenImport: catches multi-line static import", () => {
-  const source = `import {\n  OpenAI,\n} from "openai";`;
-  assertNotEquals(findForbiddenImport(source), null);
 });
