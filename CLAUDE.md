@@ -13,26 +13,25 @@ Current skills relevant to engineering work:
 
 ## Superpowers skills are the canonical playbooks
 
-This project uses the [`superpowers`](https://github.com/obra/superpowers) plugin (installed via `/plugin install superpowers@claude-plugins-official`). Where a `superpowers:` skill exists for a workflow, **it is the canonical playbook for this project**. The skills below are wired into the agents listed in [`TEAM.md`](TEAM.md).
+This project uses the [`superpowers`](https://github.com/obra/superpowers) plugin (installed via `/plugin install superpowers@claude-plugins-official`). Where a `superpowers:` skill exists for a workflow, **it is the canonical playbook for this project**. The operating model is `advisor → kickoff → architect / developer / reviewer / tester`.
 
 | Workflow | Skill | Wired into |
 |---|---|---|
-| Brainstorming a change (every change — HARD-GATE) | `superpowers:brainstorming` | Team Leader (main session) |
-| Writing an implementation plan | `superpowers:writing-plans` | Team Leader. Plans live in `docs/plans/<date>-<slug>-plan.md`. |
-| Executing a plan task-by-task | `superpowers:subagent-driven-development` | Team Leader. Dispatches engineer (implementer) + spec-reviewer + code-quality-reviewer per task. |
-| Implementing a single task | _(implementer prompt)_ | `engineer` subagent ([`.claude/agents/engineer.md`](.claude/agents/engineer.md)) |
-| Pass-1 review (spec compliance) | _(spec-reviewer prompt)_ | `spec-reviewer` subagent ([`.claude/agents/spec-reviewer.md`](.claude/agents/spec-reviewer.md)) |
-| Pass-2 review (quality + architectural invariants) | _(code-quality-reviewer prompt — quotes the architectural invariants verbatim)_ | `code-quality-reviewer` subagent ([`.claude/agents/code-quality-reviewer.md`](.claude/agents/code-quality-reviewer.md)) |
-| Test-driven discipline | `superpowers:test-driven-development` (see also `testing-anti-patterns.md` inside that skill's directory — sibling reference, not a standalone skill) | engineer (referenced from `.claude/agents/engineer.md`) |
-| Root-cause-first debugging | `superpowers:systematic-debugging` | qa (failed-test triage); engineer (general debugging) |
-| Verifying claims before completion | `superpowers:verification-before-completion` | lead (merge gate); engineer (self-review) |
-| Receiving review feedback | `superpowers:receiving-code-review` | engineer |
-| Wrapping up a branch | `superpowers:finishing-a-development-branch` | Team Leader (before dispatching lead for merge) |
+| Brainstorming a change (every change — HARD-GATE) | `superpowers:brainstorming` | `/tm-advisor` (main session) |
+| Writing an implementation plan | `superpowers:writing-plans` | `/tm-advisor`. Plans live in `docs/plans/<date>-<slug>-plan.md`. |
+| Executing a plan task-by-task | `superpowers:subagent-driven-development` | `/tm-kickoff` pipeline (architect → developer → tester → reviewer). |
+| Implementing a single task | _(developer prompt)_ | `developer` subagent ([`.claude/agents/developer.md`](.claude/agents/developer.md)) |
+| Test-driven discipline | `superpowers:test-driven-development` (see also `testing-anti-patterns.md` inside that skill's directory — sibling reference, not a standalone skill) | developer |
+| Root-cause-first debugging | `superpowers:systematic-debugging` | qa (failed-test triage); developer (general debugging) |
+| Verifying claims before completion | `superpowers:verification-before-completion` | tester + reviewer / architect |
+| Wrapping up a branch | `superpowers:finishing-a-development-branch` | `/tm-kickoff` pipeline; human merge sign-off. |
 | Worktree-per-task isolation | `superpowers:using-git-worktrees` | All agents (reinforces the existing "always use worktrees" rule). |
 
 The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`) sit alongside the superpowers skills — they cover work the superpowers library does not.
 
-**Where superpowers conflicts with older inline guidance in `CLAUDE.md` or in agent `.md` files, the superpowers playbook wins.** The [Architectural invariants](#architectural-invariants) section below is the single authoritative home of the repo's safety contract — agent prompt files (including `code-quality-reviewer.md`) derive their invariant text from this section and must not diverge from it. The section is non-negotiable.
+**Where superpowers conflicts with older inline guidance in `CLAUDE.md` or in agent `.md` files, the superpowers playbook wins.** The [Architectural invariants](#architectural-invariants) section below is the single authoritative home of the repo's safety contract; nothing restates the invariant text, every enforcement artifact references this section. Non-negotiable.
+
+**Architectural invariants are a hard review gate.** The [Architectural invariants](#architectural-invariants) section is the single source of truth — never restate it elsewhere. Every code-touching work package carries the standing acceptance criterion *"Satisfies all CLAUDE.md Architectural invariants; any violation is a must-fix review finding,"* which the advisor stamps when filing the issue. The architect, developer, and reviewer verify the change against that section; the reviewer treats any violation as a blocking `CHANGES_REQUESTED` finding. Invariant #1 ("No LLM in the trading path") is additionally enforced mechanically by `supabase/functions/_shared/invariants.test.ts`.
 
 **Subagents do not have the `Skill` tool.** They access skill content via `Read` on the SKILL.md file. To find a SKILL.md path: `find ~/.claude/plugins -name SKILL.md -path "*<skill-name>*"`.
 
@@ -190,11 +189,14 @@ _Rationale: deterministic rules engines are auditable; LLM outputs are not. The 
 
 ## Team
 
-The main session always acts as **Team Leader** — it orchestrates the specialist subagents listed in [`TEAM.md`](TEAM.md). You never need to switch sessions. See [`TEAM.md`](TEAM.md) for the full playbook.
+The operating model is `/tm-advisor` → `/tm-kickoff` → specialist subagents. You never need to switch sessions.
 
-| Tell the Team Leader | It will dispatch... |
+- **`/tm-advisor`** — refines a request, proposes a sized work package, gets one human sign-off, then runs the batch. Use it to start any meaningful change.
+- **`/tm-kickoff`** — fans out to `architect` (approach) → `developer` (implement, TDD) → `tester` (verify) → `reviewer` (spec + quality, blocks on invariant violation) and posts ready-to-merge PRs.
+
+| What you want | What to say |
 |---|---|
-| `Triage open issues` | Lead — label, prioritize, set `status: ready` |
-| `Work on issue #N` | Brainstorm -> plan -> engineer + spec-reviewer + code-quality-reviewer per task -> lead merges |
-| `Run QA` | QA — discover bugs, open issues (with `superpowers:systematic-debugging` triage) |
-| `Update docs` | Docs — sync README, CLAUDE.md, CURRENT_CONFIG |
+| Start a change | `/tm-advisor <description>` |
+| Implement a sized issue | `/tm-kickoff #N` |
+| Run QA | Ask QA — discover bugs, open issues (with `superpowers:systematic-debugging` triage) |
+| Update docs | Ask Docs — sync README, CLAUDE.md, CURRENT_CONFIG |

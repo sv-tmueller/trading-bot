@@ -4,7 +4,7 @@
     "@supabase/supabase-js": "jsr:@supabase/supabase-js@^2.45.0"
   },
   "tasks": {
-    "test": "CLAUDE_AGENT_NO_BROKER=1 deno test --allow-env --allow-net supabase/functions/",
+    "test": "CLAUDE_AGENT_NO_BROKER=1 deno test --allow-env --allow-net --allow-read=supabase/functions supabase/functions/",
     "test:db": "RUN_DB_TESTS=1 deno test --allow-env --allow-net supabase/functions/_shared/db.test.ts",
     "fmt": "deno fmt supabase/functions/",
     "lint": "deno lint supabase/functions/"
