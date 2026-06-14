@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
+import { Client as PgClient } from "https://deno.land/x/postgres@v0.19.3/mod.ts";
 import {
   coerceRegimeRow,
   getConfig,
@@ -20,6 +21,18 @@ function localClient() {
   const url = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   return createClient(url, key, { auth: { persistSession: false } });
+}
+
+// Direct Postgres connection for privilege assertions. supabase-js/PostgREST does not
+// expose pg_catalog built-ins via RPC, so has_function_privilege must be called over
+// a native Postgres connection. Defaults match `supabase status` for a local stack.
+function pgConnectionString(): string {
+  const host = Deno.env.get("SUPABASE_DB_HOST") ?? "127.0.0.1";
+  const port = Deno.env.get("SUPABASE_DB_PORT") ?? "54322";
+  const user = Deno.env.get("SUPABASE_DB_USER") ?? "postgres";
+  const password = Deno.env.get("SUPABASE_DB_PASSWORD") ?? "postgres";
+  const database = Deno.env.get("SUPABASE_DB_NAME") ?? "postgres";
+  return `postgres://${user}:${password}@${host}:${port}/${database}`;
 }
 
 Deno.test({
@@ -105,6 +118,38 @@ Deno.test({
     assertEquals(await getConfig(sb, "paused"), "true");
     await setConfig(sb, "paused", "false");
     assertEquals(await getConfig(sb, "paused"), "false");
+  },
+});
+
+// Asserts that the 0007_vault_fn_grants.sql revoke took effect: neither `anon`
+// nor `authenticated` may EXECUTE the Vault-read helpers. The service-role key
+// used by localClient() bypasses this revoke, so we cannot call the function as
+// the connected role and expect a permission error. Instead we query Postgres's
+// privilege catalogue directly via has_function_privilege, running as superuser
+// but checking the privilege of the other roles.
+Deno.test({
+  name: "0007: anon and authenticated lack EXECUTE on Vault helpers (has_function_privilege)",
+  ignore: !RUN,
+  fn: async () => {
+    const pg = new PgClient(pgConnectionString());
+    await pg.connect();
+    try {
+      for (const role of ["anon", "authenticated"]) {
+        for (const fn of ["public._service_role_key()", "public._functions_base_url()"]) {
+          const result = await pg.queryObject<{ priv: boolean }>(
+            `SELECT has_function_privilege($1, $2, 'EXECUTE') AS priv`,
+            [role, fn],
+          );
+          assertEquals(
+            result.rows[0].priv,
+            false,
+            `expected ${role} to lack EXECUTE on ${fn}`,
+          );
+        }
+      }
+    } finally {
+      await pg.end();
+    }
   },
 });
 
