@@ -25,8 +25,8 @@ Do all of these before writing.
 4. **Capture live state** — run these in parallel:
    - `git status` and `git branch --show-current` — uncommitted changes, current branch.
    - `git log --oneline -20` — recent commit context.
-   - `gh pr list --repo sv-tmueller/trading-bot --state open` — open PRs (draft and ready).
-   - `gh issue list --repo sv-tmueller/trading-bot --state open` — open issues, their labels and status.
+   - `gh pr list --state open` — open PRs (draft and ready).
+   - `gh issue list --state open` — open issues, their labels and status.
    - `git stash list` — anything stashed mid-session.
 5. **Check for an in-flight worktree.** If the session was running in a worktree (e.g. for a research bundle), record the worktree path and branch — the next session will need to know whether to keep, merge, or discard it.
 6. **Check `docs/handover/` for the previous handover.** If one exists from the same calendar day on the same slug, ask the user whether to (a) overwrite, (b) append a "Session 2" addendum, or (c) pick a more specific slug.

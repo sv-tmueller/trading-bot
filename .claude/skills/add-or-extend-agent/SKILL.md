@@ -1,158 +1,68 @@
 ---
 name: add-or-extend-agent
-description: Use this skill when authoring or modifying code under `agents/*.py`, adding a new agent to the daily pipeline, wiring a new tool into an existing agent, writing tests for an agent, or adding a new env-driven setting in `config/settings.py`. Captures the BaseAgent subclass contract, the tool-routing `__name__` rule, the agent-test triad (happy path / name check / JSON fallback), and the "add a new setting" recipe. Triggers include "add a new agent", "extend the X agent", "wire a new tool into agent Y", "write tests for agent Z", "add a new env-driven setting", or any work that edits `agents/base.py` or its subclasses.
+description: Use this skill when adding a new env-driven setting in `supabase/functions/_shared/config.ts` or `supabase secrets set`. Captures the settings recipe (env read + range-validation in config.ts, .env.example doc, README, opt-in/default-OFF pattern). Triggers include "add a new env-driven setting", "add a config option", "add a feature flag", or any work that edits `config.ts` settings.
 ---
 
-# Add or Extend an Agent
+# Add or Extend a Setting
 
-Procedural playbook for authoring or modifying agents in this trading bot. Pure how-to — every rule below has been the source of a real bug at least once.
+Procedural playbook for adding a new configurable setting to the trading bot. Every rule below has been the source of a real bug at least once.
 
-This skill is **dual-purpose**: the main session invokes it via the Skill tool; the `engineer` subagent reads it via the `Read` tool when its issue touches `agents/*.py`. Same content, two consumption paths.
+This skill is **dual-purpose**: the main session invokes it via the Skill tool; the `engineer` subagent reads it via the `Read` tool when its issue touches settings. Same content, two consumption paths.
 
 ## When this skill applies
 
-- Adding a new agent to the pipeline (`MarketIntelligenceAgent → StrategyAgent → RiskReviewAgent → TeamLeaderAgent`).
-- Extending an existing agent with a new tool, prompt change, or output field.
-- Adding a new env-driven setting in `config/settings.py` (often paired with the above).
-- Writing or updating tests for any agent.
+- Adding a new env-driven setting or feature flag to the bot (often to gate a new behaviour or expose a tunable).
+- The setting surfaces in `supabase/functions/_shared/config.ts` — read from a Supabase secret and range-validated at function start.
+- Note: the pre-2026-05-07 Python bot stored settings in a `settings.py` module and a `.env` file. The current stack uses `supabase secrets set` / `config.ts` instead. The recipe is the same in spirit; only the mechanics differ.
 
-If the work is purely tool-side (`tools/*.py`, no `agents/` change), this skill is overkill — read `CLAUDE.md` and write the tool. The skill kicks in once the new tool is going to be wired into an agent's tool list.
-
-## BaseAgent subclass contract
-
-Every agent inherits from `BaseAgent` (`agents/base.py`). Subclasses must implement exactly three methods:
-
-- **`get_tools()`** — returns the list of Anthropic tool definitions (JSON schema). One entry per tool the agent can call.
-- **`_get_tool_functions()`** — returns a `dict[str, callable]` whose keys match the tool `name` fields from `get_tools()`. **Use deferred imports inside this method** so the underlying functions can be monkeypatched in tests:
-
-  ```python
-  def _get_tool_functions(self):
-      from tools.market_data import compute_ticker_signals
-      from tools.risk import atr_stop
-      return {
-          "compute_ticker_signals": compute_ticker_signals,
-          "atr_stop": atr_stop,
-      }
-  ```
-
-- **`parse_output(response)`** — extracts the agent's structured dict from Claude's text response. **Always include a JSON fallback** for the case where Claude does not produce the expected envelope; tests assert on this path explicitly.
-
-## Instance state used by tool closures
-
-This is the rule that has caused the most subtle bugs. If your agent's tools need access to instance state (e.g. `self._conn`, `self._candidates`), follow this exact three-step pattern:
-
-1. **Initialise to `None` in `__init__`** — declares the slot, makes the absence visible.
-2. **Set in `run()` before calling `super().run()`** — populates the slot for the current run.
-3. **Capture as a local variable before defining closures** — `conn = self._conn` then close over `conn`, never over `self`.
-
-```python
-class StrategyAgent(BaseAgent):
-    def __init__(self, ...):
-        super().__init__(...)
-        self._conn = None  # step 1
-
-    def run(self, conn, ...):
-        self._conn = conn  # step 2
-        return super().run(...)
-
-    def _get_tool_functions(self):
-        conn = self._conn  # step 3 — local capture
-        def fetch_candidates():
-            return conn.execute("SELECT ...").fetchall()
-        return {"fetch_candidates": fetch_candidates}
-```
-
-Skipping step 3 (closing over `self` instead of `conn`) makes the closure see whatever `self._conn` is at call time, which breaks tests that swap connections per-test and silently passes when the prior run's state happens to still be valid.
-
-## Tool routing — the `__name__` rule
-
-`BaseAgent._handle_tool_calls` routes incoming tool calls by `fn.__name__`. The string in `get_tools()[i]["name"]` must equal the `__name__` of the callable returned by `_get_tool_functions()`.
-
-If you import a function and wrap it under a different name, set `wrapper.__name__` to match the tool definition:
-
-```python
-def _get_tool_functions(self):
-    from tools.market_data import compute_ticker_signals as _cts
-    def compute_ticker_signals(*args, **kwargs):  # local rename for clarity
-        return _cts(*args, **kwargs)
-    compute_ticker_signals.__name__ = "compute_ticker_signals"  # explicit
-    return {"compute_ticker_signals": compute_ticker_signals}
-```
-
-The cleanest form is to import the function under its target name (no wrapper) so `__name__` is correct by construction. Reach for the explicit `__name__ =` assignment only when the wrapper genuinely needs to exist (e.g. for adding logging or a guard).
+If the work is purely logic-side (no new configurable knob), this skill is overkill — read `CLAUDE.md` and write the logic. The skill kicks in once the change needs a user-facing knob.
 
 ## Adding a new env-driven setting
 
-Required when the agent needs a tunable parameter or feature flag. Recipe:
+Required when a new behaviour needs a tunable parameter or feature flag. Recipe:
 
-1. **Read in `config/settings.py`:**
-   ```python
-   NEW_SETTING = float(os.getenv("NEW_SETTING", "0.5"))
+1. **Read in `supabase/functions/_shared/config.ts`** — add the new setting inside the `loadConfig()` function (or the top-level export object). Read from `Deno.env.get("NEW_SETTING")` with a sensible default:
+   ```typescript
+   const newSetting = parseFloat(Deno.env.get("NEW_SETTING") ?? "0.5");
    ```
-2. **Validate at import time** if the setting has bounds. Raise `ValueError` for out-of-range values:
-   ```python
-   if not 0.0 <= NEW_SETTING <= 1.0:
-       raise ValueError(f"NEW_SETTING must be in [0, 1], got {NEW_SETTING}")
+2. **Validate immediately** if the setting has bounds. Throw a clear error for out-of-range values so the function fails fast at cold-start rather than silently misbehaving at trade time:
+   ```typescript
+   if (newSetting < 0.0 || newSetting > 1.0) {
+     throw new Error(`NEW_SETTING must be in [0, 1], got ${newSetting}`);
+   }
    ```
-3. **Document in `.env.example`** with a brief inline comment.
-4. **Document in `README.md`** (Settings or Configuration section) — what the setting does, default, valid range.
-5. **Risky changes use the opt-in / default-OFF pattern.** Anything touching risk parameters, position sizing, or live-trading behaviour must default to disabled (`0`, `false`, or empty string) and be gated on the flag. Recent precedents: `TRADING_PAUSED`, `DAILY_DRAWDOWN_LIMIT` (`0` = disabled), trailing stop (#91), earnings blackout (#92).
+3. **Export the validated value** as part of the config object returned by `loadConfig()` (or as a named export if the file uses that style). Every Edge Function that needs it imports from `_shared/config.ts` — do not read `Deno.env.get` directly in function code.
+4. **Set the secret** for the deployed environment:
+   ```bash
+   supabase secrets set NEW_SETTING=0.5
+   ```
+   Document the default and valid range in the command comment.
+5. **Document in `.env.example`** with a brief inline comment (this file is the canonical "what secrets does this bot need?" reference for new operators):
+   ```
+   NEW_SETTING=0.5   # <what it controls>, range [0, 1]
+   ```
+6. **Document in `README.md`** (Settings or Configuration section) — what the setting does, default, valid range, and which Edge Function(s) consume it.
+7. **Risky changes use the opt-in / default-OFF pattern.** Anything touching risk parameters, position sizing, or live-trading behaviour must default to disabled (`0`, `false`, or empty string) and be gated on the flag before taking effect. Recent precedents: `KILL_SWITCH_DRAWDOWN_PCT` (non-zero = enabled), `bot_config.paused` (runtime kill via panic action).
 
-## Testing conventions
+## Hard rule — never execute against the live broker in tests
 
-Every agent test file lives under `tests/test_agents/` and follows these idioms.
+Engineer subagents inherit the project's Alpaca secrets via the parent shell. Any `deno test` or ad-hoc invocation could submit real orders if it reaches a live broker path. The mutating helpers on `supabase/functions/_shared/alpaca.ts` (`placeMarketOrder`, `liquidate`, `cancelAllOrders`) call `checkGuard()` and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. All Alpaca calls MUST be mocked in tests — the `logic.ts` modules take an injected `deps` object, so pass mocks directly. Do NOT unset `CLAUDE_AGENT_NO_BROKER` to silence a `BrokerCallBlockedError`; that defeats the safety net.
 
-### Hard rule — never execute against the live Alpaca paper account (incident #149)
-
-Engineer subagents inherit `/opt/trading-bot/.env` via the parent shell. Any `python -c` or `python main.py scan` invocation from a worktree submits real orders to the live paper account. **`pytest` is now backstopped by the `CLAUDE_AGENT_NO_BROKER` mechanical guard (PR #168) — the autouse conftest fixture sets it for the test session and any unmocked call raises `BrokerCallBlockedError` before reaching Alpaca.** All `tools/broker.py` submission helpers (`place_market_order`, `place_parent_market_order`, `place_oco_brackets`, `cancel_all_orders`, `liquidate_all_positions`) MUST be mocked. If you need to verify against a real broker, use a separate sandbox account with explicitly-set env vars, NOT the inherited live keys. Team Leader briefs for any task touching `tools/broker.py`, `agents/team_leader.py::place_order`, or anything that calls them must restate this rule.
-
-_2026-05-06: six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT escaped from an Engineer worktree, draining buying power from $99k to $2,239. Surgically cancelled before market open. See issue #149 and the architectural invariant in `CLAUDE.md`._
-
-**`BrokerCallBlockedError` is a debugging signal, not a bug to silence.** When a test raises `BrokerCallBlockedError`, the mechanical guard caught a missing mock — add the mock at the module path the caller imports from (typical patterns shown under "Fixtures and mocks" below). Do NOT unset `CLAUDE_AGENT_NO_BROKER` or set it to empty to make the failure go away; that defeats the safety net.
-
-### Fixtures and mocks
-
-- **In-memory SQLite via `db_conn`** — defined in `tests/conftest.py`. Always use this; never touch a real DB.
-- **Mock Anthropic** with the import path patch:
-  ```python
-  with patch("agents.base.anthropic.Anthropic", return_value=mock_client):
-      ...
-  ```
-- **Mock broker calls** at the module path the agent imports from — typically:
-  ```python
-  patch("tools.broker.place_market_order", ...)
-  patch("tools.broker.get_alpaca_positions", ...)
-  ```
-- **Mock response helper** — the helper that constructs a fake Anthropic response **must be named `make_mock_claude_response`**. Tests across the suite import this name; renaming breaks the convention.
-
-### What every agent test must cover
-
-Three test cases minimum, in this order:
-
-1. **Happy path with value assertions** — drive the agent end-to-end with a realistic mocked response, assert on the parsed-output dict's actual values (not just shape).
-2. **Name check** — assert the agent's `name` attribute is the string the rest of the system expects (`"market_intelligence"`, `"strategy"`, `"risk_review"`, `"team_leader"`). Catches silent renames.
-3. **JSON fallback path** — drive the agent with a response that does **not** contain the expected envelope, assert that `parse_output` still returns a usable dict via the JSON fallback. This is the failure-mode test; do not skip it.
-
-### `stop_reason` convention
-
-Mock responses use `stop_reason = "end_turn"`. The full tool-use loop is **not** exercised in unit tests — it would require multi-turn mocking and the convention of the suite is to skip it. If you genuinely need to test multi-turn tool-use behaviour, that goes in an integration test under `tests/test_integration/` (not in `tests/test_agents/`).
+_See architectural invariant in `CLAUDE.md` and incident history (#149) for the rationale._
 
 ## Architectural invariant — non-negotiable
 
-**The LLM must never control risk parameters directly.** If the agent you are adding or extending will make decisions affecting position sizing, entry/exit timing, or stop distances — stop. Add a deterministic validation layer in `tools/risk.py` first. The LLM receives the validated values as inputs; it cannot set or override them.
+**No LLM in the trading path.** The `daily-check`, `kill-switch`, and `panic` Edge Functions import no model SDK. Any new setting you add must be consumed by deterministic TypeScript logic only — not fed to a model for interpretation.
 
-This is enforced regardless of how the agent is prompted. Risk parameters must originate from `tools/risk.py` and be plumbed through `pending_stops`/`pending_targets` (or equivalent) so the order-placement path can verify them against deterministic rules before submission.
-
-If you are unsure whether your change touches risk, default to assuming it does and add the validator. It is cheaper to remove an unnecessary check than to backfill one after a runaway loss.
+If you are unsure whether your change adds a second decision rule, stop, re-read the "One decision rule" invariant in `CLAUDE.md`, and open a brainstorm issue. It is cheaper to scope correctly than to backfill a revert.
 
 ## Quick checklist before opening the PR
 
-- [ ] Three `BaseAgent` methods implemented (`get_tools`, `_get_tool_functions`, `parse_output`).
-- [ ] Tool callable `__name__` matches the tool definition `name` for every tool.
-- [ ] Instance state for closures: init `None`, set in `run()`, captured as local before closure.
-- [ ] Deferred imports inside `_get_tool_functions()`.
-- [ ] `parse_output` includes a JSON fallback path.
-- [ ] Three agent tests: happy path, name check, JSON fallback.
-- [ ] If a new setting was added: env read + validation + `.env.example` + README.
-- [ ] If the change affects risk: deterministic validator added to `tools/risk.py` first.
-- [ ] `from __future__ import annotations` at the top of every new Python file.
+- [ ] New setting read from `Deno.env.get("NEW_SETTING")` inside `config.ts` `loadConfig()`.
+- [ ] Range validated immediately; throws on invalid value.
+- [ ] Exported via the config object (not via direct `Deno.env.get` calls in function code).
+- [ ] `supabase secrets set` command documented in PR description.
+- [ ] `.env.example` entry added with inline comment.
+- [ ] `README.md` Settings section updated.
+- [ ] Risky change? Default is OFF (0 / false / empty). Gated before taking effect.
+- [ ] No LLM call added. No second decision rule introduced.
