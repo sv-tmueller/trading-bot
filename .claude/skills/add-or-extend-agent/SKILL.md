@@ -7,7 +7,7 @@ description: Use this skill when adding a new env-driven setting in `supabase/fu
 
 Procedural playbook for adding a new configurable setting to the trading bot. Every rule below has been the source of a real bug at least once.
 
-This skill is **dual-purpose**: the main session invokes it via the Skill tool; the `engineer` subagent reads it via the `Read` tool when its issue touches settings. Same content, two consumption paths.
+This skill is **dual-purpose**: the main session invokes it via the Skill tool; the `developer` subagent reads it via the `Read` tool when its issue touches settings. Same content, two consumption paths.
 
 ## When this skill applies
 
@@ -46,7 +46,7 @@ Required when a new behaviour needs a tunable parameter or feature flag. Recipe:
 
 ## Hard rule — never execute against the live broker in tests
 
-Engineer subagents inherit the project's Alpaca secrets via the parent shell. Any `deno test` or ad-hoc invocation could submit real orders if it reaches a live broker path. The mutating helpers on `supabase/functions/_shared/alpaca.ts` (`placeMarketOrder`, `liquidate`, `cancelAllOrders`) call `checkGuard()` and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. All Alpaca calls MUST be mocked in tests — the `logic.ts` modules take an injected `deps` object, so pass mocks directly. Do NOT unset `CLAUDE_AGENT_NO_BROKER` to silence a `BrokerCallBlockedError`; that defeats the safety net.
+Developer subagents inherit the project's Alpaca secrets via the parent shell. Any `deno test` or ad-hoc invocation could submit real orders if it reaches a live broker path. The mutating helpers on `supabase/functions/_shared/alpaca.ts` (`placeMarketOrder`, `liquidate`, `cancelAllOrders`) call `checkGuard()` and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. All Alpaca calls MUST be mocked in tests — the `logic.ts` modules take an injected `deps` object, so pass mocks directly. Do NOT unset `CLAUDE_AGENT_NO_BROKER` to silence a `BrokerCallBlockedError`; that defeats the safety net.
 
 _See architectural invariant in `CLAUDE.md` and incident history (#149) for the rationale._
 
