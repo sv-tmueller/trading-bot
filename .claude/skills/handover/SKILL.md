@@ -21,7 +21,7 @@ Do all of these before writing.
 
 1. **Read `CLAUDE.md` in full.** The handover must surface the architectural invariants — *"The LLM must never control risk parameters directly"*, the deterministic-risk layer, the kill switch, the pre-market scan timing, the IEX/SIP feed gate. These are non-obvious to a cold reader and easy to violate without reminder.
 2. **Read `docs/handover/README.md`** for the section-by-section contract.
-3. **Read `TEAM.md`** so role boundaries (Lead / Engineer / Reviewer / QA / Analyst / Docs) are reflected accurately in any "next steps" the handover proposes.
+3. **Keep role boundaries straight** (architect / developer / reviewer / tester / qa / analyst / docs) so they are reflected accurately in any "next steps" the handover proposes.
 4. **Capture live state** — run these in parallel:
    - `git status` and `git branch --show-current` — uncommitted changes, current branch.
    - `git log --oneline -20` — recent commit context.
