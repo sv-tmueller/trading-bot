@@ -37,6 +37,10 @@ function makeDeps(
         target_state: "LONG",
         kill_switch_fired_at: null,
       } as never),
+    claimTradeDate: (scriptName, tradeDate) => {
+      calls.claim = { scriptName, tradeDate };
+      return Promise.resolve(true);
+    },
     upsertRegimeState: (p) => {
       calls.upsert = p;
       (calls.upserts as unknown[]).push(p);
@@ -372,4 +376,76 @@ Deno.test("liquidate ok but insertTrade fails -> kill_switch flag persisted befo
   assertEquals(upserts.length, 2);
   assertEquals(upserts[1].currentState, "CASH");
   assertEquals(upserts[1].killSwitchActive, true);
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency guard (#293): claimTradeDate
+// ---------------------------------------------------------------------------
+
+Deno.test("concurrency: breach but claimTradeDate returns false -> finishes without liquidating", async () => {
+  // A second concurrent invocation on the same trading day finds the claim
+  // already taken -> must NOT liquidate; another invocation already handled it.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+    } as unknown as KillSwitchDeps["marketdata"],
+    db: {
+      claimTradeDate: () => {
+        calls.claim = true;
+        return Promise.resolve(false); // conflict — another invocation already claimed
+      },
+    } as unknown as KillSwitchDeps["db"],
+  });
+  const outcome = await runKillSwitch(deps);
+  assertEquals(outcome, "skipped:duplicate_run");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals((calls.audit as { outcome: string }).outcome, "skipped:duplicate_run");
+});
+
+Deno.test("concurrency: within-threshold tick does NOT call claimTradeDate", async () => {
+  // A non-breaching run exits before the claim gate — must not consume a claim
+  // so a later-that-day breach can still fire.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(90), // -10%, within threshold
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  const outcome = await runKillSwitch(deps);
+  assertEquals(outcome, "success:within_threshold");
+  assertEquals(calls.claim, undefined);
+});
+
+Deno.test("concurrency: claim uses script_name='kill-switch' and today's date", async () => {
+  // The claim key must identify the script and the trading day; kill-switch
+  // must NOT share a namespace with daily-check.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  await runKillSwitch(deps);
+  const claim = calls.claim as { scriptName: string; tradeDate: string };
+  assertEquals(claim.scriptName, "kill-switch");
+  assertEquals(claim.tradeDate, "2026-06-05"); // today per the test clock
+});
+
+Deno.test("concurrency: claimTradeDate throws non-23505 error -> error:* outcome, no liquidation", async () => {
+  // Any non-conflict claim failure must propagate as an error, not silently
+  // skip. This prevents a DB outage from masking a needed liquidation by
+  // producing a silent skipped:duplicate_run instead of an alertable error.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // breach
+    } as unknown as KillSwitchDeps["marketdata"],
+    db: {
+      claimTradeDate: () => Promise.reject(new Error("db connection failed")),
+    } as unknown as KillSwitchDeps["db"],
+  });
+  const outcome = await runKillSwitch(deps);
+  assertEquals(outcome.startsWith("error:"), true);
+  assertEquals(calls.liquidate, undefined);
 });

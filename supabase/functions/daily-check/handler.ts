@@ -8,6 +8,7 @@ import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import {
+  claimTradeDate,
   getConfig,
   getLatestRegimeState,
   insertAuditLog,
@@ -40,6 +41,7 @@ function buildDeps(): DailyCheckDeps {
     db: {
       getConfig: (k) => getConfig(sb, k),
       getLatestRegimeState: () => getLatestRegimeState(sb),
+      claimTradeDate: (scriptName, tradeDate) => claimTradeDate(sb, scriptName, tradeDate),
       upsertRegimeState: (p) => upsertRegimeState(sb, p),
       insertTrade: (p) => insertTrade(sb, p),
       insertAuditLog: (p) => insertAuditLog(sb, p),

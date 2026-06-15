@@ -131,3 +131,24 @@ export async function setConfig(sb: SupabaseClient, key: string, value: string):
   );
   if (error) throw new Error(`setConfig: ${error.message}`);
 }
+
+// Per-trading-day concurrency guard (#293). Attempts to INSERT a claim row
+// for (scriptName, tradeDate). Returns:
+//   true  — claim succeeded; this invocation may proceed to place an order
+//   false — unique-violation (Postgres 23505); another invocation already
+//            claimed this date; caller must skip the order
+// Any other error is re-thrown so the caller can surface it as error:*
+// rather than silently swallowing a DB failure as a false skipped:duplicate.
+export async function claimTradeDate(
+  sb: SupabaseClient,
+  scriptName: string,
+  tradeDate: string,
+): Promise<boolean> {
+  const { error } = await sb.from("trade_claims").insert({
+    script_name: scriptName,
+    trade_date: tradeDate,
+  });
+  if (!error) return true;
+  if (error.code === "23505") return false;
+  throw new Error(`claimTradeDate: ${error.message}`);
+}
