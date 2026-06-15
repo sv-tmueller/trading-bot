@@ -542,6 +542,42 @@ Deno.test("B1b: quote fetch throws -> fail-toward-protection: liquidates on trad
   assertEquals(typeof calls.error, "string"); // notifyError called (outage alerted)
 });
 
+Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and mid", async () => {
+  // Both trade and quote breach -> the durable audit_log.notes must carry
+  // confirmation=confirmed and mid=<quote.mid> so a confirmed fire is
+  // distinguishable from a quote-outage fire in forensic queries.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve({ bid: 69, ask: 71, mid: 70 }), // both breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=confirmed"), true);
+  assertEquals(notes.includes("mid="), true);
+});
+
+Deno.test("fire notes: quote-outage fire carries confirmation=unverified_quote_outage", async () => {
+  // Quote throws -> fail-toward-protection path fires. The durable audit_log.notes
+  // must carry confirmation=unverified_quote_outage so this fire is distinguishable
+  // from a confirmed dual-breach fire.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+      getLatestQuote: () => Promise.reject(new Error("quote service unavailable")),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
+  // A quote-outage fire does NOT carry a numeric mid (there is none).
+  assertEquals(notes.includes("confirmation=confirmed"), false);
+});
+
 Deno.test("B1b: neither breaches -> success:within_threshold (regression)", async () => {
   // Both trade and mid are within threshold -> unchanged behavior.
   const { deps, calls } = makeDeps({
