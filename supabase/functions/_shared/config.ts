@@ -102,7 +102,7 @@ export function getAlpacaConfig(): AlpacaConfig {
     paper,
     tradingBaseUrl: paper ? "https://paper-api.alpaca.markets" : "https://api.alpaca.markets",
     dataBaseUrl: "https://data.alpaca.markets",
-    dataFeed: dataFeed as "iex" | "sip",
+    dataFeed,
   };
 }
 
