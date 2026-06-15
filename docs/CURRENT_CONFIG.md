@@ -20,6 +20,7 @@ Registered by `supabase/migrations/0002_schedule.sql`; daily-check rescheduled b
 | `ALPACA_API_KEY` | — | Alpaca broker + data key |
 | `ALPACA_SECRET_KEY` | — | Alpaca broker + data secret |
 | `ALPACA_PAPER` | `true` | `true` = paper trading, `false` = live |
+| `ALPACA_DATA_FEED` | `iex` | Alpaca market-data feed for daily bars, latest trade, and latest quote: `iex` (free) or `sip` (live feed) |
 | `BOT_TICKER` | `UPRO` | Instrument the bot trades (3x leveraged S&P 500 ETF) |
 | `BOT_BENCHMARK` | `SPY` | Instrument used for the regime decision |
 | `REGIME_SMA_DAYS` | `200` | SMA window for the regime decision (validated 20–500) |

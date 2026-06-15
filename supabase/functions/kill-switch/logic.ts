@@ -188,6 +188,8 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     // through to the outer catch (which returns error:* and would disarm the
     // switch). Placed BEFORE the #293 claim so an unconfirmed breach consumes no
     // claim and a later real breach the same day can still fire.
+    let confirmation: "confirmed" | "unverified_quote_outage" = "unverified_quote_outage";
+    let fireMid: number | null = null;
     try {
       const quote = await marketdata.getLatestQuote(config.botTicker);
       const midDrawdown = quote.mid / refHigh - 1;
@@ -199,12 +201,14 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         return "skipped:breach_unconfirmed";
       }
       // both breach -> fall through to claim + liquidate
+      confirmation = "confirmed";
+      fireMid = quote.mid;
     } catch (e) {
       await notifications.notifyError(
         `kill-switch: quote fetch failed for ${config.botTicker} ` +
           `(${(e as Error).message.slice(0, 200)}) — liquidating on trade price alone (fail-toward-protection)`,
       );
-      // fall through to claim + liquidate
+      // confirmation stays "unverified_quote_outage"; fall through to claim + liquidate
     }
 
     // Concurrency guard (#293): at most one liquidation per trading day. Place
@@ -264,7 +268,11 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       qty: fill.qty,
       fillPrice: fill.fillPrice,
     });
-    await finish("success:kill_switch_fired", `dd=${drawdown.toFixed(4)}`);
+    const midNote = fireMid !== null ? ` mid=${fireMid}` : "";
+    await finish(
+      "success:kill_switch_fired",
+      `dd=${drawdown.toFixed(4)}${midNote} confirmation=${confirmation}`,
+    );
     return "success:kill_switch_fired";
   } catch (e) {
     const err = e as Error;
