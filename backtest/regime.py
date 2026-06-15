@@ -52,6 +52,7 @@ def simulate_from_signal(
     starting_cash: float = STARTING_CASH,
     slippage_bps: int = SLIPPAGE_BPS,
     commission_bps: int = COMMISSION_BPS,
+    alloc_frac: float = 1.0,
 ) -> dict:
     """Core signal→equity simulation loop shared by all strategies.
 
@@ -69,6 +70,9 @@ def simulate_from_signal(
         One-way slippage in basis points.
     commission_bps:
         One-way commission in basis points.
+    alloc_frac:
+        Fraction of available cash to deploy on LONG (default 1.0 = 100%).
+        The remainder stays in cash earning 0%.
 
     Returns
     -------
@@ -100,9 +104,11 @@ def simulate_from_signal(
 
         # Open-of-day execution
         if want_long and qty == 0:
-            # Buy at open, with slippage + commission
+            # Buy at open, with slippage + commission. ``alloc_frac`` of cash is
+            # deployed; the remainder stays in cash (0% yield).
             execution_px = open_px * (1 + slippage_bps / 10_000)
-            qty = int(cash / execution_px / (1 + commission_bps / 10_000))
+            investable = cash * alloc_frac
+            qty = int(investable / execution_px / (1 + commission_bps / 10_000))
             cost = qty * execution_px * (1 + commission_bps / 10_000)
             cash -= cost
             entry_price = execution_px
@@ -174,6 +180,9 @@ def run_regime_backtest(
     end: date,
     sma_days: int = 200,
     starting_cash: float = STARTING_CASH,
+    alloc_frac: float = 1.0,
+    benchmark_px: Optional[pd.DataFrame] = None,
+    vehicle_px: Optional[pd.DataFrame] = None,
 ) -> dict:
     """Run the regime-filter backtest. Returns headline metrics + trade list.
 
@@ -183,9 +192,16 @@ def run_regime_backtest(
 
     Result keys: total_return, cagr, max_drawdown, trade_count, ending_equity,
                  starting_cash, trades (list of dicts), equity_curve (pd.Series).
+
+    ``alloc_frac`` is the fraction of available cash deployed into the vehicle
+    on LONG (default 1.0 = 100%, the live bot's behaviour). The remainder stays
+    in cash earning 0%. ``benchmark_px`` / ``vehicle_px`` let callers inject an
+    already-built OHLC frame (used by the synthetic-leverage research code) in
+    place of a yfinance download; each must have ``Open`` and ``Close`` columns
+    indexed by date.
     """
-    benchmark = _fetch(benchmark_ticker, start, end)
-    vehicle = _fetch(vehicle_ticker, start, end)
+    benchmark = _fetch(benchmark_ticker, start, end) if benchmark_px is None else benchmark_px
+    vehicle = _fetch(vehicle_ticker, start, end) if vehicle_px is None else vehicle_px
 
     # Align on common dates BEFORE computing the SMA (order matters)
     common = benchmark.index.intersection(vehicle.index)
@@ -202,6 +218,7 @@ def run_regime_backtest(
         starting_cash=starting_cash,
         slippage_bps=SLIPPAGE_BPS,
         commission_bps=COMMISSION_BPS,
+        alloc_frac=alloc_frac,
     )
 
     # cagr lives in the wrapper — it requires the calendar window, not the index
