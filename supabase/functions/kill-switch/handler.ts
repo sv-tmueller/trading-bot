@@ -5,7 +5,7 @@ import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
 import { requireServiceRole } from "../_shared/auth.ts";
 import { getStrategyConfig } from "../_shared/config.ts";
 import { createAlpacaClient } from "../_shared/alpaca.ts";
-import { getDailyCloses, getLatestTradePrice } from "../_shared/marketdata.ts";
+import { getDailyCloses, getLatestQuote, getLatestTradePrice } from "../_shared/marketdata.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import {
   claimTradeDate,
@@ -29,7 +29,7 @@ function buildDeps(): KillSwitchDeps {
   return {
     config: getStrategyConfig(),
     now: () => new Date(),
-    marketdata: { getDailyCloses, getLatestTradePrice },
+    marketdata: { getDailyCloses, getLatestTradePrice, getLatestQuote },
     alpaca: {
       getClock: () => alpaca.getClock(),
       getPosition: (s) => alpaca.getPosition(s),

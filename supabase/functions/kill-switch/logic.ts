@@ -10,6 +10,7 @@ export interface KillSwitchDeps {
   marketdata: {
     getDailyCloses: (symbol: string, count: number) => Promise<DailyBar[]>;
     getLatestTradePrice: (symbol: string) => Promise<number>;
+    getLatestQuote: (symbol: string) => Promise<{ bid: number; ask: number; mid: number }>;
   };
   alpaca: {
     getClock: () => Promise<{ isOpen: boolean }>;
@@ -178,6 +179,32 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     if (drawdown > -config.killSwitchDrawdownPct) {
       await finish("success:within_threshold", `dd=${drawdown.toFixed(4)}`);
       return "success:within_threshold";
+    }
+
+    // B1b dual-breach confirmation (#269 finding 8): a single thin-feed (IEX)
+    // trade print must not liquidate the 3x position alone. Confirm against the
+    // quote midpoint; fire only if BOTH breach. The fetch is wrapped LOCALLY so a
+    // quote OUTAGE fails toward protection (fire on trade alone) and never falls
+    // through to the outer catch (which returns error:* and would disarm the
+    // switch). Placed BEFORE the #293 claim so an unconfirmed breach consumes no
+    // claim and a later real breach the same day can still fire.
+    try {
+      const quote = await marketdata.getLatestQuote(config.botTicker);
+      const midDrawdown = quote.mid / refHigh - 1;
+      if (midDrawdown > -config.killSwitchDrawdownPct) {
+        const msg = `breach unconfirmed: trade dd=${drawdown.toFixed(4)} (px=${lastPrice}) ` +
+          `but quote-mid dd=${midDrawdown.toFixed(4)} (mid=${quote.mid}) within threshold — NOT liquidating`;
+        await notifications.notifyError(`kill-switch: ${msg}`);
+        await finish("skipped:breach_unconfirmed", msg);
+        return "skipped:breach_unconfirmed";
+      }
+      // both breach -> fall through to claim + liquidate
+    } catch (e) {
+      await notifications.notifyError(
+        `kill-switch: quote fetch failed for ${config.botTicker} ` +
+          `(${(e as Error).message.slice(0, 200)}) — liquidating on trade price alone (fail-toward-protection)`,
+      );
+      // fall through to claim + liquidate
     }
 
     // Concurrency guard (#293): at most one liquidation per trading day. Place
