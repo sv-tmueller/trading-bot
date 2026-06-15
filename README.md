@@ -81,6 +81,7 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 |---|---|---|
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | — | Alpaca broker + data credentials |
 | `ALPACA_PAPER` | `true` | `true` = paper, `false` = live |
+| `ALPACA_DATA_FEED` | `iex` | Alpaca market-data feed for daily bars, latest trade, and latest quote: `iex` (free) or `sip` (live feed) |
 | `BOT_TICKER` | `UPRO` | Instrument the bot trades (3x S&P 500 ETF) |
 | `BOT_BENCHMARK` | `SPY` | Instrument used for the regime decision |
 | `REGIME_SMA_DAYS` | `200` | SMA window (validated 20–500) |
