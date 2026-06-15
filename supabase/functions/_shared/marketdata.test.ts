@@ -147,7 +147,6 @@ Deno.test("getLatestQuote throws DataError when ask is non-numeric", async () =>
   } finally {
     restore();
     clearKeys();
-    Deno.env.delete("ALPACA_DATA_FEED");
   }
 });
 
