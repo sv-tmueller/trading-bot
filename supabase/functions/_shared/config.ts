@@ -76,6 +76,7 @@ export interface AlpacaConfig {
   paper: boolean;
   tradingBaseUrl: string;
   dataBaseUrl: string;
+  dataFeed: "iex" | "sip";
 }
 
 export function getAlpacaConfig(): AlpacaConfig {
@@ -91,12 +92,17 @@ export function getAlpacaConfig(): AlpacaConfig {
     throw new Error(`ALPACA_PAPER must be "true" or "false", got ${JSON.stringify(paperRaw)}`);
   }
   const paper = paperRaw !== "false";
+  const dataFeed = (Deno.env.get("ALPACA_DATA_FEED") ?? "iex").trim().toLowerCase();
+  if (dataFeed !== "iex" && dataFeed !== "sip") {
+    throw new Error(`ALPACA_DATA_FEED must be "iex" or "sip", got ${JSON.stringify(dataFeed)}`);
+  }
   return {
     apiKeyId,
     apiSecretKey,
     paper,
     tradingBaseUrl: paper ? "https://paper-api.alpaca.markets" : "https://api.alpaca.markets",
     dataBaseUrl: "https://data.alpaca.markets",
+    dataFeed: dataFeed as "iex" | "sip",
   };
 }
 

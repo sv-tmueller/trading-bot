@@ -120,3 +120,36 @@ Deno.test("isClaudeAgentNoBroker reads env fresh", () => {
   assertEquals(isClaudeAgentNoBroker(), true);
   Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
 });
+
+// ---------------------------------------------------------------------------
+// ALPACA_DATA_FEED knob (#269 finding 8)
+// ---------------------------------------------------------------------------
+
+Deno.test("getAlpacaConfig: ALPACA_DATA_FEED defaults to iex", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.delete("ALPACA_DATA_FEED");
+  assertEquals(getAlpacaConfig().dataFeed, "iex");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+});
+
+Deno.test("getAlpacaConfig: ALPACA_DATA_FEED=sip accepted", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.set("ALPACA_DATA_FEED", "sip");
+  assertEquals(getAlpacaConfig().dataFeed, "sip");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+  Deno.env.delete("ALPACA_DATA_FEED");
+});
+
+Deno.test("getAlpacaConfig: invalid ALPACA_DATA_FEED throws", () => {
+  Deno.env.set("ALPACA_API_KEY", "k");
+  Deno.env.set("ALPACA_SECRET_KEY", "s");
+  Deno.env.set("ALPACA_DATA_FEED", "nasdaq");
+  assertThrows(() => getAlpacaConfig(), Error, "ALPACA_DATA_FEED");
+  Deno.env.delete("ALPACA_API_KEY");
+  Deno.env.delete("ALPACA_SECRET_KEY");
+  Deno.env.delete("ALPACA_DATA_FEED");
+});

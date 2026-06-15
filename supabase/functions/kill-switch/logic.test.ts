@@ -11,6 +11,16 @@ function bars(highs: number[]): DailyBar[] {
   }));
 }
 
+// Non-breaching quote: mid=100, refHigh=100 -> mid/refHigh - 1 = 0 (within threshold).
+// This is the safe default — tests that expect a fire MUST override with a
+// confirming (breaching) quote so the both-breach branch runs, not the catch.
+const nonBreachingQuote = { bid: 100, ask: 100, mid: 100 };
+
+// Confirming (breaching) quote helpers — mid matches the trade price so both breach.
+function breachingQuote(mid: number) {
+  return { bid: mid, ask: mid, mid };
+}
+
 function makeDeps(
   over: Partial<KillSwitchDeps> = {},
 ): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
@@ -18,6 +28,13 @@ function makeDeps(
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
     getLatestTradePrice: () => Promise.resolve(100),
+    // Non-breaching default (#269 finding 8 test-integrity fix): a missing or
+    // undefined getLatestQuote would route breach tests through the local catch
+    // (undefined call throws -> fail-toward-protection -> liquidate) — green for
+    // the wrong reason. The explicit non-breaching default means any breach test
+    // that forgets a confirming override flips to skipped:breach_unconfirmed and
+    // fails loudly, exposing the missing override immediately.
+    getLatestQuote: () => Promise.resolve(nonBreachingQuote),
   };
   const defaultAlpaca: KillSwitchDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
@@ -151,6 +168,7 @@ Deno.test("DB says CASH but broker holds a position -> protects it + notifies de
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // drawdown -0.30, breach
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
@@ -172,6 +190,7 @@ Deno.test("no regime_state row but broker holds a position -> still protects it 
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
@@ -214,6 +233,7 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
@@ -232,6 +252,8 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
 Deno.test("implausible ratio (refHigh/lastPrice > 2) -> error:implausible_drawdown, no liquidation", async () => {
   // 100 -> 40 is a -60% intraday move on a 3x ETF inside the lookback window —
   // impossible without a corporate action (e.g. an unadjusted forward split).
+  // NOTE: the implausibility guard fires BEFORE the quote fetch, so no quote
+  // override needed here.
   const { deps, calls } = makeDeps({
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -252,6 +274,7 @@ Deno.test("plausible deep breach (ratio <= 2) still liquidates", async () => {
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(60),
+      getLatestQuote: () => Promise.resolve(breachingQuote(60)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
@@ -263,6 +286,7 @@ Deno.test("breach but position vanished -> success:no_position_to_liquidate", as
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
     alpaca: {
       getClock: () => Promise.resolve({ isOpen: true }),
@@ -283,6 +307,7 @@ Deno.test("exactly at threshold -> fires (boundary: drawdown === -pct)", async (
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(75),
+      getLatestQuote: () => Promise.resolve(breachingQuote(75)), // confirm breach (75/100-1=-0.25)
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
@@ -340,6 +365,7 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
     alpaca: {
       getClock: () => Promise.resolve({ isOpen: true }),
@@ -365,6 +391,7 @@ Deno.test("liquidate ok but insertTrade fails -> kill_switch flag persisted befo
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
     db: {
       insertTrade: () => Promise.reject(new Error("insert failed")),
@@ -389,6 +416,7 @@ Deno.test("concurrency: breach but claimTradeDate returns false -> finishes with
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
     db: {
       claimTradeDate: () => {
@@ -424,6 +452,7 @@ Deno.test("concurrency: claim uses script_name='kill-switch' and today's date", 
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // breach
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   await runKillSwitch(deps);
@@ -440,6 +469,7 @@ Deno.test("concurrency: claimTradeDate throws non-23505 error -> error:* outcome
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // breach
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
     } as unknown as KillSwitchDeps["marketdata"],
     db: {
       claimTradeDate: () => Promise.reject(new Error("db connection failed")),
@@ -448,4 +478,80 @@ Deno.test("concurrency: claimTradeDate throws non-23505 error -> error:* outcome
   const outcome = await runKillSwitch(deps);
   assertEquals(outcome.startsWith("error:"), true);
   assertEquals(calls.liquidate, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// B1b dual-breach price confirmation (#269 finding 8)
+// ---------------------------------------------------------------------------
+
+Deno.test("B1b: both trade and quote-mid breach -> success:kill_switch_fired (true fire)", async () => {
+  // Both trade drawdown and quote-mid drawdown exceed the threshold -> the
+  // dual-breach confirmation is satisfied and the kill-switch fires normally.
+  // trade dd = 70/100-1 = -0.30, mid dd = 70/100-1 = -0.30, both breach -0.25.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve({ bid: 69, ask: 71, mid: 70 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+});
+
+Deno.test("B1b: trade breaches but quote-mid does not -> skipped:breach_unconfirmed, no liquidation", async () => {
+  // Classic false-fire suppression: a stale/thin IEX trade print is -30% but the
+  // quote midpoint is only -10% (well within threshold). The kill-switch must NOT
+  // fire; the suppressed fire is alerted; no claim is consumed so a real breach
+  // later the same day can still fire; drawdown was persisted upstream.
+  // trade dd = 70/100-1 = -0.30 (breach); mid dd = 90/100-1 = -0.10 (no breach).
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breaches
+      getLatestQuote: () => Promise.resolve({ bid: 89, ask: 91, mid: 90 }), // -10%, no breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:breach_unconfirmed");
+  assertEquals(calls.liquidate, undefined); // did NOT liquidate
+  assertEquals(calls.claim, undefined); // did NOT consume the trade claim
+  assertEquals(typeof calls.error, "string"); // notifyError fired
+  // The upstream drawdown upsert (still-LONG row) ran before the confirmation
+  // branch — exactly 1 upsert (no second upsert added by the unconfirmed path).
+  assertEquals((calls.upserts as unknown[]).length, 1);
+  assertEquals(
+    ((calls.upserts as Array<{ currentState: string }>)[0]).currentState,
+    "LONG",
+  );
+});
+
+Deno.test("B1b: quote fetch throws -> fail-toward-protection: liquidates on trade price alone", async () => {
+  // A data outage must NEVER disarm the kill-switch. When the quote fetch throws,
+  // the local catch falls through to claim + liquidate on the trade price alone,
+  // and notifyError is called. Critically, the outer catch (which returns
+  // error:* and would disarm the switch) is NOT reached.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+      getLatestQuote: () => Promise.reject(new Error("quote service unavailable")),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  assertEquals(typeof calls.error, "string"); // notifyError called (outage alerted)
+});
+
+Deno.test("B1b: neither breaches -> success:within_threshold (regression)", async () => {
+  // Both trade and mid are within threshold -> unchanged behavior.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(90), // -10%, no breach
+      getLatestQuote: () => Promise.resolve({ bid: 89, ask: 91, mid: 90 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.claim, undefined);
 });
