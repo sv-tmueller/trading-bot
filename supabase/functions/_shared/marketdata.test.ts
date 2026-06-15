@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
-import { getDailyCloses, getLatestTradePrice } from "./marketdata.ts";
+import { getDailyCloses, getLatestQuote, getLatestTradePrice } from "./marketdata.ts";
 import { DataError } from "./num.ts";
 
 function setKeys() {
@@ -88,5 +88,107 @@ Deno.test("getLatestTradePrice throws when no trade is returned", async () => {
   } finally {
     restore();
     clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// getLatestQuote (#269 finding 8)
+// ---------------------------------------------------------------------------
+
+Deno.test("getLatestQuote returns {bid, ask, mid}", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/stocks/UPRO/quotes/latest"), true);
+    assertEquals(urlOf(i).includes("feed=iex"), true);
+    return Promise.resolve(jsonResponse({ quote: { bp: 10, ap: 10.2 } }));
+  });
+  try {
+    const q = await getLatestQuote("UPRO");
+    assertEquals(q.bid, 10);
+    assertEquals(q.ask, 10.2);
+    assertEquals(q.mid, 10.1);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getLatestQuote throws DataError when quote is missing", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: null })));
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "no latest quote");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getLatestQuote throws DataError when bid is non-numeric", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ quote: { bp: "x", ap: 10 } }))
+  );
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "quote bid");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getLatestQuote uses ALPACA_DATA_FEED=sip when set", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_DATA_FEED", "sip");
+  let capturedUrl = "";
+  const restore = stubFetch((i) => {
+    capturedUrl = urlOf(i);
+    return Promise.resolve(jsonResponse({ quote: { bp: 10, ap: 10.2 } }));
+  });
+  try {
+    await getLatestQuote("UPRO");
+    assertEquals(capturedUrl.includes("feed=sip"), true);
+  } finally {
+    restore();
+    clearKeys();
+    Deno.env.delete("ALPACA_DATA_FEED");
+  }
+});
+
+Deno.test("getDailyCloses uses ALPACA_DATA_FEED (not hard-coded iex)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_DATA_FEED", "sip");
+  let capturedUrl = "";
+  const restore = stubFetch((i) => {
+    capturedUrl = urlOf(i);
+    return Promise.resolve(jsonResponse({ bars: [], next_page_token: null }));
+  });
+  try {
+    await getDailyCloses("SPY", 5);
+    assertEquals(capturedUrl.includes("feed=sip"), true);
+    assertEquals(capturedUrl.includes("feed=iex"), false);
+  } finally {
+    restore();
+    clearKeys();
+    Deno.env.delete("ALPACA_DATA_FEED");
+  }
+});
+
+Deno.test("getLatestTradePrice uses ALPACA_DATA_FEED (not hard-coded iex)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_DATA_FEED", "sip");
+  let capturedUrl = "";
+  const restore = stubFetch((i) => {
+    capturedUrl = urlOf(i);
+    return Promise.resolve(jsonResponse({ trade: { p: 71.25, s: 10, t: "x" } }));
+  });
+  try {
+    await getLatestTradePrice("UPRO");
+    assertEquals(capturedUrl.includes("feed=sip"), true);
+    assertEquals(capturedUrl.includes("feed=iex"), false);
+  } finally {
+    restore();
+    clearKeys();
+    Deno.env.delete("ALPACA_DATA_FEED");
   }
 });
