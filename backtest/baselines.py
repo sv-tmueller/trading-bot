@@ -48,8 +48,8 @@ def buy_and_hold_signal(closes: pd.Series) -> pd.Series:
 
 
 def persistence_signal(closes: pd.Series) -> pd.Series:
-    """Lag-1 sign signal: bullish if yesterday's close was higher than the day
-    before (i.e. yesterday's 1-day return > 0).
+    """Lag-1 sign signal: bullish if today's close is higher than yesterday's
+    (i.e. today's 1-day return > 0).
 
     This is the is_bullish_close_t signal — the T+1 execution shift is applied
     by the caller (simulate_from_signal). The first day is NaN (no prior close).
@@ -61,7 +61,7 @@ def persistence_signal(closes: pd.Series) -> pd.Series:
 
     Returns
     -------
-    Boolean (or NaN) Series: True where close[T-1] > close[T-2]; NaN on day 0.
+    Boolean (or NaN) Series: True where close[T] > close[T-1]; NaN on day 0.
     """
     prior_return = closes.pct_change()  # return at close T vs close T-1
     # Signal at close-T = sign of the return that just completed at close-T

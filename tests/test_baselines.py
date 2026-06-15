@@ -179,8 +179,7 @@ def test_tsmom_transitions_only_at_month_end():
     transitions = valid[valid != valid.shift(1)].dropna()
 
     for ts in transitions.index:
-        month_end = pd.bdate_range(ts.replace(day=1), periods=31, freq="B")[-1]
-        assert ts == month_end or ts == ts + pd.offsets.BMonthEnd(0), (
+        assert ts == ts + pd.offsets.BMonthEnd(0), (
             f"TSMOM signal changed on {ts}, not a month-end. "
             f"Transitions must only occur at month boundaries."
         )

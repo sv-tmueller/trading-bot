@@ -74,6 +74,15 @@ def test_nan_signal_treated_as_flat():
     assert isinstance(result["trade_count"], int)
     assert result["trade_count"] >= 0
     assert result["ending_equity"] > 0
+    # Discriminating assertion: NaN→flat means no entry until the first post-NaN
+    # True day (day 4, open price 115). The correct path enters at 115 (not 100).
+    # Correct (NaN→flat):  ending_equity ≈ 9980.22  (1 trade, entered at 115)
+    # Bug (NaN→entry):     ending_equity ≈ 11463.72 (incorrectly entered at 100)
+    assert result["ending_equity"] == pytest.approx(9980.22, abs=0.5), (
+        f"NaN signal must be treated as flat (no entry). "
+        f"Got ending_equity={result['ending_equity']:.2f}; "
+        f"if ~11463 the NaN was incorrectly treated as a buy signal."
+    )
 
 
 # ---------------------------------------------------------------------------
