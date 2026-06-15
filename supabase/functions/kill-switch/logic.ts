@@ -18,6 +18,7 @@ export interface KillSwitchDeps {
   };
   db: {
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
+    claimTradeDate: (scriptName: string, tradeDate: string) => Promise<boolean>;
     upsertRegimeState: (p: {
       date: string;
       spyClose: number;
@@ -177,6 +178,20 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     if (drawdown > -config.killSwitchDrawdownPct) {
       await finish("success:within_threshold", `dd=${drawdown.toFixed(4)}`);
       return "success:within_threshold";
+    }
+
+    // Concurrency guard (#293): at most one liquidation per trading day. Place
+    // the claim as the last gate before liquidate so a non-breaching tick
+    // consumes no claim and a later-that-day real breach can still fire.
+    // NOTE: fail-toward-no-protection — after the kill-switch fires (claim
+    // taken), a same-day manual/desync re-entry cannot be re-protected that day,
+    // and a claim-then-crash suppresses that position's liquidation until the
+    // next daily-check resyncs. This is in-spec given "at most one order per
+    // trading day" but is a real behavior change (stated in PR description).
+    const claimed = await db.claimTradeDate("kill-switch", ymd(deps.now()));
+    if (!claimed) {
+      await finish("skipped:duplicate_run", "trade_claims conflict: another invocation already liquidated today");
+      return "skipped:duplicate_run";
     }
 
     // Threshold breached — liquidate.

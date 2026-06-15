@@ -23,6 +23,7 @@ export interface DailyCheckDeps {
   db: {
     getConfig: (key: string) => Promise<string | null>;
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
+    claimTradeDate: (scriptName: string, tradeDate: string) => Promise<boolean>;
     upsertRegimeState: (p: {
       date: string;
       spyClose: number;
@@ -177,6 +178,16 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     const outcome = "success";
 
     if (targetState !== currentState) {
+      // Concurrency guard (#293): at most one order per trading day. The first
+      // invocation to INSERT into trade_claims wins; a concurrent invocation
+      // racing on the same (script_name, trade_date) PK gets a unique-violation
+      // and must back off, not place a duplicate order.
+      const claimed = await db.claimTradeDate("daily-check", ymd(deps.now()));
+      if (!claimed) {
+        await finish("skipped:duplicate_run", "trade_claims conflict: another invocation claimed this date");
+        return "skipped:duplicate_run";
+      }
+
       // Read account value once, before any order, so a transient read failure
       // errors cleanly pre-trade rather than after a fill — a post-fill read
       // failure would skip the state write and mislabel a completed trade as

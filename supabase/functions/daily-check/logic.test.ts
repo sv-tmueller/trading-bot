@@ -43,6 +43,10 @@ function makeDeps(
   const defaultDb: DailyCheckDeps["db"] = {
     getConfig: () => Promise.resolve("false"),
     getLatestRegimeState: () => Promise.resolve(null),
+    claimTradeDate: (scriptName, tradeDate) => {
+      calls.claim = { scriptName, tradeDate };
+      return Promise.resolve(true);
+    },
     upsertRegimeState: (p) => {
       calls.upsert = p;
       return Promise.resolve();
@@ -408,4 +412,63 @@ Deno.test("trade recorded but upsertRegimeState throws -> error outcome, trade r
   assertEquals(outcome, "error:Error");
   assertEquals((calls.insertTrade as { reason: string }).reason, "regime_flip_long");
   assertEquals((calls.audit as { outcome: string }).outcome, "error:Error");
+});
+
+// ---------------------------------------------------------------------------
+// Concurrency guard (#293): claimTradeDate
+// ---------------------------------------------------------------------------
+
+Deno.test("concurrency: first invoke claims and places order; second sees conflict -> skipped:duplicate_run, no order", async () => {
+  // Simulate a duplicate invocation on the same trading day by having
+  // claimTradeDate return false (another invocation already claimed the date).
+  const { deps, calls } = makeDeps({
+    db: {
+      claimTradeDate: () => {
+        calls.claim = true;
+        return Promise.resolve(false); // conflict — another invocation already claimed
+      },
+    } as unknown as DailyCheckDeps["db"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome, "skipped:duplicate_run");
+  assertEquals(calls.placeMarketOrder, undefined);
+  assertEquals(calls.liquidate, undefined);
+  assertEquals((calls.audit as { outcome: string }).outcome, "skipped:duplicate_run");
+});
+
+Deno.test("concurrency: no-op day (no flip) does NOT call claimTradeDate", async () => {
+  // When targetState === currentState no order is needed; the claim must NOT
+  // be consumed so a concurrent no-op doesn't block a real re-run.
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  const outcome = await runDailyCheck(deps);
+  assertEquals(outcome, "success");
+  assertEquals(calls.claim, undefined); // no claim on a no-op day
+});
+
+Deno.test("concurrency: claim uses script_name='daily-check' and today's date", async () => {
+  // The claim key must identify the script and the trading day correctly so
+  // daily-check and kill-switch do not share a namespace.
+  const { deps, calls } = makeDeps();
+  await runDailyCheck(deps);
+  const claim = calls.claim as { scriptName: string; tradeDate: string };
+  assertEquals(claim.scriptName, "daily-check");
+  assertEquals(claim.tradeDate, "2026-06-05"); // today per the test clock
+});
+
+Deno.test("concurrency: skipped:* run (market_closed) before claim gate — claim never called", async () => {
+  // Market-closed exits before the targetState !== currentState block,
+  // so no claim is ever consumed.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: false }),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:market_closed");
+  assertEquals(calls.claim, undefined);
 });
