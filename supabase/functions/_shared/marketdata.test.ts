@@ -137,6 +137,20 @@ Deno.test("getLatestQuote throws DataError when bid is non-numeric", async () =>
   }
 });
 
+Deno.test("getLatestQuote throws DataError when ask is non-numeric", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ quote: { bp: 10, ap: "x" } }))
+  );
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "quote ask");
+  } finally {
+    restore();
+    clearKeys();
+    Deno.env.delete("ALPACA_DATA_FEED");
+  }
+});
+
 Deno.test("getLatestQuote uses ALPACA_DATA_FEED=sip when set", async () => {
   setKeys();
   Deno.env.set("ALPACA_DATA_FEED", "sip");
