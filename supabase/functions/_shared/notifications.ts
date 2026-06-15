@@ -29,7 +29,9 @@ export function notifyRegimeFlip(p: {
 }): Promise<void> {
   const titlePrefix = p.dryRun ? "[DRY-RUN] " : "";
   const message = `${titlePrefix}Regime flip -> ${p.targetState}: ${p.ticker} qty=${p.qty} ` +
-    `@ $${p.fillPrice.toFixed(2)} (SPY $${p.spyClose.toFixed(2)} vs 200-DMA $${p.spySma200.toFixed(2)})`;
+    `@ $${p.fillPrice.toFixed(2)} (SPY $${p.spyClose.toFixed(2)} vs 200-DMA $${
+      p.spySma200.toFixed(2)
+    })`;
   return notify({
     event_type: "regime_flip",
     title: `${titlePrefix}regime_flip ${p.targetState}`,
@@ -53,7 +55,8 @@ export function notifyKillSwitchFired(p: {
   qty: number;
   fillPrice: number;
 }): Promise<void> {
-  const message = `Kill switch fired on ${p.ticker}: drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
+  const message =
+    `Kill switch fired on ${p.ticker}: drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
     `(ref high $${p.refHigh.toFixed(2)}, last $${p.lastPrice.toFixed(2)}), ` +
     `liquidated qty=${p.qty} @ $${p.fillPrice.toFixed(2)}`;
   return notify({

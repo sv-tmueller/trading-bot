@@ -13,6 +13,8 @@ export interface DailyCheckDeps {
     getLatestTradePrice: (symbol: string) => Promise<number>;
   };
   alpaca: {
+    getClock: () => Promise<{ isOpen: boolean }>;
+    getCalendar: (start: string, end: string) => Promise<string[]>;
     getPosition: (symbol: string) => Promise<number>;
     getAccountValue: () => Promise<number>;
     placeMarketOrder: (a: { symbol: string; side: "BUY" | "SELL"; qty: number }) => Promise<Fill>;
@@ -21,6 +23,7 @@ export interface DailyCheckDeps {
   db: {
     getConfig: (key: string) => Promise<string | null>;
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
+    claimTradeDate: (scriptName: string, tradeDate: string) => Promise<boolean>;
     upsertRegimeState: (p: {
       date: string;
       spyClose: number;
@@ -41,15 +44,27 @@ export interface DailyCheckDeps {
       reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
-    updateAuditLog: (p: { id: number; finishedAt: string; outcome: string; notes?: string | null }) => Promise<void>;
+    updateAuditLog: (
+      p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
+    ) => Promise<void>;
   };
   notifications: {
     notifyRegimeFlip: (p: {
-      targetState: State; spyClose: number; spySma200: number; ticker: string;
-      fillPrice: number; qty: number; accountValue: number; dryRun?: boolean;
+      targetState: State;
+      spyClose: number;
+      spySma200: number;
+      ticker: string;
+      fillPrice: number;
+      qty: number;
+      accountValue: number;
+      dryRun?: boolean;
     }) => Promise<void>;
-    notifyStateDesync: (p: { dbState: State; brokerState: State; symbol: string; actionTaken: string }) => Promise<void>;
-    notifyTradeFailed: (p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string }) => Promise<void>;
+    notifyStateDesync: (
+      p: { dbState: State; brokerState: State; symbol: string; actionTaken: string },
+    ) => Promise<void>;
+    notifyTradeFailed: (
+      p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string },
+    ) => Promise<void>;
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
   };
 }
@@ -80,14 +95,36 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
       return "skipped:trading_paused";
     }
 
-    const barsArr = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    // Post-open execution (#256): the cron fires at 13:37 and 14:37 UTC
+    // year-round; the off-season slot, weekends-after-holiday edge cases, and
+    // market holidays all exit here. Same gate pattern as kill-switch.
+    if (!(await alpaca.getClock()).isOpen) {
+      await finish("skipped:market_closed");
+      return "skipped:market_closed";
+    }
+
+    const barsRaw = await marketdata.getDailyCloses(config.botBenchmark, config.regimeSmaDays + 10);
+    // The daily-bars feed can include today's in-progress bar during market
+    // hours; the signal must only ever see completed sessions (#256).
+    const today = ymd(deps.now());
+    const barsArr = barsRaw.filter((b) => b.date < today);
     if (barsArr.length === 0) {
-      await finish("skipped:stale_data", "no bars returned");
+      await finish("skipped:stale_data", "no completed bars returned");
       return "skipped:stale_data";
     }
     const lastBar = barsArr[barsArr.length - 1];
-    if (lastBar.date < ymd(deps.now())) {
-      await finish("skipped:stale_data", `last bar=${lastBar.date}, today=${ymd(deps.now())}`);
+    // Staleness: the last completed bar must be the most recent trading day
+    // strictly before today (calendar-aware: holidays, long weekends). At
+    // 13:37/14:37 UTC the UTC date equals the US-Eastern session date, so
+    // `today` bounds both the filter above and the calendar query.
+    const calStart = new Date(deps.now().getTime() - 10 * 86400000).toISOString().slice(0, 10);
+    const sessions = await alpaca.getCalendar(calStart, today);
+    const prevTradingDay = sessions.filter((d) => d < today).pop();
+    if (!prevTradingDay || lastBar.date !== prevTradingDay) {
+      await finish(
+        "skipped:stale_data",
+        `last bar=${lastBar.date}, prev trading day=${prevTradingDay ?? "none"}`,
+      );
       return "skipped:stale_data";
     }
 
@@ -100,7 +137,10 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     // and would violate the spy_sma200 NOT NULL column.) regime.ts's NaN→CASH
     // branch remains as defense in depth for any caller that skips this check.
     if (Number.isNaN(spySma200)) {
-      await finish("skipped:insufficient_history", `only ${closes.length} bars for SMA${config.regimeSmaDays}`);
+      await finish(
+        "skipped:insufficient_history",
+        `only ${closes.length} bars for SMA${config.regimeSmaDays}`,
+      );
       return "skipped:insufficient_history";
     }
 
@@ -109,7 +149,10 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     const killSwitchActive = latest?.kill_switch_active ?? false;
 
     let { targetState, killSwitchActive: newKs } = computeTargetState({
-      spyClose, spySma200, currentState, killSwitchActive,
+      spyClose,
+      spySma200,
+      currentState,
+      killSwitchActive,
     });
 
     // Reconcile against broker truth.
@@ -117,19 +160,34 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     const brokerState: State = qty > 0 ? "LONG" : "CASH";
     if (brokerState !== currentState) {
       await notifications.notifyStateDesync({
-        dbState: currentState, brokerState, symbol: config.botTicker,
+        dbState: currentState,
+        brokerState,
+        symbol: config.botTicker,
         actionTaken: `DB updated to ${brokerState}`,
       });
       currentState = brokerState;
       ({ targetState, killSwitchActive: newKs } = computeTargetState({
-        spyClose, spySma200, currentState, killSwitchActive,
+        spyClose,
+        spySma200,
+        currentState,
+        killSwitchActive,
       }));
     }
 
     let newCurrentState: State = currentState;
-    let outcome = "success";
+    const outcome = "success";
 
     if (targetState !== currentState) {
+      // Concurrency guard (#293): at most one order per trading day. The first
+      // invocation to INSERT into trade_claims wins; a concurrent invocation
+      // racing on the same (script_name, trade_date) PK gets a unique-violation
+      // and must back off, not place a duplicate order.
+      const claimed = await db.claimTradeDate("daily-check", ymd(deps.now()));
+      if (!claimed) {
+        await finish("skipped:duplicate_run", "trade_claims conflict: another invocation claimed this date");
+        return "skipped:duplicate_run";
+      }
+
       // Read account value once, before any order, so a transient read failure
       // errors cleanly pre-trade rather than after a fill — a post-fill read
       // failure would skip the state write and mislabel a completed trade as
@@ -139,44 +197,89 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
         const vehiclePrice = await marketdata.getLatestTradePrice(config.botTicker);
         const targetQty = Math.floor((accountValue * 0.99) / vehiclePrice);
         if (targetQty <= 0) {
-          await notifications.notifyTradeFailed({ symbol: config.botTicker, side: "BUY", qty: 0, reason: "insufficient_buying_power" });
+          await notifications.notifyTradeFailed({
+            symbol: config.botTicker,
+            side: "BUY",
+            qty: 0,
+            reason: "insufficient_buying_power",
+          });
           await finish("error:insufficient_funds");
           return "error:insufficient_funds";
         }
-        const fill = await alpaca.placeMarketOrder({ symbol: config.botTicker, side: "BUY", qty: targetQty });
+        const fill = await alpaca.placeMarketOrder({
+          symbol: config.botTicker,
+          side: "BUY",
+          qty: targetQty,
+        });
         await db.insertTrade({
-          symbol: config.botTicker, side: "BUY", qty: fill.qty, fillPrice: fill.fillPrice,
-          fillTime: fill.fillTime, brokerOrderId: fill.orderId, reason: "regime_flip_long",
+          symbol: config.botTicker,
+          side: "BUY",
+          qty: fill.qty,
+          fillPrice: fill.fillPrice,
+          fillTime: fill.fillTime,
+          brokerOrderId: fill.orderId,
+          reason: "regime_flip_long",
         });
         await notifications.notifyRegimeFlip({
-          targetState: "LONG", spyClose, spySma200, ticker: config.botTicker,
-          fillPrice: fill.fillPrice, qty: fill.qty, accountValue,
+          targetState: "LONG",
+          spyClose,
+          spySma200,
+          ticker: config.botTicker,
+          fillPrice: fill.fillPrice,
+          qty: fill.qty,
+          accountValue,
         });
         newCurrentState = "LONG";
       } else {
         const fill = await alpaca.liquidate(config.botTicker);
         if (fill) {
           await db.insertTrade({
-            symbol: config.botTicker, side: "SELL", qty: fill.qty, fillPrice: fill.fillPrice,
-            fillTime: fill.fillTime, brokerOrderId: fill.orderId, reason: "regime_flip_cash",
+            symbol: config.botTicker,
+            side: "SELL",
+            qty: fill.qty,
+            fillPrice: fill.fillPrice,
+            fillTime: fill.fillTime,
+            brokerOrderId: fill.orderId,
+            reason: "regime_flip_cash",
           });
           await notifications.notifyRegimeFlip({
-            targetState: "CASH", spyClose, spySma200, ticker: config.botTicker,
-            fillPrice: fill.fillPrice, qty: fill.qty, accountValue,
+            targetState: "CASH",
+            spyClose,
+            spySma200,
+            ticker: config.botTicker,
+            fillPrice: fill.fillPrice,
+            qty: fill.qty,
+            accountValue,
           });
           newCurrentState = "CASH";
         } else {
-          await notifications.notifyTradeFailed({ symbol: config.botTicker, side: "SELL", qty, reason: "liquidate_returned_null" });
-          await finish("error:liquidate_failed", `liquidate(${config.botTicker}) returned null; current pinned at ${currentState}`);
+          await notifications.notifyTradeFailed({
+            symbol: config.botTicker,
+            side: "SELL",
+            qty,
+            reason: "liquidate_returned_null",
+          });
+          await finish(
+            "error:liquidate_failed",
+            `liquidate(${config.botTicker}) returned null; current pinned at ${currentState}`,
+          );
           return "error:liquidate_failed";
         }
       }
     }
 
     await db.upsertRegimeState({
-      date: ymd(deps.now()), spyClose, spySma200, targetState, currentState: newCurrentState,
-      positionDrawdownPct: null, killSwitchActive: newKs,
-      killSwitchFiredAt: latest && newKs ? latest.kill_switch_fired_at : null,
+      date: ymd(deps.now()),
+      spyClose,
+      spySma200,
+      targetState,
+      currentState: newCurrentState,
+      positionDrawdownPct: null,
+      killSwitchActive: newKs,
+      // Forensic timestamp of the last kill-switch fire (finding 10): carry it
+      // through even when the flag clears (e.g. same-day bullish re-entry) —
+      // never overwrite it with null once it exists.
+      killSwitchFiredAt: latest?.kill_switch_fired_at ?? null,
     });
     await finish(outcome, `target=${targetState} current=${newCurrentState}`);
     return outcome;

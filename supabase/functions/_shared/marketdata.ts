@@ -1,4 +1,4 @@
-// Alpaca Market Data REST v2. Replaces yfinance. Uses the IEX feed (free).
+// Alpaca Market Data REST v2. Replaces yfinance. Feed controlled by ALPACA_DATA_FEED (default iex).
 import { getAlpacaConfig } from "./config.ts";
 import { DataError, requireNumber } from "./num.ts";
 
@@ -24,9 +24,11 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
   const startMs = Date.now() - Math.ceil(count * 1.6) * 24 * 60 * 60 * 1000;
   const start = new Date(startMs).toISOString().slice(0, 10);
   // sort=asc makes oldest-first explicit rather than relying on the API default.
-  const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
-    `?timeframe=1Day&start=${start}&limit=10000&adjustment=raw&sort=asc&feed=iex`;
+  // adjustment=all (#265): the backtest that validated the strategy uses fully
+  // adjusted data, so the live SMA must too — and split-adjusting the bars stops
+  // a forward split of the bot ticker from faking a -50% kill-switch drawdown.
+  const url = `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
+    `?timeframe=1Day&start=${start}&limit=10000&adjustment=all&sort=asc&feed=${cfg.dataFeed}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET bars ${symbol} -> ${res.status}: ${await res.text()}`);
@@ -43,7 +45,7 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
 export async function getLatestTradePrice(symbol: string): Promise<number> {
   const cfg = getAlpacaConfig();
   const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=iex`;
+    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=${cfg.dataFeed}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET latest trade ${symbol} -> ${res.status}: ${await res.text()}`);
@@ -53,4 +55,23 @@ export async function getLatestTradePrice(symbol: string): Promise<number> {
     throw new DataError(`no latest trade for ${symbol} (got ${JSON.stringify(j.trade)})`);
   }
   return requireNumber(j.trade.p, "trade price");
+}
+
+export async function getLatestQuote(
+  symbol: string,
+): Promise<{ bid: number; ask: number; mid: number }> {
+  const cfg = getAlpacaConfig();
+  const url =
+    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/quotes/latest?feed=${cfg.dataFeed}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) {
+    throw new Error(`GET latest quote ${symbol} -> ${res.status}: ${await res.text()}`);
+  }
+  const j = await res.json();
+  if (!j.quote) {
+    throw new DataError(`no latest quote for ${symbol} (got ${JSON.stringify(j.quote)})`);
+  }
+  const bid = requireNumber(j.quote.bp, "quote bid");
+  const ask = requireNumber(j.quote.ap, "quote ask");
+  return { bid, ask, mid: (bid + ask) / 2 };
 }

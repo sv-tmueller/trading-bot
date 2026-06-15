@@ -50,7 +50,9 @@ If `<sources>` was `en`, Agent M just receives Agent S-EN's findings — still w
 After `strategies.md` and `github-projects.md` are committed, dispatch Agent R. It reads:
 
 - `CLAUDE.md`
-- `config/settings.py`, `tools/risk.py`, `monitor/position_monitor.py`, every file in `agents/`
+- `supabase/functions/_shared/` (shared TS modules: `config.ts`, `regime.ts`, `alpaca.ts`, `marketdata.ts`, `db.ts`, `notifications.ts`)
+- The three Edge Functions: `supabase/functions/daily-check/`, `supabase/functions/kill-switch/`, `supabase/functions/panic/`
+- Research-only Python: `backtest/`, `strategy/`
 - The just-written `strategies.md` and `github-projects.md`
 
 Writes `roadmap.md` per the README contract: candidates clustered by theme, every candidate carries a `fits` / `needs envelope` / `violates` verdict and a `now` / `next` / `later` / `skip` priority, plus an `S` / `M` / `L` / `XL` effort estimate. Treats the existing "Roadmap pattern candidates" section in `github-projects.md` as input, not the final list — re-rank against `strategies.md` and de-dupe.
@@ -77,7 +79,7 @@ If a candidate already exists in the codebase (check `git log` and current files
 
 - No code changes to the bot.
 - No new tests.
-- No new agents in `agents/`.
+- No new agents in `.claude/agents/`.
 - The roadmap is a research artifact, not an implementation plan. Do not write code in `roadmap.md`; do not propose specific PRs from it.
 
 ## Reference example

@@ -1,13 +1,13 @@
 # Trading Bot
 
-A deterministic rules-engine swing trading bot. Each weekday after the US close it computes a 200-day SMA on SPY, decides whether to be LONG (in UPRO, a 3x leveraged S&P 500 ETF) or in CASH, reconciles with Alpaca, and flips the position via a market order if needed. A 5-minute kill switch liquidates intraday if drawdown breaches a threshold. The bot runs serverlessly on Supabase (`pg_cron` -> Edge Functions -> Postgres) and trades through Alpaca's REST API.
+A deterministic rules-engine swing trading bot. Each trading day shortly after the US open it computes a 200-day SMA on SPY as of the previous completed close, decides whether to be LONG (in UPRO, a 3x leveraged S&P 500 ETF) or in CASH, reconciles with Alpaca, and flips the position via a market order if needed. A 5-minute kill switch liquidates intraday if drawdown breaches a threshold. The bot runs serverlessly on Supabase (`pg_cron` -> Edge Functions -> Postgres) and trades through Alpaca's REST API.
 
 No LLM is in the trading path. The strategy is a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`); every decision is reproducible from the SPY history alone.
 
 ## Architecture
 
 ```
-pg_cron (30 22 * * 1-5 UTC)    -> Edge Fn: daily-check   --+
+pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check   --+
 pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch   --+-> shared TS modules -> Alpaca REST
 operator HTTP + x-panic-token   -> Edge Fn: panic         --+                       -> Postgres
                                                                                     -> n8n -> Discord
@@ -22,8 +22,15 @@ Each function (`supabase/functions/<name>/`) is split into `logic.ts` (pure, tes
 `index.ts` (HTTP entry) over shared modules in `supabase/functions/_shared/`:
 `regime`, `config`, `alpaca`, `marketdata`, `db`, `notifications`, `num`, `supabase_client`.
 
-**Decision rule.** `daily-check` fetches SPY daily bars from Alpaca, computes the 200-day SMA,
-and calls `computeTargetState({ spyClose, spySma200, currentState, killSwitchActive })`:
+**Decision rule.** `daily-check` runs shortly after the US open — two pg_cron slots (`37 13 * * 1-5`
+and `37 14 * * 1-5` UTC) cover US DST; the function calls Alpaca `/v2/clock` and exits
+`skipped:market_closed` when the market is closed. During EDT (open 13:30 UTC) the 13:37 run acts
+and the 14:37 run, with the market already open, repeats the pipeline as an idempotent no-op
+(`success`, no second trade); during EST (open 14:30 UTC) the 13:37 run gate-exits and the 14:37
+run acts; on market holidays both runs gate-exit. It fetches SPY daily bars from Alpaca, drops today's
+in-progress bar, computes the 200-day SMA on the previous completed trading day's close (the same
+information set as a post-close run, with execution at the next open — exactly what the backtest
+models), and calls `computeTargetState({ spyClose, spySma200, currentState, killSwitchActive })`:
 
 - **LONG** when `spyClose > spySma200` (the kill-switch flag, if set, is cleared on this transition).
 - **CASH** otherwise (when SPY is at or below the 200-DMA — the kill-switch flag, if set, is preserved).
@@ -40,17 +47,20 @@ trade — exceeds `KILL_SWITCH_DRAWDOWN_PCT` (default 25%), it liquidates the po
 back above the 200-DMA, at which point the bot re-enters LONG — so a single bad-week kill-switch
 fire does not lock the bot out of the next bull run.
 
-**Panic kill button.** `panic` is a token-authenticated Edge Function (header `x-panic-token`).
-`action=pause|resume|cancel-orders|liquidate`. The `pause` flag lives in the `bot_config` DB row
-(serverless env vars are not runtime-writable), so `pause`/`resume` toggle it; `cancel-orders` and
-`liquidate` call Alpaca directly. No LLM is in this path.
+**Panic kill button.** `panic` is a token-authenticated Edge Function (header `x-panic-token`,
+POST only). `action=pause|resume|cancel-orders|liquidate`. The `pause` flag lives in the
+`bot_config` DB row (serverless env vars are not runtime-writable), so `pause`/`resume` toggle it;
+`cancel-orders` and `liquidate` call Alpaca directly. A successful `liquidate` **also sets
+`paused=true`** so the next daily-check cannot re-buy the position you just dumped — clear it with
+`action=resume` when you want the bot trading again. No LLM is in this path.
 
 ## Database
 
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 
 - `regime_state` — one row per trading day (`spy_close`, `spy_sma200`, `target_state`,
-  `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`).
+  `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`);
+  `spy_close`/`spy_sma200` hold the previous completed session's values (the signal bar).
 - `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`,
   `broker_order_id`, `reason`).
 - `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`,
@@ -58,8 +68,9 @@ Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `bot_config` — key/value config; holds the runtime `paused` flag.
 
 All tables are RLS-deny-all; the Edge Functions connect with the service-role key (which bypasses
-RLS). The cron jobs (`0002_schedule.sql`) read the service-role key and the functions base URL from
-**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migration works
+RLS). The cron jobs (`0002_schedule.sql`; daily-check rescheduled by
+`0006_daily_check_open_schedule.sql`) read the service-role key and the functions base URL from
+**Vault** secrets (`service_role_key`, `functions_base_url`), so the same committed migrations work
 for both dev and prod — only the Vault values differ.
 
 ## Configuration
@@ -70,6 +81,7 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 |---|---|---|
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | — | Alpaca broker + data credentials |
 | `ALPACA_PAPER` | `true` | `true` = paper, `false` = live |
+| `ALPACA_DATA_FEED` | `iex` | Alpaca market-data feed for daily bars, latest trade, and latest quote: `iex` (free) or `sip` (live feed) |
 | `BOT_TICKER` | `UPRO` | Instrument the bot trades (3x S&P 500 ETF) |
 | `BOT_BENCHMARK` | `SPY` | Instrument used for the regime decision |
 | `REGIME_SMA_DAYS` | `200` | SMA window (validated 20–500) |
@@ -90,7 +102,7 @@ The short version:
 supabase link --project-ref <ref>
 supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true \
   PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY
-supabase db push                                          # applies 0001_init + 0002_schedule
+supabase db push                                          # applies migrations 0001-0006 (schema + cron schedule)
 supabase functions deploy daily-check kill-switch         # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt           # auth = x-panic-token header
 ```
@@ -103,7 +115,7 @@ Invoke the panic kill button over HTTP:
 ```bash
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" \
   -H "x-panic-token: <token>"
-# actions: pause | resume | cancel-orders | liquidate
+# actions: pause | resume | cancel-orders | liquidate (liquidate also sets paused=true)
 # 200 = success; 500 with an error: result = the action failed (don't treat it as success)
 ```
 
@@ -164,6 +176,8 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |   |-- migrations/
 |   |   |-- 0001_init.sql          # Postgres schema (regime_state, trades, audit_log, bot_config)
 |   |   |-- 0002_schedule.sql      # pg_cron jobs + Vault-backed cron auth
+|   |   |-- ...
+|   |   |-- 0006_daily_check_open_schedule.sql  # daily-check post-open slots (13:37/14:37 UTC)
 |   |-- functions/
 |   |   |-- _shared/               # regime, config, alpaca, marketdata, db, notifications, num, ...
 |   |   |-- daily-check/           # logic.ts + index.ts — daily regime flip (cron)
@@ -179,3 +193,11 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |   |-- CURRENT_CONFIG.md          # Current deployed secrets/values
 |   |-- runbooks/                  # Deploy & decommission runbook
 ```
+
+## License
+
+**Copyright © 2026 Thomas Mueller. All rights reserved.**
+
+This is proprietary software. No license is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell any part of this software, in whole or in part, in any other project — public or private — without prior written permission from the copyright holder.
+
+Unauthorized reuse of any portion of this code constitutes copyright infringement and will be pursued accordingly.
