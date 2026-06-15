@@ -47,3 +47,9 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 - [ ] Shut down the IBKR Gateway/TWS + its VPS.
 - [ ] Archive `trading_bot.db` (SQLite) for forensic history; the new system uses Supabase.
 - [ ] Remove the Python production modules (`daily_check.py`, `monitor/`, `tools/ibkr_broker.py`, `tools/database.py`, `tools/notifications.py`, `config/settings.py`, `storage/`) once the TS bot is live and stable. Keep `backtest/` (research).
+
+## Note: `requireServiceRole` and JWT-shaped keys (#291)
+
+`daily-check` and `kill-switch` are deployed with `verify_jwt=ON` (Supabase validates the JWT signature) and additionally check `role === "service_role"` in `_shared/auth.ts` (`requireServiceRole`). The `pg_cron` jobs send the service-role key as a Bearer token — a legacy Supabase service-role key is a JWT starting with `eyJ` and carrying `{"role":"service_role"}`, which passes the gate.
+
+If the project ever migrates to the new publishable/secret API-key scheme (keys starting with `sb_secret_` or `sb_publishable_` instead of `eyJ`), **revisit `requireServiceRole` in the same change** — the new keys are not JWTs and would be rejected by the current gate, silently halting the cron. Grep for `eyJ` vs `sb_secret_` in your Vault/project settings to detect a migration.
