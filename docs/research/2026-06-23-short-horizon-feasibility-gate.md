@@ -24,7 +24,7 @@ and tax drag are priced in? If the high-churn end cannot clear the bar, say so a
 |---|---|---|
 | Asset class A | US-listed equity ETF on Alpaca **US Trading API** | Existing integration; `supabase/functions/_shared/alpaca.ts`. EU/Xetra equities are **Broker-API-only**, not reachable from a self-directed account today (`docs/research/alpaca-eu-expansion.md`). "Equities via Alpaca" therefore = US Trading API. |
 | Asset class B | Crypto pair on Alpaca | New broker surface; **paper-only, no integration** (hard non-goal of #308/#309). |
-| Account size | **≥ $25,000** assumed for the equity case (paper account ran ~$99k per `docs/research/2026-06-11-margin-increase-assessment.md`); **both sides of the $25k PDT line are shown** in (a). | — |
+| Account size | **≥ $25,000** assumed for the equity case; **both sides of the $25k PDT line are shown** in (a), so the figure is not load-bearing. | Assumption (real live account size unstated). |
 | Equity round-trip cost `c` | base **3 bps** of notional (range 1–5 bps tested) | Commission-free US-listed (fees ≈ 0); `c` = spread + slippage. Top-of-book spread on a liquid ETF (SPY/QQQ) is ~1 bp; assume ~1 bp slippage per side. Round trip = full spread crossed once each way + slippage ×2. Assumption, verify against live Alpaca fills. |
 | Crypto round-trip cost `c` | base **60 bps** (fees-only floor **50 bps**; range to 80 bps) | Alpaca crypto fee schedule, **Tier 1 (0–$100k 30-day volume): maker 0.15% / taker 0.25% per side** (`docs.alpaca.markets/docs/crypto-fees`, fetched 2026-06-23). Market entries/exits are **taker**: 0.25% × 2 = **0.50% fees round-trip**, before a wider crypto spread + slippage (assume ~10 bps round-trip). |
 | Take-profit / stop-loss size `R` | tested at 10 bps (tight scalp), 30 bps, 50 bps, 100 bps | The operator's sketch (TP/SL each loop) implies tight `R`. Symmetric TP/SL assumed. |
@@ -179,11 +179,12 @@ tagged as an assumption, not a cited figure). The verdict must follow arithmetic
 (definitional, from the 0.50% round-trip fee) and equity at 10–20 trades/day carries 75–151%/yr cost
 drag (pure magnitude). The ceiling is load-bearing **only** for the borderline equity 5/day cell.
 
-**Verdict: NO-GO on the high-churn end, robustly, under both tax regimes.**
+**Verdict: NO-GO on the high-churn end, under both tax regimes.**
 
 | Region | Verdict | Why (from the stated inputs) |
 |---|---|---|
-| **Equity, ≥ 5 trades/day** | **No-go** | Cost drag alone is **37.8%/yr at 5/day** and **75.6%/yr at 10/day** at base 3-bp cost; even at an ultra-optimistic 1-bp cost it is 12.6% / 25.2%/yr. No deterministic short-horizon edge clears that *and* SPY's after-tax Calmar. **Jurisdiction-independent** — costs alone. |
+| **Equity, ≥ 10 trades/day** | **No-go** | Cost drag alone is **75.6%/yr at 10/day** and **151%/yr at 20/day** at base 3-bp cost; even at an ultra-optimistic 1-bp cost it is **25.2%/yr at 10/day**. No deterministic short-horizon edge clears that *and* SPY's after-tax Calmar. **Jurisdiction-independent — costs alone.** |
+| **Equity, 5 trades/day** | **No-go** | Cost drag is **37.8%/yr at the base 3-bp cost** and wider — a clear no-go. At the 1-bp best-case corner (**12.6%/yr**) the no-go leans on the stated ~55–60% win-rate ceiling plus the tax handicap, **not on costs alone**. |
 | **Equity, < $25k account** | **No-go (regulatory)** | PDT caps you at <1 day trade/day; the entire high-churn region is legally unreachable. Independent of cost and tax. |
 | **Crypto, any high frequency** | **No-go (hardest)** | Fees alone are **0.50% round-trip → 126%/yr drag at just 1 trade/day**, 1,260%/yr at 10/day. A tight symmetric scalp needs a **100% win rate to break even on fees**. Mathematically unwinnable. Jurisdiction-independent. |
 | Tax overlay | strengthens the no-go | US churn must add ~25% to its pre-tax Calmar just to neutralize the short-term rate penalty; Germany adds only a deferral-only drag. Both **add to**, never offset, the cost no-go. |
@@ -241,8 +242,8 @@ the **prior** that the high-churn end of that space is ruled out before it reach
 
 ## Bottom line
 
-The high-churn / intraday-scalping idea behind #308 is a **robust no-go**, and the honest negative
-result is the deliverable:
+The high-churn / intraday-scalping idea behind #308 is a **no-go that holds across the stated cost
+ranges and both tax regimes**, and the honest negative result is the deliverable:
 
 - **Cost kills it first, jurisdiction-independently.** Equity cost drag is **37.8%/yr at 5 trades/day,
   75.6%/yr at 10/day** (base 3-bp round-trip); crypto is far worse — **126%/yr at just 1 trade/day** on
