@@ -311,13 +311,18 @@ def run_backtest(sig: pd.DataFrame, cost_rt: float) -> dict:
             i += 1
             continue
 
-        # No exit this bar: ratchet the trailing stop using THIS bar's extreme so it
-        # is in force for the NEXT bar (never used to test the current bar).
+        # No exit this bar: mark equity to THIS bar's close (unrealized, signed) so
+        # max DD reflects intra-trade drawdown, not just closed trades. Entry cost is
+        # already booked at exit, so subtract the entry half here for a fair mark.
+        unreal = direction * (closes[i] / entry_price - 1.0) - cost_rt / 2.0
+        eq_curve.append((ts, equity * (1.0 + unreal)))
+
+        # Ratchet the trailing stop using THIS bar's extreme so it is in force for
+        # the NEXT bar (never used to test the current bar).
         if direction == 1:
             trail_stop = max(trail_stop, highs[i] - TRAIL_ATR_MULT * entry_atr)
         else:
             trail_stop = min(trail_stop, lows[i] + TRAIL_ATR_MULT * entry_atr)
-        eq_curve.append((ts, equity))
         i += 1
 
     # Close any open position at the final bar's close.
