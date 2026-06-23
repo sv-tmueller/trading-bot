@@ -173,8 +173,10 @@ The red (costs-on, 0.13%) curve bleeds steadily to ~$66k. The gap between them i
 priced **Bybit perp** (0.055%/side, ~0.13% round-trip) — a different, ~3.8×-cheaper venue. A reader
 might expect the cheaper venue to rescue the strategy. It does not, because the reconstruction has
 **no positive gross edge**: with break-even at 0% cost, even Bybit's low fee lands on the wrong side
-of the wall. #309 said you would need roughly a **53–65% win rate just to cover cost** at a tight
-scalp; the observed win rate here is **37%** (costs off), far below that floor. That is directional
+of the wall. #309 showed crypto scalping needs close to a **100% win rate** to clear Alpaca's 0.50%
+round-trip fee; Bybit's cheaper 0.13% fee lowers that floor, but it makes no difference here, because
+the reconstruction has **no gross edge at all** (break-even at 0% cost, 37% win rate, profit factor
+≈ 1.0). With no edge, every positive cost is a loss, on either venue. That is directional
 empirical confirmation of #309, not the exact `c/(2R)` identity (the trailing TP makes win sizes
 variable, so this is confirmation of direction and magnitude, not an arithmetic match).
 

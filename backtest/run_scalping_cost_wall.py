@@ -2,9 +2,10 @@
 
 Research-only (issue #311). Makes #309's cost arithmetic empirical: run a faithful
 reconstruction of the "ATR trend multi-confirmation" scalper on REAL BTC intraday
-OHLCV, twice (costs off vs on), and show where transaction cost flips it from win to
-loss. Imports no Alpaca client, places no orders, hits only Bybit's PUBLIC read-only
-market-data REST (no auth, no order capability) -- does not touch the broker guard.
+OHLCV, twice (costs off vs on), and show how transaction cost compounds an already
+no-edge strategy into a large loss. Imports no Alpaca client, places no orders, hits
+only Bybit's PUBLIC read-only market-data REST (no auth, no order capability) -- does
+not touch the broker guard.
 
 The load-bearing finding is the costs-off-vs-on DELTA and the BREAK-EVEN cost, not the
 absolute P/L of a strategy whose exact Pine params are unknown.
