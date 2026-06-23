@@ -105,16 +105,32 @@ def _compute_window_metrics(
     trades: list[dict],
     starting_cash: float,
 ) -> dict:
-    """Compute return, vol, maxDD, Sharpe on the equity_slice.
+    """Compute return, vol, maxDD, Sharpe, CAGR, Calmar on the equity_slice.
 
     Sharpe convention (matches backtest/run_pcs_riv.py::_buy_and_hold):
         daily_returns = equity.pct_change().dropna()
         sharpe = mean(rets) / std(rets, ddof=1) * sqrt(252)
         rf = 0
+
+    CAGR uses the slice's calendar span ``(idx[-1]-idx[0]).days / 365.25`` —
+    the same convention as ``backtest/regime.run_regime_backtest``.
+    Calmar = CAGR / |maxDD|. When the slice has no drawdown (maxDD == 0) Calmar
+    is NaN (division by zero is undefined; an inf would distort any ranking).
     """
     total_return = float(equity_slice.iloc[-1] / equity_slice.iloc[0] - 1)
     rolling_max = equity_slice.cummax()
     max_dd = float(((equity_slice - rolling_max) / rolling_max).min())
+
+    # CAGR over the slice's calendar span (matches run_regime_backtest)
+    span_days = (equity_slice.index[-1] - equity_slice.index[0]).days
+    span_years = span_days / 365.25
+    if span_years > 0:
+        cagr = float((1.0 + total_return) ** (1.0 / span_years) - 1.0)
+    else:
+        cagr = 0.0
+
+    # Calmar = CAGR / |maxDD|; NaN when there is no drawdown to divide by
+    calmar = float(cagr / abs(max_dd)) if max_dd != 0 else float("nan")
 
     daily_rets = equity_slice.pct_change().dropna()
     n = len(daily_rets)
@@ -136,6 +152,8 @@ def _compute_window_metrics(
         "max_drawdown": max_dd,
         "sharpe": sharpe,
         "flip_count": flip_count,
+        "cagr": cagr,
+        "calmar": calmar,
     }
 
 
