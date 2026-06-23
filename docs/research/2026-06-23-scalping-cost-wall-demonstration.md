@@ -86,8 +86,12 @@ hand-rolled per the issue. ATR length 10 / mult 3.0 is used for both the supertr
 - The trailing stop ratchets using the extreme of bars **strictly before** the bar being tested —
   the current bar's high/low can only *trigger* an exit, never widen the stop before that bar's low
   is tested (no intra-bar look-ahead).
-- A bar that touches the stop exits **at the stop level** (conservative — no gap-through gift, and
-  on a both-touched bar this is stop-first).
+- A bar that touches the binding stop exits **at the stop level** (conservative — no gap-through
+  gift). Within a bar the stop is tested **before** the trailing stop is allowed to ratchet on that
+  same bar (stop-first ordering), so a favourable wick cannot widen the stop before the bar's adverse
+  extreme is checked. (The initial and trailing stops share one level at entry and the trail only
+  ever ratchets toward price, so a single binding stop governs — there is no separate take-profit
+  price level for a bar to touch independently; the trailing stop *is* the profit-taking mechanism.)
 - The in-progress final bar is dropped.
 - Self-check assertion in the loop: every exit timestamp is strictly after its entry.
 
@@ -131,6 +135,12 @@ All numbers from a live Bybit pull on 2026-06-23 via `python3 backtest/run_scalp
 > closed-trade-only. Win rate falls as cost rises because the cost flips small gross winners into net
 > losers; the trade count is identical across the sweep because cost does not change the entry/exit
 > signals, only the P/L booked on each.*
+>
+> *On the costs-off row, profit factor 1.02 (> 1) sits next to net return −1.64% (< 0): not a
+> contradiction. PF is the ratio of summed per-trade gain fractions to summed loss fractions
+> (arithmetic), while net return is **compounded** on 100% notional, so volatility drag pulls the
+> compounded result below an arithmetic-sum PF near 1.0. All three signals — PF ≈ 1, win rate 37%,
+> net ≈ 0 — agree: no edge.*
 
 **Break-even round-trip cost: 0.000%.** The strategy is **already a net loss at zero cost** — there
 is no positive gross edge to fund any transaction cost. Both the realistic Bybit cost (0.13%) and the

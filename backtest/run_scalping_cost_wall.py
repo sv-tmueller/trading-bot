@@ -19,10 +19,11 @@ Window      : pinned UTC literals below (WINDOW_START / WINDOW_END)
 Strategy    : long/short supertrend(ATR10, mult3.0, hand-rolled) AND ADX(14)>25 AND
               volume>SMA(volume,20) AND MACD-hist(12/26/9) agrees; ATR stop at
               entry -/+ 2*ATR; ATR trailing-stop take-profit (ratchets on prior bars).
-No look-ahead: signal on bar t (close) -> fill at bar t+1 open; stop/TP checked only
-              against subsequent bars; both-touched bar -> stop-first (conservative);
-              trailing stop ratchets on bars strictly before the bar being tested;
-              in-progress last bar dropped.
+No look-ahead: signal on bar t (close) -> fill at bar t+1 open; stop checked only
+              against subsequent bars; within a bar the stop is tested BEFORE the
+              trailing stop ratchets on that bar (stop-first, conservative); the
+              trailing stop ratchets only on bars strictly before the bar being
+              tested; in-progress last bar dropped.
 """
 from __future__ import annotations
 
@@ -237,8 +238,11 @@ def run_backtest(sig: pd.DataFrame, cost_rt: float) -> dict:
       - signal read from bar t close; entry executed at bar t+1 open.
       - while in a trade, the trailing stop ratchets using extremes of bars STRICTLY
         BEFORE the bar being tested; the current bar's high/low only trigger exits.
-      - a bar that touches the stop -> exit at the stop level (stop-first, no
-        gap-through gift).
+      - within a bar the stop is tested BEFORE the trail ratchets on that bar
+        (stop-first); a bar that touches the stop exits at the stop level (no
+        gap-through gift). The initial and trailing stops share one binding level
+        and the trail only ratchets toward price, so the trailing stop is the
+        single profit-taking mechanism -- there is no separate TP price level.
     """
     opens = sig["open"].values
     highs = sig["high"].values
