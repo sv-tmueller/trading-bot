@@ -31,7 +31,10 @@ This first cut screens two families. Volatility-targeting (the highest-turnover,
 - **Two tax passes (the #313 decision):** (i) a **full-history** after-tax equity curve, where a
   buy-and-hold lot can qualify for the US long-term rate while churning families realize short-term —
   the **recommendation is ranked on full-history after-tax Calmar**; and (ii) a **per-window** pass
-  (each 12-month OOS window simulated independently) as the no-curve-fit **stability gate**. Both US
+  (each 12-month OOS window simulated independently) as the no-curve-fit **stability gate**. Per-window
+  cannot be the ranking basis: each window resets to cash before the US 365-day long-term boundary, so
+  every per-window lot is short-term by construction, which would erase the tax-deferral advantage the
+  full-history pass exists to measure. Both US
   (short-term 35% / long-term 18.8%) and DE (flat 26.375%, no holding-period split) are reported,
   carrying the #308 jurisdiction caveat.
 - **Params are published defaults, fixed before any result was seen** (no in-sample tuning):
@@ -141,6 +144,11 @@ evidence, not prescribed:
 - **Per-family windows are not cross-comparable.** A Calmar from a 2007-start window is not the same
   as one from 1993; each "beats SPY?" verdict is strictly within its own window, which is why the SPY
   and baseline rows differ per family block.
+- **GTAA rebalances on signal flips, not on a fixed calendar.** The simulator trades only when a target
+  weight changes, so the five GTAA sleeves are set to 1/5 when a sleeve's signal flips and then drift
+  with price between flips (they are not reset to equal weight every month). This is the higher-turnover
+  convention behind its ~14 trades/yr; it does not change the verdict (GTAA fails three independent gates
+  regardless). GEM (a single 100% holding) and Faber-single (binary) are unaffected.
 - **1x screen.** All rows are unleveraged, so this compares risk-adjusted shape, not the absolute
   return of the leveraged incumbent. A leveraged version of any signal would re-introduce the drawdown
   problem and is a separate future question.
