@@ -181,3 +181,79 @@ def test_weighted_signal_fills_at_next_open():
         f"fill must be at day-3 open (200), got {first_trade['entry_price']}"
     )
     assert result["ending_equity"] == pytest.approx(11_250.0, abs=1.0)
+
+
+# ---------------------------------------------------------------------------
+# 4. Partial-trim lot-accounting: regression guard for known limitation
+# ---------------------------------------------------------------------------
+
+def test_partial_trim_carries_original_lot_anchor():
+    """Pin the known partial-trim accounting limitation in _simulate_weighted.
+
+    KNOWN LIMITATION (do not silently change): when a strictly-positive weight
+    is *reduced* (not closed to zero), the emitted Trade carries the ORIGINAL
+    entry_date and entry_price from when the position was first opened.  The
+    anchor is reset only on a full exit (shares -> ~0).  Adding shares to an
+    open lot (weight rises) does NOT create a new anchor or blend the basis.
+
+    Concretely: weight 0.5 -> 0.7 (add) -> 0.4 (partial trim) over a rising
+    price path (100 -> 110 -> 120) produces a trim Trade with:
+      entry_date = original open date (not the add date)
+      entry_price = original open price (not the add price or average cost)
+
+    This has two OPPOSING tax effects, easily conflated:
+      (a) it overstates the holding period (all trimmed shares look as old as
+          the first buy), misclassifying late trims as US long-term -> lower US
+          rate -> flatters US after-tax (US-only; DE has no holding-period split).
+      (b) it understates the cost basis (booking trimmed shares at the original
+          100, not the higher add price), which OVERSTATES the realized gain ->
+          more tax -> DEFLATES both US and DE after-tax.
+    Net US direction is ambiguous; DE is deflated by (b). (FIFO would book the
+    trim against the first lot at 100; average-cost would use ~104 -- the
+    foundation keeps the first anchor, doing neither.)
+
+    This test encodes ACTUAL behavior so any change to the lot-accounting
+    logic is flagged immediately.
+    """
+    idx = pd.bdate_range("2023-01-02", periods=7)
+    # Rising prices: 100 on days 0-1, 110 on days 2-3, 120 on days 4-6
+    px = [100.0, 100.0, 110.0, 110.0, 120.0, 120.0, 120.0]
+    df = pd.DataFrame({"Open": px, "Close": px}, index=idx)
+
+    # Weight path (close-T -> executes at T+1 open):
+    #   day 0 close 0.5 -> BUY at day 1 open (price 100)  [anchor set: 2023-01-03, 100]
+    #   day 2 close 0.7 -> ADD  at day 3 open (price 110)  [anchor NOT updated]
+    #   day 4 close 0.4 -> TRIM at day 5 open (price 120)  [anchor unchanged: 2023-01-03, 100]
+    weights = pd.DataFrame(
+        {"SPY": [0.5, 0.5, 0.7, 0.7, 0.4, 0.4, 0.4]},
+        index=idx,
+    )
+
+    result = simulate_from_signal(
+        target_weights=weights,
+        asset_px={"SPY": df},
+        starting_cash=10_000.0,
+        slippage_bps=0,
+        commission_bps=0,
+    )
+
+    # There must be at least one intra-run rebalance trade (the trim)
+    rebalance_trades = [t for t in result["trades"] if t["exit_reason"] == "rebalance"]
+    assert len(rebalance_trades) >= 1, "expected at least one rebalance (trim) trade"
+
+    trim = rebalance_trades[0]
+
+    # The trim trade must carry the ORIGINAL entry date (day 1 open = 2023-01-03),
+    # not the add date (day 3 open = 2023-01-05).
+    original_entry_date = pd.Timestamp("2023-01-03")
+    assert trim["entry_date"] == original_entry_date, (
+        f"partial trim should carry original entry_date {original_entry_date.date()}, "
+        f"got {trim['entry_date'].date()} -- lot-accounting limitation changed"
+    )
+
+    # The trim trade must carry the ORIGINAL entry price (100.0, not the add
+    # price of 110.0 or any blended average).
+    assert trim["entry_price"] == pytest.approx(100.0, abs=1e-9), (
+        f"partial trim should carry original entry_price 100.0, "
+        f"got {trim['entry_price']:.4f} -- lot-accounting limitation changed"
+    )

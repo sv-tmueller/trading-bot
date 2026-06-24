@@ -50,7 +50,8 @@ def test_after_tax_never_above_pretax_for_every_strategy():
     u = _synthetic_universe(seed=3)
     idx = u["SPY"].index
     cases = [("gem", ["SPY", "EFA", "AGG"]), ("gtaa", ["SPY", "EFA", "AGG", "DBC", "VNQ"]),
-             ("faber_single", ["SPY"]), ("1x_spy", ["SPY"]), ("tsmom", ["SPY"])]
+             ("faber_single", ["SPY"]), ("vol_target", ["SPY"]),
+             ("1x_spy", ["SPY"]), ("tsmom", ["SPY"])]
     from backtest.tax import apply_tax_to_ledger
     for strat, held in cases:
         sim = rcs._simulate_strategy_on_index(strat, u, held, idx)
@@ -139,3 +140,38 @@ def test_no_look_ahead_weighted_family_fills_next_open():
     res = simulate_from_signal(target_weights=w, asset_px={"X": df},
                                starting_cash=10_000.0, slippage_bps=0, commission_bps=0)
     assert res["trades"][0]["entry_price"] == pytest.approx(200.0, abs=1e-9)
+
+
+def test_no_look_ahead_vol_target_fills_next_open():
+    """Vol-target weight builder returns close-T weight; fill lands at NEXT open.
+
+    Use vol_window=3 so warm-up ends quickly. Build a price series where the
+    weight goes positive at a known row; the first trade must fill at the
+    following day's open.
+    """
+    from backtest.families import vol_target_weights
+    from backtest.regime import simulate_from_signal
+    # 8 days; enough for vol_window=3 (needs 4 rows of returns = 5 price points)
+    opens  = [100.0, 102.0, 101.0, 103.0, 104.0, 105.0, 106.0, 107.0]
+    closes = [101.0, 103.0, 100.0, 104.0, 106.0, 107.0, 108.0, 109.0]
+    idx = pd.bdate_range("2020-01-02", periods=8)
+    spy_df = pd.DataFrame({"Open": opens, "Close": closes}, index=idx)
+    spy_close = spy_df["Close"]
+
+    w = vol_target_weights(spy_close, idx, vol_window=3)
+    wcol = w["SPY"].to_numpy()
+
+    # At least one positive weight must exist
+    pos_rows = np.flatnonzero(wcol > 0)
+    assert len(pos_rows) > 0, "no positive weight — price series needs more variance"
+
+    first_pos = int(pos_rows[0])
+    # There must be a day after the first positive weight to fill at
+    assert first_pos + 1 < len(idx), "no next open available after first positive weight"
+
+    res = simulate_from_signal(
+        target_weights=w, asset_px={"SPY": spy_df},
+        starting_cash=10_000.0, slippage_bps=0, commission_bps=0,
+    )
+    assert len(res["trades"]) >= 1
+    assert res["trades"][0]["entry_price"] == pytest.approx(opens[first_pos + 1], abs=1e-9)

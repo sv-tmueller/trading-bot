@@ -1,6 +1,6 @@
 """Strategy-family target-weight builders for the #314 candidate survey.
 
-Two published low-turnover families, each expressed as a daily target-weight
+Three published low-turnover families, each expressed as a daily target-weight
 frame (dates x assets, weights in [0,1], row sum <= 1, remainder = cash) so it
 feeds straight into ``backtest.regime.simulate_from_signal(target_weights=...)``.
 
@@ -27,11 +27,18 @@ tuning):
        1/5 when its own month-end close > its own 10-month SMA, else that fifth
        sits in cash. Monthly, ffill-to-daily, next-open.
 
+3. Vol-targeting (single-asset SPY, continuous weight): daily target weight =
+   min(target_vol / realized_vol, cap), where realized_vol is the 20-day
+   trailing annualised vol of SPY daily returns (ddof=1). Warm-up rows -> cash.
+   The T+1 open fill is applied by the simulator's shift (do not pre-shift here).
+
 Research-only. Lives in backtest/ and is never imported by supabase/functions/.
 No LLM, no broker calls. Every function takes already-fetched price frames so
 the network lives in the runner, not here (keeps the unit tests offline).
 """
 from __future__ import annotations
+
+import math
 
 import pandas as pd
 
@@ -169,3 +176,49 @@ def faber_gtaa_weights(
     daily_w = monthly_w.reindex(monthly_w.index.union(daily_index), method="ffill")
     daily_w = daily_w.reindex(daily_index)
     return daily_w
+
+
+def vol_target_weights(
+    spy_close: pd.Series,
+    daily_index: pd.DatetimeIndex,
+    *,
+    target_vol: float = 0.10,
+    vol_window: int = 20,
+    cap: float = 1.0,
+) -> pd.DataFrame:
+    """Vol-targeting weight builder: daily SPY weight scaled to hit target_vol.
+
+    Parameters
+    ----------
+    spy_close:
+        Daily SPY close price Series (any index superset of daily_index is fine).
+    daily_index:
+        The daily trading index that the returned frame must be indexed by.
+    target_vol:
+        Annualised volatility target (default 10% = 0.10).
+    vol_window:
+        Rolling window in trading days for realized vol (default 20).
+    cap:
+        Maximum allowed weight — never lever above 100% (default 1.0).
+
+    Returns
+    -------
+    One-column DataFrame({"SPY": w}, index=daily_index) where
+
+        realized_vol = spy_close.pct_change().rolling(vol_window).std(ddof=1) * sqrt(252)
+        w = min(target_vol / realized_vol, cap)
+
+    Warm-up rows (where rolling std is NaN, i.e. fewer than vol_window returns)
+    are set to 0.0 (cash). The weight is the close-T value — the simulator owns
+    shift(1) to convert it to a next-open fill.
+    """
+    rets = spy_close.pct_change()
+    realized_vol = rets.rolling(vol_window).std(ddof=1) * math.sqrt(252)
+
+    # Compute raw weight; warm-up NaN -> 0.0 (cash).
+    raw_w = (target_vol / realized_vol).clip(upper=cap)
+    raw_w = raw_w.fillna(0.0)
+
+    # Align to daily_index (reindex, filling any gaps by forward-fill then 0).
+    w = raw_w.reindex(daily_index, method="ffill").fillna(0.0)
+    return pd.DataFrame({"SPY": w}, index=daily_index)
