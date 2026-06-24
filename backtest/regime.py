@@ -47,32 +47,49 @@ def _fetch(ticker: str, start: date, end: date) -> pd.Series:
 
 def simulate_from_signal(
     *,
-    vehicle_df: pd.DataFrame,
-    is_bullish_close_t: pd.Series,
+    vehicle_df: Optional[pd.DataFrame] = None,
+    is_bullish_close_t: Optional[pd.Series] = None,
+    target_weights: Optional[pd.DataFrame] = None,
+    asset_px: Optional[dict] = None,
     starting_cash: float = STARTING_CASH,
     slippage_bps: int = SLIPPAGE_BPS,
     commission_bps: int = COMMISSION_BPS,
     alloc_frac: float = 1.0,
 ) -> dict:
-    """Core signal→equity simulation loop shared by all strategies.
+    """Signal/weight → equity simulation shared by all strategies.
+
+    Two calling conventions:
+
+    Binary single-asset (legacy, unchanged):
+        simulate_from_signal(vehicle_df=..., is_bullish_close_t=...)
+        A boolean (or NaN) signal at close-T deploys ``alloc_frac`` of cash into
+        the single vehicle on LONG, 0% cash on the remainder. The T+1 execution
+        shift is applied inside via ``shift(1)``.
+
+    Weighted multi-asset (new — for the #314 candidate survey):
+        simulate_from_signal(target_weights=<dates×assets frame>, asset_px=<dict
+        of asset → Open/Close frame>)
+        Each column is a daily target weight in [0,1]; the row sum must be ≤ 1
+        (remainder is cash, 0% yield — no leverage). The weight vector is shifted
+        one day (close-T target → T+1 open fill) and the portfolio trades **only
+        when the (shifted) target weights change** — a constant weight is bought
+        once and held. A one-column {0,1} frame is the binary special case and is
+        dispatched to the legacy loop so its equity curve is identical.
 
     Parameters
     ----------
-    vehicle_df:
-        DataFrame with columns Open and Close, indexed by trading date.
-        Must share the same index as ``is_bullish_close_t``.
-    is_bullish_close_t:
-        Boolean (or NaN) Series at close-T. NaN → treated as flat (no entry).
-        The T+1 execution shift is applied INSIDE this function via shift(1).
-    starting_cash:
-        Initial cash.
-    slippage_bps:
-        One-way slippage in basis points.
-    commission_bps:
-        One-way commission in basis points.
+    vehicle_df, is_bullish_close_t:
+        Binary path inputs (see above). Must share the same index.
+    target_weights:
+        Weighted path input: a DataFrame indexed by trading date, one column per
+        asset, values in [0,1] with row sum ≤ 1.
+    asset_px:
+        Weighted path input: ``{asset_name: Open/Close DataFrame}``. Keys must
+        cover every column of ``target_weights`` and share its index.
+    starting_cash, slippage_bps, commission_bps:
+        As before. One-way slippage / commission in basis points.
     alloc_frac:
-        Fraction of available cash to deploy on LONG (default 1.0 = 100%).
-        The remainder stays in cash earning 0%.
+        Binary path only: fraction of cash deployed on LONG (default 1.0).
 
     Returns
     -------
@@ -80,6 +97,43 @@ def simulate_from_signal(
     starting_cash, trades (list of dicts), equity_curve (pd.Series).
     Note: cagr is NOT returned — it requires calendar dates known to the caller.
     """
+    if target_weights is not None:
+        # One-column {0,1} frame == the binary special case: dispatch to the
+        # legacy loop so the equity curve is identical, not approximately equal.
+        col_values = target_weights.values
+        is_binary_single = (
+            target_weights.shape[1] == 1
+            and np.isin(col_values[~np.isnan(col_values)], (0.0, 1.0)).all()
+        )
+        if is_binary_single:
+            if asset_px is None:
+                raise ValueError("asset_px is required with target_weights")
+            asset = target_weights.columns[0]
+            sig = target_weights[asset].astype(bool)
+            return simulate_from_signal(
+                vehicle_df=asset_px[asset],
+                is_bullish_close_t=sig,
+                starting_cash=starting_cash,
+                slippage_bps=slippage_bps,
+                commission_bps=commission_bps,
+                alloc_frac=1.0,
+            )
+        if asset_px is None:
+            raise ValueError("asset_px is required with target_weights")
+        return _simulate_weighted(
+            target_weights=target_weights,
+            asset_px=asset_px,
+            starting_cash=starting_cash,
+            slippage_bps=slippage_bps,
+            commission_bps=commission_bps,
+        )
+
+    if vehicle_df is None or is_bullish_close_t is None:
+        raise ValueError(
+            "provide either (vehicle_df, is_bullish_close_t) or "
+            "(target_weights, asset_px)"
+        )
+
     index = vehicle_df.index
 
     # Shift signal by 1: close-T signal → execute at open T+1.
@@ -155,6 +209,157 @@ def simulate_from_signal(
         if len(equity_curve) > 0:
             last_curve_ts = equity_curve[-1][0]
             equity_curve[-1] = (last_curve_ts, cash)
+
+    eq_series = pd.Series(dict(equity_curve))
+    total_return = float(eq_series.iloc[-1] / starting_cash - 1)
+    rolling_max = eq_series.cummax()
+    max_dd = float(((eq_series - rolling_max) / rolling_max).min())
+
+    return {
+        "total_return": total_return,
+        "max_drawdown": max_dd,
+        "trade_count": len(trades),
+        "ending_equity": float(eq_series.iloc[-1]),
+        "starting_cash": starting_cash,
+        "trades": [t.__dict__ for t in trades],
+        "equity_curve": eq_series,
+    }
+
+
+def _simulate_weighted(
+    *,
+    target_weights: pd.DataFrame,
+    asset_px: dict,
+    starting_cash: float,
+    slippage_bps: int,
+    commission_bps: int,
+) -> dict:
+    """Multi-asset target-weight simulation (transition-only rebalancing).
+
+    Each column of ``target_weights`` is a daily target weight in [0,1]; the row
+    sum must be ≤ 1 (remainder = cash, 0% yield). The weight vector is shifted
+    one day (close-T target → T+1 open fill), and the portfolio rebalances **only
+    on days the shifted target vector changes** (a constant weight is bought once
+    and held). Each asset is held as a single lot: a weight transition closes the
+    open lot (a ``Trade``) and opens a new one, so the ledger classifies cleanly
+    by holding period for the tax layer.
+
+    Cost model matches the binary loop: per traded leg, buys execute at
+    ``open*(1+slip)`` with an extra ``(1+comm)`` haircut, sells at
+    ``open*(1-slip)`` with ``(1-comm)``.
+    """
+    index = target_weights.index
+    assets = list(target_weights.columns)
+
+    if (target_weights.fillna(0.0).sum(axis=1) > 1.0 + 1e-9).any():
+        raise ValueError("target weights must sum to ≤ 1 per row (no leverage)")
+
+    # close-T target → execute at T+1 open
+    shifted = target_weights.shift(1)
+
+    cash = starting_cash
+    shares: dict = {a: 0.0 for a in assets}
+    # open lot bookkeeping per asset (for the trade ledger / tax classification)
+    lot_entry_date: dict = {a: None for a in assets}
+    lot_entry_px: dict = {a: 0.0 for a in assets}
+    prev_target: dict = {a: 0.0 for a in assets}
+
+    trades: list[Trade] = []
+    equity_curve: list[tuple] = []
+
+    slip = slippage_bps / 10_000
+    comm = commission_bps / 10_000
+
+    def _open_price(a: str, i: int) -> float:
+        return float(asset_px[a]["Open"].iloc[i])
+
+    def _close_price(a: str, i: int) -> float:
+        return float(asset_px[a]["Close"].iloc[i])
+
+    for i, ts in enumerate(index):
+        # Today's effective target (NaN row → all flat)
+        row = shifted.iloc[i]
+        target = {a: (0.0 if pd.isna(row[a]) else float(row[a])) for a in assets}
+
+        changed = any(abs(target[a] - prev_target[a]) > 1e-12 for a in assets)
+
+        if changed:
+            # Portfolio value marked at today's opens
+            port_val = cash + sum(shares[a] * _open_price(a, i) for a in assets)
+
+            # First sells (free up cash), then buys
+            for a in assets:
+                tgt_val = port_val * target[a]
+                cur_val = shares[a] * _open_price(a, i)
+                if tgt_val < cur_val - 1e-9:
+                    # reduce / close this leg
+                    open_px = _open_price(a, i)
+                    exec_px = open_px * (1 - slip)
+                    # shares to sell
+                    sell_shares = shares[a] - (tgt_val / open_px if open_px > 0 else 0.0)
+                    proceeds = sell_shares * exec_px * (1 - comm)
+                    cash += proceeds
+                    shares[a] -= sell_shares
+                    # record the closed lot (entire prior lot if going flat)
+                    if lot_entry_date[a] is not None:
+                        entry_px = lot_entry_px[a]
+                        trades.append(Trade(
+                            entry_date=lot_entry_date[a], exit_date=ts,
+                            entry_price=entry_px, exit_price=exec_px,
+                            qty=int(round(sell_shares)),
+                            pnl=sell_shares * (exec_px * (1 - comm)
+                                               - entry_px * (1 + comm)),
+                            return_pct=(exec_px / entry_px - 1) if entry_px > 0 else 0.0,
+                            exit_reason="rebalance",
+                        ))
+                    if shares[a] <= 1e-9:
+                        shares[a] = 0.0
+                        lot_entry_date[a] = None
+                        lot_entry_px[a] = 0.0
+
+            for a in assets:
+                tgt_val = port_val * target[a]
+                cur_val = shares[a] * _open_price(a, i)
+                if tgt_val > cur_val + 1e-9:
+                    open_px = _open_price(a, i)
+                    exec_px = open_px * (1 + slip)
+                    buy_dollars = tgt_val - cur_val
+                    buy_shares = buy_dollars / exec_px / (1 + comm)
+                    cost = buy_shares * exec_px * (1 + comm)
+                    cash -= cost
+                    if shares[a] <= 1e-9:
+                        lot_entry_date[a] = ts
+                        lot_entry_px[a] = exec_px
+                    shares[a] += buy_shares
+
+            prev_target = dict(target)
+
+        # Mark equity to close
+        eq = cash + sum(shares[a] * _close_price(a, i) for a in assets)
+        equity_curve.append((ts, eq))
+
+    # Close any open lots at the last close
+    last_i = len(index) - 1
+    last_ts = index[-1]
+    for a in assets:
+        if shares[a] > 1e-9:
+            close_px = _close_price(a, last_i)
+            exec_px = close_px * (1 - slip)
+            proceeds = shares[a] * exec_px * (1 - comm)
+            cash += proceeds
+            entry_px = lot_entry_px[a]
+            trades.append(Trade(
+                entry_date=lot_entry_date[a], exit_date=last_ts,
+                entry_price=entry_px, exit_price=exec_px,
+                qty=int(round(shares[a])),
+                pnl=shares[a] * (exec_px * (1 - comm) - entry_px * (1 + comm)),
+                return_pct=(exec_px / entry_px - 1) if entry_px > 0 else 0.0,
+                exit_reason="end_of_window",
+            ))
+            shares[a] = 0.0
+    # Reconcile the last equity point with closed-out cash
+    if len(equity_curve) > 0 and len(trades) > 0:
+        equity_curve[-1] = (last_ts, cash)
 
     eq_series = pd.Series(dict(equity_curve))
     total_return = float(eq_series.iloc[-1] / starting_cash - 1)
