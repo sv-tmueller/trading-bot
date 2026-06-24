@@ -15,11 +15,11 @@ clears only if it beats both 1x SPY and the incumbent 200-DMA-on-3x on after-tax
 
 ## Method
 
-Four binary regime signals, each computed on the underlying SPY close and applied LONG/CASH to a
+Five binary regime signals, each computed on the underlying SPY close and applied LONG/CASH to a
 synthetic-3x SPY vehicle, run through the survey foundation (the weighted/binary `simulate_from_signal`,
 the US/DE after-tax layer, full-history after-tax Calmar ranking, the per-window 12-month OOS
-stability gate, 2020/2022 bear stress). Signals: the incumbent 200-DMA; tsmom-12mo (12-month TSMOM);
-the 10-month Faber SMA; and the 200-DMA with a 2-day confirmation (debounce). Synthetic-3x uses
+stability gate, 2020/2022 bear stress). Signals: the incumbent 200-DMA; a faster 100-DMA; tsmom-12mo
+(12-month TSMOM); the 10-month Faber SMA; and the 200-DMA with a 2-day confirmation (debounce). Synthetic-3x uses
 `backtest/synthetic.py` (daily-rebalanced 3x model with financing + expense drag), reproduce with
 `python3 -m backtest.run_leveraged_regime_study`. Window 1993-01-29 -> 2026-06-23 (~33.4y).
 
@@ -34,6 +34,7 @@ Full-history after-tax Calmar, 3x SPY by regime signal vs 1x SPY (1993-2026, ~33
 | strategy | Calmar US | Calmar DE | CAGR | max DD | trd/yr | >1x SPY? |
 |---|---|---|---|---|---|---|
 | 200-DMA on 3x (INCUMBENT) | 0.18 | 0.17 | +16.5% | -59.5% | 3.23 | no |
+| 100-DMA on 3x (faster) | 0.06 | 0.07 | +10.3% | -91.9% | 5.45 | no |
 | **tsmom-12mo on 3x** | **0.22** | **0.20** | **+19.9%** | **-76.2%** | 0.27 | **YES** |
 | Faber 10mo SMA on 3x | 0.19 | 0.17 | +16.8% | -63.5% | 0.72 | YES |
 | 200-DMA + 2d confirm on 3x | 0.19 | 0.18 | +16.6% | -58.2% | 1.80 | YES |
@@ -46,6 +47,7 @@ Per-window after-tax (US) stability gate (12-month OOS windows), median Calmar (
 | strategy | median per-window Calmar |
 |---|---|
 | 200-DMA on 3x (incumbent) | 0.50 (19/34) |
+| 100-DMA on 3x (faster) | -0.02 (17/34) |
 | **tsmom-12mo on 3x** | **0.90 (22/31)** |
 | Faber 10mo SMA on 3x | 0.38 (20/32) |
 | 200-DMA + 2d confirm on 3x | 0.21 (18/34) |
@@ -56,6 +58,7 @@ Bear stress (max DD / window return):
 | strategy | 2020 COVID | 2022 bear |
 |---|---|---|
 | 200-DMA on 3x (incumbent) | -34.0% / +44.0% | -48.4% / -48.4% |
+| 100-DMA on 3x (faster) | -26.7% / +62.0% | -48.9% / -48.9% |
 | tsmom-12mo on 3x | **-76.2%** / -23.2% | -49.3% / -41.4% |
 | Faber 10mo SMA on 3x | -37.6% / +33.5% | -57.2% / -55.3% |
 | 200-DMA + 2d confirm on 3x | -33.9% / +53.5% | -44.1% / -44.1% |
@@ -81,12 +84,17 @@ Bear stress (max DD / window return):
    risk in a fast crash, and a -76% peak-to-trough on a leveraged account raises real questions of
    margin, forced liquidation, and the discipline to not capitulate at the bottom.
 
-3. **The operator's stated goal (cut the drawdown) finds nothing stable.** Of the candidates that
-   actually reduce the 3x drawdown, the 200-DMA + 2-day confirmation is the best: -58.2% (vs the
-   incumbent -59.5%) and it nudges full-history after-tax Calmar to 0.19 (vs 0.18). But it **fails the
-   per-window stability gate badly** (median 0.21 vs SPY 0.85), so the small full-history edge is not
-   robust out-of-sample. Faber-10mo-on-3x is worse on drawdown (-63.5%) and stability (0.38). No
-   signal cuts the 3x drawdown to SPY-like levels with a stable Calmar edge.
+3. **The operator's stated goal (cut the drawdown) finds nothing, and the most direct lever fails
+   hardest.** A faster moving average is the obvious way to exit drawdowns sooner, and the 100-DMA
+   does cut the single COVID-2020 crash (-26.7% vs the incumbent's -34.0%). But over the full history
+   it is **ruinous**: the extra whipsaw (5.45 flips/yr vs the 200-DMA's 3.23), compounded at 3x with
+   cost, tax, and leverage decay on every false exit, drives its max drawdown to **-91.9%** (near
+   wipeout), its CAGR to +10.3% (no leverage premium left), its after-tax Calmar to 0.06, and its
+   per-window stability negative (-0.02). Faster is worse, not better, at 3x. The only candidate that
+   marginally reduces the drawdown without blowing up is the 200-DMA + 2-day confirmation (-58.2% vs
+   the incumbent -59.5%, after-tax Calmar 0.19), but it **fails the per-window stability gate**
+   (median 0.21 vs SPY 0.85), so its thin full-history edge is not robust out-of-sample. No signal
+   cuts the 3x drawdown to SPY-like levels with a stable Calmar edge.
 
 4. **This reopens the operator's earlier fork, now with evidence.** In the brainstorm the operator
    chose "improve risk control, keep leverage" before seeing this result. The evidence now says: the

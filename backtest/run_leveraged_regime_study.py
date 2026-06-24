@@ -49,6 +49,7 @@ LEVERAGE = 3.0
 # (label, signal_fn(spy_close) -> is_bullish_close_t, vehicle key)
 STRATEGIES = [
     ("200-DMA on 3x (INCUMBENT)", lambda c: sma_signal(c, 200), "syn3x"),
+    ("100-DMA on 3x (faster)", lambda c: sma_signal(c, 100), "syn3x"),
     ("tsmom-12mo on 3x", tsmom_signal, "syn3x"),
     ("Faber 10mo SMA on 3x", faber_sma_signal, "syn3x"),
     ("200-DMA + 2d confirm on 3x", lambda c: confirmed_sma_signal(c, 200, 2), "syn3x"),
