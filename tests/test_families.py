@@ -9,10 +9,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+import math
+
 from backtest.families import (
     faber_gtaa_weights,
     faber_single_weights,
     gem_weights,
+    vol_target_weights,
 )
 
 
@@ -220,3 +223,115 @@ def test_gtaa_rows_never_exceed_one():
         idx = closes[a].index if idx is None else idx.intersection(closes[a].index)
     w = faber_gtaa_weights(closes, idx)
     assert (w.sum(axis=1) <= 1.0 + 1e-9).all()
+
+
+# ---------------------------------------------------------------------------
+# Vol-targeting: continuous SPY weight scaled to target annualised vol
+# ---------------------------------------------------------------------------
+
+def _build_spy_close(daily_returns: list[float], start: str = "2020-01-02") -> pd.Series:
+    """Build a SPY close series from a list of daily simple returns.
+
+    Starts at 100.0; each successive price is prev * (1 + ret).
+    Index is a business-day range starting at start.
+    """
+    prices = [100.0]
+    for r in daily_returns:
+        prices.append(prices[-1] * (1.0 + r))
+    idx = pd.bdate_range(start, periods=len(prices))
+    return pd.Series(prices, index=idx)
+
+
+def test_vol_target_higher_vol_lower_weight():
+    """Higher realized vol on segment B produces a lower weight than segment A.
+
+    Segment A: 30 days of small returns (~1% daily = 16% annualised).
+    Segment B: 30 days of large returns (~4% daily = 63% annualised).
+    After the 20-day warm-up, segment A should have a higher weight than B.
+    """
+    low_vol_ret = 0.01    # ~16% ann
+    high_vol_ret = 0.04   # ~63% ann
+
+    # Alternate-sign returns so the price doesn't drift to zero/infinity.
+    low_rets = [low_vol_ret * (1 if i % 2 == 0 else -1) for i in range(30)]
+    high_rets = [high_vol_ret * (1 if i % 2 == 0 else -1) for i in range(30)]
+
+    spy = _build_spy_close(low_rets + high_rets)
+    idx = spy.index
+    w = vol_target_weights(spy, idx, target_vol=0.10, vol_window=20)
+
+    assert list(w.columns) == ["SPY"]
+    # Last day of segment A (index 30, the 31st price after 30 returns applied)
+    # vs last day of segment B (index 60).
+    w_low = w["SPY"].iloc[30]
+    w_high = w["SPY"].iloc[-1]
+    assert w_low > w_high, (
+        f"low-vol period should have higher weight: w_low={w_low:.4f}, w_high={w_high:.4f}"
+    )
+
+
+def test_vol_target_weight_capped_at_one():
+    """When realized vol < target vol, weight is capped at 1.0 (no leverage).
+
+    Use target_vol=0.50 (50%) with very small daily returns (~0.1% -> ~1.6% ann).
+    target/realized >> 1, so without the cap the weight would exceed 1.
+    """
+    tiny_rets = [0.001 * (1 if i % 2 == 0 else -1) for i in range(40)]
+    spy = _build_spy_close(tiny_rets)
+    idx = spy.index
+    w = vol_target_weights(spy, idx, target_vol=0.50, vol_window=20, cap=1.0)
+
+    post_warmup = w["SPY"].iloc[20:]  # first 20 rows are warm-up -> 0.0
+    assert (post_warmup <= 1.0 + 1e-9).all(), "weight must never exceed cap=1.0"
+    # At least one post-warmup value should be at the cap (would exceed without it).
+    assert (post_warmup >= 1.0 - 1e-9).any(), "expected some rows pinned at cap"
+
+
+def test_vol_target_warmup_is_cash():
+    """First vol_window rows (where rolling std is NaN) must be 0.0 (cash).
+
+    With vol_window=20 and a 30-return series, rows 0-19 are warm-up (fewer than
+    20 complete returns in the window -> NaN std -> weight = 0.0).
+    """
+    rets = [0.01 * (1 if i % 2 == 0 else -1) for i in range(30)]
+    spy = _build_spy_close(rets)
+    idx = spy.index
+    w = vol_target_weights(spy, idx, target_vol=0.10, vol_window=20)
+
+    # The price series has 31 points (price[0] + 30 returns).
+    # pct_change() produces NaN at position 0, then 30 returns.
+    # rolling(20).std() first non-NaN is at position 20 (index 20 of the series).
+    warmup = w["SPY"].iloc[:20]
+    assert (warmup == 0.0).all(), f"warm-up rows must be 0.0 (cash), got:\n{warmup}"
+
+
+def test_vol_target_no_pre_shift():
+    """The returned weight is the close-T value — not shifted forward by one day.
+
+    Build a price series where the last return is large (high vol on the final
+    window). The weight on the LAST row of the output must reflect that last
+    window's realized vol, not a stale prior day's value. If the builder had
+    pre-shifted (shift(1)), the last row would carry the second-to-last window's
+    weight instead of the final one.
+
+    Strategy: 25 calm days then 5 high-vol days. The last 20-day window spans
+    both. Compute realized_vol manually on the raw series and compare.
+    """
+    calm = [0.001 * (1 if i % 2 == 0 else -1) for i in range(25)]
+    volatile = [0.05 * (1 if i % 2 == 0 else -1) for i in range(5)]
+    rets = calm + volatile
+    spy = _build_spy_close(rets)
+    idx = spy.index
+
+    w = vol_target_weights(spy, idx, target_vol=0.10, vol_window=20)
+
+    # Manually compute the expected weight at the last date.
+    ret_series = spy.pct_change()
+    rv = ret_series.rolling(20).std(ddof=1) * math.sqrt(252)
+    expected_w = min(0.10 / rv.iloc[-1], 1.0)
+
+    got_w = w["SPY"].iloc[-1]
+    assert got_w == pytest.approx(expected_w, rel=1e-6), (
+        f"last-row weight {got_w:.6f} != expected close-T weight {expected_w:.6f}; "
+        "builder must NOT pre-shift"
+    )
