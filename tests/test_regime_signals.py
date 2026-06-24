@@ -58,6 +58,16 @@ def test_confirm_one_equals_sma_signal():
         assert (pd.isna(a) and pd.isna(b)) or a == b
 
 
+def test_confirmed_no_shift():
+    # The confirmed signal at T reflects close[T] vs SMA[T], NOT a shifted value.
+    # On a strictly rising series, once warm-up + confirmation pass the state is
+    # True and tracks the current close (no lag beyond the documented debounce).
+    s = _series([1, 2, 3, 4, 5, 6, 7, 8])
+    con = confirmed_sma_signal(s, window=2, confirm=2)
+    assert con.iloc[-1] == True  # current close above SMA -> confirmed bullish now
+    assert pd.isna(con.iloc[0])  # SMA warm-up
+
+
 def test_confirm_must_be_positive():
     s = _series([1, 2, 3])
     with pytest.raises(ValueError):

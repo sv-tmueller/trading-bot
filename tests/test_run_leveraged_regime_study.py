@@ -41,9 +41,11 @@ def test_run_study_structure_and_strategies(patched):
     res = R.run_study(end=date(2018, 12, 31))
     assert set(res["rows"]) == {label for label, _, _ in R.STRATEGIES}
     assert res["n_days"] > 300
-    # every row carries metrics + stability + bear
-    for r in res["rows"].values():
+    # every row carries metrics + stability + bear, and the right vehicle
+    for label, _, veh in R.STRATEGIES:
+        r = res["rows"][label]
         assert {"metrics", "stability", "bear", "vehicle"} <= set(r)
+        assert r["vehicle"] == veh  # regime rows trade syn3x; the 1x row trades spy
 
 
 def test_after_tax_not_above_pretax(patched):
