@@ -9,8 +9,8 @@ Issue: #315 (batch #317). Companion to the first cut
 
 ## Question
 
-Same bar as the first cut: does **volatility-targeting** — the last named family, and the
-highest-turnover (weakest "low-turnover" fit) — beat plain 1x SPY buy-and-hold on out-of-sample
+Same bar as the first cut: does **volatility-targeting** (the last named family, and the
+highest-turnover, weakest "low-turnover" fit) beat plain 1x SPY buy-and-hold on out-of-sample
 **after-tax Calmar** (CAGR / |max drawdown|), net of cost and tax, while also beating the dumb
 baselines and surviving the 2020 + 2022 bear stress? The first cut screened GEM dual-momentum and
 Faber MA-timing (single-asset + GTAA-lite); none cleared. This cut adds the last family so #255's
@@ -23,7 +23,7 @@ Identical foundation and conventions to the first cut: the same weighted simulat
 0.05% + 0.05% per-side cost model, no look-ahead (signal on the completed bar, executed next open),
 full-history after-tax Calmar as the ranking basis, the per-window 12-month OOS pass as the
 stability gate, and the 2020 / 2022 bear stress. Real yfinance total-return-adjusted daily bars;
-SPY-only window 1993-01-29 -> 2026-06-23 (~33.4y). Reproduce with
+SPY-only window 1993-01-29 to 2026-06-23 (~33.4y). Reproduce with
 `python3 -m backtest.run_candidate_survey`.
 
 The one new family:
@@ -35,7 +35,7 @@ The one new family:
 
 ## Results
 
-Vol-target vs 1x SPY + the dumb baselines, full window 1993-01-29 -> 2026-06-23 (~33.4y):
+Vol-target vs 1x SPY + the dumb baselines, full window 1993-01-29 to 2026-06-23 (~33.4y):
 
 | strategy | Calmar US | Calmar DE | CAGR | max DD | trd/yr | >1x SPY? |
 |---|---|---|---|---|---|---|
@@ -56,10 +56,10 @@ curve went non-positive (see Findings 3).
 
 ## Findings
 
-1. **Pre-tax, vol-targeting is at parity with SPY — marginally ahead.** Pre-tax Calmar:
+1. **Pre-tax, vol-targeting is at parity with SPY, marginally ahead.** Pre-tax Calmar:
    vol-target 7.1% / 34.7% = **0.205** vs SPY 10.8% / 55.2% = **0.196**. It cuts drawdown
    (-34.7% vs -55.2%) more than it cuts return, so before tax it has a slim 0.009 edge. The #255 bar
-   is **after-tax**, and that is where it fails — a marginal pre-tax edge does not clear an after-tax
+   is **after-tax**, and that is where it fails; a marginal pre-tax edge does not clear an after-tax
    bar.
 
 2. **After tax, SPY wins on structural tax deferral, and it is decisive.** This is the load-bearing
@@ -69,36 +69,41 @@ curve went non-positive (see Findings 3).
    Calmar edge under any reasonable tax model. After tax, vol-target clears the bar on zero computed
    bases: US n/a, DE n/a, per-window median -0.54 vs SPY 0.85.
 
-3. **The three after-tax signals are NOT independent confirmations — they share one tax model.** US,
+3. **The three after-tax signals are NOT independent confirmations; they share one tax model.** US,
    DE, and the per-window pass all run through the **same no-loss-credit tax layer**: it taxes every
    winning exit and credits no losing exit. That is **punitive for a high-churn strategy** and drives
-   the US and DE full-history after-tax curves non-positive — `_curve_metrics` reports CAGR / Calmar
+   the US and DE full-history after-tax curves non-positive; `_curve_metrics` reports CAGR / Calmar
    as `n/a` with max DD clamped to -100% ("ruin") rather than crashing. Real US (short-term loss
    offset) and DE (Verlustverrechnung) both credit offsetting losses, so under a loss-crediting model
    vol-target would **underperform, not ruin**: the *sign* of the verdict is robust (it rests on the
    structural deferral gap in Finding 2), but the *magnitude* ("ruin", and the per-window -0.54) is
    exaggerated by this model. **Consequence: the no-loss-credit model cannot fairly rank ANY
-   high-turnover candidate — a loss-crediting tax layer is a prerequisite before screening
+   high-turnover candidate; a loss-crediting tax layer is a prerequisite before screening
    churn-heavy strategies.** (Flagged for batch #317 as a foundation limitation; not fixed here.)
 
 4. **The lot-accounting artifact is immaterial to this verdict.** The foundation's
-   `_simulate_weighted` keeps a single lot anchor for a continuous strictly-positive weight (partial
-   trims book against the original `entry_date` / cost basis — pinned by a new regression test,
-   `tests/test_weighted_simulator.py`). That would *inflate* the full-history **US** after-tax Calmar
-   (late trims classified long-term against a stale basis). Here it cannot help: the US after-tax
-   curve is non-positive, so there is no positive Calmar to inflate. DE (no holding-period split) and
-   the per-window pass (each window resets) are free of *this* artifact — though not of the
-   no-loss-credit model (Finding 3). The artifact remains a real foundation limitation for any future
-   continuous-weight candidate that survives after tax (flagged on #317).
+   `_simulate_weighted` keeps a single lot anchor for a continuous strictly-positive weight: partial
+   trims book against the original `entry_date` AND original cost basis (pinned by a new regression
+   test, `tests/test_weighted_simulator.py`). This has **two opposing tax effects**, easily
+   conflated: (a) the stale **entry-date** misclassifies late trims as US long-term, lowering the US
+   rate, which *inflates* US after-tax Calmar (US-only; DE has no holding-period split); (b) the
+   stale **cost basis** books later, higher-priced adds at the original lower basis, *overstating*
+   the realized gain so more tax is paid, which *deflates* both US and DE after-tax. The net US
+   direction is therefore ambiguous; DE is unambiguously deflated by (b). Either way it is
+   **immaterial here**: the US and DE after-tax curves are non-positive regardless (no positive
+   Calmar to inflate), the per-window pass resets each window (no single anchor), and the verdict
+   rests on the artifact-independent structural deferral gap (Finding 2). Because (a) and (b) push
+   opposite ways on US, the artifact is not a clean "flattering" bias; it needs a real fix before any
+   future continuous-weight candidate can be ranked on US after-tax Calmar (flagged on #317).
 
 5. **Drawdown was cut, as designed** (-34.7% vs SPY -55.2%; survives both 2020 and 2022), but cutting
    drawdown by near-daily rebalancing is exactly the after-tax-expensive pattern #255 predicts will
-   not beat SPY — and it does not.
+   not beat SPY, and it does not.
 
 ## Verdict
 
 **Vol-targeting does not clear the #255 after-tax Calmar bar.** Pre-tax it is at parity with SPY
-(marginally ahead, 0.205 vs 0.196); after tax, SPY wins decisively on structural tax deferral — a
+(marginally ahead, 0.205 vs 0.196); after tax, SPY wins decisively on structural tax deferral: a
 93.7x/year churner realizes short-term continuously while buy-and-hold defers to a single long-term
 realization, a gap that dominates the slim pre-tax edge under any reasonable tax model. It joins GEM
 dual-momentum, Faber, and GTAA-lite from the first cut: **nothing in the survey beats 1x SPY

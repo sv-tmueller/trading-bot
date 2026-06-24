@@ -201,11 +201,16 @@ def test_partial_trim_carries_original_lot_anchor():
       entry_date = original open date (not the add date)
       entry_price = original open price (not the add price or average cost)
 
-    This overstates holding period for tax classification (all trimmed shares
-    look as old as the first buy) and understates cost basis for the trimmed
-    lot (using original price 100 rather than a blended ~104 FIFO basis).
-    Both effects flatter long-horizon after-tax results for continuous-weight
-    strategies by making gains appear longer-held and basis appear lower.
+    This has two OPPOSING tax effects, easily conflated:
+      (a) it overstates the holding period (all trimmed shares look as old as
+          the first buy), misclassifying late trims as US long-term -> lower US
+          rate -> flatters US after-tax (US-only; DE has no holding-period split).
+      (b) it understates the cost basis (booking trimmed shares at the original
+          100, not the higher add price), which OVERSTATES the realized gain ->
+          more tax -> DEFLATES both US and DE after-tax.
+    Net US direction is ambiguous; DE is deflated by (b). (FIFO would book the
+    trim against the first lot at 100; average-cost would use ~104 -- the
+    foundation keeps the first anchor, doing neither.)
 
     This test encodes ACTUAL behavior so any change to the lot-accounting
     logic is flagged immediately.
