@@ -52,6 +52,7 @@ from backtest.families import (
     faber_gtaa_weights,
     faber_single_weights,
     gem_weights,
+    vol_target_weights,
 )
 from backtest.regime import COMMISSION_BPS, SLIPPAGE_BPS, simulate_from_signal
 from backtest.tax import apply_tax_to_ledger
@@ -270,8 +271,8 @@ def _simulate_strategy_on_index(
 ) -> dict:
     """Build the strategy's signal/weights on ``idx`` and simulate it.
 
-    ``strategy`` is one of: 'gem', 'faber_single', 'gtaa', '1x_spy',
-    'persistence', 'faber10', 'tsmom'.
+    ``strategy`` is one of: 'gem', 'faber_single', 'gtaa', 'vol_target',
+    '1x_spy', 'persistence', 'faber10', 'tsmom'.
     """
     spy = universe["SPY"].loc[idx]
     close = spy["Close"]
@@ -285,6 +286,9 @@ def _simulate_strategy_on_index(
         return _sim_single_asset(spy, tsmom_signal(close))
     if strategy == "faber_single":
         w = faber_single_weights(close, idx)
+        return _sim_weighted(w, {"SPY": spy})
+    if strategy == "vol_target":
+        w = vol_target_weights(close, idx)
         return _sim_weighted(w, {"SPY": spy})
     if strategy == "gem":
         asset_close = {a: universe[a]["Close"].loc[idx] for a in held_assets}
@@ -356,6 +360,12 @@ FAMILIES = [
         "label": "Faber GTAA-lite (SPY/EFA/AGG/DBC/VNQ)",
         "held": ["SPY", "EFA", "AGG", "DBC", "VNQ"],
         "binding": ["SPY", "EFA", "AGG", "DBC", "VNQ"],
+    },
+    {
+        "key": "vol_target",
+        "label": "Vol-target 10% (single-asset SPY)",
+        "held": ["SPY"],
+        "binding": ["SPY"],
     },
 ]
 
