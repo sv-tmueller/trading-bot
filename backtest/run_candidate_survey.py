@@ -103,13 +103,44 @@ def _years(idx: pd.DatetimeIndex) -> float:
     return (idx[-1] - idx[0]).days / 365.25
 
 
+def _curve_metrics(curve: pd.Series) -> dict:
+    """CAGR / maxDD / Calmar on an equity curve, robust to capital wipe-out.
+
+    Uses the foundation's conventions (calendar-span CAGR, Calmar = CAGR/|maxDD|,
+    NaN when maxDD == 0). The one case the foundation's ``_compute_window_metrics``
+    cannot express is an after-tax curve that goes non-positive: the no-loss-credit
+    tax model can tax gross winners on a strategy whose gross losers dominate,
+    driving after-tax equity below zero. ``(1 + total_return)`` is then < 0 and a
+    fractional power is complex — undefined. Here that case reports CAGR/Calmar as
+    NaN with maxDD clamped at -100% (capital ruined), so the survey records the
+    ruin honestly instead of crashing. The pre-tax (long-only, cash-floored) curve
+    never hits this branch.
+    """
+    start = float(curve.iloc[0])
+    end = float(curve.iloc[-1])
+    rolling_max = curve.cummax()
+    max_dd = float(((curve - rolling_max) / rolling_max).min())
+
+    if end <= 0 or start <= 0:
+        # capital wiped out at/after some exit -> CAGR/Calmar undefined
+        return {"cagr": float("nan"), "max_drawdown": min(max_dd, -1.0),
+                "calmar": float("nan")}
+
+    total_return = end / start - 1.0
+    span_years = (curve.index[-1] - curve.index[0]).days / 365.25
+    cagr = float((1.0 + total_return) ** (1.0 / span_years) - 1.0) if span_years > 0 else 0.0
+    calmar = float(cagr / abs(max_dd)) if max_dd != 0 else float("nan")
+    return {"cagr": cagr, "max_drawdown": max_dd, "calmar": calmar}
+
+
 def _after_tax_metrics(sim: dict, idx: pd.DatetimeIndex) -> dict:
     """Pre-tax + US/DE after-tax CAGR/Calmar/maxDD on the FULL equity curve.
 
-    Feeds the after-tax curve (from ``apply_tax_to_ledger``) straight into the
-    foundation's ``_compute_window_metrics`` — no re-implementation of Calmar,
-    no "x (1 - tau)" shortcut (the real after-tax drawdown shifts as tax steps
-    in at each exit).
+    Pre-tax metrics reuse the foundation's ``_compute_window_metrics`` directly.
+    After-tax metrics use ``_curve_metrics`` (same conventions, ruin-safe) because
+    a high-churn after-tax curve can go non-positive under the no-loss-credit tax
+    model — see ``_curve_metrics``. No "x (1 - tau)" shortcut; the real after-tax
+    drawdown shifts as tax steps in at each exit.
     """
     eq = sim["equity_curve"]
     trades = sim["trades"]
@@ -117,8 +148,8 @@ def _after_tax_metrics(sim: dict, idx: pd.DatetimeIndex) -> dict:
 
     after_us = apply_tax_to_ledger(trades, eq, jurisdiction="US")
     after_de = apply_tax_to_ledger(trades, eq, jurisdiction="DE")
-    m_us = _compute_window_metrics(after_us, trades, STARTING_CASH)
-    m_de = _compute_window_metrics(after_de, trades, STARTING_CASH)
+    m_us = _curve_metrics(after_us)
+    m_de = _curve_metrics(after_de)
 
     yrs = _years(idx)
     turnover = sim["trade_count"] / yrs if yrs > 0 else float("nan")
@@ -131,6 +162,7 @@ def _after_tax_metrics(sim: dict, idx: pd.DatetimeIndex) -> dict:
         "calmar_de": m_de["calmar"],
         "cagr_us": m_us["cagr"],
         "cagr_de": m_de["cagr"],
+        "max_dd_us": m_us["max_drawdown"],
         "trade_count": sim["trade_count"],
         "turnover_yr": turnover,
     }
@@ -216,7 +248,7 @@ def _per_window_after_tax_calmar(
             continue
         test_trades = [t for t in sim["trades"] if ts <= t["exit_date"] <= te]
         after_us = apply_tax_to_ledger(test_trades, eq_test, jurisdiction="US")
-        m = _compute_window_metrics(after_us, test_trades, STARTING_CASH)
+        m = _curve_metrics(after_us)
         c = m["calmar"]
         if not (isinstance(c, float) and np.isnan(c)):
             calmars.append(c)

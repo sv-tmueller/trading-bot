@@ -91,6 +91,39 @@ def test_turnover_reported_per_year():
     assert m["turnover_yr"] < 1.0  # buy-and-hold barely trades
 
 
+def test_curve_metrics_ruin_safe_on_negative_after_tax_curve():
+    """A capital-wiped after-tax curve reports NaN CAGR/Calmar, not a crash.
+
+    The no-loss-credit US tax model taxes gross winners even when gross losers
+    dominate, so a high-churn after-tax curve can go non-positive. CAGR on a
+    negative base is complex (undefined); the runner must report NaN with maxDD
+    clamped at <= -100%, recording the ruin honestly.
+    """
+    idx = pd.date_range("2007-01-01", "2026-01-01", freq="D")
+    curve = pd.Series(np.linspace(100_000.0, -38_000.0, len(idx)), index=idx)
+    m = rcs._curve_metrics(curve)
+    assert np.isnan(m["cagr"])
+    assert np.isnan(m["calmar"])
+    assert m["max_drawdown"] <= -1.0
+
+
+def test_curve_metrics_matches_foundation_on_a_healthy_curve():
+    """On a positive curve, _curve_metrics agrees with the foundation's CAGR/Calmar."""
+    import backtest.walkforward as wf
+    idx = pd.date_range("2020-01-01", "2021-12-31", freq="D")
+    n = len(idx)
+    vals = np.empty(n)
+    t = n // 3
+    vals[: t + 1] = np.linspace(100.0, 80.0, t + 1)
+    vals[t:] = np.linspace(80.0, 144.0, n - t)
+    curve = pd.Series(vals, index=idx)
+    mine = rcs._curve_metrics(curve)
+    theirs = wf._compute_window_metrics(curve, [], 100.0)
+    assert mine["cagr"] == pytest.approx(theirs["cagr"], rel=1e-9)
+    assert mine["calmar"] == pytest.approx(theirs["calmar"], rel=1e-9)
+    assert mine["max_drawdown"] == pytest.approx(theirs["max_drawdown"], rel=1e-9)
+
+
 def test_no_look_ahead_weighted_family_fills_next_open():
     """A GEM-style weight change fills at the NEXT open, not the signal close.
 
