@@ -73,5 +73,8 @@ export async function getLatestQuote(
   }
   const bid = requireNumber(j.quote.bp, "quote bid");
   const ask = requireNumber(j.quote.ap, "quote ask");
+  if (bid <= 0 || ask <= 0 || bid > ask) {
+    throw new DataError(`implausible quote for ${symbol}: bid=${bid} ask=${ask}`);
+  }
   return { bid, ask, mid: (bid + ask) / 2 };
 }
