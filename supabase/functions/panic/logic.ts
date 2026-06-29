@@ -115,7 +115,11 @@ export async function runPanic(
     // "updated in a finally" contract and avoids a double-update.
     const outcome = ok ? "success:panic" : `error:${err?.name}`;
     const notes = ok ? `${action}: ${result}` : `${action}: ${err?.message}`.slice(0, 500);
-    await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
+    try {
+      await db.updateAuditLog({ id: auditId, finishedAt: iso(deps.now()), outcome, notes });
+    } catch (_e) {
+      /* audit-close failed: leave the row open (documented recoverable state); never mask the action result */
+    }
   }
   return { ok, result };
 }

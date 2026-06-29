@@ -28,14 +28,13 @@ export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 
 function runWithRealDeps(action: PanicAction, opts: PanicOpts): Promise<PanicResult> {
   const sb = getServiceClient();
-  const alpaca = createAlpacaClient();
   return runPanic(
     {
       config: getStrategyConfig(),
       now: () => new Date(),
       alpaca: {
-        cancelAllOrders: () => alpaca.cancelAllOrders(),
-        liquidate: (s) => alpaca.liquidate(s),
+        cancelAllOrders: () => createAlpacaClient().cancelAllOrders(),
+        liquidate: (s) => createAlpacaClient().liquidate(s),
       },
       db: {
         setConfig: (k, v) => setConfig(sb, k, v),
@@ -81,7 +80,12 @@ export async function handlePanic(
   // Finding 13 / #185 option 1: liquidate auto-pauses unless ?pause=false.
   const pauseOnLiquidate = url.searchParams.get("pause") !== "false";
 
-  const result = await run(action, { pauseOnLiquidate });
+  let result: PanicResult;
+  try {
+    result = await run(action, { pauseOnLiquidate });
+  } catch (e) {
+    return json({ result: "internal: " + (e as Error).message }, 500);
+  }
   // Surface a failed action (e.g. liquidate timeout) as 500 so the operator
   // can't mistake an error result for success.
   return json({ result: result.result }, result.ok ? 200 : 500);
