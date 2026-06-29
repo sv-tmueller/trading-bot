@@ -17,38 +17,59 @@ on:
     branches: [main]
     paths:
       - "supabase/**"
+  pull_request:
 
 concurrency:
-  group: deploy-dev
+  group: deploy-dev-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
   # Dev / paper project (trading-bot-dev). Live keys never touch this workflow.
   PROJECT_REF: qdaxxsuicyiscdvsdowc
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.2
+      - run: deno task test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: pip install -r requirements.txt
+      - run: pytest -m "not slow"
+
   deploy:
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - uses: supabase/setup-cli@v2.1.1
         with:
-          version: latest
+          version: 2.98.2
 
       # Order matters (#256 final-review finding): functions BEFORE db push.
       # New function + old cron is fail-closed (clock gate / stale guard);
       # new cron + old function could trade on a partial bar during RTH.
       - name: Deploy functions (JWT-verified)
         run: supabase functions deploy daily-check kill-switch --project-ref "$PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Deploy panic (x-panic-token auth, no JWT)
         run: supabase functions deploy panic --no-verify-jwt --project-ref "$PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Apply migrations
         run: |
           supabase link --project-ref "$PROJECT_REF"
           supabase db push -p "$SUPABASE_DB_PASSWORD"
         env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
