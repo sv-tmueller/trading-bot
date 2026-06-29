@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { type PanicDeps, runPanic } from "./logic.ts";
 
 function makeDeps(
@@ -169,4 +169,29 @@ Deno.test("cancel-orders broker failure -> ok:false + error audit outcome", asyn
   const r = await runPanic(deps, "cancel-orders");
   assertEquals(r.ok, false);
   assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
+});
+
+// Test A: updateAuditLog rejecting in finally must not mask the typed return.
+// Red before change 3 (the unguarded await throws, replacing the pending return),
+// green after (try/catch swallows the audit-close error).
+Deno.test("updateAuditLog failure in finally does not mask ok:true return", async () => {
+  const { deps } = makeDeps({
+    db: {
+      updateAuditLog: () => Promise.reject(new Error("db write failed")),
+    } as unknown as PanicDeps["db"],
+  });
+  const r = await runPanic(deps, "pause");
+  assertEquals(r.ok, true);
+  assertEquals(r.result, "paused");
+});
+
+// Test B: insertAuditLog rejecting before the try must propagate (characterization
+// guard — green before and after change 3; pins that swallow never reaches insertAuditLog).
+Deno.test("insertAuditLog failure propagates and is not swallowed", async () => {
+  const { deps } = makeDeps({
+    db: {
+      insertAuditLog: () => Promise.reject(new Error("audit open failed")),
+    } as unknown as PanicDeps["db"],
+  });
+  await assertRejects(() => runPanic(deps, "pause"), Error, "audit open failed");
 });
