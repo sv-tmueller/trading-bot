@@ -53,9 +53,6 @@ export interface KillSwitchDeps {
       qty: number;
       fillPrice: number;
     }) => Promise<void>;
-    notifyTradeFailed: (
-      p: { symbol: string; side: "BUY" | "SELL"; qty: number; reason: string },
-    ) => Promise<void>;
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
     notifyStateDesync: (p: {
       dbState: "LONG" | "CASH";

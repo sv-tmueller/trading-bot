@@ -90,7 +90,6 @@ function makeDeps(
         calls.fired = true;
         return Promise.resolve();
       },
-      notifyTradeFailed: () => Promise.resolve(),
       notifyBrokerError: () => Promise.resolve(),
       notifyStateDesync: () => {
         calls.desync = true;
@@ -373,7 +372,6 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
     } as unknown as KillSwitchDeps["alpaca"],
     notifications: {
       notifyKillSwitchFired: () => Promise.resolve(),
-      notifyTradeFailed: () => Promise.resolve(),
       notifyBrokerError: (p: { context: string; errorMsg: string }) => {
         brokerError = p;
         return Promise.resolve();
