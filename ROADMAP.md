@@ -29,32 +29,9 @@ Anything that changes signal direction, sizing math, or risk model belongs in v2
 
 **Milestone:** [`v2.0`](https://github.com/sv-tmueller/trading-bot/milestones/2)
 
-**Theme:** bidirectional regime coverage. The bot is currently structurally a directional bet on bull markets — v2.0 adds short-side capability so it can be profitable in both trending-bull and trending-bear weeks.
+The pre-pivot v2.0 framing (short-side support on the since-retired pre-pivot architecture, tracked under umbrella issue #66, now closed) was superseded by the 2026-05-07 rules-engine pivot and the MVP 2.0 migration (#220).
 
-**Umbrella issue:** [#66](https://github.com/sv-tmueller/trading-bot/issues/66) — short-side strategy support. The 2026-04-30 comment on that issue captures the v2 framing, the architectural impact analysis, and the open design questions.
-
-### Decision gates (research-first phasing)
-
-Before any live plumbing for shorts:
-
-1. **Bearish signal must show standalone positive expectancy.** Backtest the symmetric inverse signal (EMA20 < EMA50, etc.) on 5y/10y data. Kill the idea here if PF < 1.1 on the inverse alone — trend-following inverted often loses (trends persist longer than they reverse).
-2. **Combined long+short backtest must improve Sharpe vs long-only.** No point adding shorts if they only add variance.
-3. **Deterministic risk caps must exist before any LLM proposes a short.** Short side has unbounded theoretical upside; CLAUDE.md invariant addition required (max short notional, max gross/net exposure, max long-vs-short skew).
-
-### Architectural changes for v2.0
-
-Bigger than the v1.10/v1.11 safety stack combined. Touches:
-
-- Strategy agent (bearish signal generation)
-- Risk layer (separate `MAX_NET_EXPOSURE` vs `MAX_GROSS_EXPOSURE`, short-specific stop logic)
-- Position sizer (direction-agnostic share count, sign convention)
-- Broker (`place_short_order`, bracket leg orientation flip)
-- Monitor (exit comparisons flip for shorts)
-- Schema (`side` column on trades)
-- Agent prompts (long/short candidate format)
-- CLAUDE.md invariants (short risk caps)
-
-When v2.0 work begins, [#66](https://github.com/sv-tmueller/trading-bot/issues/66) splits into three phased issues (research spike → combined backtest → live plumbing), each gated on the previous decision.
+There is currently no committed theme for the next major — the milestone is empty. Any future strategy change must be a deterministic rule that passes a research-first gate and a fresh brainstorm/spec, per CLAUDE.md ["Architectural invariants"](CLAUDE.md#architectural-invariants). Candidate research lives in [`docs/research/`](docs/research/) (2026-06 survey series; the leveraged-regime study conclusion is a pending operator decision — see [#255](https://github.com/sv-tmueller/trading-bot/issues/255)).
 
 ## Parking lot
 
