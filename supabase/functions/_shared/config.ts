@@ -33,7 +33,7 @@ function floatEnv(name: string, def: number): number {
 function strEnv(name: string, def: string): string {
   const raw = Deno.env.get(name);
   if (raw === undefined) return def;
-  return raw;
+  return raw.trim();
 }
 
 export function getStrategyConfig(): StrategyConfig {
@@ -58,12 +58,12 @@ export function getStrategyConfig(): StrategyConfig {
 
   // Default is UPRO, not settings.py's WSPL.DE: Alpaca is US-listed-only (spec §2).
   const botTicker = strEnv("BOT_TICKER", "UPRO");
-  if (botTicker.trim() === "") {
+  if (botTicker === "") {
     throw new Error("BOT_TICKER must be a non-empty ticker symbol");
   }
 
   const botBenchmark = strEnv("BOT_BENCHMARK", "SPY");
-  if (botBenchmark.trim() === "") {
+  if (botBenchmark === "") {
     throw new Error("BOT_BENCHMARK must be a non-empty ticker symbol");
   }
 

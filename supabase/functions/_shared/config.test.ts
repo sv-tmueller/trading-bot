@@ -70,6 +70,23 @@ Deno.test("rejects empty BOT_TICKER", () => {
   clearEnv();
 });
 
+Deno.test("rejects whitespace-only BOT_BENCHMARK", () => {
+  clearEnv();
+  Deno.env.set("BOT_BENCHMARK", "  ");
+  assertThrows(() => getStrategyConfig(), Error, "BOT_BENCHMARK");
+  clearEnv();
+});
+
+Deno.test("stores padded BOT_TICKER/BOT_BENCHMARK trimmed", () => {
+  clearEnv();
+  Deno.env.set("BOT_TICKER", " UPRO ");
+  Deno.env.set("BOT_BENCHMARK", " SPY ");
+  const c = getStrategyConfig();
+  assertEquals(c.botTicker, "UPRO");
+  assertEquals(c.botBenchmark, "SPY");
+  clearEnv();
+});
+
 Deno.test("getAlpacaConfig throws when keys missing", () => {
   Deno.env.delete("ALPACA_API_KEY");
   Deno.env.delete("ALPACA_SECRET_KEY");
