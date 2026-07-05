@@ -206,7 +206,7 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     } catch (e) {
       await notifications.notifyError(
         `kill-switch: quote fetch failed for ${config.botTicker} ` +
-          `(${(e as Error).message.slice(0, 200)}) — liquidating on trade price alone (fail-toward-protection)`,
+          `(${String((e as Error)?.message ?? e).slice(0, 200)}) — liquidating on trade price alone (fail-toward-protection)`,
       );
       // confirmation stays "unverified_quote_outage"; fall through to claim + liquidate
     }

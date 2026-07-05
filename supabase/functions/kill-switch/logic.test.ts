@@ -591,3 +591,21 @@ Deno.test("B1b: neither breaches -> success:within_threshold (regression)", asyn
   assertEquals(calls.liquidate, undefined);
   assertEquals(calls.claim, undefined);
 });
+
+Deno.test("B1b: quote fetch throws a non-Error -> still fail-toward-protection: liquidates on trade price alone", async () => {
+  // A string rejection (e.g. a quote feed returning a raw error string rather
+  // than an Error) must not disarm the kill-switch. Before the fix, the local
+  // catch's `(e as Error).message.slice(0, 200)` threw a TypeError on a
+  // non-Error rejection (message is undefined), escaping to the outer catch
+  // and returning error:TypeError without liquidating.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+      getLatestQuote: () => Promise.reject("quote feed returned garbage"),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  assertEquals(typeof calls.error, "string"); // notifyError fired
+});
