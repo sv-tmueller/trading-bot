@@ -145,3 +145,18 @@ Deno.test("timingSafeEqual compares correctly", async () => {
   assertEquals(await timingSafeEqual("abc", "abcd"), false);
   assertEquals(await timingSafeEqual("", ""), true);
 });
+
+// Test C: run() throwing must yield a JSON 500 with an "internal:" prefix.
+// The res.json() succeeding proves every panic response is JSON.
+// Red before change 2 (no catch -> handlePanic rejects), green after.
+Deno.test("run() throwing yields JSON 500 with internal: prefix", async () => {
+  await withPanicToken("secret", async () => {
+    const res = await handlePanic(
+      req({ action: "pause", token: "secret" }),
+      () => Promise.reject(new Error("audit open failed")),
+    );
+    assertEquals(res.status, 500);
+    const body = await res.json();
+    assertEquals(body.result.startsWith("internal:"), true);
+  });
+});
