@@ -3,6 +3,7 @@ import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 import type { RegimeStateRow } from "../_shared/db.ts";
 import type { StrategyConfig } from "../_shared/config.ts";
+import { DataError } from "../_shared/num.ts";
 
 export interface KillSwitchDeps {
   config: StrategyConfig;
@@ -189,6 +190,17 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     let fireMid: number | null = null;
     try {
       const quote = await marketdata.getLatestQuote(config.botTicker);
+      // #334: a well-shaped-but-implausible mid (e.g. a ~10x fat-fingered print)
+      // must not be trusted as a confirming second source — throw so it routes
+      // into the local catch below and fires on the trade price alone.
+      const midRatio = Math.max(quote.mid, lastPrice) / Math.min(quote.mid, lastPrice);
+      if (midRatio > 2) {
+        throw new DataError(
+          `implausible quote mid for ${config.botTicker}: mid=${quote.mid} lastPrice=${lastPrice} (ratio ${
+            midRatio.toFixed(2)
+          } > 2)`,
+        );
+      }
       const midDrawdown = quote.mid / refHigh - 1;
       if (midDrawdown > -config.killSwitchDrawdownPct) {
         const msg = `breach unconfirmed: trade dd=${drawdown.toFixed(4)} (px=${lastPrice}) ` +
