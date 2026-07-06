@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
-import { AlpacaError } from "../_shared/alpaca.ts";
+import { AlpacaError, OrderTimeoutError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 import { DataError } from "../_shared/num.ts";
 
@@ -117,6 +117,9 @@ Deno.test("broker flat -> success:no_position (broker is source of truth)", asyn
   assertEquals(await runKillSwitch(deps), "success:no_position");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:no_position");
   assertEquals(calls.liquidate, undefined);
+  // No position -> the qty gate returns before the qtyNote fragment is set, so
+  // notes stay null (#342 — qty is only meaningful once a position exists).
+  assertEquals((calls.audit as { notes?: string }).notes, undefined);
 });
 
 Deno.test("DB says CASH but broker holds a position -> desync notified, drawdown check continues", async () => {
@@ -145,7 +148,10 @@ Deno.test("DB says CASH but broker holds a position -> desync notified, drawdown
   assertEquals(calls.desync, true);
   assertEquals(calls.liquidate, undefined);
   // Audit notes carry the desync for forensics.
-  assertEquals(String((calls.audit as { notes: string }).notes).includes("state_desync"), true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("state_desync"), true);
+  // Broker qty (#342) is carried exactly once — desyncNote no longer duplicates it.
+  assertEquals(notes.match(/qty=/g)?.length, 1);
 });
 
 Deno.test("DB says CASH but broker holds a position -> protects it + notifies desync (#237)", async () => {
@@ -199,7 +205,10 @@ Deno.test("no regime_state row but broker holds a position -> still protects it 
   assertEquals((calls.insertTrade as { reason: string }).reason, "kill_switch");
   // No regime_state writes — there is no SPY data here to seed one.
   assertEquals((calls.upserts as unknown[]).length, 0);
-  assertEquals(String((calls.audit as { notes: string }).notes).includes("state_desync"), true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("state_desync"), true);
+  // Broker qty (#342) is carried exactly once — desyncNote no longer duplicates it.
+  assertEquals(notes.match(/qty=/g)?.length, 1);
 });
 
 Deno.test("market closed -> skipped:market_closed", async () => {
@@ -226,6 +235,11 @@ Deno.test("within threshold -> success:within_threshold, persists drawdown", asy
     Math.round(((calls.upsert as { positionDrawdownPct: number }).positionDrawdownPct) * 100) / 100,
     -0.10,
   );
+  // Audit notes carry both the drawdown and the broker-reported qty (#342 —
+  // mock getPosition returns 99).
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("dd="), true);
+  assertEquals(notes.includes("qty=99"), true);
 });
 
 Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
@@ -383,6 +397,39 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
   assertEquals(brokerError?.context, "kill-switch");
 });
 
+Deno.test("liquidate times out (cancel UNVERIFIED) -> error:OrderTimeoutError + notifyBrokerError (#342/#262)", async () => {
+  // OrderTimeoutError now extends AlpacaError (#342), so the existing
+  // `instanceof AlpacaError -> notifyBrokerError` catch surfaces an UNVERIFIED
+  // cancel to the operator with zero caller-side changes.
+  let brokerError: { context: string; errorMsg: string } | undefined;
+  const { deps } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)), // confirm breach
+    } as unknown as KillSwitchDeps["marketdata"],
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: true }),
+      liquidate: () =>
+        Promise.reject(
+          new OrderTimeoutError(
+            "SELL 99 UPRO did not fill within 30000ms; cancel UNVERIFIED — order o1 may still be live (status 'pending_cancel')",
+          ),
+        ),
+    } as unknown as KillSwitchDeps["alpaca"],
+    notifications: {
+      notifyKillSwitchFired: () => Promise.resolve(),
+      notifyBrokerError: (p: { context: string; errorMsg: string }) => {
+        brokerError = p;
+        return Promise.resolve();
+      },
+    } as unknown as KillSwitchDeps["notifications"],
+  });
+  assertEquals(await runKillSwitch(deps), "error:OrderTimeoutError");
+  assertEquals(brokerError?.context, "kill-switch");
+  assertEquals(brokerError?.errorMsg.includes("cancel UNVERIFIED"), true);
+});
+
 Deno.test("liquidate ok but insertTrade fails -> kill_switch flag persisted before the error (#238)", async () => {
   // The CASH flip + kill_switch_active is upserted BEFORE insertTrade, so a
   // failure recording the trade cannot erase the fact that the kill-switch fired.
@@ -519,7 +566,7 @@ Deno.test("B1b: trade breaches but quote-mid does not -> skipped:breach_unconfir
   // branch — exactly 1 upsert (no second upsert added by the unconfirmed path).
   assertEquals((calls.upserts as unknown[]).length, 1);
   assertEquals(
-    ((calls.upserts as Array<{ currentState: string }>)[0]).currentState,
+    (calls.upserts as Array<{ currentState: string }>)[0].currentState,
     "LONG",
   );
 });
@@ -583,6 +630,8 @@ Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and 
   const notes = String((calls.audit as { notes: string }).notes);
   assertEquals(notes.includes("confirmation=confirmed"), true);
   assertEquals(notes.includes("mid="), true);
+  // Broker-reported qty (#342) carried on the fire path too.
+  assertEquals(notes.includes("qty="), true);
 });
 
 Deno.test("fire notes: quote-outage fire carries confirmation=unverified_quote_outage", async () => {

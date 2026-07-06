@@ -13,7 +13,10 @@ export class BrokerCallBlockedError extends Error {
 export class AlpacaError extends Error {
   override name = "AlpacaError";
 }
-export class OrderTimeoutError extends Error {
+// Extends AlpacaError (#342) so both cron callers' existing
+// `instanceof AlpacaError -> notifyBrokerError` catches surface a timed-out
+// order (including an UNVERIFIED cancel, #262) with zero caller changes.
+export class OrderTimeoutError extends AlpacaError {
   override name = "OrderTimeoutError";
 }
 // Terminal non-fill (rejected/canceled/expired) detected while polling (#267).
@@ -192,21 +195,42 @@ export function createAlpacaClient(): AlpacaClient {
     }
     // Timed out — best-effort cancel, then re-check once: the order can fill
     // (fully or partially) in the race window between the last poll and the
-    // cancel, and those shares must be reported, not swallowed (#267).
+    // cancel, and those shares must be reported, not swallowed (#267). The
+    // post-cancel status also VERIFIES the cancel actually landed (#262/#342):
+    // a terminal non-fill status confirms the order is dead, but anything
+    // still live — or a failed status check — must alert the operator that
+    // the order may still be resting at the broker.
     try {
       await trade(`/v2/orders/${orderId}`, { method: "DELETE" });
     } catch (_e) { /* best effort — fetch-level failure only */ }
-    let raceNote = "";
     try {
       const final = await tradeJson(`/v2/orders/${orderId}`);
       const fill = partialOrFullFill(final);
       if (fill) return fill;
+      if (TERMINAL_NON_FILL.includes(String(final.status))) {
+        // Cancel verified: the order is confirmed dead. `rejected` counts as
+        // verified too — the order cannot be live, which is the property
+        // being verified.
+        throw new OrderTimeoutError(
+          `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+            `cancelled (verified: status '${final.status}')`,
+        );
+      }
+      // Still live (e.g. pending_cancel) — an immediate re-poll can legitimately
+      // race the broker's own cancel processing, so this is classified
+      // UNVERIFIED rather than assumed cancelled.
+      throw new OrderTimeoutError(
+        `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+          `cancel UNVERIFIED — order ${orderId} may still be live (status '${final.status}')`,
+      );
     } catch (e) {
-      raceNote = `; post-cancel status check failed (${(e as Error).message}) — fill state unknown`;
+      if (e instanceof OrderTimeoutError) throw e;
+      throw new OrderTimeoutError(
+        `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+          `cancel UNVERIFIED — order ${orderId} may still be live ` +
+          `(post-cancel status check failed: ${(e as Error).message})`,
+      );
     }
-    throw new OrderTimeoutError(
-      `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; cancelled${raceNote}`,
-    );
   }
 
   async function liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null> {

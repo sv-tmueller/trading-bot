@@ -75,12 +75,17 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
   // desyncNote (#266) is prepended to every audit-notes write once a DB/broker
   // state desync is detected, so the forensic trail survives in audit_log.
   let desyncNote = "";
+  // qtyNote (#342) carries the broker-reported position qty on every subsequent
+  // finish() call, so a forensic audit_log query always knows how many shares
+  // were at risk. Set once the qty gate below confirms a position exists;
+  // success:no_position returns before it is set, so its notes stay null.
+  let qtyNote = "";
   const finish = (outcome: string, notes?: string) =>
     db.updateAuditLog({
       id: auditId,
       finishedAt: iso(deps.now()),
       outcome,
-      notes: desyncNote === "" ? notes : `${desyncNote}${notes ?? ""}`,
+      notes: desyncNote === "" && qtyNote === "" ? notes : `${desyncNote}${notes ?? ""}${qtyNote}`,
     });
 
   try {
@@ -95,11 +100,12 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       await finish("success:no_position");
       return "success:no_position";
     }
+    qtyNote = ` qty=${qty}`;
 
     // Broker holds a position. If the DB didn't know, surface the desync.
     const dbState: "LONG" | "CASH" = latest?.current_state === "LONG" ? "LONG" : "CASH";
     if (dbState !== "LONG") {
-      desyncNote = `state_desync db=${latest?.current_state ?? "none"} broker=LONG qty=${qty}; `;
+      desyncNote = `state_desync db=${latest?.current_state ?? "none"} broker=LONG; `;
       await notifications.notifyStateDesync({
         dbState,
         brokerState: "LONG",

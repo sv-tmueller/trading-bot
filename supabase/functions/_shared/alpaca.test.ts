@@ -153,7 +153,11 @@ Deno.test("placeMarketOrder polls to fill", async () => {
   }
 });
 
-Deno.test("placeMarketOrder times out and cancels", async () => {
+Deno.test("placeMarketOrder times out, post-cancel status still live -> cancel UNVERIFIED", async () => {
+  // The post-DELETE re-poll shows the order still "accepted" (a live status) —
+  // an immediate re-poll can legitimately race the broker's own cancel
+  // processing (e.g. pending_cancel), so this is classified UNVERIFIED per
+  // #262/#342 rather than assumed cancelled.
   setKeys();
   let cancelled = false;
   const restore = stubFetch((i, init) => {
@@ -165,11 +169,11 @@ Deno.test("placeMarketOrder times out and cancels", async () => {
       cancelled = true;
       return Promise.resolve(new Response(null, { status: 204 }));
     }
-    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" })); // never fills
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" })); // still live
   });
   liftBrokerGuard();
   try {
-    await assertRejects(
+    const err = await assertRejects(
       () =>
         createAlpacaClient().placeMarketOrder(
           { symbol: "UPRO", side: "BUY", qty: 100 },
@@ -178,6 +182,117 @@ Deno.test("placeMarketOrder times out and cancels", async () => {
       OrderTimeoutError,
     );
     assertEquals(cancelled, true);
+    assertEquals(err.message.includes("cancel UNVERIFIED"), true);
+    assertEquals(err.message.includes("may still be live"), true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeMarketOrder times out, post-cancel status canceled -> verified-dead, no UNVERIFIED", async () => {
+  setKeys();
+  let cancelled = false;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") {
+      cancelled = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (cancelled) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "canceled", filled_qty: "0" }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    const err = await assertRejects(
+      () =>
+        createAlpacaClient().placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+    assertEquals(cancelled, true);
+    assertEquals(err.message.includes("cancelled"), true);
+    assertEquals(err.message.includes("UNVERIFIED"), false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeMarketOrder times out, post-cancel status rejected (no fill) -> verified-dead, no UNVERIFIED", async () => {
+  // rejected counts as verified: the order cannot be live, which is the
+  // property being verified.
+  setKeys();
+  let cancelled = false;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") {
+      cancelled = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (cancelled) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "rejected", filled_qty: "0" }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    const err = await assertRejects(
+      () =>
+        createAlpacaClient().placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+    assertEquals(cancelled, true);
+    assertEquals(err.message.includes("UNVERIFIED"), false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeMarketOrder times out, post-cancel status GET throws -> cancel UNVERIFIED", async () => {
+  setKeys();
+  let cancelled = false;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") {
+      cancelled = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (cancelled) {
+      return Promise.resolve(jsonResponse({ message: "boom" }, 500));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    const err = await assertRejects(
+      () =>
+        createAlpacaClient().placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+    assertEquals(cancelled, true);
+    assertEquals(err.message.includes("cancel UNVERIFIED"), true);
+    assertEquals(err.message.includes("may still be live"), true);
   } finally {
     restore();
     clearKeys();
