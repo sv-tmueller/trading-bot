@@ -150,6 +150,49 @@ Deno.test("getLatestQuote throws DataError when ask is non-numeric", async () =>
   }
 });
 
+// ---------------------------------------------------------------------------
+// getLatestQuote: crossed / non-positive quote guard (#330)
+// ---------------------------------------------------------------------------
+
+Deno.test("getLatestQuote throws DataError on crossed market (bid > ask)", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ quote: { bp: 11, ap: 10 } }))
+  );
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getLatestQuote throws DataError on zero bid", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ quote: { bp: 0, ap: 10 } }))
+  );
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getLatestQuote throws DataError on negative ask", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ quote: { bp: 10, ap: -1 } }))
+  );
+  try {
+    await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 Deno.test("getLatestQuote uses ALPACA_DATA_FEED=sip when set", async () => {
   setKeys();
   Deno.env.set("ALPACA_DATA_FEED", "sip");

@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
 import { AlpacaError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
+import { DataError } from "../_shared/num.ts";
 
 function bars(highs: number[]): DailyBar[] {
   return highs.map((h, i) => ({
@@ -539,6 +540,33 @@ Deno.test("B1b: quote fetch throws -> fail-toward-protection: liquidates on trad
   assertEquals(calls.liquidate, true);
   assertEquals(typeof calls.error, "string"); // notifyError called (outage alerted)
 });
+
+Deno.test(
+  "B1b: crossed/non-positive quote (DataError) -> fail-toward-protection: liquidates on trade price alone",
+  async () => {
+    // A crossed or non-positive quote is now rejected in getLatestQuote (#330) as
+    // DataError. The kill-switch's local catch handles DataError identically to any
+    // other throw from the quote fetch: notifyError is called, then the run falls
+    // through to claim + liquidate on the trade price alone. No logic.ts change
+    // needed — this test documents the existing chain "DataError thrown by
+    // getLatestQuote -> local catch -> fail-toward-protection".
+    // Note: this test passes on the existing catch even before the #330 guard is
+    // added to getLatestQuote, because getLatestQuote is mocked here to reject
+    // directly. It is a regression test — if the local catch is accidentally removed
+    // or weakened, this test fails.
+    const { deps, calls } = makeDeps({
+      marketdata: {
+        getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+        getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
+        getLatestQuote: () =>
+          Promise.reject(new DataError("implausible quote for UPRO: bid=11 ask=10")),
+      } as unknown as KillSwitchDeps["marketdata"],
+    });
+    assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+    assertEquals(calls.liquidate, true);
+    assertEquals(typeof calls.error, "string"); // notifyError called
+  },
+);
 
 Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and mid", async () => {
   // Both trade and quote breach -> the durable audit_log.notes must carry
