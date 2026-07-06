@@ -20,7 +20,6 @@ import {
   notifyError,
   notifyKillSwitchFired,
   notifyStateDesync,
-  notifyTradeFailed,
 } from "../_shared/notifications.ts";
 
 function buildDeps(): KillSwitchDeps {
@@ -45,7 +44,6 @@ function buildDeps(): KillSwitchDeps {
     },
     notifications: {
       notifyKillSwitchFired,
-      notifyTradeFailed,
       notifyBrokerError,
       notifyStateDesync,
       notifyError,
