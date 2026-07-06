@@ -106,7 +106,10 @@ Deno.test(
   async () => {
     // This file lives in supabase/functions/_shared/
     // "../" goes up to supabase/functions/ on POSIX (Deno's primary platform).
-    const functionsRoot = new URL("../", import.meta.url).pathname;
+    // decodeURIComponent: url.pathname percent-encodes the path, so a checkout
+    // dir with a space (".../30 Github/...") yields "%20", which Deno.readDir
+    // cannot match against the --allow-read grant and fails with NotCapable.
+    const functionsRoot = decodeURIComponent(new URL("../", import.meta.url).pathname);
 
     const files = await collectSourceFiles(functionsRoot);
     // Must find at least the known source files so we know the scan ran.
