@@ -635,3 +635,69 @@ Deno.test("B1b: quote fetch throws a non-Error -> still fail-toward-protection: 
   assertEquals(calls.liquidate, true);
   assertEquals(typeof calls.error, "string"); // notifyError fired
 });
+
+// ---------------------------------------------------------------------------
+// #334: bound quote mid against lastPrice so a well-shaped but implausible
+// mid can't suppress a kill-switch fire on a real trade-price breach.
+// ---------------------------------------------------------------------------
+
+Deno.test("#334: breaching trade + implausibly HIGH quote mid -> fires on trade price alone", async () => {
+  // trade dd = 70/100-1 = -0.30 (breach). Quote is well-shaped (bid < ask, both
+  // positive) but mid=700 is a 10x fat-fingered print (ratio 700/70=10 > 2).
+  // Pre-fix: midDrawdown = 700/100-1 = +6.00 -> skipped:breach_unconfirmed (the
+  // fail-open this issue closes). Post-fix: the bound throws before the
+  // unconfirmed check, routing into the local catch -> fires on trade alone.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve({ bid: 690, ask: 710, mid: 700 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  assertEquals(typeof calls.error, "string"); // notifyError fired
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
+  assertEquals(notes.includes("confirmation=confirmed"), false);
+});
+
+Deno.test("#334: breaching trade + implausibly LOW quote mid -> fires as unverified, not confirmed", async () => {
+  // trade dd = 70/100-1 = -0.30 (breach). Quote is well-shaped but mid=7 is a
+  // 10x-low print (ratio 70/7=10 > 2). Pre-fix, mid=7 also breaches (dd=-0.93)
+  // so the position was liquidated either way — but the fire was wrongly
+  // recorded as a *confirmed* dual-breach (confirmation=confirmed mid=7) when
+  // the "confirming" second source was itself implausible. Post-fix, the bound
+  // throws before reaching the confirmed branch, so the fire is recorded as
+  // confirmation=unverified_quote_outage instead.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve({ bid: 6.9, ask: 7.1, mid: 7 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
+  assertEquals(notes.includes("confirmation=confirmed"), false);
+});
+
+Deno.test("#334: ratio exactly 2 -> bound passes, confirmation proceeds (boundary: strict >)", async () => {
+  // trade dd = 70/100-1 = -0.30 (breach). mid=140, lastPrice=70 -> ratio
+  // exactly 2.0, not > 2 — the bound is `> 2` (strict), so this quote is NOT
+  // rejected and confirmation proceeds normally: midDrawdown = 140/100-1 =
+  // +0.40 -> within threshold -> skipped:breach_unconfirmed, no liquidation.
+  // Pins the comparator: flipping `>` to `>=` would make this case throw.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(140)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:breach_unconfirmed");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.claim, undefined);
+});
