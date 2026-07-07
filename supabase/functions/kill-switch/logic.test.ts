@@ -219,6 +219,9 @@ Deno.test("market closed -> skipped:market_closed", async () => {
   });
   assertEquals(await runKillSwitch(deps), "skipped:market_closed");
   assertEquals((calls.audit as { outcome: string }).outcome, "skipped:market_closed");
+  // #350(d): a no-other-notes finish() after the qty gate carries qtyNote alone
+  // — no stray leading space (qtyNote's own separator space is trimmed off).
+  assertEquals((calls.audit as { notes: string }).notes, "qty=99");
 });
 
 Deno.test("within threshold -> success:within_threshold, persists drawdown", async () => {
@@ -728,6 +731,7 @@ Deno.test("#334: breaching trade + implausibly LOW quote mid -> fires as unverif
   });
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
   assertEquals(calls.liquidate, true);
+  assertEquals(typeof calls.error, "string"); // notifyError fired (parity with the HIGH-mid T1 case)
   const notes = String((calls.audit as { notes: string }).notes);
   assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
   assertEquals(notes.includes("confirmation=confirmed"), false);
