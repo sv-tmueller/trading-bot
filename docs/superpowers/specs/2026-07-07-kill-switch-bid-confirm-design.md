@@ -77,11 +77,20 @@ guards, no feed change, no schema change.
 
 ## Architecture / changes
 
-### 1. Confirmation logic — `supabase/functions/kill-switch/logic.ts:190–202`
+### 1. Confirmation logic — `supabase/functions/kill-switch/logic.ts:197–229`
 
 Inside the existing local `try` that fetches the quote (the try/catch stays — it is
 what makes a quote **outage** fail toward protection):
 
+- **Re-point the existing #334 implausibility guard from the mid to the bid.** The
+  confirmation block already throws a `DataError` when the confirming source is
+  implausible vs the last trade — currently
+  `midRatio = max(mid, lastPrice) / min(mid, lastPrice); if (midRatio > 2) throw`.
+  Swap it to `bidRatio = max(bid, lastPrice) / min(bid, lastPrice); if (bidRatio > 2) throw`,
+  message referencing `bid=`. This is a **re-point, not a removal**: dropping it
+  would regress #334 (a fat-fingered ~10× confirming quote could suppress a real
+  fire). Behavior is preserved — an implausible confirming source still routes into
+  the local catch and fires on the trade price alone.
 - Replace `const midDrawdown = quote.mid / refHigh - 1;` with
   `const bidDrawdown = quote.bid / refHigh - 1;`.
 - The within-threshold guard becomes `if (bidDrawdown > -config.killSwitchDrawdownPct)`.
@@ -91,7 +100,7 @@ what makes a quote **outage** fail toward protection):
 - On the both-breach branch: `confirmation = "confirmed"` (now meaning
   *bid-confirmed*); rename `fireMid` → `fireBid`, set `fireBid = quote.bid`.
 
-### 2. Audit-log finish note — `supabase/functions/kill-switch/logic.ts:268–271`
+### 2. Audit-log finish note — `supabase/functions/kill-switch/logic.ts:288–291`
 
 `midNote` → `bidNote`: `fireBid !== null ? ` bid=${fireBid}` : ""`, so the
 liquidation finish note reads `dd=… bid=… confirmation=…`.
@@ -101,11 +110,11 @@ liquidation finish note reads `dd=… bid=… confirmation=…`.
 - **Outage path** — a thrown quote error still fires on the trade alone
   (fail-toward-protection). The asymmetry closes because the *returned-quote* branch
   is now protective, not because the outage branch moves.
-- **Trade-side `>2×` implausibility guard** stays the sole implausibility gate.
-  **No bid-side implausibility guard**: a wildly-low bid cannot fire on its own (the
-  trade must breach first), and a garbage-low trade print is already caught by the
-  existing `refHigh/lastPrice > 2×` exit. (Matches the architect's earlier ruling
-  that the implausibility guard is a non-goal for the confirm signal.)
+- **No *additional* implausibility guard.** The existing #334 guard on the
+  confirming source is re-pointed from mid to bid (see Architecture §1) — that is a
+  translation of an existing guard, not new surface. No further guard is added: a
+  wildly-low bid cannot fire on its own (the trade must breach first, and a
+  >2× bid/lastPrice divergence routes to the protective outage path).
 - **`skipped:breach_unconfirmed` outcome string** is kept — same forensic/query
   surface; only the note/message text changes.
 - **No config flag**; **no `ALPACA_DATA_FEED` change** (separate cutover lever).
@@ -124,17 +133,33 @@ deviation as a blocking `CHANGES_REQUESTED` finding.
 
 All Alpaca/DB calls mocked; the `CLAUDE_AGENT_NO_BROKER` guard stays intact.
 
-- **Re-express** the existing B1b mid-based confirmation tests onto the bid.
-- **#304 regression (the fix):** trade breached; ask stale-high so the mid is within
-  threshold; **bid breached** → asserts it now **liquidates** (today returns
-  `skipped:breach_unconfirmed`).
-- **Preserved-intent:** trade breached (thin low print) but **bid healthy** → still
-  `skipped:breach_unconfirmed`, no liquidation.
-- **Accepted-whipsaw (documented):** trade breached **and** bid breached (stale-low
-  bid) → **fires** — encodes the bounded, self-healing false-fire we chose.
-- **Outage unchanged:** quote fetch throws → fires on the trade alone
-  (`confirmation="unverified_quote_outage"`), still green.
-- Audit-note assertion updated from `mid=` to `bid=`.
+Note on the existing suite: the test helper builds confirming quotes with
+`bid = mid` (`breachingQuote(x) → {bid:x, ask:x, mid:x}`), so most existing B1b and
+#334 tests stay green under bid-confirm automatically. Exactly **one** existing test
+genuinely breaks — the fire-note test asserting `notes.includes("mid=")` — and it is
+updated to assert `bid=`. The directly-affected test names/comments (which say
+"quote-mid") are updated to "quote-bid" since this change is what makes them stale.
+
+New / changed tests:
+
+- **#304 regression (the fix):** trade breached (`lastPrice=68`, dd −0.32); quote
+  `{bid:68, ask:120, mid:94}` — the stale-high ask keeps `midDrawdown` at −0.06
+  (within threshold), but `bidDrawdown` is −0.32 → asserts it now **liquidates**.
+  This test **fails on the current mid-based code** (returns
+  `skipped:breach_unconfirmed`) and passes after the swap.
+- **Preserved-intent:** the existing "trade breaches but quote does not" test
+  (`lastPrice=70`, `{bid:89,…}`) already encodes a thin low print against a healthy
+  bid → still `skipped:breach_unconfirmed`; re-worded onto the bid.
+- **Fire-note:** update the confirmed-fire note assertion from `mid=` to `bid=`.
+- **Outage / implausible-quote / boundary tests unchanged** (quote throws → fires on
+  the trade alone; #334 implausible-source → `unverified_quote_outage`; ratio==2
+  boundary) — all stay green with comments re-pointed to the bid.
+
+Deliberately **not** added: a separate "accepted-whipsaw" test. "Trade breached
+**and** bid breached → fires" is the *same code path* as the existing both-breach
+true-fire test; a stale-low bid is indistinguishable from a real low bid at the unit
+level (and a >2× stale-low bid routes to the outage path via the #334 guard). A
+duplicate test would assert nothing new.
 
 Run: `deno task test` (full suite) and the single-file form for the kill-switch
 logic test.
