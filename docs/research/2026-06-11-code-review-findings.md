@@ -35,9 +35,13 @@ Fixed on branch `claude/code-review-margin-analysis-yaxilr`:
 
 Still open (not addressed here):
 
-- **7** — anon-key invocability + concurrency guard (design proposal: [`docs/plans/2026-06-11-invocation-hardening-and-killswitch-confirmation-design.md`](../plans/2026-06-11-invocation-hardening-and-killswitch-confirmation-design.md); needs brainstorm sign-off).
-- **8** — kill switch fires on a single IEX print (design proposal in the same doc; needs brainstorm sign-off).
-- **15 (rest)** — "order filled but DB write throws" and kill-switch "liquidate succeeds, `insertTrade` fails" tests.
+_(as of 2026-07-06, #341 close-out of #269): none of the below remain open._
+
+- ~~**7** — anon-key invocability + concurrency guard~~ — closed: authz via #291 → PR #294 (`e492105`); concurrency guard via #293 → PR #297 (`628b64e`).
+- ~~**8** — kill switch fires on a single IEX print~~ — closed: #299 → PR #300 (`c525fa7`); hardened by PR #331 and PR #338.
+- ~~**15 (rest)** — "order filled but DB write throws" and kill-switch "liquidate succeeds, `insertTrade` fails" tests~~ — closed: DB-failure tests via PR #272 (`b7b0c7d`); canceled/expired zero-fill terminal test via this PR (#341).
+
+Full citations and the two open caveats (F9 privilege-test dropped per #292 closure; F12 dashboard-auth default-OFF posture) are in the evidence audit posted to #269.
 
 ## Operator questions
 

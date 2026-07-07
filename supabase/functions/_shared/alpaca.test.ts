@@ -220,6 +220,46 @@ Deno.test("placeMarketOrder throws OrderRejectedError promptly on a rejected ord
   }
 });
 
+for (const terminalStatus of ["canceled", "expired"]) {
+  Deno.test(
+    `placeMarketOrder throws OrderRejectedError promptly on a broker-initiated '${terminalStatus}' with zero fill (#269 finding 15b)`,
+    async () => {
+      setKeys();
+      let polls = 0;
+      const restore = stubFetch((i, init) => {
+        const url = urlOf(i);
+        if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+          return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+        }
+        polls += 1;
+        return Promise.resolve(jsonResponse({
+          id: "o1",
+          status: terminalStatus,
+          filled_qty: "0",
+        }));
+      });
+      liftBrokerGuard();
+      try {
+        // timeoutMs 30s + intervalMs 1s: if the loop did not break on the
+        // terminal status this test would spin for the full 30s.
+        await assertRejects(
+          () =>
+            createAlpacaClient().placeMarketOrder(
+              { symbol: "UPRO", side: "BUY", qty: 100 },
+              { timeoutMs: 30_000, intervalMs: 1000 },
+            ),
+          OrderRejectedError,
+          terminalStatus,
+        );
+        assertEquals(polls, 1); // broke on the first poll, no spin
+      } finally {
+        restore();
+        clearKeys();
+      }
+    },
+  );
+}
+
 Deno.test("placeMarketOrder timeout race: order filled after cancel -> returns the fill", async () => {
   setKeys();
   let cancelled = false;
