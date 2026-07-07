@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { runDailyCheck } from "./logic.ts";
 import type { DailyCheckDeps } from "./logic.ts";
-import { AlpacaError } from "../_shared/alpaca.ts";
+import { AlpacaError, OrderTimeoutError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 
 function bars(closes: number[]): DailyBar[] {
@@ -276,6 +276,35 @@ Deno.test("broker error -> error outcome + notifyBrokerError(daily-check)", asyn
   });
   assertEquals(await runDailyCheck(deps), "error:AlpacaError");
   assertEquals(brokerError?.context, "daily-check");
+});
+
+Deno.test("placeMarketOrder times out (cancel UNVERIFIED) -> error:OrderTimeoutError + notifyBrokerError (#342/#262)", async () => {
+  // OrderTimeoutError now extends AlpacaError (#342), so the existing
+  // `instanceof AlpacaError -> notifyBrokerError` catch surfaces an UNVERIFIED
+  // cancel to the operator with zero caller-side changes.
+  let brokerError: { context: string; errorMsg: string } | undefined;
+  const { deps } = makeDeps({
+    alpaca: {
+      placeMarketOrder: () =>
+        Promise.reject(
+          new OrderTimeoutError(
+            "BUY 99 UPRO did not fill within 30000ms; cancel UNVERIFIED — order o1 may still be live (status 'pending_cancel')",
+          ),
+        ),
+    } as unknown as DailyCheckDeps["alpaca"],
+    notifications: {
+      notifyRegimeFlip: () => Promise.resolve(),
+      notifyStateDesync: () => Promise.resolve(),
+      notifyTradeFailed: () => Promise.resolve(),
+      notifyBrokerError: (p: { context: string; errorMsg: string }) => {
+        brokerError = p;
+        return Promise.resolve();
+      },
+    } as unknown as DailyCheckDeps["notifications"],
+  });
+  assertEquals(await runDailyCheck(deps), "error:OrderTimeoutError");
+  assertEquals(brokerError?.context, "daily-check");
+  assertEquals(brokerError?.errorMsg.includes("cancel UNVERIFIED"), true);
 });
 
 Deno.test("getConfig (paused read) failure -> error outcome, no trade (#238)", async () => {
