@@ -86,7 +86,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       id: auditId,
       finishedAt: iso(deps.now()),
       outcome,
-      notes: desyncNote === "" && qtyNote === "" ? notes : `${desyncNote}${notes ?? ""}${qtyNote}`,
+      notes: desyncNote === "" && qtyNote === ""
+        ? notes
+        : `${desyncNote}${notes ?? ""}${qtyNote}`.trimStart(),
     });
 
   try {
