@@ -533,10 +533,10 @@ Deno.test("concurrency: claimTradeDate throws non-23505 error -> error:* outcome
 // B1b dual-breach price confirmation (#269 finding 8)
 // ---------------------------------------------------------------------------
 
-Deno.test("B1b: both trade and quote-mid breach -> success:kill_switch_fired (true fire)", async () => {
-  // Both trade drawdown and quote-mid drawdown exceed the threshold -> the
+Deno.test("B1b: both trade and quote-bid breach -> success:kill_switch_fired (true fire)", async () => {
+  // Both trade drawdown and quote-bid drawdown exceed the threshold -> the
   // dual-breach confirmation is satisfied and the kill-switch fires normally.
-  // trade dd = 70/100-1 = -0.30, mid dd = 70/100-1 = -0.30, both breach -0.25.
+  // trade dd = 70/100-1 = -0.30, bid dd = 69/100-1 = -0.31, both breach -0.25.
   const { deps, calls } = makeDeps({
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -548,17 +548,18 @@ Deno.test("B1b: both trade and quote-mid breach -> success:kill_switch_fired (tr
   assertEquals(calls.liquidate, true);
 });
 
-Deno.test("B1b: trade breaches but quote-mid does not -> skipped:breach_unconfirmed, no liquidation", async () => {
+Deno.test("B1b: trade breaches but quote-bid does not -> skipped:breach_unconfirmed, no liquidation", async () => {
   // Classic false-fire suppression: a stale/thin IEX trade print is -30% but the
-  // quote midpoint is only -10% (well within threshold). The kill-switch must NOT
-  // fire; the suppressed fire is alerted; no claim is consumed so a real breach
-  // later the same day can still fire; drawdown was persisted upstream.
-  // trade dd = 70/100-1 = -0.30 (breach); mid dd = 90/100-1 = -0.10 (no breach).
+  // bid is holding at 89 (only -11%, well within threshold) — the original B1b
+  // thin-print protection, now confirmed against the realizable price. The
+  // kill-switch must NOT fire; the suppressed fire is alerted; no claim is consumed
+  // so a real breach later the same day can still fire; drawdown was persisted
+  // upstream. trade dd = 70/100-1 = -0.30 (breach); bid dd = 89/100-1 = -0.11 (no breach).
   const { deps, calls } = makeDeps({
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // -30%, breaches
-      getLatestQuote: () => Promise.resolve({ bid: 89, ask: 91, mid: 90 }), // -10%, no breach
+      getLatestQuote: () => Promise.resolve({ bid: 89, ask: 91, mid: 90 }), // bid -11%, no breach
     } as unknown as KillSwitchDeps["marketdata"],
   });
   assertEquals(await runKillSwitch(deps), "skipped:breach_unconfirmed");
@@ -572,6 +573,24 @@ Deno.test("B1b: trade breaches but quote-mid does not -> skipped:breach_unconfir
     (calls.upserts as Array<{ currentState: string }>)[0].currentState,
     "LONG",
   );
+});
+
+Deno.test("B1b(#352): trade + bid breach but stale-high ask keeps mid within threshold -> fires", async () => {
+  // The #304 pathology: real bid has crashed to 68 (-32%) but the ask is
+  // stale-high at 120, so mid=94 is only -6% (within the -25% threshold).
+  // Mid-confirm suppresses (skipped:breach_unconfirmed); bid-confirm fires.
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(68), // -32%, breaches
+      getLatestQuote: () => Promise.resolve({ bid: 68, ask: 120, mid: 94 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=confirmed"), true);
+  assertEquals(notes.includes("bid=68"), true);
 });
 
 Deno.test("B1b: quote fetch throws -> fail-toward-protection: liquidates on trade price alone", async () => {
@@ -618,9 +637,9 @@ Deno.test(
   },
 );
 
-Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and mid", async () => {
+Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and bid", async () => {
   // Both trade and quote breach -> the durable audit_log.notes must carry
-  // confirmation=confirmed and mid=<quote.mid> so a confirmed fire is
+  // confirmation=confirmed and bid=<quote.bid> so a confirmed fire is
   // distinguishable from a quote-outage fire in forensic queries.
   const { deps, calls } = makeDeps({
     marketdata: {
@@ -632,7 +651,7 @@ Deno.test("fire notes: confirmed dual-breach carries confirmation=confirmed and 
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
   const notes = String((calls.audit as { notes: string }).notes);
   assertEquals(notes.includes("confirmation=confirmed"), true);
-  assertEquals(notes.includes("mid="), true);
+  assertEquals(notes.includes("bid="), true);
   // Broker-reported qty (#342) carried on the fire path too.
   assertEquals(notes.includes("qty="), true);
 });
@@ -689,16 +708,15 @@ Deno.test("B1b: quote fetch throws a non-Error -> still fail-toward-protection: 
 });
 
 // ---------------------------------------------------------------------------
-// #334: bound quote mid against lastPrice so a well-shaped but implausible
-// mid can't suppress a kill-switch fire on a real trade-price breach.
+// #334/#352: bound the quote bid against lastPrice so a well-shaped but implausible
+// bid can't suppress a kill-switch fire on a real trade-price breach.
 // ---------------------------------------------------------------------------
 
-Deno.test("#334: breaching trade + implausibly HIGH quote mid -> fires on trade price alone", async () => {
+Deno.test("#334: breaching trade + implausibly HIGH quote bid -> fires on trade price alone", async () => {
   // trade dd = 70/100-1 = -0.30 (breach). Quote is well-shaped (bid < ask, both
-  // positive) but mid=700 is a 10x fat-fingered print (ratio 700/70=10 > 2).
-  // Pre-fix: midDrawdown = 700/100-1 = +6.00 -> skipped:breach_unconfirmed (the
-  // fail-open this issue closes). Post-fix: the bound throws before the
-  // unconfirmed check, routing into the local catch -> fires on trade alone.
+  // positive) but bid=690 is a ~10x fat-fingered quote (ratio 690/70=9.86 > 2).
+  // The bound throws before the unconfirmed check, routing into the local catch
+  // -> fires on trade alone (recorded unverified, not confirmed).
   const { deps, calls } = makeDeps({
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -714,14 +732,13 @@ Deno.test("#334: breaching trade + implausibly HIGH quote mid -> fires on trade 
   assertEquals(notes.includes("confirmation=confirmed"), false);
 });
 
-Deno.test("#334: breaching trade + implausibly LOW quote mid -> fires as unverified, not confirmed", async () => {
-  // trade dd = 70/100-1 = -0.30 (breach). Quote is well-shaped but mid=7 is a
-  // 10x-low print (ratio 70/7=10 > 2). Pre-fix, mid=7 also breaches (dd=-0.93)
-  // so the position was liquidated either way — but the fire was wrongly
-  // recorded as a *confirmed* dual-breach (confirmation=confirmed mid=7) when
-  // the "confirming" second source was itself implausible. Post-fix, the bound
-  // throws before reaching the confirmed branch, so the fire is recorded as
-  // confirmation=unverified_quote_outage instead.
+Deno.test("#334: breaching trade + implausibly LOW quote bid -> fires as unverified, not confirmed", async () => {
+  // trade dd = 70/100-1 = -0.30 (breach). Quote is well-shaped but bid=6.9 is a
+  // ~10x-low quote (ratio 70/6.9=10.14 > 2). Without the bound, bid=6.9 also
+  // breaches (dd=-0.93) so the position liquidates either way — but the fire
+  // would be wrongly recorded as a *confirmed* dual-breach when the "confirming"
+  // second source was itself implausible. The bound throws before the confirmed
+  // branch, so the fire is recorded as confirmation=unverified_quote_outage instead.
   const { deps, calls } = makeDeps({
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
@@ -738,9 +755,9 @@ Deno.test("#334: breaching trade + implausibly LOW quote mid -> fires as unverif
 });
 
 Deno.test("#334: ratio exactly 2 -> bound passes, confirmation proceeds (boundary: strict >)", async () => {
-  // trade dd = 70/100-1 = -0.30 (breach). mid=140, lastPrice=70 -> ratio
+  // trade dd = 70/100-1 = -0.30 (breach). bid=140, lastPrice=70 -> ratio
   // exactly 2.0, not > 2 — the bound is `> 2` (strict), so this quote is NOT
-  // rejected and confirmation proceeds normally: midDrawdown = 140/100-1 =
+  // rejected and confirmation proceeds normally: bidDrawdown = 140/100-1 =
   // +0.40 -> within threshold -> skipped:breach_unconfirmed, no liquidation.
   // Pins the comparator: flipping `>` to `>=` would make this case throw.
   const { deps, calls } = makeDeps({

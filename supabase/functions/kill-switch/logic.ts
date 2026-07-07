@@ -187,39 +187,41 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       return "success:within_threshold";
     }
 
-    // B1b dual-breach confirmation (#269 finding 8): a single thin-feed (IEX)
+    // B1b dual-breach confirmation (#269 finding 8, #352): a single thin-feed (IEX)
     // trade print must not liquidate the 3x position alone. Confirm against the
-    // quote midpoint; fire only if BOTH breach. The fetch is wrapped LOCALLY so a
-    // quote OUTAGE fails toward protection (fire on trade alone) and never falls
-    // through to the outer catch (which returns error:* and would disarm the
-    // switch). Placed BEFORE the #293 claim so an unconfirmed breach consumes no
-    // claim and a later real breach the same day can still fire.
+    // quote bid (the realizable sale price for a down-breach); fire only if BOTH
+    // breach. The fetch is wrapped LOCALLY so a quote OUTAGE fails toward protection
+    // (fire on trade alone) and never falls through to the outer catch (which
+    // returns error:* and would disarm the switch). Placed BEFORE the #293 claim so
+    // an unconfirmed breach consumes no claim and a later real breach the same day
+    // can still fire.
     let confirmation: "confirmed" | "unverified_quote_outage" = "unverified_quote_outage";
-    let fireMid: number | null = null;
+    let fireBid: number | null = null;
     try {
       const quote = await marketdata.getLatestQuote(config.botTicker);
-      // #334: a well-shaped-but-implausible mid (e.g. a ~10x fat-fingered print)
-      // must not be trusted as a confirming second source — throw so it routes
-      // into the local catch below and fires on the trade price alone.
-      const midRatio = Math.max(quote.mid, lastPrice) / Math.min(quote.mid, lastPrice);
-      if (midRatio > 2) {
+      // #334/#352: bid is the realizable sale price, so it confirms a *down*-breach.
+      // A well-shaped-but-implausible bid (e.g. a ~10x fat-fingered quote) must not
+      // be trusted as a confirming second source — throw so it routes into the local
+      // catch below and fires on the trade price alone.
+      const bidRatio = Math.max(quote.bid, lastPrice) / Math.min(quote.bid, lastPrice);
+      if (bidRatio > 2) {
         throw new DataError(
-          `implausible quote mid for ${config.botTicker}: mid=${quote.mid} lastPrice=${lastPrice} (ratio ${
-            midRatio.toFixed(2)
+          `implausible quote bid for ${config.botTicker}: bid=${quote.bid} lastPrice=${lastPrice} (ratio ${
+            bidRatio.toFixed(2)
           } > 2)`,
         );
       }
-      const midDrawdown = quote.mid / refHigh - 1;
-      if (midDrawdown > -config.killSwitchDrawdownPct) {
+      const bidDrawdown = quote.bid / refHigh - 1;
+      if (bidDrawdown > -config.killSwitchDrawdownPct) {
         const msg = `breach unconfirmed: trade dd=${drawdown.toFixed(4)} (px=${lastPrice}) ` +
-          `but quote-mid dd=${midDrawdown.toFixed(4)} (mid=${quote.mid}) within threshold — NOT liquidating`;
+          `but quote-bid dd=${bidDrawdown.toFixed(4)} (bid=${quote.bid}) within threshold — NOT liquidating`;
         await notifications.notifyError(`kill-switch: ${msg}`);
         await finish("skipped:breach_unconfirmed", msg);
         return "skipped:breach_unconfirmed";
       }
       // both breach -> fall through to claim + liquidate
       confirmation = "confirmed";
-      fireMid = quote.mid;
+      fireBid = quote.bid;
     } catch (e) {
       await notifications.notifyError(
         `kill-switch: quote fetch failed for ${config.botTicker} ` +
@@ -285,10 +287,10 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       qty: fill.qty,
       fillPrice: fill.fillPrice,
     });
-    const midNote = fireMid !== null ? ` mid=${fireMid}` : "";
+    const bidNote = fireBid !== null ? ` bid=${fireBid}` : "";
     await finish(
       "success:kill_switch_fired",
-      `dd=${drawdown.toFixed(4)}${midNote} confirmation=${confirmation}`,
+      `dd=${drawdown.toFixed(4)}${bidNote} confirmation=${confirmation}`,
     );
     return "success:kill_switch_fired";
   } catch (e) {
