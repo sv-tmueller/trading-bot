@@ -33,7 +33,7 @@ Fixed on branch `claude/code-review-margin-analysis-yaxilr`:
 - **14** — `requireNumber` rejects whitespace-only strings.
 - **15 (partial)** — added: rejected-order, timeout-race partial-fill, recorded-partial-fill, and panic HTTP-layer tests.
 
-Still open (not addressed here):
+Still open at review time (all since closed):
 
 _(as of 2026-07-06, #341 close-out of #269): none of the below remain open._
 
