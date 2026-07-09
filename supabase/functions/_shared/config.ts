@@ -110,6 +110,18 @@ export function getN8nWebhookUrl(): string {
   return Deno.env.get("N8N_WEBHOOK_URL")?.trim() ?? "";
 }
 
+// x-status-token header value for the read-only status Edge Function (#354).
+// Unlike the strategy knobs above, a secret has no sensible default: unset or
+// blank MUST throw so the function fails to start rather than silently
+// serving with no auth gate.
+export function getStatusToken(): string {
+  const raw = Deno.env.get("STATUS_TOKEN")?.trim() ?? "";
+  if (raw === "") {
+    throw new Error("STATUS_TOKEN must be set to a non-empty value");
+  }
+  return raw;
+}
+
 // Ported #168 guard. Read fresh every call so tests can flip it mid-test.
 export function isClaudeAgentNoBroker(): boolean {
   const v = Deno.env.get("CLAUDE_AGENT_NO_BROKER")?.toLowerCase() ?? "";

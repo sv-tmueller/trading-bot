@@ -2,6 +2,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   getAlpacaConfig,
   getN8nWebhookUrl,
+  getStatusToken,
   getStrategyConfig,
   isClaudeAgentNoBroker,
 } from "./config.ts";
@@ -169,4 +170,26 @@ Deno.test("getAlpacaConfig: invalid ALPACA_DATA_FEED throws", () => {
   Deno.env.delete("ALPACA_API_KEY");
   Deno.env.delete("ALPACA_SECRET_KEY");
   Deno.env.delete("ALPACA_DATA_FEED");
+});
+
+// ---------------------------------------------------------------------------
+// STATUS_TOKEN (#354 T2): a secret has no sensible default, so unlike the
+// strategy knobs above, unset/blank must THROW rather than fall back.
+// ---------------------------------------------------------------------------
+
+Deno.test("getStatusToken: unset throws", () => {
+  Deno.env.delete("STATUS_TOKEN");
+  assertThrows(() => getStatusToken(), Error, "STATUS_TOKEN");
+});
+
+Deno.test("getStatusToken: blank/whitespace-only throws", () => {
+  Deno.env.set("STATUS_TOKEN", "   ");
+  assertThrows(() => getStatusToken(), Error, "STATUS_TOKEN");
+  Deno.env.delete("STATUS_TOKEN");
+});
+
+Deno.test("getStatusToken: set returns trimmed value", () => {
+  Deno.env.set("STATUS_TOKEN", "  s3cr3t  ");
+  assertEquals(getStatusToken(), "s3cr3t");
+  Deno.env.delete("STATUS_TOKEN");
 });

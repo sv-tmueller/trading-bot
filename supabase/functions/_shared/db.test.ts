@@ -2,7 +2,9 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
   coerceRegimeRow,
+  getAuditLogSince,
   getConfig,
+  getLastTrade,
   getLatestRegimeState,
   insertAuditLog,
   insertTrade,
@@ -105,6 +107,68 @@ Deno.test({
     assertEquals(await getConfig(sb, "paused"), "true");
     await setConfig(sb, "paused", "false");
     assertEquals(await getConfig(sb, "paused"), "false");
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #354 T3: read-only helpers for the status Edge Function.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "getLastTrade returns the most recent trade by fill_time",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const olderId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 100,
+      fillPrice: 70.5,
+      fillTime: "2030-01-02T15:00:00Z",
+      brokerOrderId: "o-older",
+      reason: "regime_flip_long",
+    });
+    const newerId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "SELL",
+      qty: 100,
+      fillPrice: 72.25,
+      fillTime: "2030-01-03T15:00:00Z",
+      brokerOrderId: "o-newer",
+      reason: "regime_flip_cash",
+    });
+    const last = await getLastTrade(sb);
+    assertEquals(last?.broker_order_id, "o-newer");
+    assertEquals(last?.fill_price, 72.25);
+    assertEquals(last?.qty, 100);
+    await sb.from("trades").delete().in("id", [olderId, newerId]);
+  },
+});
+
+Deno.test({
+  name: "getAuditLogSince: filters by started_at, orders newest-first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const oldId = await insertAuditLog(sb, {
+      scriptName: "db-test",
+      startedAt: "2020-01-01T00:00:00Z",
+    });
+    const inWindowId = await insertAuditLog(sb, {
+      scriptName: "db-test",
+      startedAt: "2030-01-02T15:00:00Z",
+    });
+    await updateAuditLog(sb, {
+      id: inWindowId,
+      finishedAt: "2030-01-02T15:00:01Z",
+      outcome: "success",
+      notes: null,
+    });
+    const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].outcome, "success");
+    assertEquals(rows[0].script_name, "db-test");
+    await sb.from("audit_log").delete().in("id", [oldId, inWindowId]);
   },
 });
 
