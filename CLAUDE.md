@@ -53,12 +53,17 @@ deno task test:db
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
+supabase functions deploy status --no-verify-jwt      # auth = x-status-token header (read-only, no writes)
 supabase db push                                      # applies migrations 0001-0007 (schema + cron + vault fn grants)
 
 # Panic kill button (token-auth Edge Function — deterministic, no LLM)
 curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"
 #   actions: pause | resume | cancel-orders | liquidate   (500 + error: result = action failed)
 #   liquidate also sets bot_config.paused=true (no re-buy next daily-check); clear via action=resume
+
+# Status check (read-only Edge Function — no LLM, no writes; see docs/runbooks/status-check.md)
+bash scripts/status.sh   # renders the JSON digest from .env.status via curl + jq
+#   or directly: curl -s ".../functions/v1/status" -H "x-status-token: <token>" | jq .
 
 # Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5
@@ -75,10 +80,13 @@ on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
 
 ## Architecture
 
-The production bot is three Supabase Edge Functions (TypeScript/Deno) driven by `pg_cron`, over
-shared TS modules in `supabase/functions/_shared/` (`regime`, `config`, `alpaca`, `marketdata`,
-`db`, `notifications`, `num`, `supabase_client`). Each function is `logic.ts` (pure, testable) +
-`index.ts` (HTTP entry). Broker + market data are Alpaca REST; persistence is Postgres.
+The production bot is three trading Edge Functions (`daily-check`, `kill-switch`, `panic`) plus a
+fourth, read-only `status` Edge Function (TypeScript/Deno), driven by `pg_cron` for the first two,
+over shared TS modules in `supabase/functions/_shared/` (`regime`, `config`, `alpaca`, `marketdata`,
+`db`, `notifications`, `num`, `supabase_client`, `auth`). Each function is `logic.ts` (pure,
+testable) + `index.ts` (HTTP entry) — `panic` and `status` additionally split out a `handler.ts`
+for the auth/method mapping (unit-testable without `Deno.serve`). Broker + market data are Alpaca
+REST; persistence is Postgres.
 
 ### Daily flow
 
@@ -119,7 +127,7 @@ or bad print) and exits `error:implausible_drawdown` with an alert instead of li
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `regime_state` — one row per trading day with `spy_close`, `spy_sma200`, `target_state`, `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`.
 - `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`, `broker_order_id`, `reason`).
-- `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`.
+- `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`. `status` deliberately writes no row here (reads only), so this table stays a clean record of trading actions.
 - `bot_config` — key/value config; holds the runtime `paused` flag (replaces the old `TRADING_PAUSED` env var).
 
 All tables are RLS-deny-all; the Edge Functions connect with the **service-role key** (bypasses RLS).

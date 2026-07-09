@@ -10,7 +10,7 @@ No LLM is in the trading path. The strategy is a pure function (`computeTargetSt
 pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check   --+
 pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch   --+-> shared TS modules -> Alpaca REST
 operator HTTP + x-panic-token   -> Edge Fn: panic         --+                       -> Postgres
-                                                                                    -> n8n -> Discord
+operator HTTP + x-status-token  -> Edge Fn: status (read-only, no writes) --+       -> n8n -> Discord
 ```
 
 Everything runs inside one Supabase project: `pg_cron` schedules the jobs, which invoke
@@ -54,6 +54,13 @@ POST only). `action=pause|resume|cancel-orders|liquidate`. The `pause` flag live
 `paused=true`** so the next daily-check cannot re-buy the position you just dumped — clear it with
 `action=resume` when you want the bot trading again. No LLM is in this path.
 
+**Status visibility.** `status` is a token-authenticated, GET-only, strictly read-only Edge
+Function (header `x-status-token`) for on-demand operator/advisor visibility. It returns a single
+JSON digest: latest regime state, 7-day `audit_log` outcome counts plus any `error:*` rows
+verbatim, the last trade, the `paused` flag, and the Alpaca paper equity + open position. It reads
+only — no mutating broker helper, no writes, not even its own `audit_log` row, so that table stays
+a clean record of trading actions. See `docs/runbooks/status-check.md` and `scripts/status.sh`.
+
 ## Database
 
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
@@ -65,6 +72,7 @@ Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
   `broker_order_id`, `reason`).
 - `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`,
   `outcome`, `notes`). `outcome` is written before exit so a crashed run leaves a forensic row.
+  `status` deliberately writes no row here — it only reads this table.
 - `bot_config` — key/value config; holds the runtime `paused` flag.
 
 All tables are RLS-deny-all; the Edge Functions connect with the service-role key (which bypasses
@@ -88,6 +96,7 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `KILL_SWITCH_DRAWDOWN_PCT` | `0.25` | Drawdown from rolling high that fires the kill switch |
 | `KILL_SWITCH_LOOKBACK_DAYS` | `30` | Trading-day window for the rolling high |
 | `PANIC_TOKEN` | — | `x-panic-token` header value for the panic function |
+| `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status function; no default — unset/blank throws |
 | `N8N_WEBHOOK_URL` | — (optional) | Discord notification webhook; unset = notifications skipped |
 
 See `docs/CURRENT_CONFIG.md` for the current deployed values.
@@ -101,10 +110,11 @@ The short version:
 ```bash
 supabase link --project-ref <ref>
 supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true \
-  PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY
+  PANIC_TOKEN=... STATUS_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY
 supabase db push                                          # applies migrations 0001-0006 (schema + cron schedule)
 supabase functions deploy daily-check kill-switch         # JWT-verified; cron sends the bearer
 supabase functions deploy panic --no-verify-jwt           # auth = x-panic-token header
+supabase functions deploy status --no-verify-jwt          # auth = x-status-token header (read-only)
 ```
 
 Then store the two Vault secrets (`service_role_key`, `functions_base_url`) once per project in the
@@ -117,6 +127,14 @@ curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" \
   -H "x-panic-token: <token>"
 # actions: pause | resume | cancel-orders | liquidate (liquidate also sets paused=true)
 # 200 = success; 500 with an error: result = the action failed (don't treat it as success)
+```
+
+Check the bot's runtime status (read-only, no writes):
+
+```bash
+bash scripts/status.sh   # renders the digest via jq, from .env.status (see docs/runbooks/status-check.md)
+# or directly:
+curl -s "https://<ref>.supabase.co/functions/v1/status" -H "x-status-token: <token>" | jq .
 ```
 
 ### Tests
