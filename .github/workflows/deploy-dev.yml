@@ -66,6 +66,14 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
+      # Read-only (#354): no mutating broker helper, no DB writes. The
+      # one-time STATUS_TOKEN secret stays a documented operator step
+      # (supabase secrets set) — this deploy alone doesn't require it.
+      - name: Deploy status (x-status-token auth, no JWT, read-only)
+        run: supabase functions deploy status --no-verify-jwt --project-ref "$PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
       - name: Apply migrations
         run: |
           supabase link --project-ref "$PROJECT_REF"

@@ -27,6 +27,7 @@ Registered by `supabase/migrations/0002_schedule.sql`; daily-check rescheduled b
 | `KILL_SWITCH_DRAWDOWN_PCT` | `0.25` | Drawdown from rolling high that triggers the kill switch |
 | `KILL_SWITCH_LOOKBACK_DAYS` | `30` | Trading-day window for the rolling high |
 | `PANIC_TOKEN` | — | `x-panic-token` header value for the panic Edge Function |
+| `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status Edge Function (#354); no default — unset/blank throws |
 | `N8N_WEBHOOK_URL` | — (optional) | Discord notification webhook; unset = notifications skipped |
 
 Account currency is **USD** (Alpaca accounts are USD-denominated). The runtime pause flag is not a

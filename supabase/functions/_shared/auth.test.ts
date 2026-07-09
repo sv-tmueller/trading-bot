@@ -2,7 +2,7 @@
 // Does NOT verify JWT signatures — that is handled by Supabase's verify_jwt=ON.
 // Tests confirm: service_role JWT → null (pass); anon JWT → 401; malformed/absent → 401.
 import { assertEquals } from "@std/assert";
-import { requireServiceRole } from "./auth.ts";
+import { requireServiceRole, timingSafeEqual } from "./auth.ts";
 
 const BASE = "https://example.test/daily-check";
 
@@ -105,4 +105,17 @@ Deno.test("empty Authorization header value -> 401", async () => {
   assertEquals(result instanceof Response, true);
   assertEquals((result as Response).status, 401);
   await (result as Response).body?.cancel();
+});
+
+// ---------------------------------------------------------------------------
+// timingSafeEqual (moved from panic/handler.ts, T1 of #354: shared so the new
+// status Edge Function's token check can reuse it without duplicating the
+// constant-time comparison).
+// ---------------------------------------------------------------------------
+
+Deno.test("timingSafeEqual compares correctly", async () => {
+  assertEquals(await timingSafeEqual("abc", "abc"), true);
+  assertEquals(await timingSafeEqual("abc", "abd"), false);
+  assertEquals(await timingSafeEqual("abc", "abcd"), false);
+  assertEquals(await timingSafeEqual("", ""), true);
 });

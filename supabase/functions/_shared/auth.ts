@@ -75,3 +75,21 @@ export function requireServiceRole(req: Request): Response | null {
     return UNAUTHORIZED();
   }
 }
+
+// Constant-time string comparison (moved from panic/handler.ts, finding 5 of
+// the 2026-06-11 review; shared here in T1 of #354 so the status Edge
+// Function's token check can reuse it too): hash both sides with SHA-256 and
+// compare the fixed-length digests byte-wise with no early exit, so neither
+// the token's length nor its bytes leak via timing.
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const ua = new Uint8Array(da);
+  const ub = new Uint8Array(db);
+  let diff = 0;
+  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
+  return diff === 0;
+}

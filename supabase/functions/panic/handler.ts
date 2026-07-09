@@ -7,24 +7,13 @@ import { createAlpacaClient } from "../_shared/alpaca.ts";
 import { getServiceClient } from "../_shared/supabase_client.ts";
 import { insertAuditLog, insertTrade, setConfig, updateAuditLog } from "../_shared/db.ts";
 import { notifyPanic } from "../_shared/notifications.ts";
+// timingSafeEqual moved to _shared/auth.ts (T1 of #354) so the new status
+// Edge Function's token check can reuse it too. Re-exported here so
+// panic/index.test.ts needs no change (zero behavior change).
+import { timingSafeEqual } from "../_shared/auth.ts";
+export { timingSafeEqual };
 
 const VALID: PanicAction[] = ["pause", "resume", "cancel-orders", "liquidate"];
-
-// Constant-time string comparison (finding 5, 2026-06-11 review): hash both
-// sides with SHA-256 and compare the fixed-length digests byte-wise with no
-// early exit, so neither the token's length nor its bytes leak via timing.
-export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [da, db] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const ua = new Uint8Array(da);
-  const ub = new Uint8Array(db);
-  let diff = 0;
-  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
-  return diff === 0;
-}
 
 function runWithRealDeps(action: PanicAction, opts: PanicOpts): Promise<PanicResult> {
   const sb = getServiceClient();

@@ -118,6 +118,67 @@ export async function updateAuditLog(sb: SupabaseClient, p: {
   if (error) throw new Error(`updateAuditLog: ${error.message}`);
 }
 
+// ---------------------------------------------------------------------------
+// Read-only helpers for the status Edge Function (#354 T3). Both SELECT-only —
+// no insert/update/upsert — mirroring getLatestRegimeState's shape.
+// ---------------------------------------------------------------------------
+
+export interface TradeRow {
+  symbol: string;
+  side: "BUY" | "SELL";
+  qty: number;
+  fill_price: number;
+  fill_time: string;
+  reason: string;
+  broker_order_id: string;
+}
+
+export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .order("fill_time", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLastTrade: ${error.message}`);
+  if (!data) return null;
+  const raw = data as Record<string, unknown>;
+  return {
+    symbol: raw.symbol as string,
+    side: raw.side as "BUY" | "SELL",
+    qty: requireNumber(raw.qty, "qty"),
+    fill_price: requireNumber(raw.fill_price, "fill_price"),
+    fill_time: raw.fill_time as string,
+    reason: raw.reason as string,
+    broker_order_id: raw.broker_order_id as string,
+  };
+}
+
+export interface AuditLogRow {
+  script_name: string;
+  started_at: string;
+  finished_at: string | null;
+  outcome: string | null;
+  notes: string | null;
+}
+
+// PostgREST's default max_rows is 1000; explicit limit keeps behavior
+// predictable even if that server default ever changes. Descending order
+// means an overflow drops the OLDEST rows in the window, not the newest.
+export async function getAuditLogSince(
+  sb: SupabaseClient,
+  sinceIso: string,
+): Promise<AuditLogRow[]> {
+  const { data, error } = await sb
+    .from("audit_log")
+    .select("script_name, started_at, finished_at, outcome, notes")
+    .gte("started_at", sinceIso)
+    .order("started_at", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getAuditLogSince: ${error.message}`);
+  return (data ?? []) as AuditLogRow[];
+}
+
 export async function getConfig(sb: SupabaseClient, key: string): Promise<string | null> {
   const { data, error } = await sb.from("bot_config").select("value").eq("key", key).maybeSingle();
   if (error) throw new Error(`getConfig: ${error.message}`);
