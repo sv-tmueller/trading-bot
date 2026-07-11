@@ -21,7 +21,7 @@ export interface StatusDeps {
   };
   db: {
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
-    getAuditLogSince: (sinceIso: string) => Promise<AuditLogRow[]>;
+    getAuditLogSince: (sinceIso: string, untilIso: string) => Promise<AuditLogRow[]>;
     getLastTrade: () => Promise<TradeRow | null>;
     getConfig: (key: string) => Promise<string | null>;
   };
@@ -52,11 +52,12 @@ const UNFINISHED_LABEL = "(unfinished)";
 export async function runStatus(deps: StatusDeps): Promise<StatusDigest> {
   const { db, alpaca, config } = deps;
   const now = deps.now();
+  const until = now.toISOString();
   const since = new Date(now.getTime() - SEVEN_DAYS_MS).toISOString();
 
   const [regime, auditRows, lastTrade, pausedRaw, clock, equity, positionQty] = await Promise.all([
     db.getLatestRegimeState(),
-    db.getAuditLogSince(since),
+    db.getAuditLogSince(since, until),
     db.getLastTrade(),
     db.getConfig("paused"),
     alpaca.getClock(),

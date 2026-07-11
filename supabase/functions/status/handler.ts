@@ -24,7 +24,7 @@ function buildDeps(): StatusDeps {
     },
     db: {
       getLatestRegimeState: () => getLatestRegimeState(sb),
-      getAuditLogSince: (sinceIso) => getAuditLogSince(sb, sinceIso),
+      getAuditLogSince: (sinceIso, untilIso) => getAuditLogSince(sb, sinceIso, untilIso),
       getLastTrade: () => getLastTrade(sb),
       getConfig: (k) => getConfig(sb, k),
     },

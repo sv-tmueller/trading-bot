@@ -65,14 +65,10 @@ function makeDeps(
       botBenchmark: "SPY",
     },
     now: () => new Date("2026-07-09T15:00:00Z"),
+    ...over,
     alpaca: { ...defaultAlpaca, ...(over.alpaca as unknown as StatusDeps["alpaca"]) },
     db: { ...defaultDb, ...(over.db as unknown as StatusDeps["db"]) },
-    ...over,
   };
-  if (over.alpaca) {
-    deps.alpaca = { ...defaultAlpaca, ...over.alpaca as unknown as StatusDeps["alpaca"] };
-  }
-  if (over.db) deps.db = { ...defaultDb, ...over.db as unknown as StatusDeps["db"] };
   return { deps, calls };
 }
 
@@ -142,13 +138,16 @@ Deno.test("outcome aggregation: mixed outcomes counted, null -> (unfinished)", a
   });
 });
 
-Deno.test("error rows returned verbatim, newest first; non-error rows excluded", async () => {
-  const errorRow: AuditLogRow = {
-    script_name: "daily-check",
-    started_at: "2026-07-05T13:37:00Z",
-    finished_at: "2026-07-05T13:37:05Z",
-    outcome: "error:AlpacaError",
-    notes: "boom",
+Deno.test("error rows returned verbatim, newest first (DB order preserved); non-error rows excluded", async () => {
+  // #355 review finding 2: assert ordering with >=2 qualifying error rows,
+  // interleaved with success rows, to prove .filter() preserves the DB's
+  // newest-first order rather than merely happening to pass with one row.
+  const newerError: AuditLogRow = {
+    script_name: "kill-switch",
+    started_at: "2026-07-07T13:37:00Z",
+    finished_at: "2026-07-07T13:37:05Z",
+    outcome: "error:implausible_drawdown",
+    notes: "ratio",
   };
   const successRow: AuditLogRow = {
     script_name: "daily-check",
@@ -157,13 +156,21 @@ Deno.test("error rows returned verbatim, newest first; non-error rows excluded",
     outcome: "success",
     notes: null,
   };
+  const olderError: AuditLogRow = {
+    script_name: "daily-check",
+    started_at: "2026-07-05T13:37:00Z",
+    finished_at: "2026-07-05T13:37:05Z",
+    outcome: "error:AlpacaError",
+    notes: "boom",
+  };
   const { deps } = makeDeps({
     db: {
-      getAuditLogSince: () => Promise.resolve<AuditLogRow[]>([successRow, errorRow]),
+      getAuditLogSince: () =>
+        Promise.resolve<AuditLogRow[]>([newerError, successRow, olderError]),
     } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps);
-  assertEquals(digest.audit_7d.errors, [errorRow]);
+  assertEquals(digest.audit_7d.errors, [newerError, olderError]);
 });
 
 Deno.test("no regime row -> regime: null", async () => {
