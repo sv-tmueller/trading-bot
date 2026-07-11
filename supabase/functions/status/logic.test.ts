@@ -33,8 +33,9 @@ function makeDeps(
   const calls: Record<string, unknown> = {};
   const defaultDb: StatusDeps["db"] = {
     getLatestRegimeState: () => Promise.resolve(REGIME_ROW),
-    getAuditLogSince: (sinceIso: string) => {
+    getAuditLogSince: (sinceIso: string, untilIso: string) => {
       calls.since = sinceIso;
+      calls.until = untilIso;
       return Promise.resolve<AuditLogRow[]>([
         {
           script_name: "daily-check",
@@ -47,6 +48,14 @@ function makeDeps(
     },
     getLastTrade: () => Promise.resolve(TRADE_ROW),
     getConfig: (_key: string) => Promise.resolve("false"),
+    getTradesSince: (_sinceIso: string) => {
+      calls.tradesSinceCalled = true;
+      return Promise.resolve<TradeRow[]>([]);
+    },
+    getRegimeStatesSince: (_sinceDate: string) => {
+      calls.regimeStatesSinceCalled = true;
+      return Promise.resolve<RegimeStateRow[]>([]);
+    },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
@@ -165,8 +174,7 @@ Deno.test("error rows returned verbatim, newest first (DB order preserved); non-
   };
   const { deps } = makeDeps({
     db: {
-      getAuditLogSince: () =>
-        Promise.resolve<AuditLogRow[]>([newerError, successRow, olderError]),
+      getAuditLogSince: () => Promise.resolve<AuditLogRow[]>([newerError, successRow, olderError]),
     } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps);
@@ -212,4 +220,77 @@ Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () =>
     } as unknown as StatusDeps["alpaca"],
   });
   await assertRejects(() => runStatus(deps), Error, "alpaca down");
+});
+
+// ---------------------------------------------------------------------------
+// #358 T5: runStatus extended mode (`windowDays` param). Default (no param)
+// must stay shape-identical to the current deployment (hard constraint).
+// ---------------------------------------------------------------------------
+
+Deno.test("default mode (no windowDays): shape-lock - exact current 7 keys, no trades/regime_history, windowed helpers not called", async () => {
+  const { deps, calls } = makeDeps();
+  const digest = await runStatus(deps);
+  assertEquals(
+    Object.keys(digest).sort(),
+    ["alpaca", "audit_7d", "generated_at", "last_trade", "market_open", "paused", "regime"],
+  );
+  assertEquals("trades" in digest, false);
+  assertEquals("regime_history" in digest, false);
+  assertEquals(calls.tradesSinceCalled, undefined);
+  assertEquals(calls.regimeStatesSinceCalled, undefined);
+});
+
+Deno.test("windowDays=30: audit_7d.since is now - 30 days; untilIso passed to getAuditLogSince equals generated_at", async () => {
+  const { deps, calls } = makeDeps();
+  const digest = await runStatus(deps, 30);
+  assertEquals(digest.audit_7d.since, "2026-06-09T15:00:00.000Z");
+  assertEquals(calls.until, digest.generated_at);
+});
+
+Deno.test("windowDays set: trades + regime_history arrays populated newest-first from mocks", async () => {
+  const newerTrade: TradeRow = {
+    ...TRADE_ROW,
+    broker_order_id: "o-2",
+    fill_time: "2026-07-09T13:00:00Z",
+  };
+  const { deps } = makeDeps({
+    db: {
+      getTradesSince: () => Promise.resolve([newerTrade, TRADE_ROW]),
+      getRegimeStatesSince: () => Promise.resolve([REGIME_ROW]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, 7);
+  assertEquals(digest.trades, [newerTrade, TRADE_ROW]);
+  assertEquals(digest.regime_history, [REGIME_ROW]);
+});
+
+Deno.test("windowDays set: empty window -> trades and regime_history are [] not null", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getTradesSince: () => Promise.resolve([]),
+      getRegimeStatesSince: () => Promise.resolve([]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, 7);
+  assertEquals(digest.trades, []);
+  assertEquals(digest.regime_history, []);
+});
+
+Deno.test("outcome_counts sums correctly across a 1500-row page-boundary-spanning window", async () => {
+  const rows: AuditLogRow[] = Array.from({ length: 1500 }, (_, i) => ({
+    script_name: "daily-check",
+    started_at: `t${i}`,
+    finished_at: `t${i}f`,
+    outcome: i % 2 === 0 ? "success" : "skipped:market_closed",
+    notes: null,
+  }));
+  const { deps } = makeDeps({
+    db: { getAuditLogSince: () => Promise.resolve(rows) } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, 60);
+  const total = Object.values(digest.audit_7d.outcome_counts).reduce(
+    (a, b) => a + b,
+    0,
+  );
+  assertEquals(total, 1500);
 });
