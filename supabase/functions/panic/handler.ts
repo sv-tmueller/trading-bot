@@ -8,10 +8,8 @@ import { getServiceClient } from "../_shared/supabase_client.ts";
 import { insertAuditLog, insertTrade, setConfig, updateAuditLog } from "../_shared/db.ts";
 import { notifyPanic } from "../_shared/notifications.ts";
 // timingSafeEqual moved to _shared/auth.ts (T1 of #354) so the new status
-// Edge Function's token check can reuse it too. Re-exported here so
-// panic/index.test.ts needs no change (zero behavior change).
+// Edge Function's token check can reuse it too.
 import { timingSafeEqual } from "../_shared/auth.ts";
-export { timingSafeEqual };
 
 const VALID: PanicAction[] = ["pause", "resume", "cancel-orders", "liquidate"];
 

@@ -4,7 +4,7 @@
 // pause=false opt-out plumbing (finding 13 / #185 option 1). The action runner
 // is stubbed — no broker, no DB.
 import { assertEquals } from "@std/assert";
-import { handlePanic, timingSafeEqual } from "./handler.ts";
+import { handlePanic } from "./handler.ts";
 import type { PanicResult } from "./logic.ts";
 
 const BASE = "https://example.test/panic";
@@ -137,13 +137,6 @@ Deno.test("pause query param: default true, ?pause=false opts out (finding 13)",
     assertEquals(seen, false);
     await res.body?.cancel();
   });
-});
-
-Deno.test("timingSafeEqual compares correctly", async () => {
-  assertEquals(await timingSafeEqual("abc", "abc"), true);
-  assertEquals(await timingSafeEqual("abc", "abd"), false);
-  assertEquals(await timingSafeEqual("abc", "abcd"), false);
-  assertEquals(await timingSafeEqual("", ""), true);
 });
 
 // Test C: run() throwing must yield a JSON 500 with an "internal:" prefix.
