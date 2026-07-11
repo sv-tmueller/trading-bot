@@ -4,11 +4,33 @@ set -euo pipefail
 # Reads STATUS_URL/STATUS_TOKEN from .env.status (gitignored; copy from
 # .env.status.example and fill in the values) and renders the JSON digest.
 #
-# Usage: bash scripts/status.sh   (or: ./scripts/status.sh, if executable)
+# Usage: bash scripts/status.sh [--days N]   (or: ./scripts/status.sh, if executable)
+#   --days N   widen the digest's history window (1-60; server default 7) and
+#              add the `trades`/`regime_history` arrays (#358). No client-side
+#              range validation — a bad N reaches the server, whose 400 body
+#              is now surfaced via --fail-with-body (see below).
 # See docs/runbooks/status-check.md for the one-time setup (secret, deploy).
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$REPO_ROOT/.env.status"
+
+DAYS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days)
+      if [ $# -lt 2 ]; then
+        echo "error: --days requires a value" >&2
+        exit 1
+      fi
+      DAYS="$2"
+      shift 2
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "error: $ENV_FILE not found. Copy .env.status.example to .env.status and fill it in." >&2
@@ -28,9 +50,17 @@ if [ -z "${STATUS_TOKEN:-}" ]; then
   exit 1
 fi
 
+REQUEST_URL="$STATUS_URL"
+if [ -n "$DAYS" ]; then
+  REQUEST_URL="${STATUS_URL}?days=${DAYS}"
+fi
+
+# --fail-with-body (curl >=7.76): unlike -f, this still prints the response
+# body (e.g. the 400/401/500 { "error": "..." } JSON) before exiting non-zero,
+# so an operator sees *why* the request failed instead of just a curl error.
 if command -v jq >/dev/null 2>&1; then
-  curl -fsS -H "x-status-token: $STATUS_TOKEN" "$STATUS_URL" | jq .
+  curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL" | jq .
 else
   echo "warning: jq not found; printing raw response" >&2
-  curl -fsS -H "x-status-token: $STATUS_TOKEN" "$STATUS_URL"
+  curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL"
 fi
