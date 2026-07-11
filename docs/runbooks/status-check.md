@@ -32,6 +32,38 @@ Renders the JSON digest via `jq` (falls back to raw output with a warning if
 `jq` is not installed). Exits non-zero if `.env.status` is missing, either
 value is unset, or the HTTP request fails.
 
+## Automated weekly soak digest (GitHub Actions)
+
+`.github/workflows/soak-digest.yml` ("soak-digest") automates the manual
+check above: once a week it fetches the digest and posts a rendered markdown
+summary as a comment on the paper-soak tracking issue, replacing "watch the
+SQL editor by hand."
+
+- **Schedule:** Friday 21:30 UTC (after the US close in both EDT and EST;
+  GitHub schedule jitter of a few minutes to about an hour is expected).
+- **Manual dispatch:** trigger the workflow from the Actions tab with an
+  optional `issue_number` input (defaults to `229`) — useful for testing
+  against a scratch issue before it lands on the real tracking issue.
+- **Target issue:** #229 by default.
+- **Rendering:** the workflow shells out to the committed
+  `scripts/render_soak_digest.sh`, which validates the digest JSON (garbled,
+  partial, truncated, or missing/mistyped keys all fail the render step) and
+  renders regime state, 7-day outcome counts, `error:*` rows verbatim, the
+  last trade, and Alpaca equity/position, plus the raw JSON in a collapsed
+  `<details>` block. It targets the current no-param `StatusDigest` shape
+  in `supabase/functions/status/logic.ts` — no `?days=` parameter.
+- **Required repo secrets** (Settings -> Secrets and variables -> Actions,
+  same values as your local `.env.status`):
+  - `STATUS_URL`
+  - `STATUS_TOKEN` (read-only by design)
+- **Failure contract:** unlike `backup-db.yml`, this workflow does **not**
+  skip inertly when secrets are missing — it fails loudly (`::error::`),
+  because a red run is itself soak signal. Any endpoint failure (401, 5xx,
+  timeout, unreachable) or garbled/invalid JSON also fails the run before the
+  comment step runs, so nothing is posted on failure. Re-run via manual
+  dispatch once the underlying issue (missing secret, endpoint down, etc.)
+  is fixed.
+
 ## Troubleshooting
 
 - **401 Unauthorized** — token problem: either `STATUS_TOKEN` is unset/blank
