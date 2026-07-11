@@ -7,10 +7,13 @@ No LLM is in the trading path. The strategy is a pure function (`computeTargetSt
 ## Architecture
 
 ```
-pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check   --+
-pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch   --+-> shared TS modules -> Alpaca REST
-operator HTTP + x-panic-token   -> Edge Fn: panic         --+                       -> Postgres
-operator HTTP + x-status-token  -> Edge Fn: status (read-only, no writes) --+       -> n8n -> Discord
+pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check --+
+pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch --+-> shared TS modules -> Alpaca REST (read/write)
+operator HTTP + x-panic-token   -> Edge Fn: panic       --+                       -> Postgres (read/write)
+                                                                                   -> n8n -> Discord
+
+operator HTTP + x-status-token  -> Edge Fn: status (read-only, no writes)
+                                    -> Alpaca REST (read-only) + Postgres (read-only)
 ```
 
 Everything runs inside one Supabase project: `pg_cron` schedules the jobs, which invoke
@@ -57,9 +60,12 @@ POST only). `action=pause|resume|cancel-orders|liquidate`. The `pause` flag live
 **Status visibility.** `status` is a token-authenticated, GET-only, strictly read-only Edge
 Function (header `x-status-token`) for on-demand operator/advisor visibility. It returns a single
 JSON digest: latest regime state, 7-day `audit_log` outcome counts plus any `error:*` rows
-verbatim, the last trade, the `paused` flag, and the Alpaca paper equity + open position. It reads
-only — no mutating broker helper, no writes, not even its own `audit_log` row, so that table stays
-a clean record of trading actions. See `docs/runbooks/status-check.md` and `scripts/status.sh`.
+verbatim, the last trade, the `paused` flag, and the Alpaca paper equity + open position. An
+optional `?days=N` query param (1-60, default 7) widens the `audit_log` window and adds two arrays
+to the digest — `trades` and `regime_history`, covering the window — while the no-param response
+stays shape-identical to the default digest. It reads only — no mutating broker helper, no writes,
+not even its own `audit_log` row, so that table stays a clean record of trading actions. See
+`docs/runbooks/status-check.md` and `scripts/status.sh`.
 
 ## Database
 
@@ -133,8 +139,9 @@ Check the bot's runtime status (read-only, no writes):
 
 ```bash
 bash scripts/status.sh   # renders the digest via jq, from .env.status (see docs/runbooks/status-check.md)
+bash scripts/status.sh --days 30   # widen the window; adds trades + regime_history arrays (1-60, default 7)
 # or directly:
-curl -s "https://<ref>.supabase.co/functions/v1/status" -H "x-status-token: <token>" | jq .
+curl -s "https://<ref>.supabase.co/functions/v1/status?days=30" -H "x-status-token: <token>" | jq .
 ```
 
 ### Tests
