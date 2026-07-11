@@ -18,10 +18,12 @@ const DIGEST: StatusDigest = {
   alpaca: { equity_usd: 100_000, position: { symbol: "UPRO", qty: 0 } },
 };
 
-function req(opts: { method?: string; token?: string }): Request {
+function req(opts: { method?: string; token?: string; days?: string }): Request {
+  const url = new URL(BASE);
+  if (opts.days !== undefined) url.searchParams.set("days", opts.days);
   const headers = new Headers();
   if (opts.token !== undefined) headers.set("x-status-token", opts.token);
-  return new Request(BASE, { method: opts.method ?? "GET", headers });
+  return new Request(url.toString(), { method: opts.method ?? "GET", headers });
 }
 
 async function withStatusToken<T>(value: string | null, fn: () => Promise<T>): Promise<T> {
@@ -108,5 +110,79 @@ Deno.test("runner throws -> JSON 500", async () => {
     assertEquals(res.status, 500);
     const body = await res.json();
     assertEquals(typeof body.error, "string");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #358 T6: `?days=N` param parsing (D5 order: 405 -> 401 -> 400 -> run).
+// ---------------------------------------------------------------------------
+
+Deno.test("no days param -> runner called with undefined", async () => {
+  await withStatusToken("secret", async () => {
+    let received: number | undefined = -1 as unknown as number;
+    let called = false;
+    const run = (days?: number) => {
+      called = true;
+      received = days;
+      return Promise.resolve(DIGEST);
+    };
+    const res = await handleStatus(req({ token: "secret" }), run);
+    assertEquals(res.status, 200);
+    assertEquals(called, true);
+    assertEquals(received, undefined);
+  });
+});
+
+for (const daysStr of ["1", "7", "60"]) {
+  Deno.test(`days=${daysStr} -> runner receives the parsed number`, async () => {
+    await withStatusToken("secret", async () => {
+      let received: number | undefined;
+      const run = (days?: number) => {
+        received = days;
+        return Promise.resolve(DIGEST);
+      };
+      const res = await handleStatus(req({ token: "secret", days: daysStr }), run);
+      assertEquals(res.status, 200);
+      assertEquals(received, Number(daysStr));
+    });
+  });
+}
+
+for (const bad of ["0", "61", "abc", "7.5", ""]) {
+  Deno.test(`days=${bad === "" ? "(empty)" : bad} -> 400, runner never called`, async () => {
+    await withStatusToken("secret", async () => {
+      let ran = false;
+      const run = () => {
+        ran = true;
+        return Promise.resolve(DIGEST);
+      };
+      const res = await handleStatus(req({ token: "secret", days: bad }), run);
+      assertEquals(res.status, 400);
+      assertEquals(ran, false);
+      const body = await res.json();
+      assertEquals(body.error, "days must be an integer between 1 and 60");
+    });
+  });
+}
+
+Deno.test("wrong token + bad days -> 401 (auth precedes days validation)", async () => {
+  await withStatusToken("secret", async () => {
+    const res = await handleStatus(
+      req({ token: "wrong", days: "999" }),
+      () => Promise.resolve(DIGEST),
+    );
+    assertEquals(res.status, 401);
+    await res.body?.cancel();
+  });
+});
+
+Deno.test("non-GET + bad days -> 405 (method check precedes days validation)", async () => {
+  await withStatusToken("secret", async () => {
+    const res = await handleStatus(
+      req({ method: "POST", token: "secret", days: "999" }),
+      () => Promise.resolve(DIGEST),
+    );
+    assertEquals(res.status, 405);
+    await res.body?.cancel();
   });
 });
