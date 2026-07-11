@@ -42,6 +42,7 @@ DIGEST="$RAW"
 generated_at="$(printf '%s' "$DIGEST" | jq -r '.generated_at')"
 market_open="$(printf '%s' "$DIGEST" | jq -r '.market_open')"
 paused="$(printf '%s' "$DIGEST" | jq -r '.paused')"
+audit_since="$(printf '%s' "$DIGEST" | jq -r '.audit_7d.since')"
 
 echo "## Weekly soak digest — ${generated_at}"
 echo
@@ -63,7 +64,7 @@ else
 fi
 echo
 
-echo "### 7-day outcomes (since ${generated_at})"
+echo "### 7-day outcomes (since ${audit_since})"
 counts="$(printf '%s' "$DIGEST" | jq -r '.audit_7d.outcome_counts | to_entries | if length == 0 then empty else .[] | "- \(.value) x `\(.key)`" end')"
 if [ -z "$counts" ]; then
   echo "No \`audit_log\` rows in the last 7 days."
