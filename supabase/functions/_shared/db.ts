@@ -133,16 +133,10 @@ export interface TradeRow {
   broker_order_id: string;
 }
 
-export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null> {
-  const { data, error } = await sb
-    .from("trades")
-    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
-    .order("fill_time", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`getLastTrade: ${error.message}`);
-  if (!data) return null;
-  const raw = data as Record<string, unknown>;
+// PostgREST returns `numeric` columns as JSON strings to preserve precision
+// (same reason as coerceRegimeRow above). Shared by getLastTrade and the
+// #358 T4 getTradesSince window helper so both map rows identically.
+export function coerceTradeRow(raw: Record<string, unknown>): TradeRow {
   return {
     symbol: raw.symbol as string,
     side: raw.side as "BUY" | "SELL",
@@ -152,6 +146,49 @@ export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null>
     reason: raw.reason as string,
     broker_order_id: raw.broker_order_id as string,
   };
+}
+
+export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .order("fill_time", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLastTrade: ${error.message}`);
+  return data ? coerceTradeRow(data as Record<string, unknown>) : null;
+}
+
+// #358 T4: windowed read for the status digest's `?days=N` extended mode.
+// SELECT-only, same shape as getLastTrade. .limit(1000) is a defensive cap,
+// not a pagination need: a <=1-trade/day bot cannot plausibly produce more
+// than 1000 fills in a 60-day window (the widest allowed `days`).
+export async function getTradesSince(sb: SupabaseClient, sinceIso: string): Promise<TradeRow[]> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .gte("fill_time", sinceIso)
+    .order("fill_time", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getTradesSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceTradeRow);
+}
+
+// #358 T4: windowed read for the status digest's `?days=N` extended mode.
+// SELECT-only. .limit(1000) is a defensive cap: one row per trading day
+// means a 60-day window cannot plausibly exceed it.
+export async function getRegimeStatesSince(
+  sb: SupabaseClient,
+  sinceDate: string,
+): Promise<RegimeStateRow[]> {
+  const { data, error } = await sb
+    .from("regime_state")
+    .select("*")
+    .gte("date", sinceDate)
+    .order("date", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getRegimeStatesSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceRegimeRow);
 }
 
 export interface AuditLogRow {

@@ -2,10 +2,13 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
   coerceRegimeRow,
+  coerceTradeRow,
   getAuditLogSince,
   getConfig,
   getLastTrade,
   getLatestRegimeState,
+  getRegimeStatesSince,
+  getTradesSince,
   insertAuditLog,
   insertTrade,
   setConfig,
@@ -58,7 +61,15 @@ function stubAuditClient(pages: StubAuditPage[]) {
   };
   // deno-lint-ignore no-explicit-any
   const sb = { from: () => builder } as any;
-  return { sb, ranges, gteCalls, lteCalls, get calls() { return call; } };
+  return {
+    sb,
+    ranges,
+    gteCalls,
+    lteCalls,
+    get calls() {
+      return call;
+    },
+  };
 }
 
 function makeAuditRows(n: number, label: string): unknown[] {
@@ -352,4 +363,125 @@ Deno.test("coerceRegimeRow: non-numeric spy_close throws", () => {
       }),
     DataError,
   );
+});
+
+// ---------------------------------------------------------------------------
+// #358 T4: getTradesSince / getRegimeStatesSince (windowed read helpers) +
+// coerceTradeRow (extracted from getLastTrade so both share one mapping).
+// ---------------------------------------------------------------------------
+
+Deno.test("coerceTradeRow: numeric strings -> numbers (PostgREST returns numeric as string)", () => {
+  const row = coerceTradeRow({
+    symbol: "UPRO",
+    side: "BUY",
+    qty: "120",
+    fill_price: "71.4000",
+    fill_time: "2026-07-08T13:38:00Z",
+    reason: "regime_flip_long",
+    broker_order_id: "o-1",
+  });
+  assertEquals(row.qty, 120);
+  assertEquals(row.fill_price, 71.4);
+  assertEquals(row.symbol, "UPRO");
+  assertEquals(row.broker_order_id, "o-1");
+});
+
+Deno.test("coerceTradeRow: non-numeric qty throws", () => {
+  assertThrows(
+    () =>
+      coerceTradeRow({
+        symbol: "UPRO",
+        side: "BUY",
+        qty: "not-a-number",
+        fill_price: "71.4",
+        fill_time: "2026-07-08T13:38:00Z",
+        reason: "regime_flip_long",
+        broker_order_id: "o-1",
+      }),
+    DataError,
+  );
+});
+
+Deno.test({
+  name: "getTradesSince: returns fills with fill_time >= since, newest first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const belowId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 100,
+      fillPrice: 70.5,
+      fillTime: "2029-12-31T15:00:00Z",
+      brokerOrderId: "o-below",
+      reason: "regime_flip_long",
+    });
+    const olderId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 100,
+      fillPrice: 70.5,
+      fillTime: "2030-01-02T15:00:00Z",
+      brokerOrderId: "o-older",
+      reason: "regime_flip_long",
+    });
+    const newerId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "SELL",
+      qty: 100,
+      fillPrice: 72.25,
+      fillTime: "2030-01-03T15:00:00Z",
+      brokerOrderId: "o-newer",
+      reason: "regime_flip_cash",
+    });
+    const rows = await getTradesSince(sb, "2030-01-01T00:00:00Z");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].broker_order_id, "o-newer");
+    assertEquals(rows[1].broker_order_id, "o-older");
+    await sb.from("trades").delete().in("id", [belowId, olderId, newerId]);
+  },
+});
+
+Deno.test({
+  name: "getRegimeStatesSince: returns rows with date >= sinceDate, newest first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    await sb.from("regime_state").delete().in("date", ["2029-12-31", "2030-01-02", "2030-01-03"]);
+    await upsertRegimeState(sb, {
+      date: "2029-12-31",
+      spyClose: 399,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: null,
+      killSwitchActive: false,
+      killSwitchFiredAt: null,
+    });
+    await upsertRegimeState(sb, {
+      date: "2030-01-02",
+      spyClose: 400,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: null,
+      killSwitchActive: false,
+      killSwitchFiredAt: null,
+    });
+    await upsertRegimeState(sb, {
+      date: "2030-01-03",
+      spyClose: 401,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: -0.1,
+      killSwitchActive: true,
+      killSwitchFiredAt: "2030-01-03T15:00:00Z",
+    });
+    const rows = await getRegimeStatesSince(sb, "2030-01-01");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].date, "2030-01-03");
+    assertEquals(rows[1].date, "2030-01-02");
+    await sb.from("regime_state").delete().in("date", ["2029-12-31", "2030-01-02", "2030-01-03"]);
+  },
 });
