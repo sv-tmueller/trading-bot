@@ -13,12 +13,19 @@
 #   - prod (STATUS_URL_PROD / STATUS_TOKEN_PROD)  - not yet deployed; inert
 #     until the go-live runbook sets these two secrets (docs/runbooks/
 #     mvp2-deploy-and-decommission.md)
+# The prod steps carry `if: !cancelled()` so a failing/red dev ping cannot
+# skip them (GitHub Actions' default step gate is `success()`, which would
+# otherwise suppress every later step once dev fails) - a workflow_dispatch
+# cancellation is the only thing that still skips them.
 #
 # Failure contract per target: secrets unset -> inert green skip (`::notice::`
 # + no request), matching backup-db.yml's default-OFF idiom. Secrets set ->
 # `curl --fail-with-body` against the endpoint; a non-200 response or a
 # timeout fails the run red, same idiom as soak-digest.yml's "Fetch digest"
-# step. Never echo the token.
+# step. The JSON digest body prints to the step log on success for forensics
+# (same exposure class as the soak-digest already posted to issue #229 -
+# paper equity/position, no secrets); a failing response body is included in
+# curl's --fail-with-body error output. Never echo the token.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   STATUS_URL          - dev status function URL (same as .env.status)
@@ -62,14 +69,14 @@ jobs:
         run: |
           curl --fail-with-body -sS --max-time 60 \
             -H "x-status-token: $STATUS_TOKEN" \
-            "$STATUS_URL" \
-            -o /dev/null
+            "$STATUS_URL"
         env:
           STATUS_URL: ${{ secrets.STATUS_URL }}
           STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
 
       - name: Check prod secrets configured
         id: check_prod
+        if: ${{ !cancelled() }}
         run: |
           if [ -z "$STATUS_URL_PROD" ] || [ -z "$STATUS_TOKEN_PROD" ]; then
             echo "::notice::heartbeat (prod) is inert — STATUS_URL_PROD and/or STATUS_TOKEN_PROD repo secrets are not set. Prod is not yet deployed (#230); set these two secrets at go-live to activate. Skipping."
@@ -82,12 +89,11 @@ jobs:
           STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
 
       - name: Ping prod
-        if: steps.check_prod.outputs.configured == 'true'
+        if: ${{ !cancelled() && steps.check_prod.outputs.configured == 'true' }}
         run: |
           curl --fail-with-body -sS --max-time 60 \
             -H "x-status-token: $STATUS_TOKEN_PROD" \
-            "$STATUS_URL_PROD" \
-            -o /dev/null
+            "$STATUS_URL_PROD"
         env:
           STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
           STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
