@@ -26,11 +26,34 @@ credential.
 
 ```bash
 bash scripts/status.sh
+bash scripts/status.sh --days 30   # widen the window (1-60, default 7); see below
 ```
 
 Renders the JSON digest via `jq` (falls back to raw output with a warning if
 `jq` is not installed). Exits non-zero if `.env.status` is missing, either
 value is unset, or the HTTP request fails.
+
+The script uses `curl --fail-with-body`, which requires **curl >= 7.76**
+(check with `curl --version`). Unlike plain `-f`, it still prints the response
+body before exiting non-zero, so a 400/401/500 error's `{ "error": "…" }` JSON
+reaches the operator instead of just a bare `curl: (22) ...` line.
+
+### `--days N`: history window
+
+`--days N` (1-60; the server default is 7 when omitted) widens the
+`audit_log` window used for the outcome counts and `error:*` rows, and adds
+two arrays to the digest for the same window:
+
+- `trades` — every fill (`trades` table row) in the window, newest first.
+- `regime_history` — the daily `regime_state` rows in the window, newest
+  first.
+
+Both are `[]` (not omitted, not `null`) when the window holds no rows. The
+no-`--days` response is unchanged in shape — `trades`/`regime_history` are
+only present when `--days` (or the underlying `?days=`) is supplied. There is
+no client-side range validation in the script; an out-of-range or malformed
+`N` reaches the server, whose `400 { "error": "days must be an integer
+between 1 and 60" }` is now visible via `--fail-with-body` above.
 
 ## Automated weekly soak digest (GitHub Actions)
 
@@ -69,6 +92,8 @@ SQL editor by hand."
 - **401 Unauthorized** — token problem: either `STATUS_TOKEN` is unset/blank
   server-side (fails closed by design), or `.env.status`'s `STATUS_TOKEN`
   doesn't match what was set with `supabase secrets set`. Re-check both sides.
+- **400 Bad Request** — only possible with `--days`/`?days=`: the value isn't
+  an integer in `1..60`. The JSON body's `error` field names the constraint.
 - **500** — function-side failure (e.g. Alpaca or DB read failed). The JSON
   body carries `{ "error": "…" }` with the underlying message; check the
   Supabase function logs for the full stack.
@@ -79,8 +104,10 @@ SQL editor by hand."
 ## What the digest contains
 
 Latest regime state (date, target/current state, drawdown %, kill-switch
-flag), 7-day `audit_log` outcome counts plus any `error:*` rows verbatim, the
-last trade, the `bot_config.paused` flag, and the Alpaca paper account equity
-+ open position. See `supabase/functions/status/logic.ts` (`StatusDigest`) for
-the exact shape — the function is strictly read-only and writes nothing, not
-even its own `audit_log` row.
+flag), 7-day (or `--days N`) `audit_log` outcome counts plus any `error:*`
+rows verbatim, the last trade, the `bot_config.paused` flag, and the Alpaca
+paper account equity + open position. When `--days`/`?days=` is supplied, the
+digest additionally carries `trades` and `regime_history` (see above). See
+`supabase/functions/status/logic.ts` (`StatusDigest`) for the exact shape —
+the function is strictly read-only and writes nothing, not even its own
+`audit_log` row.

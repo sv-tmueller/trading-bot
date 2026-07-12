@@ -1,11 +1,14 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
   coerceRegimeRow,
+  coerceTradeRow,
   getAuditLogSince,
   getConfig,
   getLastTrade,
   getLatestRegimeState,
+  getRegimeStatesSince,
+  getTradesSince,
   insertAuditLog,
   insertTrade,
   setConfig,
@@ -22,6 +25,61 @@ function localClient() {
   const url = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   return createClient(url, key, { auth: { persistSession: false } });
+}
+
+// ---------------------------------------------------------------------------
+// #358 T3: stub query-builder client for getAuditLogSince's pagination loop.
+// Mimics the chainable subset of the real PostgrestFilterBuilder that
+// getAuditLogSince calls (select/gte/lte/order/range), stitching together
+// pre-canned pages by call order. No network, no real client construction.
+// ---------------------------------------------------------------------------
+type StubAuditPage = { data: unknown[]; error: { message: string } | null };
+
+function stubAuditClient(pages: StubAuditPage[]) {
+  const ranges: Array<[number, number]> = [];
+  const gteCalls: Array<[string, unknown]> = [];
+  const lteCalls: Array<[string, unknown]> = [];
+  let call = 0;
+  // deno-lint-ignore no-explicit-any
+  const builder: any = {
+    select: () => builder,
+    gte: (col: string, val: unknown) => {
+      gteCalls.push([col, val]);
+      return builder;
+    },
+    lte: (col: string, val: unknown) => {
+      lteCalls.push([col, val]);
+      return builder;
+    },
+    order: () => builder,
+    range: (from: number, to: number) => {
+      ranges.push([from, to]);
+      const page = pages[call] ?? { data: [], error: null };
+      call++;
+      return Promise.resolve(page);
+    },
+  };
+  // deno-lint-ignore no-explicit-any
+  const sb = { from: () => builder } as any;
+  return {
+    sb,
+    ranges,
+    gteCalls,
+    lteCalls,
+    get calls() {
+      return call;
+    },
+  };
+}
+
+function makeAuditRows(n: number, label: string): unknown[] {
+  return Array.from({ length: n }, (_, i) => ({
+    script_name: label,
+    started_at: `2030-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+    finished_at: null,
+    outcome: "success",
+    notes: null,
+  }));
 }
 
 Deno.test({
@@ -146,7 +204,9 @@ Deno.test({
 });
 
 Deno.test({
-  name: "getAuditLogSince: filters by started_at, orders newest-first",
+  // #355 review finding 2b: assert newest-first ordering with >=2 qualifying
+  // rows, plus a row above `untilIso` to prove the closed-window upper bound.
+  name: "getAuditLogSince: filters by [since, until], orders newest-first (>=2 rows)",
   ignore: !RUN,
   fn: async () => {
     const sb = localClient();
@@ -154,22 +214,92 @@ Deno.test({
       scriptName: "db-test",
       startedAt: "2020-01-01T00:00:00Z",
     });
-    const inWindowId = await insertAuditLog(sb, {
+    const olderInWindowId = await insertAuditLog(sb, {
       scriptName: "db-test",
       startedAt: "2030-01-02T15:00:00Z",
     });
     await updateAuditLog(sb, {
-      id: inWindowId,
+      id: olderInWindowId,
       finishedAt: "2030-01-02T15:00:01Z",
       outcome: "success",
-      notes: null,
+      notes: "older",
     });
-    const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z");
-    assertEquals(rows.length, 1);
-    assertEquals(rows[0].outcome, "success");
-    assertEquals(rows[0].script_name, "db-test");
-    await sb.from("audit_log").delete().in("id", [oldId, inWindowId]);
+    const newerInWindowId = await insertAuditLog(sb, {
+      scriptName: "db-test",
+      startedAt: "2030-01-03T15:00:00Z",
+    });
+    await updateAuditLog(sb, {
+      id: newerInWindowId,
+      finishedAt: "2030-01-03T15:00:01Z",
+      outcome: "success",
+      notes: "newer",
+    });
+    const aboveUntilId = await insertAuditLog(sb, {
+      scriptName: "db-test",
+      startedAt: "2030-01-05T00:00:00Z",
+    });
+    const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-04T00:00:00Z");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].notes, "newer");
+    assertEquals(rows[1].notes, "older");
+    await sb.from("audit_log").delete().in("id", [
+      oldId,
+      olderInWindowId,
+      newerInWindowId,
+      aboveUntilId,
+    ]);
   },
+});
+
+// ---------------------------------------------------------------------------
+// #358 T3: getAuditLogSince pagination loop (D1/D2) — stub query-builder
+// client, ungated (no network, no local Postgres needed).
+// ---------------------------------------------------------------------------
+
+Deno.test("getAuditLogSince: stitches 1000/1000/500 pages into 2500 rows with correct .range() calls", async () => {
+  const { sb, ranges } = stubAuditClient([
+    { data: makeAuditRows(1000, "p0"), error: null },
+    { data: makeAuditRows(1000, "p1"), error: null },
+    { data: makeAuditRows(500, "p2"), error: null },
+  ]);
+  const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z");
+  assertEquals(rows.length, 2500);
+  assertEquals(ranges, [[0, 999], [1000, 1999], [2000, 2999]]);
+});
+
+Deno.test("getAuditLogSince: loop stops on a short first page", async () => {
+  const { sb, ranges } = stubAuditClient([
+    { data: makeAuditRows(3, "only"), error: null },
+  ]);
+  const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z");
+  assertEquals(rows.length, 3);
+  assertEquals(ranges.length, 1);
+});
+
+Deno.test("getAuditLogSince: exactly-1000 total issues a second (empty) page and returns 1000", async () => {
+  const { sb, ranges } = stubAuditClient([
+    { data: makeAuditRows(1000, "p0"), error: null },
+    { data: [], error: null },
+  ]);
+  const rows = await getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z");
+  assertEquals(rows.length, 1000);
+  assertEquals(ranges, [[0, 999], [1000, 1999]]);
+});
+
+Deno.test("getAuditLogSince: 10 full pages with no short page -> throws (page cap)", async () => {
+  const pages: StubAuditPage[] = Array.from(
+    { length: 10 },
+    (_, i) => ({ data: makeAuditRows(1000, `p${i}`), error: null }),
+  );
+  const { sb } = stubAuditClient(pages);
+  await assertRejects(() => getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z"));
+});
+
+Deno.test("getAuditLogSince: gte/lte receive sinceIso/untilIso", async () => {
+  const { sb, gteCalls, lteCalls } = stubAuditClient([{ data: [], error: null }]);
+  await getAuditLogSince(sb, "2030-01-01T00:00:00Z", "2030-01-08T00:00:00Z");
+  assertEquals(gteCalls, [["started_at", "2030-01-01T00:00:00Z"]]);
+  assertEquals(lteCalls, [["started_at", "2030-01-08T00:00:00Z"]]);
 });
 
 Deno.test("coerceRegimeRow: numeric strings -> numbers (PostgREST returns numeric as string)", () => {
@@ -233,4 +363,125 @@ Deno.test("coerceRegimeRow: non-numeric spy_close throws", () => {
       }),
     DataError,
   );
+});
+
+// ---------------------------------------------------------------------------
+// #358 T4: getTradesSince / getRegimeStatesSince (windowed read helpers) +
+// coerceTradeRow (extracted from getLastTrade so both share one mapping).
+// ---------------------------------------------------------------------------
+
+Deno.test("coerceTradeRow: numeric strings -> numbers (PostgREST returns numeric as string)", () => {
+  const row = coerceTradeRow({
+    symbol: "UPRO",
+    side: "BUY",
+    qty: "120",
+    fill_price: "71.4000",
+    fill_time: "2026-07-08T13:38:00Z",
+    reason: "regime_flip_long",
+    broker_order_id: "o-1",
+  });
+  assertEquals(row.qty, 120);
+  assertEquals(row.fill_price, 71.4);
+  assertEquals(row.symbol, "UPRO");
+  assertEquals(row.broker_order_id, "o-1");
+});
+
+Deno.test("coerceTradeRow: non-numeric qty throws", () => {
+  assertThrows(
+    () =>
+      coerceTradeRow({
+        symbol: "UPRO",
+        side: "BUY",
+        qty: "not-a-number",
+        fill_price: "71.4",
+        fill_time: "2026-07-08T13:38:00Z",
+        reason: "regime_flip_long",
+        broker_order_id: "o-1",
+      }),
+    DataError,
+  );
+});
+
+Deno.test({
+  name: "getTradesSince: returns fills with fill_time >= since, newest first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const belowId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 100,
+      fillPrice: 70.5,
+      fillTime: "2029-12-31T15:00:00Z",
+      brokerOrderId: "o-below",
+      reason: "regime_flip_long",
+    });
+    const olderId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 100,
+      fillPrice: 70.5,
+      fillTime: "2030-01-02T15:00:00Z",
+      brokerOrderId: "o-older",
+      reason: "regime_flip_long",
+    });
+    const newerId = await insertTrade(sb, {
+      symbol: "UPRO",
+      side: "SELL",
+      qty: 100,
+      fillPrice: 72.25,
+      fillTime: "2030-01-03T15:00:00Z",
+      brokerOrderId: "o-newer",
+      reason: "regime_flip_cash",
+    });
+    const rows = await getTradesSince(sb, "2030-01-01T00:00:00Z");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].broker_order_id, "o-newer");
+    assertEquals(rows[1].broker_order_id, "o-older");
+    await sb.from("trades").delete().in("id", [belowId, olderId, newerId]);
+  },
+});
+
+Deno.test({
+  name: "getRegimeStatesSince: returns rows with date >= sinceDate, newest first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    await sb.from("regime_state").delete().in("date", ["2029-12-31", "2030-01-02", "2030-01-03"]);
+    await upsertRegimeState(sb, {
+      date: "2029-12-31",
+      spyClose: 399,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: null,
+      killSwitchActive: false,
+      killSwitchFiredAt: null,
+    });
+    await upsertRegimeState(sb, {
+      date: "2030-01-02",
+      spyClose: 400,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: null,
+      killSwitchActive: false,
+      killSwitchFiredAt: null,
+    });
+    await upsertRegimeState(sb, {
+      date: "2030-01-03",
+      spyClose: 401,
+      spySma200: 380,
+      targetState: "LONG",
+      currentState: "LONG",
+      positionDrawdownPct: -0.1,
+      killSwitchActive: true,
+      killSwitchFiredAt: "2030-01-03T15:00:00Z",
+    });
+    const rows = await getRegimeStatesSince(sb, "2030-01-01");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].date, "2030-01-03");
+    assertEquals(rows[1].date, "2030-01-02");
+    await sb.from("regime_state").delete().in("date", ["2029-12-31", "2030-01-02", "2030-01-03"]);
+  },
 });

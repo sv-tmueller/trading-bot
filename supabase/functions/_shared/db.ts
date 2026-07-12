@@ -133,16 +133,10 @@ export interface TradeRow {
   broker_order_id: string;
 }
 
-export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null> {
-  const { data, error } = await sb
-    .from("trades")
-    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
-    .order("fill_time", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw new Error(`getLastTrade: ${error.message}`);
-  if (!data) return null;
-  const raw = data as Record<string, unknown>;
+// PostgREST returns `numeric` columns as JSON strings to preserve precision
+// (same reason as coerceRegimeRow above). Shared by getLastTrade and the
+// #358 T4 getTradesSince window helper so both map rows identically.
+export function coerceTradeRow(raw: Record<string, unknown>): TradeRow {
   return {
     symbol: raw.symbol as string,
     side: raw.side as "BUY" | "SELL",
@@ -154,6 +148,49 @@ export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null>
   };
 }
 
+export async function getLastTrade(sb: SupabaseClient): Promise<TradeRow | null> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .order("fill_time", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLastTrade: ${error.message}`);
+  return data ? coerceTradeRow(data as Record<string, unknown>) : null;
+}
+
+// #358 T4: windowed read for the status digest's `?days=N` extended mode.
+// SELECT-only, same shape as getLastTrade. .limit(1000) is a defensive cap,
+// not a pagination need: a <=1-trade/day bot cannot plausibly produce more
+// than 1000 fills in a 60-day window (the widest allowed `days`).
+export async function getTradesSince(sb: SupabaseClient, sinceIso: string): Promise<TradeRow[]> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .gte("fill_time", sinceIso)
+    .order("fill_time", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getTradesSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceTradeRow);
+}
+
+// #358 T4: windowed read for the status digest's `?days=N` extended mode.
+// SELECT-only. .limit(1000) is a defensive cap: one row per trading day
+// means a 60-day window cannot plausibly exceed it.
+export async function getRegimeStatesSince(
+  sb: SupabaseClient,
+  sinceDate: string,
+): Promise<RegimeStateRow[]> {
+  const { data, error } = await sb
+    .from("regime_state")
+    .select("*")
+    .gte("date", sinceDate)
+    .order("date", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getRegimeStatesSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceRegimeRow);
+}
+
 export interface AuditLogRow {
   script_name: string;
   started_at: string;
@@ -162,21 +199,50 @@ export interface AuditLogRow {
   notes: string | null;
 }
 
-// PostgREST's default max_rows is 1000; explicit limit keeps behavior
-// predictable even if that server default ever changes. Descending order
-// means an overflow drops the OLDEST rows in the window, not the newest.
+// PostgREST's default max_rows is 1000 per request, so a window that holds
+// more than 1000 audit rows (#358: any `?days=N` window past ~2 days at
+// current volume) silently truncates on a single `.limit()` call. This loop
+// pages through with `.range()` instead, taking a **closed window**
+// [sinceIso, untilIso] (D2): `untilIso` is snapshotted by the caller from
+// deps.now() before the loop starts, and audit rows are append-only, so a row
+// inserted mid-pagination has started_at > untilIso and can never shift an
+// offset between pages — pagination is stable without a stronger DB-side
+// snapshot mechanism. Order stays `started_at desc`; page size 1000; the loop
+// ends on a short (< page size) page. Hard cap of 10 pages (10,000 rows): the
+// worst realistic window (days=60, ~4,700 rows at current volume) is ~5
+// pages, so the cap has 2x headroom and exists only to bound a runaway loop —
+// breaching it throws (surfaced as the existing JSON 500 path) rather than
+// silently returning a truncated count.
+const AUDIT_PAGE_SIZE = 1000;
+const AUDIT_MAX_PAGES = 10;
+
 export async function getAuditLogSince(
   sb: SupabaseClient,
   sinceIso: string,
+  untilIso: string,
 ): Promise<AuditLogRow[]> {
-  const { data, error } = await sb
-    .from("audit_log")
-    .select("script_name, started_at, finished_at, outcome, notes")
-    .gte("started_at", sinceIso)
-    .order("started_at", { ascending: false })
-    .limit(1000);
-  if (error) throw new Error(`getAuditLogSince: ${error.message}`);
-  return (data ?? []) as AuditLogRow[];
+  const rows: AuditLogRow[] = [];
+  for (let page = 0; page < AUDIT_MAX_PAGES; page++) {
+    const from = page * AUDIT_PAGE_SIZE;
+    const to = from + AUDIT_PAGE_SIZE - 1;
+    const { data, error } = await sb
+      .from("audit_log")
+      .select("script_name, started_at, finished_at, outcome, notes")
+      .gte("started_at", sinceIso)
+      .lte("started_at", untilIso)
+      .order("started_at", { ascending: false })
+      .range(from, to);
+    if (error) throw new Error(`getAuditLogSince: ${error.message}`);
+    const pageRows = (data ?? []) as AuditLogRow[];
+    rows.push(...pageRows);
+    if (pageRows.length < AUDIT_PAGE_SIZE) {
+      return rows;
+    }
+  }
+  throw new Error(
+    `getAuditLogSince: exceeded ${AUDIT_MAX_PAGES * AUDIT_PAGE_SIZE}-row page cap ` +
+      `(${sinceIso} .. ${untilIso})`,
+  );
 }
 
 export async function getConfig(sb: SupabaseClient, key: string): Promise<string | null> {

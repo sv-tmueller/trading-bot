@@ -9,7 +9,7 @@
 import type { StrategyConfig } from "../_shared/config.ts";
 import type { AuditLogRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface StatusDeps {
   config: StrategyConfig;
@@ -21,9 +21,13 @@ export interface StatusDeps {
   };
   db: {
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
-    getAuditLogSince: (sinceIso: string) => Promise<AuditLogRow[]>;
+    getAuditLogSince: (sinceIso: string, untilIso: string) => Promise<AuditLogRow[]>;
     getLastTrade: () => Promise<TradeRow | null>;
     getConfig: (key: string) => Promise<string | null>;
+    // #358 T4/T5: windowed reads for the `?days=N` extended digest mode.
+    // Only called when a windowDays is passed to runStatus.
+    getTradesSince: (sinceIso: string) => Promise<TradeRow[]>;
+    getRegimeStatesSince: (sinceDate: string) => Promise<RegimeStateRow[]>;
   };
 }
 
@@ -32,6 +36,9 @@ export interface StatusDigest {
   market_open: boolean;
   paused: boolean;
   regime: RegimeStateRow | null;
+  // Legacy key name kept in both modes (#358 D4) so the response shape never
+  // forks between default and extended mode; `since` is self-describing and
+  // reflects the widened window when `windowDays` is set.
   audit_7d: {
     since: string;
     outcome_counts: Record<string, number>;
@@ -42,6 +49,12 @@ export interface StatusDigest {
     equity_usd: number;
     position: { symbol: string; qty: number };
   };
+  // #358: only present when `runStatus` is called with a `windowDays`
+  // (i.e. `?days=N` was supplied). Never set to `undefined` — the keys are
+  // conditionally spread so they are entirely absent from the JSON in
+  // default mode (D3), keeping the no-param response byte-identical.
+  trades?: TradeRow[];
+  regime_history?: RegimeStateRow[];
 }
 
 // A crashed/still-open run leaves outcome NULL in the DB (documented in
@@ -49,19 +62,38 @@ export interface StatusDigest {
 // with no finished_at") — group those under this label instead of "null".
 const UNFINISHED_LABEL = "(unfinished)";
 
-export async function runStatus(deps: StatusDeps): Promise<StatusDigest> {
+// windowDays: presence (not value) toggles extended mode (#358 D3). Absent ->
+// the legacy 7-day-window, 7-key response (byte-identical to the current
+// deployment); present -> same base shape plus `trades`/`regime_history`.
+export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<StatusDigest> {
   const { db, alpaca, config } = deps;
   const now = deps.now();
-  const since = new Date(now.getTime() - SEVEN_DAYS_MS).toISOString();
+  const until = now.toISOString();
+  const since = new Date(now.getTime() - (windowDays ?? 7) * DAY_MS).toISOString();
+  const extended = windowDays !== undefined;
 
-  const [regime, auditRows, lastTrade, pausedRaw, clock, equity, positionQty] = await Promise.all([
+  const [
+    regime,
+    auditRows,
+    lastTrade,
+    pausedRaw,
+    clock,
+    equity,
+    positionQty,
+    trades,
+    regimeHistory,
+  ] = await Promise.all([
     db.getLatestRegimeState(),
-    db.getAuditLogSince(since),
+    db.getAuditLogSince(since, until),
     db.getLastTrade(),
     db.getConfig("paused"),
     alpaca.getClock(),
     alpaca.getAccountValue(),
     alpaca.getPosition(config.botTicker),
+    extended ? db.getTradesSince(since) : Promise.resolve(undefined),
+    // date part of `since` (already UTC via toISOString) is the boundary for
+    // the once-a-day regime_state table.
+    extended ? db.getRegimeStatesSince(since.slice(0, 10)) : Promise.resolve(undefined),
   ]);
 
   const outcome_counts: Record<string, number> = {};
@@ -82,5 +114,8 @@ export async function runStatus(deps: StatusDeps): Promise<StatusDigest> {
       equity_usd: equity,
       position: { symbol: config.botTicker, qty: positionQty },
     },
+    ...(extended
+      ? { trades: trades as TradeRow[], regime_history: regimeHistory as RegimeStateRow[] }
+      : {}),
   };
 }
