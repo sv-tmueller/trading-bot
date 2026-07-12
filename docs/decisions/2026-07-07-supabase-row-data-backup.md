@@ -106,3 +106,28 @@ or a per-environment backup, but that is a future decision, not this one.
 | Supabase Pro ($25/mo, daily backups, 7-day retention, optional PITR) | New recurring spend for what is currently dev/paper forensics data with modest, non-monetary irreplaceability. Cost is disproportionate to the risk being covered today; revisit once prod is live and real trades are at stake. |
 | Accept the risk, no backup | Legitimate in principle for low-value paper data, but rejected on the evidence: this exact data already resolved one real incident (the June-5 stale kill-switch post-mortem), and a weekly zero-cost workflow removes the risk for near-zero marginal effort — there's no honest case for paying zero cost to leave value on the table. |
 | GitHub Actions artifact storage (instead of a committed repo file) | 90-day retention does not survive Supabase-project-deletion in the way a backup is meant to; a committed file is simpler and permanent for negligible size. |
+
+## Addendum (2026-07-12)
+
+The Context section above claimed: "this project is invoked continuously by
+`pg_cron` (5-minute kill-switch during market hours, twice-daily
+daily-check), so involuntary pause from inactivity is not the live risk
+here." **This claim was wrong.** Supabase's free-tier inactivity/pause
+criterion is based on user-facing API-gateway traffic, not on
+database-internal cron activity — `pg_cron` invocations of `daily-check` and
+`kill-switch` run entirely inside the project's own Postgres instance and do
+not register as the kind of "activity" the pause heuristic checks for. Dev
+(`trading-bot-dev`, `qdaxxsuicyiscdvsdowc`) received an inactivity warning on
+2026-07-12 despite the cron running continuously throughout that period,
+confirming the original assumption did not hold.
+
+This does not change the Decision above (the encrypted weekly dump still
+stands on its own merits — it protects against deletion/incident/region-loss
+regardless of pause risk), but it does mean the *pause* risk itself needed a
+separate mitigation, since a paused project also means a real, un-liquidated
+open position can no longer be protected by the kill-switch. That mitigation
+is `.github/workflows/heartbeat.yml` (#361): a scheduled weekday ping of the
+read-only `status` Edge Function, which drives real API-gateway traffic
+(DB reads across all four tables, plus read-only Alpaca calls) and so counts
+toward Supabase's activity criterion. See `docs/runbooks/status-check.md`
+("Heartbeat (GitHub Actions)") for the full write-up.

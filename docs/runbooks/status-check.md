@@ -87,6 +87,45 @@ SQL editor by hand."
   dispatch once the underlying issue (missing secret, endpoint down, etc.)
   is fixed.
 
+## Heartbeat (GitHub Actions)
+
+`.github/workflows/heartbeat.yml` ("heartbeat") exists for a different reason
+than soak-digest: Supabase's free-tier inactivity/pause criterion is based on
+user-facing API traffic, and `pg_cron` invocations of `daily-check` /
+`kill-switch` do **not** count toward it — a project can be paused for
+inactivity even while the trading cron runs continuously. Dev received such a
+warning on 2026-07-12 (see the Addendum in
+`docs/decisions/2026-07-07-supabase-row-data-backup.md`). A paused project
+silently stops protecting an open position, since the kill-switch can't fire
+if the project itself is paused. This workflow pings the `status` function on
+a schedule so the project sees real gateway traffic and stays active.
+
+- **Schedule:** weekdays 12:23 UTC, plus manual `workflow_dispatch`.
+- **Two independent targets, one job:**
+  - **dev** — gated on the same `STATUS_URL`/`STATUS_TOKEN` repo secrets as
+    soak-digest (deliberate reuse, not new `_DEV`-suffixed secrets — see the
+    sub-plan on #361). Already active as of this workflow merging.
+  - **prod** — gated on `STATUS_URL_PROD`/`STATUS_TOKEN_PROD`, which are unset
+    today (prod is not yet deployed). Prod stays subject to inactivity
+    warnings/manual restore until go-live (#230); setting these two secrets
+    at go-live activates the prod step with no code change (see
+    `docs/runbooks/mvp2-deploy-and-decommission.md`).
+- **Failure contract — inert skip vs red run:** unlike soak-digest, missing
+  secrets for a target make that target's steps an **inert green skip**
+  (`::notice::`, no request made) — matching `backup-db.yml`'s default-OFF
+  idiom, since this workflow is meant to be safe to merge into forks or
+  before secrets exist. Once a target's two secrets are both set, a non-200
+  response or a timeout from that target **fails the run red** (same
+  `curl --fail-with-body --max-time 60` idiom as soak-digest). The dev and
+  prod steps are independent — a red prod run (post go-live) doesn't block
+  dev's ping, and vice versa.
+- **GitHub's 60-day auto-disable caveat:** GitHub automatically disables a
+  scheduled workflow after 60 days with no repository activity at all. This
+  repo has weekly commits from `backup-db.yml` alone, so this is a low but
+  non-zero residual risk — if it ever fires, both `heartbeat.yml` and
+  `backup-db.yml` stop running silently (no notification), and re-enabling
+  requires a manual visit to the Actions tab.
+
 ## Troubleshooting
 
 - **401 Unauthorized** — token problem: either `STATUS_TOKEN` is unset/blank
