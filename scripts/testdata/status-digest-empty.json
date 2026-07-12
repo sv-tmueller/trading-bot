@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-10T13:45:02.123Z",
+  "market_open": false,
+  "paused": true,
+  "regime": null,
+  "audit_7d": {
+    "since": "2026-07-03T13:45:02.123Z",
+    "outcome_counts": {},
+    "errors": []
+  },
+  "last_trade": null,
+  "alpaca": {
+    "equity_usd": 0,
+    "position": {
+      "symbol": "UPRO",
+      "qty": 0
+    }
+  }
+}
