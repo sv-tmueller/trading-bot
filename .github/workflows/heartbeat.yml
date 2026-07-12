@@ -1,0 +1,93 @@
+# Weekday heartbeat: pings the read-only `status` Edge Function so the
+# Supabase project sees real user-facing traffic through the API gateway
+# (DB reads of regime_state/audit_log/trades/bot_config, plus read-only
+# Alpaca calls). Exists because pg_cron invocations do NOT count toward
+# Supabase's free-tier inactivity/pause criterion — only user-initiated API
+# traffic does — and a paused project silently stops protecting an open
+# position (the kill-switch can't fire if the project is paused). See
+# docs/decisions/2026-07-07-supabase-row-data-backup.md (Addendum
+# 2026-07-12) and ref #361.
+#
+# Two independent targets in one job:
+#   - dev  (STATUS_URL / STATUS_TOKEN)            - already deployed, live now
+#   - prod (STATUS_URL_PROD / STATUS_TOKEN_PROD)  - not yet deployed; inert
+#     until the go-live runbook sets these two secrets (docs/runbooks/
+#     mvp2-deploy-and-decommission.md)
+#
+# Failure contract per target: secrets unset -> inert green skip (`::notice::`
+# + no request), matching backup-db.yml's default-OFF idiom. Secrets set ->
+# `curl --fail-with-body` against the endpoint; a non-200 response or a
+# timeout fails the run red, same idiom as soak-digest.yml's "Fetch digest"
+# step. Never echo the token.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   STATUS_URL          - dev status function URL (same as .env.status)
+#   STATUS_TOKEN         - dev status function token (same as .env.status)
+#   STATUS_URL_PROD      - prod status function URL (set at go-live, #230)
+#   STATUS_TOKEN_PROD    - prod status function token (set at go-live, #230)
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "23 12 * * 1-5" # weekdays 12:23 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: heartbeat
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check dev secrets configured
+        id: check_dev
+        run: |
+          if [ -z "$STATUS_URL" ] || [ -z "$STATUS_TOKEN" ]; then
+            echo "::notice::heartbeat (dev) is inert — STATUS_URL and/or STATUS_TOKEN repo secrets are not set. See docs/runbooks/status-check.md. Skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - name: Ping dev
+        if: steps.check_dev.outputs.configured == 'true'
+        run: |
+          curl --fail-with-body -sS --max-time 60 \
+            -H "x-status-token: $STATUS_TOKEN" \
+            "$STATUS_URL" \
+            -o /dev/null
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - name: Check prod secrets configured
+        id: check_prod
+        run: |
+          if [ -z "$STATUS_URL_PROD" ] || [ -z "$STATUS_TOKEN_PROD" ]; then
+            echo "::notice::heartbeat (prod) is inert — STATUS_URL_PROD and/or STATUS_TOKEN_PROD repo secrets are not set. Prod is not yet deployed (#230); set these two secrets at go-live to activate. Skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
+          STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
+
+      - name: Ping prod
+        if: steps.check_prod.outputs.configured == 'true'
+        run: |
+          curl --fail-with-body -sS --max-time 60 \
+            -H "x-status-token: $STATUS_TOKEN_PROD" \
+            "$STATUS_URL_PROD" \
+            -o /dev/null
+        env:
+          STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
+          STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
