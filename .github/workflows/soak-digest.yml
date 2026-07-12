@@ -1,0 +1,77 @@
+# Weekly soak digest: fetches the read-only `status` Edge Function (#354)
+# and posts a rendered markdown summary as a comment on the paper-soak
+# tracking issue (default #229), replacing the manual "watch the SQL editor"
+# instruction. See docs/runbooks/status-check.md for the full write-up.
+#
+# Deliberate divergence from backup-db.yml's inert-skip-on-missing-secrets
+# pattern: here, a missing STATUS_URL/STATUS_TOKEN FAILS the run loudly
+# instead of skipping silently — a red X is itself soak signal, and a quiet
+# green skip would defeat that contract.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   STATUS_URL    - the deployed status function URL (same value as
+#                   .env.status locally)
+#   STATUS_TOKEN  - the status function's read-only auth token (same value
+#                   as .env.status locally)
+name: soak-digest
+
+on:
+  schedule:
+    # Friday 21:30 UTC — after the US close (20:00 UTC EDT / 21:00 UTC EST)
+    # in both DST regimes. GitHub schedule jitter of a few minutes to about
+    # an hour is expected and acceptable for a weekly soak record.
+    - cron: "30 21 * * 5"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to comment on"
+        required: false
+        default: "229"
+
+concurrency:
+  group: soak-digest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  ISSUE_NUMBER: ${{ inputs.issue_number || '229' }}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check secrets configured
+        run: |
+          if [ -z "$STATUS_URL" ] || [ -z "$STATUS_TOKEN" ]; then
+            echo "::error::soak-digest requires STATUS_URL and STATUS_TOKEN repo secrets to be set (Settings -> Secrets and variables -> Actions). See docs/runbooks/status-check.md. Failing loudly — no silent skip."
+            exit 1
+          fi
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - uses: actions/checkout@v5
+
+      - name: Fetch digest
+        run: |
+          curl --fail-with-body -sS --max-time 60 \
+            -H "x-status-token: $STATUS_TOKEN" \
+            "$STATUS_URL" \
+            -o digest.json
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - name: Render digest
+        run: |
+          bash scripts/render_soak_digest.sh < digest.json > comment.md
+          cat comment.md
+
+      - name: Post comment
+        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file comment.md
+        env:
+          GH_TOKEN: ${{ github.token }}
