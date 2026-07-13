@@ -188,7 +188,7 @@ Family R total: **3 shapes**.
 **Justification for excluding R = 10 bp, quoted from #369 §5.2 (not a backtest result — cost
 arithmetic on published/fetched broker schedules):** at R = 20 bp, the required win rate to break
 even on cost is 51.4–55.9% across all eight venue/cost-case rows in #369's table (the co-primary
-base-case rows sit at 52.6% for XTB and 51.4% for 6E futures, comfortably inside the ~55–60%
+base-case rows sit at 52.0% for XTB and 51.4% for 6E futures, comfortably inside the ~55–60%
 plausible-ceiling band #369 states as a carried-over assumption). At R = 10 bp, two cells in that
 same table already breach that ceiling on #369's own arithmetic: IC Markets ECN pessimistic
 requires **61.8%** and M6E pessimistic requires **60.5%**, both over the ~55–60% band, and IC
