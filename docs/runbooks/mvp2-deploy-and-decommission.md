@@ -13,7 +13,8 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 ## Deploy (paper)
 1. `supabase link --project-ref <ref>`
 2. Set secrets:
-   `supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true N8N_WEBHOOK_URL=... PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY`
+   `supabase secrets set ALPACA_API_KEY=... ALPACA_SECRET_KEY=... ALPACA_PAPER=true NOTIFY_WEBHOOK_URL=... PANIC_TOKEN=... BOT_TICKER=UPRO BOT_BENCHMARK=SPY`
+   (`NOTIFY_WEBHOOK_URL` is the Discord incoming-webhook URL — see [`docs/runbooks/discord-notifications.md`](discord-notifications.md) for how to create one; unset = notifications silently skipped.)
    (Strategy params `REGIME_SMA_DAYS`/`KILL_SWITCH_DRAWDOWN_PCT`/`KILL_SWITCH_LOOKBACK_DAYS` default to 200/0.25/30 — set only to override.)
 3. `supabase db push` (applies all migrations, `0001_init.sql` through `0007_vault_fn_grants.sql`).
 4. In the SQL editor, store **two** secrets in Vault (one-time per project, not committed — the same migrations work for dev and prod, only these differ):
@@ -33,7 +34,7 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 - [ ] Test the kill button:
   `curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "x-panic-token: <token>"`
   → HTTP 200, `bot_config.paused` flips to `true`; then `?action=resume`. (A failed action returns **HTTP 500** with an `error:` result — don't treat a 500 as success. Note: `?action=liquidate` also sets `paused=true` so daily-check can't re-buy the dumped position — `resume` to re-enable trading.)
-- [ ] Let the cron run for a full week; verify daily flips and 5-min kill-switch ticks land in `audit_log` with expected outcomes; confirm Discord notifications arrive (the n8n flow renders `body.message` — the TS payloads carry it).
+- [ ] Let the cron run for a full week; verify daily flips and 5-min kill-switch ticks land in `audit_log` with expected outcomes; confirm Discord notifications arrive (Discord renders the `content` field the TS payloads carry — no forwarder in between).
 - [ ] If alerts are missing or daily-check seems to no-op, check for cron→function HTTP failures:
   `select * from net._http_response order by created desc limit 20;` (a wrong `PROJECT_REF` makes cron fire silent no-ops).
 
