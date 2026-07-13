@@ -1,6 +1,6 @@
 # Current Configuration
 
-(Last reviewed: 2026-06-10 for the daily-check post-open schedule change, #256.)
+(Last reviewed: 2026-07-12 for the GitHub Actions heartbeat workflow, #361.)
 
 The bot runs on Supabase (`pg_cron` -> Edge Functions -> Postgres) + Alpaca. Settings are stored
 as Supabase secrets (`supabase secrets set`), not a local `.env`.
@@ -56,3 +56,8 @@ to prod at go-live. See `web/.env.example`.
 
 - Deployment: dev (`qdaxxsuicyiscdvsdowc`) paper, soaking; prod not yet deployed.
 - `N8N_WEBHOOK_URL` intentionally unset on dev during the soak (notifications are best-effort).
+- **Heartbeat (#361):** `.github/workflows/heartbeat.yml` pings the `status` Edge Function on
+  weekdays so Supabase sees real API traffic — `pg_cron` alone does not count toward the free-tier
+  inactivity/pause criterion. Dev is covered now (reuses the existing `STATUS_URL`/`STATUS_TOKEN`
+  repo secrets); prod remains uncovered and subject to manual restore until `STATUS_URL_PROD`/
+  `STATUS_TOKEN_PROD` are set at go-live (#230). See `docs/runbooks/status-check.md`.

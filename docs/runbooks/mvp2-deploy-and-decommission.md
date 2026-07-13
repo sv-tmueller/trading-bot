@@ -40,6 +40,7 @@ three plans (`docs/plans/2026-06-05-mvp2-infra-migration-plan-{1,2,3}-*.md`).
 ## Cut to live
 - [ ] After a clean soak: `supabase secrets set ALPACA_PAPER=false` (live keys) and redeploy functions.
 - [ ] Watch the first live daily-check + a kill-switch tick closely.
+- [ ] Set the `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` repo secrets (Settings -> Secrets and variables -> Actions) to activate the prod step of `.github/workflows/heartbeat.yml` (#361) — until then, prod stays subject to Supabase's free-tier inactivity warnings/manual restore. See `docs/runbooks/status-check.md`.
 
 ## Decommission old stack
 - [ ] Tag the pre-migration tree FIRST: `git tag v1.0 <pre-migration-commit> && git push --tags` (do this before deleting any Python production code).
