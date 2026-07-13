@@ -138,15 +138,16 @@ values differ.
 
 ### Notifications
 
-`notifications.ts` POSTs to an n8n webhook (`N8N_WEBHOOK_URL` secret) which forwards to Discord.
-Silently skips if the secret is unset or the request fails, so a notification outage never crashes
-the bot. The webhook must be reachable from Supabase's cloud — a `localhost` URL won't work, and a
-Cloudflare-Access-protected n8n needs a path **bypass** (the bot sends no auth header).
+`notifications.ts` POSTs directly to a Discord incoming webhook (`NOTIFY_WEBHOOK_URL` secret) — no
+n8n or other forwarder in the path. Silently skips if the secret is unset or the request fails, so
+a notification outage never crashes the bot. The webhook must be reachable from Supabase's cloud —
+a `localhost` URL won't work.
 
 The helpers post structured JSON dicts (`event_type` + event-specific fields, plus a `message`
-field the n8n flow renders) so the flow can route on shape: `notifyRegimeFlip`,
+field) so a future JSON-consuming forwarder could still route on shape: `notifyRegimeFlip`,
 `notifyKillSwitchFired`, `notifyTradeFailed`, `notifyStateDesync`, `notifyBrokerError`,
-`notifyError`, `notifyPanic`.
+`notifyError`, `notifyPanic`. `notify()` derives a Discord-native `content` field from `message`
+(codepoint-safe-truncated to Discord's 2,000-character limit), which Discord renders directly.
 
 ### Settings
 

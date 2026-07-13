@@ -28,7 +28,7 @@ Registered by `supabase/migrations/0002_schedule.sql`; daily-check rescheduled b
 | `KILL_SWITCH_LOOKBACK_DAYS` | `30` | Trading-day window for the rolling high |
 | `PANIC_TOKEN` | — | `x-panic-token` header value for the panic Edge Function |
 | `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status Edge Function (#354); no default — unset/blank throws |
-| `N8N_WEBHOOK_URL` | — (optional) | Discord notification webhook; unset = notifications skipped |
+| `NOTIFY_WEBHOOK_URL` | — (optional) | Discord incoming-webhook URL; unset = notifications skipped |
 
 Account currency is **USD** (Alpaca accounts are USD-denominated). The runtime pause flag is not a
 secret — it lives in the `bot_config` row (`key='paused'`, seeded `false`), toggled via the `panic`
@@ -55,7 +55,7 @@ to prod at go-live. See `web/.env.example`.
 ## Operational state
 
 - Deployment: dev (`qdaxxsuicyiscdvsdowc`) paper, soaking; prod not yet deployed.
-- `N8N_WEBHOOK_URL` intentionally unset on dev during the soak (notifications are best-effort).
+- `NOTIFY_WEBHOOK_URL` intentionally unset on dev during the soak (notifications are best-effort).
 - **Heartbeat (#361):** `.github/workflows/heartbeat.yml` pings the `status` Edge Function on
   weekdays so Supabase sees real API traffic — `pg_cron` alone does not count toward the free-tier
   inactivity/pause criterion. Dev is covered now (reuses the existing `STATUS_URL`/`STATUS_TOKEN`

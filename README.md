@@ -10,7 +10,7 @@ No LLM is in the trading path. The strategy is a pure function (`computeTargetSt
 pg_cron (37 13&14 * * 1-5 UTC)  -> Edge Fn: daily-check --+
 pg_cron (*/5 13-21 * * 1-5 UTC) -> Edge Fn: kill-switch --+-> shared TS modules -> Alpaca REST (read/write)
 operator HTTP + x-panic-token   -> Edge Fn: panic       --+                       -> Postgres (read/write)
-                                                                                   -> n8n -> Discord
+                                                                                   -> Discord webhook
 
 operator HTTP + x-status-token  -> Edge Fn: status (read-only, no writes)
                                     -> Alpaca REST (read-only) + Postgres (read-only)
@@ -18,7 +18,7 @@ operator HTTP + x-status-token  -> Edge Fn: status (read-only, no writes)
 
 Everything runs inside one Supabase project: `pg_cron` schedules the jobs, which invoke
 TypeScript/Deno **Edge Functions**, which persist to **Postgres** and trade through **Alpaca**
-REST (broker + market data). Notifications go to the existing n8n webhook -> Discord. There is
+REST (broker + market data). Notifications go directly to a Discord incoming webhook. There is
 no always-on gateway, no VPS, and no host cron.
 
 Each function (`supabase/functions/<name>/`) is split into `logic.ts` (pure, testable) and
@@ -103,7 +103,7 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `KILL_SWITCH_LOOKBACK_DAYS` | `30` | Trading-day window for the rolling high |
 | `PANIC_TOKEN` | — | `x-panic-token` header value for the panic function |
 | `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status function; no default — unset/blank throws |
-| `N8N_WEBHOOK_URL` | — (optional) | Discord notification webhook; unset = notifications skipped |
+| `NOTIFY_WEBHOOK_URL` | — (optional) | Discord incoming-webhook URL; unset = notifications skipped |
 
 See `docs/CURRENT_CONFIG.md` for the current deployed values.
 
@@ -169,17 +169,20 @@ venv/bin/python main.py backtest --years 5
 This forwards to `backtest/regime.py` (UPRO vehicle, SPY benchmark, 200-day SMA). Set up the
 research venv with `python3 -m venv venv && venv/bin/pip install -r requirements.txt`.
 
-## Discord notifications (via n8n)
+## Discord notifications
 
 The bot posts structured event payloads (`event_type: regime_flip`, `kill_switch_fired`,
-`trade_failed`, `state_desync`, `broker_error`, `panic`, `error`) to an n8n webhook, which forwards
-to Discord. Each payload carries a `message` field that the n8n flow renders. Set `N8N_WEBHOOK_URL`
-via `supabase secrets set`. If unset, notifications are silently skipped and the bot keeps trading.
+`trade_failed`, `state_desync`, `broker_error`, `panic`, `error`) directly to a Discord incoming
+webhook — no forwarder in between. Each payload carries a `content` field (derived from the
+event's `message`, codepoint-safe-truncated to Discord's 2,000-character limit) that Discord
+renders natively, plus the full structured fields for any future JSON-consuming forwarder. Set
+`NOTIFY_WEBHOOK_URL` via `supabase secrets set` — see
+[`docs/runbooks/discord-notifications.md`](docs/runbooks/discord-notifications.md) for the setup
+steps. If unset, notifications are silently skipped and the bot keeps trading.
 
-Note: the webhook must be reachable from Supabase's cloud — a `localhost` URL will not work, and a
-Cloudflare-Access-protected n8n needs a **bypass** on the `/webhook/...` path (the bot sends no auth
-header). Notifications are best-effort, so the bot runs fine without them (they are intentionally
-unset during the paper soak).
+Note: the webhook must be reachable from Supabase's cloud — a `localhost` URL will not work.
+Notifications are best-effort, so the bot runs fine without them (they are intentionally unset
+during the paper soak).
 
 ## History
 
@@ -213,7 +216,6 @@ coin flip vs cost prompted the pivot to the deterministic rules engine.
 |-- strategy/regime.py             # Kept Python reference port of the decision rule
 |-- main.py                        # `python main.py backtest ...` research entry
 |-- deno.json                      # Deno tasks (test, test:db)
-|-- n8n/                           # n8n -> Discord workflow export
 |-- docs/
 |   |-- CURRENT_CONFIG.md          # Current deployed secrets/values
 |   |-- runbooks/                  # Deploy & decommission runbook

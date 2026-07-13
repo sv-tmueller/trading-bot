@@ -1,5 +1,5 @@
 // Strategy/runtime config for the migrated bot. Ports the numeric range checks
-// from config/settings.py. Alpaca/n8n/panic secrets are read in their own
+// from config/settings.py. Alpaca/notify/panic secrets are read in their own
 // modules (Plans 2-3) so this stays testable without broker credentials.
 
 export interface StrategyConfig {
@@ -106,8 +106,10 @@ export function getAlpacaConfig(): AlpacaConfig {
   };
 }
 
-export function getN8nWebhookUrl(): string {
-  return Deno.env.get("N8N_WEBHOOK_URL")?.trim() ?? "";
+// Discord incoming-webhook URL (#362 — direct-to-Discord, no n8n middleman).
+// Optional: unset/blank means notify() silently skips (see notifications.ts).
+export function getNotifyWebhookUrl(): string {
+  return Deno.env.get("NOTIFY_WEBHOOK_URL")?.trim() ?? "";
 }
 
 // x-status-token header value for the read-only status Edge Function (#354).

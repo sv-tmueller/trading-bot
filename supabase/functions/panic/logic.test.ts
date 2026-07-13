@@ -131,7 +131,7 @@ Deno.test("unknown action -> error", async () => {
 Deno.test("notify failure does not corrupt a successful outcome", async () => {
   const { deps, calls } = makeDeps({
     notifications: {
-      notifyPanic: () => Promise.reject(new Error("n8n down")),
+      notifyPanic: () => Promise.reject(new Error("webhook down")),
     } as unknown as PanicDeps["notifications"],
   });
   const r = await runPanic(deps, "pause");
