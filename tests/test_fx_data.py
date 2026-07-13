@@ -163,6 +163,23 @@ def test_get_week_bytes_cache_miss_with_fetch_writes_cache(tmp_path, monkeypatch
     assert calls == [(2023, 5)]
 
 
+def test_fetch_week_raises_week_not_found_on_empty_200_body(monkeypatch):
+    """An isolated FXCM CDN artifact observed live (2024 week 35): HTTP 200
+    with a zero-byte body. Treated the same as a 404 -- no data for that
+    week -- rather than crashing downstream in gzip/CSV parsing."""
+    class _FakeResp:
+        status_code = 200
+        content = b""
+
+        def raise_for_status(self):
+            pass
+
+    import requests as _requests
+    monkeypatch.setattr(_requests, "get", lambda url, timeout=30: _FakeResp())
+    with pytest.raises(fx_data.WeekNotFoundError):
+        fx_data._fetch_week(2024, 35)
+
+
 def test_fetch_week_raises_week_not_found_on_404(monkeypatch):
     class _FakeResp:
         status_code = 404
@@ -298,6 +315,15 @@ def test_check_ohlc_coherence_fires_on_non_positive_price():
     df.loc[df.index[0], "BidOpen"] = 0.0
     report = fx_data.check_ohlc_coherence(df)
     assert report["n_non_positive_prices"] >= 1
+
+
+def test_check_ohlc_coherence_fires_on_broken_mid_field():
+    """Mid OHLC is checked too — it's what fx_execution.simulate_fx actually
+    consumes, so its coherence must be verified independently of Bid/Ask."""
+    df = _h1_frame(n=2).copy()
+    df.loc[df.index[0], "MidLow"] = df.loc[df.index[0], "MidClose"] + 1.0
+    report = fx_data.check_ohlc_coherence(df)
+    assert report["n_coherence_violations"] >= 1
 
 
 def test_check_ohlc_coherence_clean_on_normal_fixture():

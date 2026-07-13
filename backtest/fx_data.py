@@ -79,6 +79,12 @@ def _fetch_week(year: int, week: int) -> bytes:
     if resp.status_code == 404:
         raise WeekNotFoundError(f"{url} -> HTTP 404")
     resp.raise_for_status()
+    if not resp.content:
+        # Observed live (2024 week 35): an isolated CDN artifact serves HTTP
+        # 200 with a zero-byte body for a single week. Treated the same as
+        # a 404 -- no data for that week -- so callers get one consistent
+        # "missing" signal instead of a downstream gzip/CSV parse crash.
+        raise WeekNotFoundError(f"{url} -> HTTP 200 with empty body")
     return resp.content
 
 
@@ -233,11 +239,13 @@ def check_gaps(df: pd.DataFrame, *, expected_delta: str = "1h") -> dict:
 
 
 def check_ohlc_coherence(df: pd.DataFrame) -> dict:
-    """OHLC coherence (low <= open,close <= high, both bid and ask sides),
+    """OHLC coherence (low <= open,close <= high, on the Bid, Ask, AND Mid
+    sides — Mid is what ``fx_execution.simulate_fx`` actually consumes, so
+    it is checked independently rather than merely assumed from Bid/Ask),
     crossed quotes (ask < bid, checked on Close), and non-positive prices
     (any raw price column <= 0)."""
     violations = 0
-    for side in ("Bid", "Ask"):
+    for side in ("Bid", "Ask", "Mid"):
         o = df[f"{side}Open"]
         h = df[f"{side}High"]
         l = df[f"{side}Low"]
