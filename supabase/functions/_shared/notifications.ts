@@ -1,16 +1,29 @@
-// n8n webhook poster. Mirrors tools/notifications.py: structured event_type
-// payloads (each carrying a human-readable `message` the n8n Discord node
-// renders), and NEVER throws — a notification outage must not crash the bot.
-import { getN8nWebhookUrl } from "./config.ts";
+// Direct-to-Discord webhook poster (#362 — no n8n middleman). Every event
+// carries structured `event_type` + event-specific fields (kept for any
+// future JSON-consuming forwarder), plus a human-readable `message`. When
+// `message` is present, notify() also derives a Discord-native `content`
+// field (Discord's incoming-webhook API renders `content` directly, and
+// ignores unrecognised extra fields), codepoint-safe-truncated to 2,000
+// characters — Discord's hard content limit — so a long message still posts
+// instead of 400ing the whole webhook call. The full untruncated text always
+// survives in `message`. NEVER throws — a notification outage must not crash
+// the bot.
+import { getNotifyWebhookUrl } from "./config.ts";
+
+const DISCORD_CONTENT_MAX_CODEPOINTS = 2000;
 
 export async function notify(event: Record<string, unknown>): Promise<void> {
-  const url = getN8nWebhookUrl();
+  const url = getNotifyWebhookUrl();
   if (url === "") return;
+  const message = event.message;
+  const body = typeof message === "string" && message !== ""
+    ? { ...event, content: [...message].slice(0, DISCORD_CONTENT_MAX_CODEPOINTS).join("") }
+    : event;
   try {
     await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(event),
+      body: JSON.stringify(body),
     });
   } catch (_e) {
     // swallow — outage must not crash the bot

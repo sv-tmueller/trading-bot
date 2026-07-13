@@ -1,7 +1,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   getAlpacaConfig,
-  getN8nWebhookUrl,
+  getNotifyWebhookUrl,
   getStatusToken,
   getStrategyConfig,
   isClaudeAgentNoBroker,
@@ -126,9 +126,23 @@ Deno.test("getAlpacaConfig rejects invalid ALPACA_PAPER", () => {
   Deno.env.delete("ALPACA_PAPER");
 });
 
-Deno.test("getN8nWebhookUrl empty when unset", () => {
+Deno.test("getNotifyWebhookUrl empty when unset", () => {
+  Deno.env.delete("NOTIFY_WEBHOOK_URL");
   Deno.env.delete("N8N_WEBHOOK_URL");
-  assertEquals(getN8nWebhookUrl(), "");
+  assertEquals(getNotifyWebhookUrl(), "");
+});
+
+Deno.test("getNotifyWebhookUrl reads NOTIFY_WEBHOOK_URL", () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "https://discord.com/api/webhooks/x/y");
+  assertEquals(getNotifyWebhookUrl(), "https://discord.com/api/webhooks/x/y");
+  Deno.env.delete("NOTIFY_WEBHOOK_URL");
+});
+
+Deno.test("getNotifyWebhookUrl ignores the legacy N8N_WEBHOOK_URL name", () => {
+  Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  Deno.env.set("N8N_WEBHOOK_URL", "http://localhost:5678/hook");
+  assertEquals(getNotifyWebhookUrl(), "");
+  Deno.env.delete("N8N_WEBHOOK_URL");
 });
 
 Deno.test("isClaudeAgentNoBroker reads env fresh", () => {
