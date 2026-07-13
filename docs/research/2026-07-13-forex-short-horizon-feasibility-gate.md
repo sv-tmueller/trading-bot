@@ -27,9 +27,9 @@ touched; no order placed)
 | EURUSD reference price (for pip→bp conversion) | **1.14** | [tradingeconomics.com/commodity/euro](https://tradingeconomics.com/commodity/euro), fetched 2026-07-13 (live spot ≈1.14014, rounded) |
 | Trading days / year | **~260** (24/5 forex session, 52 weeks × 5 days) | Stated explicitly to contrast with **#309's 252** (US equity/NYSE calendar) — forex trades 24 hours a day, 5 days a week with no US-market holiday closures baked into the count the way NYSE has; 260 is the standard 52×5 approximation. This is **not** the crypto 365-day count either (forex closes over the weekend). |
 | Round-trip cost `c` (proportional venues) | per-venue, see §4 | Fetched schedules, §2 |
-| Slippage assumption per side | 0.2 pip (base) / 0.5 pip (pessimistic) | **[assumption]** — no venue publishes a slippage figure; bracketed low/high per venue row, consistent with #309's slippage treatment |
+| Slippage assumption per side | 0.2 pip (base) / 0.5 pip (pessimistic) — **spot/CFD venues (IC Markets, XTB) only** | **[assumption]** — no venue publishes a slippage figure; bracketed low/high, applied via the formula in §3 (`2×slippage_per_side`), consistent with #309's slippage treatment. **Futures (6E/M6E) use a different, explicitly-stated convention instead**: CME quotes in discrete ticks, not continuous pips, so the base-vs-pessimistic spread already widens from 1 tick to 2 ticks (§4.3) to capture the same "things go against you" effect a continuous pip-slippage figure captures for spot/CFD. Stacking an *additional* pip-slippage line on top of a tick-quantized spread would double-count the same risk in an instrument where "slippage" isn't a meaningful sub-tick concept; the 1-tick/2-tick base/pessimistic split is the futures-specific slippage proxy, applied consistently across both futures rows. |
 | Overnight financing (spot/CFD only, sub-daily cadence) | XTB EURUSD swap: long **−$4.525**/day, short **−$1.032**/day per 100k-EUR lot | [XTB review via dailyforex.com](https://www.dailyforex.com/forex-brokers/xtb-review), page last updated 2024-11-11, fetched 2026-07-13 — reused as a proxy for all proportional venues (spot ECN and CFD alike), since venue-specific swap schedules were not separately fetched for each; **[assumption: applied uniformly]** |
-| `R` grid (symmetric TP/SL) | {10, 20, 30, 50} bp → pip equivalents at 1.14 ref price: **11 / 23 / 34 / 57 pips** | Derived (`R_bp × 1.14 / 100`), spans tight-scalp to a realistic 4h-bar TP/SL, per #368's grid |
+| `R` grid (symmetric TP/SL) | {10, 20, 30, 50} bp → pip equivalents at 1.14 ref price: **11 / 23 / 34 / 57 pips** | Derived (`R_bp × 1.14`, no `/100` — 1 bp = 0.0001 of price and 1 EURUSD pip = 0.0001 of price, so the two units are numerically identical up to the price-scaling factor; e.g. `10 × 1.14 = 11.4 ≈ 11 pips`), spans tight-scalp to a realistic 4h-bar TP/SL, per #368's grid |
 | Trades/day grid | {0.5, 1, 2, 3, 6, 12} | Per #368; cadence mapping: 0.5–1 ≈ a daily/EOD rule; 4h bars on a 24h session cap out at **6/day** (24 h ÷ 4 h); 12/day is a capped 1h-cadence proxy — so 1h/4h/daily cadences literally fall out of this table rather than being assumed up front |
 | Position sizes (Trade Republic flat-fee sweep only) | €1,000 / €5,000 / €10,000 / €25,000 | Per #368 |
 | German capital-gains flat tax | **≈26.375%** (25% Abgeltungsteuer + 5.5% Solidaritätszuschlag on the 25%) | [§32d EStG](https://www.gesetze-im-internet.de/estg/__32d.html), fetched 2026-07-13: "Die Einkommensteuer für Einkünfte aus Kapitalvermögen... beträgt 25 Prozent," no short/long distinction. Same flat-tax treatment carried over from #309/#308's logged decision. |
@@ -55,11 +55,16 @@ as #309's equivalent framing stated. The live bot is untouched by this research 
 #368). Stage 2 (colleague-strategy audit + faithful backtest) is a later batch, gated on this doc
 passing — it is **not** developed here (hard non-goal).
 
-The invariant line that matters for this doc's venue table (§7): an **LLM deciding each trade** — the
+The invariant line that matters for this doc's venue table (§8): an **LLM deciding each trade** — the
 shape the rules-engine pivot removed — is out of bounds regardless of cost arithmetic. Two of the
-four operator-flagged platforms (tradingkit.com's "PropFirm AI," trader.dev's "vibe trading, automated")
-carry an AI/LLM framing in their own marketing copy; that framing is noted honestly in §7 but does not
-change this doc's cost verdict, which concerns instrument/venue economics, not decision logic.
+four operator-flagged platforms (tradingkit.com, trader.dev) are **confirmed LLM-based** on a direct
+re-fetch with a plain browser user agent (round 1's fetch attempts were blocked or returned only a
+tagline): tradingkit.com's own site explicitly names an "AI Trading Arena" ("Watch trading AIs go
+head-to-head... the best LLMs compete") and a "Connect to Claude" feature; trader.dev's own meta
+description reads "Prompt-driven strategies, AI-native backtests, and one-click deploys to Bybit,
+Blofin, Toobit, and WeeX" — confirmed AI/LLM framing, not merely hedged marketing copy. That
+confirmation is detailed in §8 but does not change this doc's cost verdict, which concerns
+instrument/venue economics, not decision logic.
 
 ---
 
@@ -81,16 +86,25 @@ an asymmetric generalization is `(SL + c) / (TP + SL)` (relevant to the colleagu
 a TP *ceiling* rather than a fixed TP) — noted here for completeness, but every AC table below stays
 symmetric per #368's own grid.
 
+**Applying `2×slippage_per_side` consistently (§1).** Every spot/CFD venue row in §4 (IC Markets,
+XTB) includes the `2×slippage_per_side` term explicitly, as the formula above requires — round 1
+omitted it from IC Markets' base-case row only, which §4.1/§5 corrects. The two futures rows (6E,
+M6E, §4.3) use a stated, different convention instead of an additive pip-slippage term: CME quotes in
+discrete ticks, so their base-vs-pessimistic `c` already widens from a 1-tick to a 2-tick spread to
+capture the same effect a continuous pip-slippage figure captures for spot/CFD — stacking both would
+double-count. This is the "different, explicitly-stated per-venue assumption" §1 flags, applied
+consistently to both futures rows.
+
 ## 4. Venue round-trip cost `c` — fetched schedules
 
 ### 4.1 ECN/spot forex — IC Markets (Raw Spread / cTrader account)
 
 | Component | Value | Source |
 |---|---|---|
-| EURUSD average spread | **0.01 pips** | [ic.com/global/en/trading-pricing/spreads](https://ic.com/global/en/trading-pricing/spreads) (redirected from icmarkets.com), fetched 2026-07-13 |
+| EURUSD average spread | **0.1 pips** | [ic.com/global/en/trading-pricing/spreads](https://ic.com/global/en/trading-pricing/spreads) (redirected from icmarkets.com), fetched 2026-07-13 — quoted **verbatim**: *"IC's spreads are among the lowest across all major and minor currency pairs. In particular, our average EUR/USD spread\* of 0.1 pips is one of the lowest in the world."* (Round 1 of this doc had misread a `0.01` figure off the page — likely a MIN-column value rather than the stated average prose — corrected here to the page's own average-spread sentence.) |
 | Commission | **$3 per 100,000 USD traded, per side** → $6 round-trip per 100k lot | same page |
-| Base `c` | spread (0.01 pip = 0.009 bp) + commission (0.6 bp round-trip) = **0.61 bp** | derived |
-| Pessimistic `c` | 1.0-pip spread (0.88 bp) + commission (0.6 bp) + 0.5-pip/side slippage (0.88 bp) = **2.35 bp** | derived, slippage `[assumption]` |
+| Base `c` | spread (0.1 pip = 0.088 bp) + commission (0.6 bp round-trip) + 0.2-pip/side slippage (2× = 0.4 pip = 0.351 bp, per §1's slippage convention) = **1.04 bp** (0.088 + 0.6 + 0.351 = 1.039) | derived; the base row must include the same slippage line the formula in §3 requires for every spot/CFD venue — round 1 omitted it here (and only here), which this round corrects |
+| Pessimistic `c` | 1.0-pip spread (0.88 bp) + commission (0.6 bp) + 0.5-pip/side slippage (0.88 bp) = **2.35 bp** | derived, slippage `[assumption]`; unaffected by the base-spread correction above, since the pessimistic case already assumed a worse 1.0-pip spread regardless of the quoted average |
 
 IC Markets satisfies #368's "ECN/spot forex broker" row; it fills the developer's-pick slot the
 SUB_PLAN offered (IBKR IDEALPRO / IC Markets / Pepperstone). **IBKR's own pricing pages
@@ -165,33 +179,47 @@ it does not depend on picking the "right" issuer-spread number within the bracke
 
 `drag = trades_per_day × 260 × c` (annualized, % of notional/yr); `required win rate = 0.5 + c/(2R)`.
 Sub-daily cadences (0.5/day) for spot/CFD rows add the **XTB overnight financing proxy**, averaged
-long/short (`(4.525 − 1.032)/2 = 1.75 bp/night`(as a fraction, 0.175 bp — table below), applied for
-~2 nights held at 0.5 trades/day; futures rows have no daily rollover charge (a genuine structural
-advantage of the futures wrapper, not modeled away) so no overnight line is added there.
+long/short. The doc's own EUR×1.14 notional convention (used for the futures notionals in §4.3) is
+applied here too, for consistency: `(4.525 − 1.032)/2 = 1.7465 $/night` on a 100,000-EUR lot, i.e.
+**$114,000 notional** (100,000 × 1.14), not a flat $100,000 — `1.7465 / 114,000 × 10,000 = 0.153 bp/
+night` (round 1 divided by the flat $100,000 lot size instead, giving an inconsistent 0.175 bp/night;
+corrected here), applied for ~2 nights held at 0.5 trades/day; futures rows have no daily rollover
+charge (a genuine structural advantage of the futures wrapper, not modeled away) so no overnight line
+is added there.
 
 ### 5.1 Annualized cost drag (%/yr) by venue × trades/day
 
 | Venue (`c`) | 0.5/day | 1/day | 2/day | 3/day | 6/day | 12/day |
 |---|---|---|---|---|---|---|
-| IC Markets ECN base (0.61 bp) | 1.2% | 1.6% | 3.2% | 4.7% | 9.5% | 19.0% |
+| IC Markets ECN base (1.04 bp) | 1.7% | 2.7% | 5.4% | 8.1% | **16.2%** | 32.4% |
 | IC Markets ECN pessimistic (2.35 bp) | 3.5% | 6.1% | 12.2% | 18.4% | 36.7% | 73.5% |
-| XTB CFD base (0.79 bp) | 1.5% | 2.1% | 4.1% | 6.2% | 12.3% | 24.6% |
+| XTB CFD base (0.79 bp) | 1.4% | 2.1% | 4.1% | 6.2% | 12.3% | 24.6% |
 | XTB CFD pessimistic (1.75 bp) | 2.7% | 4.6% | 9.1% | 13.7% | 27.4% | 54.7% |
-| 6E futures base (0.56 bp) | 0.7% | 1.5% | 2.9% | 4.4% | 8.7% | 17.4% |
+| 6E futures base (0.56 bp) | 0.7% | 1.5% | 2.9% | 4.4% | 8.7% | **17.4%** |
 | 6E futures pessimistic (1.00 bp) | 1.3% | 2.6% | 5.2% | 7.8% | 15.5% | 31.1% |
 | M6E futures base (1.23 bp) | 1.6% | 3.2% | 6.4% | 9.6% | 19.2% | 38.3% |
 | M6E futures pessimistic (2.10 bp) | 2.7% | 5.5% | 10.9% | 16.4% | 32.8% | 65.7% |
 
+**Correction from round 1:** IC Markets ECN base `c` was 0.61 bp (missing the base-case slippage
+line and using a misread 0.01-pip spread, §4.1); corrected to **1.04 bp**, which pushes its 6/day
+drag from 9.5% to **16.2% — over the stated 15%/yr budget** (see §10). The XTB 0.5/day cell also
+moves slightly (1.5% → 1.4%) from the overnight-financing convention fix above. Every other cell in
+this table is unchanged from round 1 — the futures rows do not carry an additional slippage line
+because they use the tick-widening convention stated in §1 instead (1-tick base → 2-tick pessimistic
+already plays the same role).
+
 Contrast with #309's equivalent table: at base cost, equity ETFs on Alpaca hit **37.8%/yr at just
 5 trades/day**; the cheapest forex venue here (6E futures, base) is still under 20%/yr at **12**
-trades/day. This is the direct arithmetic reason forex prices out differently from #309's US-equity
-and crypto cases — a genuinely cheaper cost floor, not a different formula.
+trades/day (17.4% — itself over the 15%/yr budget at that cadence, see §10, but nowhere near equity's
+37.8%). This is the direct arithmetic reason forex prices out differently from #309's US-equity
+and crypto cases — a genuinely cheaper cost floor, not a different formula, even after correcting the
+IC Markets figure.
 
 ### 5.2 Required win rate to break even on cost, by `R`
 
 | Venue (`c`) | R=10 bp (11 pips) | R=20 bp (23 pips) | R=30 bp (34 pips) | R=50 bp (57 pips) |
 |---|---|---|---|---|
-| IC Markets ECN base | 53.0% | 51.5% | 51.0% | 50.6% |
+| IC Markets ECN base | **55.2%** | 52.6% | 51.7% | 51.0% |
 | IC Markets ECN pessimistic | **61.8%** | 55.9% | 53.9% | 52.4% |
 | XTB CFD base | 53.9% | 52.0% | 51.3% | 50.8% |
 | XTB CFD pessimistic | 58.8% | 54.4% | 52.9% | 51.8% |
@@ -200,28 +228,62 @@ and crypto cases — a genuinely cheaper cost floor, not a different formula.
 | M6E futures base | 56.1% | 53.1% | 52.0% | 51.2% |
 | M6E futures pessimistic | **60.5%** | 55.3% | 53.5% | 52.1% |
 
-Only the tight-`R` (10 bp / ~11-pip) + pessimistic-cost corner brushes or exceeds the stated 55–60%
-ceiling (IC Markets pessimistic 61.8%, M6E pessimistic 60.5%); every other cell — including every
-base-case row at every `R`, and every pessimistic row at `R` ≥ 20 bp — sits comfortably under it.
-This is the opposite shape from #309, where the *base* case already failed outright.
+IC Markets ECN base's `R=10 bp` cell moves from 53.0% (round 1) to **55.2%** with the corrected `c`
+— it now sits at the *bottom edge* of the stated 55–60% ceiling band rather than comfortably under
+it, though it does not exceed the band. Two cells now sit at or above the stated 55–60% ceiling:
+**IC Markets ECN pessimistic (61.8%)**, which *exceeds* the ceiling outright and is the single worst
+cell in this table — on the doc's own flagship, cheapest-quoted spot venue — and **M6E pessimistic
+(60.5%)**, also over the ceiling. Every other cell — every base-case row at `R` ≥ 20 bp, and every
+pessimistic row at `R` ≥ 20 bp — sits comfortably under the ceiling. This is still a much narrower
+failure region than #309, where the *base* case already failed outright at every venue tested; here
+only the tightest-`R`, pessimistic-cost (plus, marginally, IC Markets base at the tightest `R`)
+corners are affected.
+
+### 5.3 Cadence sweep — Trade Republic flat-fee model (AC 1 gap fix)
+
+AC 1 asks for cadence-sweep drag tables under **both** cost models; round 1 gave the proportional
+venues a full sweep (§5.1) but the flat-fee (TR) model only inline 1-trade/day estimates. This
+table closes that literal gap, using `drag = trades_per_day × 260 × c(size)` with `c(size)` at the
+**low end** of the issuer-spread bracket (10 bp, §4.4) — i.e. the *most favorable* case for TR:
+
+| Size (`c` at low-issuer-spread, §4.4) | 0.5/day | 1/day | 2/day | 3/day | 6/day | 12/day |
+|---|---|---|---|---|---|---|
+| €1,000 (30.0 bp) | 39.0% | 78.0% | 156.0% | 234.0% | 468.0% | 936.0% |
+| €5,000 (14.0 bp) | 18.2% | 36.4% | 72.8% | 109.2% | 218.4% | 436.8% |
+| €10,000 (12.0 bp) | 15.6% | 31.2% | 62.4% | 93.6% | 187.2% | 374.4% |
+| €25,000 (10.8 bp) | 14.0% | 28.1% | 56.2% | 84.2% | 168.5% | 337.0% |
+
+Every cell above the 15%/yr budget is dead — which is every cell except the single most favorable
+corner (**€25,000, 0.5 trades/day, 14.0%**), and even that corner is already priced at the *low* end
+of the issuer-spread bracket (10 bp); at the base-case 15 bp issuer spread used elsewhere in this
+doc, that same corner's `c` rises to 15.8 bp (§4.4) and its drag to `0.5 × 260 × 0.00158 × 100 =
+20.5%`, also over budget. TR is dead at every cadence × size cell in the swept grid once a realistic
+issuer spread is used — reinforcing, not softening, §4.4's crossover finding: TR's cost problem is
+structural (the embedded certificate issuer spread), not solved by trading less often or sizing up.
 
 ## 6. Feasibility frontier — closed form
 
-`max trades/day = drag_budget / (260 × c)`. Frontier at the stated **15%/yr** sanity budget (§9):
+`max trades/day = drag_budget / (260 × c)`. Frontier at the stated **15%/yr** sanity budget (§1):
 
 | Venue | Max trades/day (base) | Max trades/day (pessimistic) |
 |---|---|---|
-| IC Markets ECN spot | 9.5 | 2.5 |
+| IC Markets ECN spot | **5.6** | 2.5 |
 | XTB CFD | 7.3 | 3.3 |
 | 6E futures | **10.3** | 5.8 |
 | M6E futures | 4.7 | 2.7 |
 
-At a 15%/yr drag budget, the frontier survives well past the colleague's own 4h/6-per-day cadence on
-every base-case venue, and past it on three of four venues even pessimistically. Widening the budget
-to 20%/yr or 30%/yr (shown in the scratchpad calc, not reproduced here to keep this table to the
-stated threshold) pushes the frontier further out; narrowing it to 10%/yr pulls IC Markets ECN
-pessimistic below 2/day. The frontier is a straight-line function of the assumed budget — reviewers
-disagreeing with 15% can rescale linearly using the formula above.
+**Correction from round 1:** IC Markets ECN spot's base-case frontier moves from 9.5 to **5.6**
+trades/day with the corrected `c` (§4.1/§5.1) — it now falls **short of** the colleague's proposed
+6-per-day (4h) cadence, not past it. At the stated 15%/yr drag budget, the frontier survives past the
+colleague's 4h/6-per-day cadence on two of four base-case venues (XTB at 7.3/day, 6E futures at
+10.3/day); IC Markets base tops out at 5.6/day and M6E base at 4.7/day — both *below* 6/day. Put
+another way: the honest frontier for a rule run at exactly 6 trades/day survives on XTB and 6E
+futures but not on IC Markets or M6E at base cost, and on none of the four venues at pessimistic
+cost (all four pessimistic frontiers are below 6/day: 2.5, 3.3, 5.8, 2.7). Widening the budget to
+20%/yr or 30%/yr (shown in the scratchpad calc, not reproduced here to keep this table to the stated
+threshold) pushes every frontier further out; narrowing it to 10%/yr pulls IC Markets ECN pessimistic
+below 2/day. The frontier is a straight-line function of the assumed budget — reviewers disagreeing
+with 15% can rescale linearly using the formula above.
 
 ---
 
@@ -284,14 +346,14 @@ Which venues a German resident can legitimately reach with **real, automatable**
 
 | Venue | What it is | Cost (from §4) | Automatable by a German resident? | Notes |
 |---|---|---|---|---|
-| **IC Markets** (Raw/cTrader) | ECN/STP forex-CFD broker | 0.61–2.35 bp | **Yes** — cTrader Open API / FIX API, MT4/5 EAs; EU-facing entity, MiFID-reachable | Fetched fee schedule directly (§4.1) |
+| **IC Markets** (Raw/cTrader) | ECN/STP forex-CFD broker | 1.04–2.35 bp | **Yes** — cTrader Open API / FIX API, MT4/5 EAs; EU-facing entity, MiFID-reachable | Fetched fee schedule directly (§4.1); base `c` corrected from round 1's 0.61 bp |
 | **XTB** | CFD/forex broker, BaFin-relevant retail brand | 0.79–1.75 bp | Has an xStation platform with algo/API access in its retail offering (not separately re-verified this session beyond the fee citation) | Fee number is a secondary/dated source (§4.2) — flagged |
 | **CME 6E/M6E via IBKR** | Regulated futures exchange + broker | 0.56–2.10 bp | **Yes** — IBKR TWS/Client Portal API is a real, documented, automatable API; IBKR itself could not be fetched directly this session (403 on every domain tried), but its API's existence and general reachability from Germany is well-established and not in dispute here | Commission figure sourced from a secondary page, not IBKR's own (§4.3) |
 | **Trade Republic** | German neobroker | 10.8–50 bp (certificates only) | **No — disqualifying.** No spot FX at all. **No official API** (confirmed §4.4, multiple sources); unofficial/reverse-engineered APIs exist but TR actively works to break them ("möchte... nicht, dass die... Lösungen dauerhaft funktionieren") — ToS-violating and unreliable by the platform's own stated intent, independent of TR's cost economics (which are separately disqualifying per §4.4) | Two independent disqualifiers, not one |
 | **tradingview.com** | Charting/alerting platform, **not itself a broker** | N/A (subscription: €12.95–€199.95/mo, [tradingview.com/pricing](https://www.tradingview.com/pricing/), fetched 2026-07-13) | Only **via** a connected broker. TradingView's own webhook mechanism is a **one-way HTTP POST notification** to a URL you supply — [confirmed via tradingview.com's own webhook support doc](https://www.tradingview.com/support/solutions/43000529348-tradingview-trading-panel/), fetched 2026-07-13 — it does **not** place orders by itself. Separately, TradingView's official "Trading Panel" broker-partner integration lists **100+ broker partners** including **IC Markets, Pepperstone, OANDA, Interactive Brokers, Saxo Bank, Forex.com, FXCM** — [tradingview.com/brokerage-integration](https://www.tradingview.com/brokerage-integration/), fetched 2026-07-13 | This is the legitimate half of the "YouTube stack" (see synthesis below): official broker partnerships, not scraped credentials |
 | **trigger.trade** | Webhook→exchange execution bridge, **crypto-only** | N/A to this forex doc | Connects **Bybit, Blofin, Toobit, WEEX, Bitunix** — five crypto exchanges, **none** BaFin-licensed for German retail spot/derivatives crypto trading in the way a MiFID broker is; free for a "Skool community" membership per its own page, [trigger.trade](https://trigger.trade), fetched 2026-07-13 | **Not applicable to forex at all** — and crypto is a hard non-goal of #368/#309 anyway. Included per the operator's lead decision, marked honestly as out-of-scope-by-asset-class, not evaluated further |
-| **trader.dev** | Minimal landing page: **"vibe trading, automated"** | Unknown — no pricing, broker, or feature detail was retrievable | **Cannot confirm any legitimate automated execution capability.** The page returns essentially no content beyond its own tagline to this session's fetch tool | The tagline itself ("vibe trading") suggests **non-deterministic, LLM/sentiment-style** decision-making if the product is real — which would be **out of invariant bounds** (§2) regardless of cost, independent of whatever this product actually does under the hood. Marked honestly as **indeterminate**, not dead, not verified |
-| **tradingkit.com** | AI-powered trading **tool suite**: backtesting (via trader.dev), "PropFirm AI" funded-account monitoring, a strategy marketplace, an MT5 Python package | Unknown | **Direct site access returned HTTP 403** to this session's fetch tool; described only via secondary search-engine snippets, which show it is **not itself a forex execution bridge to a regulated broker** — it is closer to an education/prop-firm-tooling brand that references trader.dev for backtesting | Prop-firm funded-account trading is also a **different asset/legal relationship** (trading the firm's capital under a challenge agreement, not a personal brokerage account) — not evaluated here at all, flagged as out of scope |
+| **trader.dev** | **Confirmed AI/LLM-based** ("vibe trading, automated") — round 2 re-fetch with a plain browser user agent (round 1's fetch returned only the tagline) pulled the page's own meta description: *"The terminal for vibe traders. Prompt-driven strategies, AI-native backtests, and one-click deploys to Bybit, Blofin, Toobit, and WeeX."* Fetched 2026-07-13. | Unknown — no pricing page retrievable; execution targets are the four named crypto exchanges only | **No forex execution capability at all** — its own description names only crypto-exchange deploys (Bybit, Blofin, Toobit, WeeX), none MiFID/BaFin-relevant. Even if it were forex-capable, its **"prompt-driven"/"AI-native"** framing is now **confirmed**, not merely suggested, LLM-in-the-loop decision-making — **out of invariant bounds** (§2) regardless of cost or asset class | Upgraded from round 1's "indeterminate" to **confirmed LLM-based and forex-inapplicable**, both on direct evidence |
+| **tradingkit.com** | **Confirmed AI/LLM-based.** Round 2 re-fetch with a plain user agent returned HTTP 200 (round 1's fetch was blocked); the site's own content names an **"AI Trading Arena"** — *"Watch trading AIs go head-to-head. An arena where the best LLMs compete live to out-trade each other"* — with a **"Connect to Claude"** feature, plus its own `<title>`/meta: *"TradingKit.com · Trade smarter with AI... AI-powered trading tools by DaviddTech — backtest strategies with Trader.dev, pass funded challenges with PropFirm AI."* Fetched 2026-07-13. | Unknown — no forex-broker pricing found | **Not a forex execution bridge to a regulated broker** — it is an AI/prop-firm-tooling brand (backtesting via trader.dev, "PropFirm AI" funded-account monitoring, an "LLM vs LLM" arena). Its own site now **explicitly confirms** LLM-driven trading ("Connect to Claude," "best LLMs compete") — squarely **out of invariant bounds** (§2), not merely suggestive marketing copy | Upgraded from round 1's "indeterminate/blocked" to **confirmed LLM-based**; prop-firm funded-account trading is also a different asset/legal relationship (trading the firm's capital under a challenge agreement, not a personal brokerage account) — not evaluated here at all, flagged as out of scope regardless |
 
 **Synthesis — the TradingView-alert→webhook→execution-bridge stack, assessed:**
 
@@ -320,6 +382,12 @@ different reliability/ToS profiles:
 no official API for either pattern to attach to, and an explicit, sourced statement that TR
 disables unofficial workarounds. Its disqualification for automation (§4.4, AC 5) stands on ToS/API
 grounds *and independently* on cost grounds (§4.4) — either one alone would be disqualifying.
+
+**trader.dev and tradingkit.com sit outside both patterns too, on the invariant axis specifically**
+— both are now confirmed (not merely suspected) LLM-driven products by their own marketing copy, and
+neither offers a forex execution path in the first place (trader.dev's own description names only
+crypto-exchange deploys). They are disqualified twice over: no forex venue to evaluate, and an
+LLM-in-the-loop decision shape this repo's invariants (§2) rule out regardless of cost.
 
 ---
 
@@ -364,30 +432,60 @@ representative mid-grid TP/SL, not the tightest or widest) and the secondary 15%
 
 | Venue | 0.5/day | 1/day | 2/day | 3/day | 6/day (4h cadence) | 12/day |
 |---|---|---|---|---|---|---|
-| IC Markets ECN (base) | survive | survive | survive | survive | survive | **borderline** (19.0% drag, just over budget) |
-| XTB CFD (base) | survive | survive | survive | survive | survive | **borderline** (24.6% drag) |
-| 6E futures (base) | survive | survive | survive | survive | survive | survive (17.4% drag, closest to budget but under) |
+| IC Markets ECN (base) | survive | survive | survive | survive | **borderline** (16.2% drag, over budget) | dead (32.4% drag) |
+| XTB CFD (base) | survive | survive | survive | survive | survive (12.3% drag) | **borderline** (24.6% drag) |
+| 6E futures (base) | survive | survive | survive | survive | survive (8.7% drag) | **borderline** (17.4% drag, over budget) |
 | M6E futures (base) | survive | survive | survive | survive | **borderline** (19.2% drag) | dead (38.3% drag) |
-| *(pessimistic-cost cells, same venues)* | mostly survive | survive/borderline | borderline | borderline–dead | dead (all ≥27% drag) | dead |
+| *(pessimistic-cost cells, same venues)* | mostly survive | survive/borderline | borderline | borderline–dead | borderline–dead (15.5–36.7% drag, §5.1) | dead |
+
+**Correction from round 1 (re-verification, not a numbered finding):** the 6/day pessimistic cell was
+labeled "dead (all ≥27% drag)," but §5.1's own pessimistic row shows 6E futures pessimistic at 6/day
+is 15.5% — neither ≥27% nor "dead" by this doc's own usage elsewhere (compare 6E base 12/day at
+17.4%, labeled "borderline" below, not "dead"). Corrected to the actual 15.5–36.7% range spanning
+borderline (6E, XTB) to dead (IC Markets, M6E).
+
+**Correction from round 1:** the IC Markets ECN (base) row is materially worse after the `c`
+correction (§4.1/§5.1) — it moves from "survive at 6/day, borderline only at 12/day" to
+**borderline at 6/day itself** (16.2% drag, over the 15%/yr budget) and dead at 12/day. The 6E
+futures 12/day cell is also relabeled from round 1's "survive... closest to budget but under" —
+17.4% drag is arithmetically **over**, not under, the stated 15% budget, so it is corrected to
+**borderline** here (this was a wording error in round 1, independent of any cost-input change: 6E's
+`c` itself did not change).
 
 All win-rate cells at `R=20 bp` (§5.2) sit at 51.4–55.9% — **under or at the edge of** the 55–60%
 ceiling in every case, base or pessimistic. **The binding constraint at high cadence is the drag
 budget, not the win-rate ceiling** — the reverse of #309, where win-rate/cost magnitude killed the
 region outright regardless of any budget. At the colleague's actual proposed cadence (**4h bars,
-≤6 trades/day**), every base-case venue survives both gates; only the pessimistic-cost, tight-`R`
-corner (M6E pessimistic, `R=10bp`) approaches the win-rate ceiling (60.5%, §5.2) at any cadence.
+6 trades/day**), the picture is now mixed rather than uniform: **XTB CFD and 6E futures survive
+comfortably** (12.3% and 8.7% drag); **IC Markets ECN — the doc's cheapest-quoted, flagship spot
+venue — and M6E futures are both borderline**, sitting just over the 15%/yr drag budget (16.2% and
+19.2% respectively) at exactly this cadence. The closed-form frontier (§6) puts this precisely: IC
+Markets base tops out at **5.6 trades/day**, not 6 — a rule run at the colleague's proposed cadence
+on IC Markets specifically would need to drop to ~5/day (13.5% drag) to clear the drag gate, or move
+to XTB/6E futures instead. On the win-rate axis, **two** cells now sit at or above the 55–60%
+ceiling: **IC Markets ECN pessimistic (61.8%, §5.2)** — the single worst cell in the whole doc, on
+its own flagship venue — and **M6E pessimistic (60.5%)**; IC Markets ECN *base* at the tightest `R`
+(10 bp) also moves to the bottom edge of the ceiling band (55.2%, up from round 1's 53.0%), though
+it does not exceed it.
 
 **Trade Republic (all sizes, all issuer-spread assumptions):** dead at every cadence ≥ 0.5/day — its
-`c` (10.8–50 bp, §4.4) already fails the win-rate gate at `R=10bp` (required win rate 55%+ even at
-the *cheapest* size/issuer-spread combination, and >70% at the €1,000/high-issuer-spread corner) and
-blows through the 15%/yr drag budget at just 1 trade/day in every size/spread combination
-(`1 × 260 × 0.0108` to `1 × 260 × 0.0050` ≈ 28–130%/yr). TR is disqualified on cost **and**
-independently on API/ToS grounds (§8) — a double disqualification, not a single weak one.
+`c` (10.8–50 bp, §4.4) already fails the win-rate gate at `R=10bp`: required win rate is **104%** even
+at the *cheapest* size/issuer-spread combination (€25,000, 10 bp issuer spread) and **300%** at the
+€1,000/high-issuer-spread corner — both figures **exceed 100% and are therefore mathematically
+impossible** win rates, not merely high ones, which only strengthens TR's dead-on-arrival status.
+It also blows through the 15%/yr drag budget at just 1 trade/day in every size/spread combination
+(`1 × 260 × 0.0108` to `1 × 260 × 0.0050` ≈ 28–130%/yr; see §5.3 for the full cadence sweep). TR is
+disqualified on cost **and** independently on API/ToS grounds (§8) — a double disqualification, not
+a single weak one.
 
 **Closed-form frontier (§6), inherited explicitly:** `max trades/day = drag_budget/(260×c)`. At the
-stated 15%/yr budget the base-case frontier tops out around **10.3 trades/day (6E futures)** down to
-**4.7/day (M6E)** — i.e., the entire 0.5–6/day band #368 asked about survives on drag for every
-proportional venue except the pessimistic-cost M6E and IC Markets rows.
+stated 15%/yr budget the base-case frontier now ranges from **10.3 trades/day (6E futures)** and
+**7.3/day (XTB)** down to **5.6/day (IC Markets)** and **4.7/day (M6E)** — the honest reading is that
+the 0.5–6/day band #368 asked about survives on drag for **two** of the four proportional venues
+(XTB, 6E futures) at the colleague's full 6/day cadence; IC Markets and M6E clear the band only up
+to ~5/day and ~4.7/day respectively. This is a tightened, not a failed, verdict: a wide cadence band
+still clears the cost floor, but not uniformly across every venue at the colleague's specific
+proposed cadence — the frontier, not a flat pass/fail, is the honest artifact here.
 
 **Inherited standing bar.** Per #255/the 2026-07-06 ADR, any candidate that reaches stage 2 must
 still **beat SPY on after-tax Calmar** at a tolerable drawdown, on a proper walk-forward backtest.
@@ -407,10 +505,17 @@ the tables above:
   the venues #309 priced** (1–5 bp equity, 50–80 bp crypto), and the 260-trading-day count is close
   to #309's 252 (not the 365 that made crypto's drag worse than shown). This is a structurally
   different region, exactly as #367 hypothesized.
-- **The colleague's actual proposed cadence (4h bars, ≤6 trades/day) survives both stated gates on
-  every base-case venue**, and on three of four venues even at the pessimistic-cost assumption.
-  Required win-rate uplift at a realistic `R=20bp` sits at 51–56% — under the stated ~55–60%
-  ceiling in every base-case cell.
+- **The colleague's actual proposed cadence (4h bars, 6 trades/day) survives the drag gate on two of
+  four base-case venues (XTB CFD, 6E futures) — not on all four.** A round-1 slippage/spread
+  omission understated IC Markets ECN's own round-trip cost (0.61 bp → corrected **1.04 bp**, §4.1);
+  corrected, IC Markets' base-case drag at 6/day is **16.2%/yr — over the stated 15%/yr budget** —
+  and M6E futures is also borderline (19.2%). The closed-form frontier (§6) puts IC Markets' own
+  base-case ceiling at **5.6 trades/day**, short of the colleague's proposed 6. This is a genuine
+  tightening of round 1's conclusion, not a full reversal: XTB and 6E futures still clear 6/day
+  comfortably, and every venue clears a somewhat lower cadence (~5/day). Required win-rate uplift at
+  a realistic `R=20bp` still sits at 51.4–55.9% — under or at the edge of the stated ~55–60% ceiling
+  in every base-case cell — so **the binding constraint at 6/day is the drag budget, not the win-rate
+  ceiling**, for the venues that fail there.
 - **Trade Republic is dead, on two independent grounds**: no spot FX (only derivative certificates
   whose unpublished issuer spread, bracketed 10–30bp, already exceeds every proportional venue's
   *entire* cost, at every position size swept — there is no crossover size where TR's flat fee wins),
@@ -421,12 +526,14 @@ the tables above:
   front-end when paired with one of its official broker partners** (IC Markets/Pepperstone/OANDA/IBKR
   are all named partners) — this is the credible half of the YouTube "alert→webhook→execution" stack
   for forex specifically. **trigger.trade is real but crypto-only** (five exchanges, none
-  BaFin-relevant), out of scope by asset class. **trader.dev and tradingkit.com could not be verified
-  to provide any forex execution capability at all** — trader.dev is a near-empty landing page whose
-  own tagline ("vibe trading, automated") suggests non-deterministic decision-making if it is
-  real, which would be out of this repo's invariant bounds regardless; tradingkit.com's own site
-  blocked automated access and secondary sources describe an AI/prop-firm tooling brand, not a
-  dedicated forex broker bridge.
+  BaFin-relevant), out of scope by asset class. **trader.dev and tradingkit.com are now confirmed
+  LLM-based** (round 2 re-fetch with a plain browser user agent, upgraded from round 1's
+  "indeterminate"/HTTP-403-blocked): trader.dev's own meta description reads "Prompt-driven
+  strategies, AI-native backtests, and one-click deploys to Bybit, Blofin, Toobit, and WeeX" (crypto
+  exchanges only, no forex path); tradingkit.com's own site names an "AI Trading Arena" ("the best
+  LLMs compete") and a "Connect to Claude" feature. Neither offers forex execution, and both are now
+  squarely out of this repo's invariant bounds (§2) on the decision-logic axis, not merely on the
+  cost/venue axis.
 - **German tax loss-offset status, verified live (not from memory) per #368's explicit requirement**:
   the 2021-era €20,000/year cap on Termingeschäfte losses was found likely unconstitutional by the
   BFH (AdV order, 2024-06-07) and was then **repealed outright** by the JStG 2024, effective
@@ -443,12 +550,20 @@ the tables above:
   objection that killed #309's equity/crypto case; it says nothing about whether the colleague's
   actual rules have any edge.
 
-**Recommendation:** the cost gate for moderate-cadence (≤6/day), deterministic forex-major trading,
-under confirmed German tax treatment, at IC Markets/XTB/CME-futures-via-IBKR, **passes** — the
-opposite of #309's equity/crypto no-go. Per the batch contract (#367), **stage 2 (audit of the
-colleague's live trade history + a faithful backtest of his rules using this doc's cost model, at a
-cadence the frontier says is affordable) is a reasonable next step**, contingent on the operator
-obtaining the colleague's exact rules and a broker trade export, as #367 already anticipated. Trade
-Republic is excluded from any stage-2 build on both cost and API/ToS grounds. This does not authorize
-any change to the live 200-DMA/UPRO bot, which remains untouched (#367's explicit non-goal) and whose
-own goals-question was separately and finally settled by the 2026-07-06 ADR.
+**Recommendation:** the cost gate for moderate-cadence, deterministic forex-major trading, under
+confirmed German tax treatment, **passes — with a tighter, venue-dependent frontier than round 1
+reported.** At the colleague's own proposed 6 trades/day, **XTB CFD and 6E futures clear both
+gates comfortably; IC Markets ECN and M6E futures are borderline (16.2% and 19.2% drag against a
+15%/yr budget)** — a corrected slippage/spread omission moved IC Markets from "clearly survives" to
+"just over budget" at exactly this cadence, though it still clears the gate at ~5/day. This is the
+opposite of #309's equity/crypto no-go, but it is an honestly narrower pass than round 1 claimed: not
+every venue clears every cadence in the swept band. Per the batch contract (#367), **stage 2 (audit
+of the colleague's live trade history + a faithful backtest of his rules using this doc's cost model)
+is still a reasonable next step**, provided it targets a venue/cadence cell the frontier actually
+clears — XTB or 6E futures at 6/day, or IC Markets/M6E at a reduced ~5/day cadence — contingent on
+the operator obtaining the colleague's exact rules and a broker trade export, as #367 already
+anticipated. Trade Republic is excluded from any stage-2 build on both cost and API/ToS grounds
+(§4.4, §5.3, §8); trader.dev and tradingkit.com are excluded on invariant grounds (§2, §8) as well as
+on the cost/venue axis, now that both are confirmed LLM-based. This does not authorize any change to
+the live 200-DMA/UPRO bot, which remains untouched (#367's explicit non-goal) and whose own
+goals-question was separately and finally settled by the 2026-07-06 ADR.
