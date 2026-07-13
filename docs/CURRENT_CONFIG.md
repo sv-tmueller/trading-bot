@@ -1,6 +1,6 @@
 # Current Configuration
 
-(Last reviewed: 2026-07-12 for the GitHub Actions heartbeat workflow, #361.)
+(Last reviewed: 2026-07-13 — `NOTIFY_WEBHOOK_URL` now set on dev + prod, #362.)
 
 The bot runs on Supabase (`pg_cron` -> Edge Functions -> Postgres) + Alpaca. Settings are stored
 as Supabase secrets (`supabase secrets set`), not a local `.env`.
@@ -55,7 +55,8 @@ to prod at go-live. See `web/.env.example`.
 ## Operational state
 
 - Deployment: dev (`qdaxxsuicyiscdvsdowc`) paper, soaking; prod not yet deployed.
-- `NOTIFY_WEBHOOK_URL` intentionally unset on dev during the soak (notifications are best-effort).
+- `NOTIFY_WEBHOOK_URL` set on **dev and prod** since 2026-07-13 (direct Discord webhook, #362 —
+  verified end-to-end with a panic-resume test). Notifications remain best-effort/fire-and-forget.
 - **Heartbeat (#361):** `.github/workflows/heartbeat.yml` pings the `status` Edge Function on
   weekdays so Supabase sees real API traffic — `pg_cron` alone does not count toward the free-tier
   inactivity/pause criterion. Dev is covered now (reuses the existing `STATUS_URL`/`STATUS_TOKEN`
