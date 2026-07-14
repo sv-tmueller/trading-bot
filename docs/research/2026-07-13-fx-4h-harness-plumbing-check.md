@@ -99,12 +99,34 @@ should be > 0), and is wired into `run_fx_plumbing_check.py`'s `blocked_reasons`
 **Investigation (73 residual Saturday bars across 27 affected weeks — explained, not blocking):**
 these are NOT the timezone bug (which would produce a large, systematic, constant-offset population
 across every year 2012–2026); instead they appear in only 4 years (2023: 1, **2024: 43**, **2025:
-28**, 2026: 1) and, within an affected week, are always trailing rows of that week's file — **1 to 7
-hourly rows**, most commonly 1-3 (24 of the 27 affected weeks), but reaching as late as **17:00–
-21:00 UTC Saturday in 3 weeks**: 2025 week 20 (5 rows, `2025-05-17 17:00` → `21:00 UTC`), 2025 week
-31 (7 rows, `2025-08-02 08:00` → `21:00 UTC`), and 2025 week 34 (5 rows, `2025-08-23 08:00` →
-`17:00 UTC`). Example of the common (1-3 row) case, verified against the raw bytes
-(`data/fxcm/H1/EURUSD/2024/11.csv.gz`, tail):
+28**, 2026: 1) and, within an affected week, are always trailing rows of that week's file. Rows per
+affected week (all 27, computed directly from the cache — `data/fxcm/H1/EURUSD/`, grouped by
+weekly file):
+
+| Trailing rows | Weeks |
+|---|---|
+| 1 | 5 |
+| 2 | 8 |
+| 3 | 9 |
+| 4 | 2 |
+| 5 | 2 |
+| 7 | 1 |
+| **Total** | **27 weeks, 73 rows** |
+
+The five weeks trailing 4 or more rows, with their UTC span:
+
+| Week | Rows | UTC span |
+|---|---|---|
+| 2024 week 32 | 4 | `2024-08-10 08:00` → `16:00` |
+| 2025 week 20 | 5 | `2025-05-17 17:00` → `21:00` |
+| 2025 week 31 | 7 | `2025-08-02 08:00` → `21:00` |
+| 2025 week 33 | 4 | `2025-08-16 12:00` → `18:00` |
+| 2025 week 34 | 5 | `2025-08-23 08:00` → `17:00` |
+
+Most weeks trail 1–3 rows (22 of 27, per the histogram above); the five weeks above trail 4–7, and
+of those five, four (2025 weeks 20, 31, 33, 34) reach into 17:00–21:00 UTC Saturday — see the
+table; 2024 week 32 is the exception, ending earlier at 16:00 UTC. Example of the common (1-3 row)
+case, verified against the raw bytes (`data/fxcm/H1/EURUSD/2024/11.csv.gz`, tail):
 
 ```
 03/15/2024 20:00:00.000,1.08893,1.08901,1.0886,1.08875,1.08894,1.08905,1.08868,1.08891
