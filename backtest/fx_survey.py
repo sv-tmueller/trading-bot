@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from backtest import baselines as _equity_baselines
-from backtest import fx_costs, fx_data, fx_execution, regime, tax
+from backtest import fx_baselines, fx_costs, fx_data, fx_execution, fx_signals, regime, tax
 from backtest import run_fx_plumbing_check as _plumbing
 
 # spec §5: co-primary venues -- a survivor must clear the bar on BOTH.
@@ -479,7 +479,15 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
 
     rows: list = []
     for w in calendar_windows:
-        mask = (full.index >= w["pre_roll_start"]) & (full.index <= w["test_end"])
+        # SPY's daily calendar is tz-naive (yfinance convention); the FX
+        # survey's own windows are tz-aware UTC -- strip tz for this
+        # comparison only, since a calendar DAY boundary is what matters
+        # here, not a specific UTC instant.
+        pre_roll_start = pd.Timestamp(w["pre_roll_start"]).tz_localize(None)
+        test_start = pd.Timestamp(w["test_start"]).tz_localize(None)
+        test_end = pd.Timestamp(w["test_end"]).tz_localize(None)
+
+        mask = (full.index >= pre_roll_start) & (full.index <= test_end)
         window_df = full.loc[mask]
         if len(window_df) < 2:
             continue
@@ -489,13 +497,13 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
             slippage_bps=regime.SLIPPAGE_BPS, commission_bps=regime.COMMISSION_BPS,
         )
         eq_full = sim["equity_curve"]
-        test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
+        test_mask = (eq_full.index >= test_start) & (eq_full.index < test_end)
         eq_test = eq_full.loc[test_mask]
         if len(eq_test) < 2:
             continue
         test_trades = [
             t for t in sim["trades"]
-            if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
+            if t["exit_date"] >= test_start and t["exit_date"] < test_end
         ]
         after_tax = compute_after_tax_metrics(eq_test, test_trades, mode="annual_netting")
         rows.append({"year": w["year"], "scored": w.get("scored", True), **after_tax})
@@ -593,3 +601,283 @@ def class_kill(results: dict) -> dict:
     if not clears_median:
         return {"class_dead": True, "reason": "a_no_cell_clears_median"}
     return {"class_dead": True, "reason": "b_never_survives_worst_window"}
+
+
+# ---------------------------------------------------------------------------
+# Synthetic smoke fixture (spec §7) -- code-generated, deterministic, NEVER
+# real cache data. This is the ONLY execution input for
+# ``run_fx_survey.py --smoke``.
+# ---------------------------------------------------------------------------
+
+_SMOKE_YEARS = 1.5
+_SMOKE_HOURS = int(_SMOKE_YEARS * 365 * 24)
+_SMOKE_START = "2020-01-01"
+
+
+def make_smoke_fixture(*, seed: int = 42) -> pd.DataFrame:
+    """~1.5 synthetic 'years' of H1-style bid/ask/mid OHLC rows -- a fixed-
+    seed (``numpy.random.default_rng``, never real EUR/USD history) log-
+    random-walk. CONTINUOUS 24/7 hourly bars (unlike the real FXCM archive,
+    which closes on weekends) -- deliberate, so every Saturday in the
+    fixture carries a full day of bars and the carve-out
+    (``fx_data.drop_saturday_bars``) is exercised on every single run, not
+    just "a few" injected rows.
+
+    Same column shape as ``fx_data.parse_week_csv``'s output (Bid/Ask/Mid
+    Open/High/Low/Close, tz-aware UTC ``datetime_utc`` index) so it can be
+    fed directly into the SAME downstream pipeline steps
+    (``drop_saturday_bars`` -> ``resample_to_4h`` -> ``drop_in_progress_bar``)
+    ``prepare_history`` uses for real cache data -- this function itself
+    never touches the cache or the network.
+    """
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range(_SMOKE_START, periods=_SMOKE_HOURS, freq="1h", tz="UTC")
+    idx.name = "datetime_utc"
+
+    log_rets = rng.normal(0.0, 0.0003, _SMOKE_HOURS)
+    mid_close = 1.10 * np.exp(np.cumsum(log_rets))
+    mid_open = np.empty_like(mid_close)
+    mid_open[0] = mid_close[0]
+    mid_open[1:] = mid_close[:-1]
+
+    wiggle = rng.uniform(0.00002, 0.00008, _SMOKE_HOURS)
+    mid_high = np.maximum(mid_open, mid_close) + wiggle
+    mid_low = np.minimum(mid_open, mid_close) - wiggle
+
+    half_spread = 0.00003  # ~0.6 pip round trip, a plausible EURUSD spread
+    df = pd.DataFrame({
+        "BidOpen": mid_open - half_spread, "BidHigh": mid_high - half_spread,
+        "BidLow": mid_low - half_spread, "BidClose": mid_close - half_spread,
+        "AskOpen": mid_open + half_spread, "AskHigh": mid_high + half_spread,
+        "AskLow": mid_low + half_spread, "AskClose": mid_close + half_spread,
+        "MidOpen": mid_open, "MidHigh": mid_high, "MidLow": mid_low, "MidClose": mid_close,
+    }, index=idx)
+    return df
+
+
+def make_smoke_spy_fixture(*, seed: int = 43) -> pd.DataFrame:
+    """Synthetic daily 'SPY' Open/Close frame (spec §7), fixed-seed, never
+    real SPY history -- fed to ``compute_spy_windows`` via a monkeypatched
+    ``fetch`` argument in smoke mode."""
+    rng = np.random.default_rng(seed)
+    n_days = int(_SMOKE_YEARS * 365)
+    idx = pd.bdate_range(_SMOKE_START, periods=n_days)
+    log_rets = rng.normal(0.0003, 0.01, n_days)
+    close = 300.0 * np.exp(np.cumsum(log_rets))
+    open_ = close * 0.999
+    return pd.DataFrame({"Open": open_, "Close": close}, index=idx)
+
+
+# ---------------------------------------------------------------------------
+# Per-cell / per-baseline window runners (used by both stage 2c's real
+# survey and this package's synthetic smoke run).
+# ---------------------------------------------------------------------------
+
+def _mid_ohlc_to_exec_bars(pre_rolled: pd.DataFrame) -> pd.DataFrame:
+    return pre_rolled.rename(
+        columns={"MidOpen": "Open", "MidHigh": "High", "MidLow": "Low", "MidClose": "Close"}
+    )[["Open", "High", "Low", "Close"]]
+
+
+def run_cell_across_windows(
+    bars_4h: pd.DataFrame, signal_fn, r: float, windows: list, *,
+    cost_rt: float, overnight, tax_mode: str, starting_equity: float = 100_000.0,
+) -> dict:
+    """Run one (shape, R, cost, tax-mode) candidate cell across every
+    window, Trap-A-slicing metrics to each window's test sub-window only,
+    and aggregate the SCORED windows (spec §5 walk-forward convention)."""
+    scored_metrics = []
+    for w in windows:
+        pre_rolled = bars_4h.loc[
+            (bars_4h.index >= w["pre_roll_start"]) & (bars_4h.index < w["test_end"])
+        ]
+        if len(pre_rolled) < 2:
+            continue
+        entry_dir = signal_fn(pre_rolled)
+        exec_bars = _mid_ohlc_to_exec_bars(pre_rolled)
+        sim = fx_execution.simulate_fx(
+            exec_bars, entry_dir, tp_pct=r, sl_pct=r, cost_rt=cost_rt,
+            overnight=overnight, starting_equity=starting_equity,
+        )
+        eq_full = sim["equity_curve"]
+        test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
+        eq_test = eq_full.loc[test_mask]
+        if len(eq_test) < 2:
+            continue
+        test_trades = [
+            t for t in sim["trades"]
+            if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
+        ]
+        after_tax = compute_after_tax_metrics(eq_test, test_trades, mode=tax_mode)
+        if w.get("scored", True):
+            scored_metrics.append({"year": w["year"], **after_tax})
+
+    return aggregate_metric_across_windows(scored_metrics)
+
+
+_BASELINE_STATE_FNS = {
+    "always_flat": lambda pre_rolled, w: fx_baselines.always_flat_state(pre_rolled.index),
+    "buy_and_hold": lambda pre_rolled, w: fx_baselines.buy_and_hold_state(
+        pre_rolled.index, w["pre_roll_start"],
+    ),
+    "persistence": lambda pre_rolled, w: fx_baselines.persistence_state(pre_rolled["MidClose"]),
+    "sma200_regime": lambda pre_rolled, w: fx_baselines.sma200_regime_state(
+        pre_rolled["MidClose"], n=200,
+    ),
+}
+
+
+def run_baseline_across_windows(
+    bars_4h: pd.DataFrame, baseline_key: str, windows: list, *,
+    cost_rt: float, overnight, tax_mode: str, starting_equity: float = 100_000.0,
+) -> dict:
+    """Run one of the 4 dumb baselines (spec §5) across every window via
+    ``fx_execution.simulate_fx_state`` (no TP/SL -- the candidate/baseline
+    execution asymmetry). ``baseline_key`` in {"always_flat",
+    "buy_and_hold", "persistence", "sma200_regime"}.
+
+    The baseline-4 (``sma200_regime``) degenerate-window convention (spec
+    §6 -- a window entirely flat, zero trades, treated as return=0/calmar=0
+    rather than left NaN) is applied automatically here before
+    aggregation.
+    """
+    if baseline_key not in _BASELINE_STATE_FNS:
+        raise ValueError(f"unknown baseline_key {baseline_key!r}")
+    state_fn = _BASELINE_STATE_FNS[baseline_key]
+
+    scored_metrics = []
+    for w in windows:
+        pre_rolled = bars_4h.loc[
+            (bars_4h.index >= w["pre_roll_start"]) & (bars_4h.index < w["test_end"])
+        ]
+        if len(pre_rolled) < 2:
+            continue
+        state = state_fn(pre_rolled, w)
+        exec_bars = _mid_ohlc_to_exec_bars(pre_rolled)
+        sim = fx_execution.simulate_fx_state(
+            exec_bars, state, cost_rt=cost_rt, overnight=overnight, starting_equity=starting_equity,
+        )
+        eq_full = sim["equity_curve"]
+        test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
+        eq_test = eq_full.loc[test_mask]
+        if len(eq_test) < 2:
+            continue
+        test_trades = [
+            t for t in sim["trades"]
+            if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
+        ]
+        after_tax = compute_after_tax_metrics(eq_test, test_trades, mode=tax_mode)
+        if w.get("scored", True):
+            scored_metrics.append({"year": w["year"], **after_tax})
+
+    if baseline_key == "sma200_regime":
+        scored_metrics = apply_baseline4_degenerate_convention(scored_metrics)
+
+    return aggregate_metric_across_windows(scored_metrics)
+
+
+# ---------------------------------------------------------------------------
+# Full smoke composition (spec §7) -- the ENTIRE survey composition run on
+# the synthetic fixture above. This is the ONLY runnable end-to-end path in
+# this package; ``run_fx_survey.py --smoke`` is a thin CLI wrapper around
+# this function. NEVER touches ``fx_data.read_cache``/``get_week_bytes``.
+# ---------------------------------------------------------------------------
+
+def run_smoke_survey(*, seed: int = 42) -> dict:
+    """Compose the entire survey (data prep, all 33 cells x cost matrix x
+    both tax modes, all 4 baselines, the SPY bar, the §6 evaluator) on the
+    code-generated synthetic fixture. Returns a dict digest; never prints
+    (the CLI owns presentation)."""
+    h1 = make_smoke_fixture(seed=seed)
+    h1_no_saturdays, n_saturday_dropped = fx_data.drop_saturday_bars(h1)
+    post_check = fx_data.check_weekend_bars(h1_no_saturdays)
+    assert post_check["n_saturday_bars"] == 0
+
+    bars_4h, resample_report = fx_data.resample_to_4h(h1_no_saturdays)
+    bars_4h = fx_data.drop_in_progress_bar(bars_4h)
+
+    measured_spread_pips = float(fx_data.empirical_spread_pips(h1_no_saturdays).median())
+
+    first_test_year = bars_4h.index[0].year + 1
+    windows = slice_calendar_year_windows(
+        bars_4h.index, first_test_year=first_test_year,
+        pre_roll_bars=DEFAULT_PRE_ROLL_BARS, excluded_years=(),
+    )
+
+    costs = cost_rows(measured_spread_pips=measured_spread_pips)
+    tax_modes = ("annual_netting", "de_sensitivity")
+
+    cells = fx_signals.build_cells()
+    cell_full_matrix: dict = {}
+    cell_co_primary_annual: dict = {}
+    for cell in cells:
+        cid = cell["cell_id"]
+        cell_full_matrix[cid] = {}
+        for cost_row in costs:
+            row_key = f"{cost_row['venue_key']}_{cost_row['cost_mode']}"
+            cell_full_matrix[cid][row_key] = {}
+            for tmode in tax_modes:
+                agg = run_cell_across_windows(
+                    bars_4h, cell["fn"], cell["r"], windows,
+                    cost_rt=cost_row["cost_rt"], overnight=cost_row["overnight"], tax_mode=tmode,
+                )
+                cell_full_matrix[cid][row_key][tmode] = agg
+        cell_co_primary_annual[cid] = {
+            "xtb_base": cell_full_matrix[cid]["xtb_base"]["annual_netting"],
+            "6e_base": cell_full_matrix[cid]["6e_base"]["annual_netting"],
+        }
+
+    base_cost_by_venue = {
+        c["venue_key"]: c for c in costs if c["cost_mode"] == "base" and c["venue_key"] in ("xtb", "6e")
+    }
+    baseline_co_primary_annual: dict = {}
+    for bname in ("buy_and_hold", "persistence", "sma200_regime"):
+        baseline_co_primary_annual[bname] = {}
+        for venue_key, cost_row in base_cost_by_venue.items():
+            agg = run_baseline_across_windows(
+                bars_4h, bname, windows,
+                cost_rt=cost_row["cost_rt"], overnight=cost_row["overnight"], tax_mode="annual_netting",
+            )
+            baseline_co_primary_annual[bname][f"{venue_key}_base"] = agg
+
+    spy_frame = make_smoke_spy_fixture(seed=seed + 1)
+    spy_windows_metrics = compute_spy_windows(
+        calendar_windows=windows, fetch=lambda ticker, start, end: spy_frame,
+    )
+    spy_scored = [m for m in spy_windows_metrics if m.get("scored", True)]
+    spy_agg = (
+        aggregate_metric_across_windows(spy_scored) if spy_scored
+        else {"median_calmar": float("nan")}
+    )
+    spy_median_calmar = spy_agg["median_calmar"]
+
+    survivor_results = {
+        cid: evaluate_survivor(
+            cell_agg=cagg, baseline_aggs=baseline_co_primary_annual,
+            spy_median_calmar=spy_median_calmar,
+        )
+        for cid, cagg in cell_co_primary_annual.items()
+    }
+
+    families = {
+        "T": [c["cell_id"] for c in cells if c["shape_id"].startswith("T")],
+        "M": [c["cell_id"] for c in cells if c["shape_id"].startswith("M")],
+        "R": [c["cell_id"] for c in cells if c["shape_id"].startswith("R")],
+    }
+    family_kills = {fam: family_kill(survivor_results, ids) for fam, ids in families.items()}
+    overall_class_kill = class_kill(survivor_results)
+
+    return {
+        "n_saturday_dropped": n_saturday_dropped,
+        "bars_4h_len": len(bars_4h),
+        "resample_report": resample_report,
+        "measured_spread_pips": measured_spread_pips,
+        "windows": windows,
+        "cell_full_matrix": cell_full_matrix,
+        "cell_co_primary_annual": cell_co_primary_annual,
+        "baseline_co_primary_annual": baseline_co_primary_annual,
+        "spy_median_calmar": spy_median_calmar,
+        "survivor_results": survivor_results,
+        "family_kills": family_kills,
+        "class_kill": overall_class_kill,
+    }

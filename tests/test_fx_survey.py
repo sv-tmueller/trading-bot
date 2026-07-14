@@ -505,3 +505,141 @@ def test_class_kill_pattern_b_clears_median_but_never_survives_worst_window():
     out = fx_survey.class_kill(results)
     assert out["class_dead"] is True
     assert out["reason"] == "b_never_survives_worst_window"
+
+
+# ---------------------------------------------------------------------------
+# Synthetic smoke fixture (spec §7) -- code-generated, deterministic, NEVER
+# real cache data. Includes deliberate Saturday-UTC rows to exercise the
+# carve-out.
+# ---------------------------------------------------------------------------
+
+def test_make_smoke_fixture_is_deterministic_for_a_fixed_seed():
+    a = fx_survey.make_smoke_fixture(seed=42)
+    b = fx_survey.make_smoke_fixture(seed=42)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_make_smoke_fixture_differs_for_a_different_seed():
+    a = fx_survey.make_smoke_fixture(seed=42)
+    c = fx_survey.make_smoke_fixture(seed=43)
+    assert not a["MidClose"].equals(c["MidClose"])
+
+
+def test_make_smoke_fixture_has_saturday_rows_and_is_ohlc_coherent():
+    from backtest import fx_data
+
+    fixture = fx_survey.make_smoke_fixture(seed=42)
+    weekend = fx_data.check_weekend_bars(fixture)
+    assert weekend["n_saturday_bars"] > 0  # deliberately present -- exercises the carve-out
+
+    coherence = fx_data.check_ohlc_coherence(fixture)
+    assert coherence["n_coherence_violations"] == 0
+    assert coherence["n_crossed_quotes"] == 0
+    assert coherence["n_non_positive_prices"] == 0
+
+
+def test_make_smoke_fixture_covers_roughly_1_5_years():
+    fixture = fx_survey.make_smoke_fixture(seed=42)
+    span_days = (fixture.index[-1] - fixture.index[0]).days
+    assert 400 <= span_days <= 600  # ~1.1-1.6 years
+
+
+def test_make_smoke_spy_fixture_has_open_close_columns_and_is_deterministic():
+    a = fx_survey.make_smoke_spy_fixture(seed=7)
+    b = fx_survey.make_smoke_spy_fixture(seed=7)
+    assert list(a.columns) == ["Open", "Close"]
+    pd.testing.assert_frame_equal(a, b)
+    assert (a["Close"] > 0).all()
+
+
+# ---------------------------------------------------------------------------
+# Per-cell / per-baseline window runners
+# ---------------------------------------------------------------------------
+
+def _tiny_bars_4h(n=40, start="2020-06-01"):
+    idx = pd.date_range(start, periods=n, freq="4h", tz="UTC")
+    idx.name = "datetime_utc"
+    rng = np.random.default_rng(1)
+    mid_close = 1.10 + np.cumsum(rng.normal(0, 0.0002, n))
+    df = pd.DataFrame({
+        "MidOpen": mid_close, "MidHigh": mid_close + 0.0003,
+        "MidLow": mid_close - 0.0003, "MidClose": mid_close,
+    }, index=idx)
+    return df
+
+
+def test_run_cell_across_windows_returns_aggregate_shape():
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[-1],
+    }]
+    from backtest import fx_signals
+
+    fn = fx_signals.SHAPES["M1_roc_12"]
+    agg = fx_survey.run_cell_across_windows(
+        bars, fn, 0.0030, windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    for key in ("median_calmar", "n_nan_calmar_windows", "median_total_return",
+                "worst_window_total_return", "worst_window_label", "n_windows"):
+        assert key in agg
+
+
+def test_run_baseline_across_windows_returns_aggregate_shape():
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[-1],
+    }]
+    agg = fx_survey.run_baseline_across_windows(
+        bars, "persistence", windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    for key in ("median_calmar", "n_windows"):
+        assert key in agg
+
+
+def test_run_baseline_across_windows_sma200_applies_degenerate_convention():
+    """A window entirely too short for SMA(200) to ever turn on (all-flat,
+    zero trades) must aggregate to calmar=0, not NaN (spec §6)."""
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[-1],
+    }]
+    agg = fx_survey.run_baseline_across_windows(
+        bars, "sma200_regime", windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    assert agg["n_nan_calmar_windows"] == 0
+    assert agg["median_calmar"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Full smoke composition (spec §7) -- offline, synthetic-only, zero cache
+# access. This is the SAME composition run_fx_survey.py --smoke executes.
+# ---------------------------------------------------------------------------
+
+def test_run_smoke_survey_never_touches_cache(monkeypatch):
+    from backtest import fx_data
+
+    def _raise(*a, **kw):
+        raise AssertionError("smoke survey must never touch the FXCM cache")
+
+    monkeypatch.setattr(fx_data, "read_cache", _raise)
+    monkeypatch.setattr(fx_data, "get_week_bytes", _raise)
+
+    result = fx_survey.run_smoke_survey(seed=42)
+
+    assert result["n_saturday_dropped"] > 0
+    assert result["bars_4h_len"] > 0
+    assert len(result["survivor_results"]) == 33
+    assert set(result["family_kills"].keys()) == {"T", "M", "R"}
+    assert "class_dead" in result["class_kill"]
+    assert not pd.isna(result["spy_median_calmar"]) or pd.isna(result["spy_median_calmar"])  # always present (may be NaN)
+
+
+def test_run_smoke_survey_is_deterministic():
+    r1 = fx_survey.run_smoke_survey(seed=42)
+    r2 = fx_survey.run_smoke_survey(seed=42)
+    assert r1["n_saturday_dropped"] == r2["n_saturday_dropped"]
+    assert r1["bars_4h_len"] == r2["bars_4h_len"]
+    assert r1["survivor_results"].keys() == r2["survivor_results"].keys()
