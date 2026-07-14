@@ -21,6 +21,7 @@ from backtest.tax import (
     US_LONG_TERM_RATE,
     US_SHORT_TERM_RATE,
     DE_FLAT_RATE,
+    apply_annual_netting_tax,
     apply_tax_to_ledger,
     classify_holding,
 )
@@ -153,3 +154,96 @@ def test_rates_match_pinned_values():
     assert US_SHORT_TERM_RATE == pytest.approx(0.35)
     assert US_LONG_TERM_RATE == pytest.approx(0.188)
     assert DE_FLAT_RATE == pytest.approx(0.26375)
+
+
+# ---------------------------------------------------------------------------
+# apply_annual_netting_tax — German-style WITHIN-YEAR netting (#371 T7)
+#
+# A NEW function, independent of apply_tax_to_ledger (deduct-at-exit,
+# per-trade). apply_tax_to_ledger's own tests above are untouched and must
+# stay green — the "default unchanged" AC, mechanically.
+# ---------------------------------------------------------------------------
+
+def test_loss_offsets_gain_within_the_same_year():
+    trades = [
+        {"exit_date": pd.Timestamp("2023-03-01"), "pnl": 3000.0},
+        {"exit_date": pd.Timestamp("2023-09-01"), "pnl": -1000.0},
+    ]
+    idx = [pd.Timestamp(d) for d in ["2023-01-01", "2023-03-01", "2023-09-01", "2023-12-31"]]
+    pre_tax = pd.Series([100_000.0, 103_000.0, 102_000.0, 102_000.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax)
+    # net gain for 2023 = 3000 - 1000 = 2000; tax = 2000 * DE_FLAT_RATE
+    expected_tax = 2000.0 * DE_FLAT_RATE
+    assert after.iloc[-1] == pytest.approx(102_000.0 - expected_tax, abs=1e-6)
+
+
+def test_net_loss_year_owes_zero_tax():
+    trades = [
+        {"exit_date": pd.Timestamp("2023-03-01"), "pnl": 1000.0},
+        {"exit_date": pd.Timestamp("2023-09-01"), "pnl": -5000.0},
+    ]
+    idx = [pd.Timestamp(d) for d in ["2023-01-01", "2023-03-01", "2023-09-01", "2023-12-31"]]
+    pre_tax = pd.Series([100_000.0, 101_000.0, 96_000.0, 96_000.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax)
+    # net = 1000 - 5000 = -4000 -> max(net, 0) = 0 -> no tax
+    pd.testing.assert_series_equal(after, pre_tax, check_names=False)
+
+
+def test_multi_year_independence_no_cross_year_carryforward():
+    trades = [
+        {"exit_date": pd.Timestamp("2022-06-01"), "pnl": -5000.0},  # 2022: net loss
+        {"exit_date": pd.Timestamp("2023-06-01"), "pnl": 4000.0},   # 2023: net gain, NOT offset by 2022's loss
+    ]
+    idx = [pd.Timestamp(d) for d in
+           ["2022-01-01", "2022-06-01", "2022-12-31", "2023-06-01", "2023-12-31"]]
+    pre_tax = pd.Series([100_000.0, 95_000.0, 95_000.0, 99_000.0, 99_000.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax)
+    # 2022: net loss -> 0 tax. 2023: net gain 4000, taxed in full (no carryforward).
+    expected_tax_2023 = 4000.0 * DE_FLAT_RATE
+    assert after.loc[pd.Timestamp("2022-12-31")] == pytest.approx(95_000.0)
+    assert after.iloc[-1] == pytest.approx(99_000.0 - expected_tax_2023, abs=1e-6)
+
+
+def test_tax_deduction_lands_at_years_last_equity_point():
+    trades = [
+        {"exit_date": pd.Timestamp("2023-03-01"), "pnl": 2000.0},
+    ]
+    idx = [pd.Timestamp(d) for d in ["2023-01-01", "2023-03-01", "2023-06-01", "2023-12-31"]]
+    pre_tax = pd.Series([100_000.0, 102_000.0, 102_000.0, 102_000.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax)
+    expected_tax = 2000.0 * DE_FLAT_RATE
+    # Before the year's last equity point: unchanged (netting settles once, at year-end)
+    assert after.loc[pd.Timestamp("2023-01-01")] == pytest.approx(100_000.0)
+    assert after.loc[pd.Timestamp("2023-03-01")] == pytest.approx(102_000.0)
+    assert after.loc[pd.Timestamp("2023-06-01")] == pytest.approx(102_000.0)
+    # At the year's last point, the full year's net-gain tax is deducted.
+    assert after.iloc[-1] == pytest.approx(102_000.0 - expected_tax, abs=1e-6)
+
+
+def test_final_partial_year_settles_at_curves_last_point():
+    """A year with no equity point past the last trade's exit (e.g. the
+    backtest window ends mid-year) settles at the curve's actual last
+    point, not a fabricated Dec-31 date."""
+    trades = [
+        {"exit_date": pd.Timestamp("2023-04-01"), "pnl": 1000.0},
+    ]
+    idx = [pd.Timestamp(d) for d in ["2023-01-01", "2023-04-01", "2023-05-15"]]
+    pre_tax = pd.Series([100_000.0, 101_000.0, 101_500.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax)
+    expected_tax = 1000.0 * DE_FLAT_RATE
+    assert after.iloc[-1] == pytest.approx(101_500.0 - expected_tax, abs=1e-6)
+
+
+def test_annual_netting_no_trades_returns_pretax_curve_unchanged():
+    idx = [pd.Timestamp(d) for d in ["2023-01-02", "2023-04-02"]]
+    pre_tax = pd.Series([100_000.0, 100_000.0], index=idx)
+    after = apply_annual_netting_tax([], pre_tax)
+    pd.testing.assert_series_equal(after, pre_tax, check_names=False)
+
+
+def test_annual_netting_accepts_custom_rate():
+    trades = [{"exit_date": pd.Timestamp("2023-03-01"), "pnl": 1000.0}]
+    idx = [pd.Timestamp(d) for d in ["2023-01-01", "2023-03-01"]]
+    pre_tax = pd.Series([100_000.0, 101_000.0], index=idx)
+    after = apply_annual_netting_tax(trades, pre_tax, rate=0.30)
+    assert after.iloc[-1] == pytest.approx(101_000.0 - 1000.0 * 0.30, abs=1e-6)

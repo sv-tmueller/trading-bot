@@ -107,3 +107,86 @@ def apply_tax_to_ledger(
     ).reindex(pre_tax_equity.index).fillna(0.0)
 
     return pre_tax_equity - cum_on_index
+
+
+def apply_annual_netting_tax(
+    trades: list,
+    pre_tax_equity: pd.Series,
+    *,
+    rate: float = DE_FLAT_RATE,
+) -> pd.Series:
+    """German-style ANNUAL NETTING tax layer (#371 T7) — a NEW, independent
+    model, distinct from ``apply_tax_to_ledger``'s deduct-at-exit-per-trade
+    model above (which is left completely unchanged by this function).
+
+    Model
+    -----
+    Realized trade ``pnl`` is grouped by the CALENDAR YEAR of ``exit_date``.
+    Within each year, gains and losses net against each other (unlike
+    ``apply_tax_to_ledger``, which clamps each trade's tax at >= 0
+    individually): ``tax_year = max(net_gain_year, 0) * rate``. The tax for
+    a year is deducted at that year's LAST equity timestamp present in
+    ``pre_tax_equity`` (a final partial year — e.g. the backtest window ends
+    mid-year — settles at the curve's actual last point in that year, never
+    a fabricated Dec-31 date).
+
+    Deliberately conservative simplifications (documented, not modeled):
+      - Within-year netting ONLY — NO cross-year Verlustvortrag (loss
+        carryforward). A loss year's excess loss does NOT offset a later
+        year's gain (see ``test_multi_year_independence_no_cross_year_carryforward``).
+      - NO Sparer-Pauschbetrag (the EUR 1,000/2,000 annual tax-free
+        allowance) is applied.
+    Both are consistent with the batch contract's wording ("each calendar
+    year's net gains").
+
+    Parameters
+    ----------
+    trades:
+        List of trade dicts (as produced by ``simulate_from_signal`` or
+        ``fx_execution.simulate_fx``), each with ``exit_date`` (Timestamp)
+        and ``pnl`` (float).
+    pre_tax_equity:
+        Pre-tax equity curve indexed by trading date/timestamp.
+    rate:
+        Flat tax rate applied to each year's net gain (default
+        ``DE_FLAT_RATE``, 26.375%).
+
+    Returns
+    -------
+    After-tax equity curve, same index as ``pre_tax_equity``.
+    """
+    if len(trades) == 0:
+        return pre_tax_equity.copy()
+
+    net_gain_by_year: dict = {}
+    for t in trades:
+        year = pd.Timestamp(t["exit_date"]).year
+        net_gain_by_year[year] = net_gain_by_year.get(year, 0.0) + float(t["pnl"])
+
+    tax_by_year = {
+        year: max(net_gain, 0.0) * rate
+        for year, net_gain in net_gain_by_year.items()
+        if max(net_gain, 0.0) * rate > 0.0
+    }
+    if not tax_by_year:
+        return pre_tax_equity.copy()
+
+    tax_by_date: dict = {}
+    for year, tax in tax_by_year.items():
+        year_mask = pre_tax_equity.index.year == year
+        if year_mask.any():
+            settle_date = pre_tax_equity.index[year_mask][-1]
+        else:
+            # No equity point recorded within this year (shouldn't normally
+            # happen since a trade exited in it) — conservative fallback:
+            # deduct at the curve's own last point.
+            settle_date = pre_tax_equity.index[-1]
+        tax_by_date[settle_date] = tax_by_date.get(settle_date, 0.0) + tax
+
+    tax_series = pd.Series(tax_by_date, dtype=float).sort_index()
+    cumulative = tax_series.cumsum()
+    cum_on_index = cumulative.reindex(
+        pre_tax_equity.index.union(cumulative.index), method="ffill"
+    ).reindex(pre_tax_equity.index).fillna(0.0)
+
+    return pre_tax_equity - cum_on_index
