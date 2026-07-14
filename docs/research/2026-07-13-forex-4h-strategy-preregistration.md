@@ -51,8 +51,8 @@ Batch #370's contract, item 3 ("the P1↔P2 interface"), quoted verbatim:
 Plus the lead decisions locked in #370's decision log (resolving the #371/#372 NEEDS_DECISION
 items before developer dispatch):
 
-- **4h grid anchor: fixed absolute grid** — 00/04/08/12/16/20, UTC-normalized (mirrored verbatim
-  from #371's lead decision #1).
+- **4h grid anchor: fixed absolute grid** — 00/04/08/12/16/20, UTC-normalized (mirrored from
+  #371's lead decision #1).
 - **Entry bar TP/SL testing: yes** — the entry bar's own high/low tests TP/SL; the fill is at that
   bar's open, so its extremes occur after entry in time, no look-ahead (mirrored verbatim from
   #371's lead decision #2).
@@ -86,8 +86,10 @@ concurrently with a live position.
 **Computational pinning, applied to every family (the two-independent-implementers bar):**
 
 - **Price field:** all indicators are computed on **mid close** = (bid_close + ask_close)/2 of
-  the completed 4h bar. No family reads bid or ask alone, or the high/low, for signal computation
-  (high/low are used only for TP/SL testing, which is #371's execution layer, not the signal).
+  the completed 4h bar, with one explicit carve-out: **high/low enter signal computation only in
+  Family T2's channel** (§3) — no other family reads bid or ask alone, or the high/low, for signal
+  computation. Outside Family T2, high/low are used only for TP/SL testing, which is #371's
+  execution layer, not the signal.
 - **Warm-up / NaN handling:** any bar where a required input is NaN (insufficient history for the
   lookback) → `decline`. No family ever signals during its own warm-up period.
 - **Flat-only evaluation:** signal functions are not called, and their output is not consulted,
@@ -126,13 +128,21 @@ bar). Pairs (fast, slow), all in native 4h bars:
 | (20, 50) | The standard intermediate crossover |
 | (50, 200) | The golden/death cross |
 
-**T2. Donchian breakout.** Close strictly above the prior-N-bar high → enter-long; close strictly
-below the prior-N-bar low → enter-short; else `decline`. **Channel excludes the current bar** — the
-N-bar high/low window is computed over the N completed bars *strictly before* the bar being
-evaluated, so the just-completed bar's own high/low can never trigger its own breakout (pinned to
-avoid the classic off-by-one). Exactly-equal-to-the-boundary → `decline` (θ=0 rule). N ∈ {20, 55} —
-the published Turtle System 1 (20-day, here 20-bar) and System 2 (55-day, here 55-bar) entry
-lengths (Faith, *Way of the Turtle*).
+**T2. Donchian breakout.** Mid close strictly above the prior-N-bar **mid high** → enter-long; mid
+close strictly below the prior-N-bar **mid low** → enter-short; else `decline`. **Channel field
+(the §2 carve-out):** T2 is the one family whose channel is computed from high/low rather than mid
+close alone. The field is pinned as **mid high** = (bid_high + ask_high)/2 and **mid low** =
+(bid_low + ask_low)/2 of each bar — a transplant convention consistent with this document's
+mid-price convention (§1 decision #5, §2), not a claim that mid high/mid low is itself a published
+quantity. The classical-Donchian provenance (the breakout logic, the N-bar window, the published
+20/55 lengths below) is otherwise preserved unchanged; only the high/low field is transplanted from
+raw bid or ask onto the bid/ask midpoint so the channel is representable in this doc's
+single-mid-price data model without picking a side. **Channel excludes the current bar** — the
+N-bar mid-high/mid-low window is computed over the N completed bars *strictly before* the bar being
+evaluated, so the just-completed bar's own mid-high/mid-low can never trigger its own breakout
+(pinned to avoid the classic off-by-one). Exactly-equal-to-the-boundary → `decline` (θ=0 rule).
+N ∈ {20, 55} — the published Turtle System 1 (20-day, here 20-bar) and System 2 (55-day, here
+55-bar) entry lengths (Faith, *Way of the Turtle*).
 
 Family T total: 3 MA pairs + 2 Donchian lengths = **5 shapes**.
 
@@ -222,8 +232,9 @@ ahead rule already used elsewhere in this repo's research code). Pinned specific
 survey:
 
 - **Test windows: 12 months each, calendar-year-aligned**, first test window starting
-  **2013-01-01** (2012 is warm-up only, never scored). This yields roughly 13–14 test windows
-  across the 2012→2026 archive coverage.
+  **2013-01-01, 00:00 UTC** (every window boundary is 00:00 UTC on Jan 1, consistent with the
+  UTC-normalized 4h grid, §1 — no other timezone convention is in play) (2012 is warm-up only,
+  never scored). This yields roughly 13–14 test windows across the 2012→2026 archive coverage.
 - **Pre-roll: 300 native 4h bars**, prepended before each test window so every family's longest
   lookback (Family T's 200-bar SMA) has a full warm-up before the first bar that could score.
 - Calendar-year alignment is deliberate, not incidental: it makes the German annual-netting tax
@@ -248,8 +259,8 @@ NYSE calendar) and not 365 (crypto's continuous count).
 must clear the bar (§6) on **both**, not either. Pessimistic rows and IC Markets/M6E are reported
 as sensitivity, never as the basis for a survivor claim. #371's empirically-measured FXCM spread
 is added as a reconciliation row against these published/fetched presets, not as a fifth cost
-preset in its own right. Overnight financing (for positions held over a 4h close) follows #371's
-model, itself following #369 §1's XTB-swap-proxy convention.
+preset in its own right. Overnight financing — for positions held across the daily rollover, per
+#371's financing model — follows #369 §1's XTB-swap-proxy convention.
 
 **Tax.** German annual-netting model **primary** (#371's new `tax.py` mode — 26.375% flat rate on
 each calendar year's net gains, losses offset within the year, per the post-JStG-2024 statute
@@ -304,10 +315,15 @@ netting), all three of the following hold simultaneously:
    Calmar ratio on the same calendar windows.
 2. It beats all four dumb baselines (§5) on the same statistic (median-window after-tax Calmar,
    with baseline 1's always-flat criterion applied as stated: median-window return > 0).
+   **Baseline-4 degenerate-window convention:** in any window where baseline 4 (200-SMA regime) is
+   flat for the entire window — no position held throughout, hence trade count zero and an
+   undefined 0/0 Calmar ratio — that window's baseline-4 return is treated as exactly 0 for the
+   comparison, mirroring baseline 1's "median return > 0" convention rather than discarding the
+   window or its test.
 3. Its **worst-window** total return, after costs and tax, is positive (> 0) — the multiplicity
    control from §5's verbatim rule ("stay positive on worst window").
 
-**Family kill.** If no combo within a family (5 cells for Trend, 9 for Momentum, 9 for
+**Family kill.** If no combo within a family (15 cells for Trend, 9 for Momentum, 9 for
 Mean-reversion) satisfies the survivor definition, that family is dead — it does not proceed to
 any further stage on this evidence.
 
