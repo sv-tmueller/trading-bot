@@ -242,7 +242,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     print("*** PLUMBING CHECK — no strategy claim. See module docstring. ***")
-    print(f"FXCM H1 EUR/USD -> 4h harness plumbing check (#371, batch #370)")
+    print("FXCM H1 EUR/USD -> 4h harness plumbing check (#371, batch #370)")
     print(f"Run started: {datetime.now(timezone.utc).isoformat()}")
     print(f"Year range: {START_YEAR}-{args.end_year}  |  fetch={'ON' if args.fetch else 'cache-only'}")
 
@@ -391,8 +391,8 @@ def main(argv=None) -> int:
                 f"{on['max_drawdown']*100:7.1f}% | {on['trade_count']:7d}"
             )
 
-    print(f"\nBaseline costs-off/on DELTA is the pipeline proof, not a strategy result — "
-          f"see docs/research/ note for the full write-up.")
+    print("\nBaseline costs-off/on DELTA is the pipeline proof, not a strategy result — "
+          "see docs/research/ note for the full write-up.")
     print("\nDone. All numbers above came from the cached/fetched FXCM archive; no price was fabricated.")
     return 0
 

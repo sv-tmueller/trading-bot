@@ -96,12 +96,15 @@ should be > 0), and is wired into `run_fx_plumbing_check.py`'s `blocked_reasons`
   would have produced (~1,312, ~1.5%), but not zero. **Mechanical gate fires; investigated below.**
 - **Sunday-UTC bars: 1,945** (session-open bars — expected and clean).
 
-**Investigation (73 residual Saturday bars — explained, not blocking):** these are NOT the
-timezone bug (which would produce a large, systematic, constant-offset population across every
-year 2012–2026); instead they appear in only 4 years (2023: 1, **2024: 43**, **2025: 28**, 2026: 1)
-and, within an affected week, are always the LAST 1–4 hourly rows of that week's file, trailing a
-few hours past the normal Friday-close boundary into early Saturday UTC. Example, verified against
-the raw bytes (`data/fxcm/H1/EURUSD/2024/11.csv.gz`, tail):
+**Investigation (73 residual Saturday bars across 27 affected weeks — explained, not blocking):**
+these are NOT the timezone bug (which would produce a large, systematic, constant-offset population
+across every year 2012–2026); instead they appear in only 4 years (2023: 1, **2024: 43**, **2025:
+28**, 2026: 1) and, within an affected week, are always trailing rows of that week's file — **1 to 7
+hourly rows**, most commonly 1-3 (24 of the 27 affected weeks), but reaching as late as **17:00–
+21:00 UTC Saturday in 3 weeks**: 2025 week 20 (5 rows, `2025-05-17 17:00` → `21:00 UTC`), 2025 week
+31 (7 rows, `2025-08-02 08:00` → `21:00 UTC`), and 2025 week 34 (5 rows, `2025-08-23 08:00` →
+`17:00 UTC`). Example of the common (1-3 row) case, verified against the raw bytes
+(`data/fxcm/H1/EURUSD/2024/11.csv.gz`, tail):
 
 ```
 03/15/2024 20:00:00.000,1.08893,1.08901,1.0886,1.08875,1.08894,1.08905,1.08868,1.08891
@@ -114,10 +117,35 @@ not by the expected Sunday reopen. This is consistent with an FXCM archive **wee
 boundary/batching quirk** concentrated in 2024–2025 (the same two years already flagged in §5 for
 missing weeks — this harness's cached archive shows independent evidence of vendor data-quality
 degradation in that window from two unrelated checks), not a code defect: OHLC coherence on these
-rows is 0 violations (checked identically to every other row), the magnitude is tiny (0.083% of all
-rows), and Bid/Ask/Mid are all internally consistent. **Verdict: explained, not BLOCKED** — flagged
-here (and in §5) as an open item for the survey batch, since these vendor data-quality windows
-overlap years that batch's walk-forward windows may want to use.
+rows is 0 violations (checked identically to every other row) and the magnitude is tiny overall
+(0.083% of all rows).
+
+**Two outlier prints (NOT benign — surfaced explicitly, not glossed over):** of the 73 Saturday
+bars, 71 have a market-plausible intra-hour mid range (`MidHigh − MidLow`), median **0.10 pips**.
+The remaining 2 are market-implausible one-hour price jumps:
+
+| Timestamp (UTC) | Mid Open | Mid High | Mid Low | Mid Close | Mid range (pips) |
+|---|---|---|---|---|---|
+| 2023-12-16 14:00 | 1.089425 | 1.099325 | 1.089425 | 1.099325 | **99.0** |
+| 2025-08-30 20:00 | 1.168565 | 1.168565 | 1.166255 | 1.166260 | **23.1** |
+
+(Bid-side range 98.3 / 22.4 pips, ask-side 99.7 / 23.8 pips — both sides agree the jump is real in
+the raw feed, not a Bid/Ask-construction artifact; median of the other 71 bars is 0.10 pips, so
+these two are ~230x and ~1,000x the typical Saturday-bar range respectively.) These 2 bars feed
+directly into the 4h bars the simulator's high/low TP/SL exit test consumes (§4h resample, fixed
+grid), so — unlike the other 71, genuinely-benign trailing prints — they are not waved through on
+"tiny magnitude" alone: a 99-pip or 23-pip one-hour range is outside any plausible EURUSD move and
+should be treated as a bad print, not a real market event.
+
+**Verdict: explained, not BLOCKED, with an explicit carve-out.** The mechanical gate firing (73 > 0)
+correctly forced this investigation; 71 of the 73 bars are genuine, tiny, non-propagating vendor
+batching artifacts, but the 2 outlier prints above are a distinct, more serious data-quality issue
+that the survey batch must not silently absorb: **the survey batch should exclude or winsorize
+Saturday-UTC bars from its 4h series (or, at minimum, exclude these 2 specific prints) per its
+pre-registered data-quality protocol** before running any strategy on this cache. This is flagged
+here (and in §5) as an open item for the survey batch, alongside the Dec-2024/Jan-2025 and Jul-2025
+vendor gaps — all four sit in the same 2023–2025 window this harness's independent checks show
+degraded vendor data quality.
 
 ---
 

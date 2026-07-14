@@ -296,9 +296,13 @@ def check_weekend_bars(df: pd.DataFrame) -> dict:
 def drop_in_progress_bar(bars_4h: pd.DataFrame) -> pd.DataFrame:
     """Drop the final resampled 4h bar — the no-look-ahead convention
     (SUB_PLAN #371): the last bucket in any pull may still be in progress
-    (not yet closed) relative to "now", so it is dropped AT LOAD, here in
-    ``fx_data.py`` (not left to callers, e.g. ``run_fx_plumbing_check.py``,
-    to remember to do themselves). A no-op on an already-empty frame."""
+    (not yet closed) relative to "now". This is the designated LOAD-TIME
+    helper for that drop, living in ``fx_data.py`` per the SUB_PLAN ("at
+    load") rather than reimplemented ad hoc downstream — but it is not
+    called automatically by anything else in this module; the caller
+    (currently ``run_fx_plumbing_check.py``, immediately after
+    ``resample_to_4h``) is responsible for invoking it. A no-op on an
+    already-empty frame."""
     if len(bars_4h) == 0:
         return bars_4h
     return bars_4h.iloc[:-1]
