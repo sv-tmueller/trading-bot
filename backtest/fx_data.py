@@ -21,13 +21,20 @@ are plain gzip'd CSV with columns::
 ``format=`` string — never dateutil-inferred (a strictness requirement; see
 ``parse_week_csv``).
 
-**Empirical timezone finding** (confirmed by fetching real archive weeks):
-the archive's ``DateTime`` column is expressed in **America/New_York local
-time, DST-aware** — a winter (EST) week opens Sunday 17:00 ET (= 22:00 UTC)
-and a summer (EDT) week opens Sunday 17:00 ET (= 21:00 UTC), i.e. the *UTC*
-open time shifts by an hour across the DST boundary while the *local* open
-time (17:00) does not. This is **not** a fixed-UTC archive — every timestamp
-below is normalized to UTC via ``tz_localize("America/New_York")`` before use.
+**Empirical timezone finding** (confirmed against raw cached archive bytes;
+corrected 2026-07-14 — see PR #374 reviewer round-1 must-fix 1): the
+archive's ``DateTime`` column is **already UTC**. Raw weekly files open
+Sunday 22:00 in winter and Sunday 21:00 in summer — that is the 17:00 ET
+session open *expressed in UTC* (17:00 EST = 22:00 UTC; 17:00 EDT = 21:00
+UTC). A genuinely America/New_York-local archive would print a CONSTANT
+17:00 local open year-round regardless of season — it does not. So this
+*is* a fixed-UTC archive already; every timestamp is localized directly via
+``tz_localize("UTC")``, with **no** DST-aware conversion applied. (An
+earlier version of this module wrongly applied
+``tz_localize("America/New_York")`` to this already-UTC column, shifting 14
+years of bars +4h/+5h and producing impossible Saturday-UTC bars — see
+``check_weekend_bars``, the mechanical check added to catch a regression of
+this exact bug.)
 
 Fetched files are cached **verbatim** (raw bytes, exactly as served — never
 re-derived) under ``data/fxcm/H1/EURUSD/<year>/<week>.csv.gz``. ``/data/`` is
@@ -52,7 +59,6 @@ import pandas as pd
 
 BASE_URL = "https://candledata.fxcorporate.com/H1/EURUSD"
 CACHE_ROOT = "data/fxcm/H1/EURUSD"
-ARCHIVE_TZ = "America/New_York"
 DATETIME_FORMAT = "%m/%d/%Y %H:%M:%S.%f"
 RAW_COLUMNS = [
     "DateTime",
@@ -142,9 +148,10 @@ def parse_week_csv(raw_gzip: bytes) -> pd.DataFrame:
     - Strict datetime parsing via an explicit ``format=`` string (never
       dateutil-inferred) — a malformed/ambiguous date raises ``ValueError``.
     - Adds mid-price OHLC columns: ``Mid<Field> = (Bid<Field> + Ask<Field>) / 2``.
-    - Localizes the naive ``DateTime`` as America/New_York wall-clock time
-      (the empirical archive-timezone finding — see module docstring), then
-      converts to UTC. Index name: ``datetime_utc``.
+    - Localizes the naive ``DateTime`` directly as UTC (the corrected
+      empirical archive-timezone finding — see module docstring; the column
+      is already UTC, no DST-aware conversion is applied). Index name:
+      ``datetime_utc``.
 
     Raises ``ValueError`` if the CSV's columns don't match the expected
     FXCM archive schema.
@@ -155,7 +162,7 @@ def parse_week_csv(raw_gzip: bytes) -> pd.DataFrame:
         raise ValueError(f"unexpected columns: {list(df.columns)}; expected {RAW_COLUMNS}")
 
     dt_naive = pd.to_datetime(df["DateTime"], format=DATETIME_FORMAT)
-    dt_utc = dt_naive.dt.tz_localize(ARCHIVE_TZ).dt.tz_convert("UTC")
+    dt_utc = dt_naive.dt.tz_localize("UTC")
 
     out = df.drop(columns=["DateTime"]).copy()
     out.index = dt_utc
@@ -263,6 +270,38 @@ def check_ohlc_coherence(df: pd.DataFrame) -> dict:
         "n_crossed_quotes": crossed,
         "n_non_positive_prices": non_positive,
     }
+
+
+def check_weekend_bars(df: pd.DataFrame) -> dict:
+    """Mechanical check: a correctly UTC-localized FX archive has NO bars on
+    Saturday (the market is closed globally from Friday ~21-22:00 UTC to
+    Sunday ~21-22:00 UTC) but DOES have bars on Sunday (the session open).
+    Any Saturday bar is a hard sign of a timezone-localization bug — this is
+    the check that would have caught reviewer round-1 must-fix 1 (a wrong
+    ``tz_localize("America/New_York")`` applied to an already-UTC column
+    produced 1,312 impossible Saturday-UTC bars across the full history).
+
+    Returns ``{"n_saturday_bars": int, "n_sunday_bars": int}`` — the
+    pre-registered BLOCKED gate is ``n_saturday_bars == 0`` (evaluated by
+    the caller, e.g. ``run_fx_plumbing_check.py``); Sunday-bar count is
+    reported for context only (not itself a threshold).
+    """
+    weekday = df.index.dayofweek  # Monday=0 ... Sunday=6
+    return {
+        "n_saturday_bars": int((weekday == 5).sum()),
+        "n_sunday_bars": int((weekday == 6).sum()),
+    }
+
+
+def drop_in_progress_bar(bars_4h: pd.DataFrame) -> pd.DataFrame:
+    """Drop the final resampled 4h bar — the no-look-ahead convention
+    (SUB_PLAN #371): the last bucket in any pull may still be in progress
+    (not yet closed) relative to "now", so it is dropped AT LOAD, here in
+    ``fx_data.py`` (not left to callers, e.g. ``run_fx_plumbing_check.py``,
+    to remember to do themselves). A no-op on an already-empty frame."""
+    if len(bars_4h) == 0:
+        return bars_4h
+    return bars_4h.iloc[:-1]
 
 
 def empirical_spread_pips(df: pd.DataFrame) -> pd.Series:

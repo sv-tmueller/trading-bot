@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 
-import numpy as np
 import pandas as pd
 
 from backtest import fx_costs, fx_data, fx_execution
@@ -47,10 +46,22 @@ STARTING_EQUITY = 100_000.0
 
 # Pre-registered BLOCKED thresholds (#371 SUB_PLAN) — evaluated per COMPLETE
 # historical year only; the current, still-publishing year is reported but
-# explicitly excluded from the threshold check (see main()).
+# explicitly excluded from the threshold check (see main()). Crossed-quotes
+# shares the same 0.1% threshold family as coherence (reviewer round-1
+# must-fix 3).
 MAX_PCT_MISSING_WEEKS = 0.02
 MAX_PCT_MISSING_ROWS = 0.05
 MAX_PCT_COHERENCE_VIOLATIONS = 0.001
+MAX_PCT_CROSSED_QUOTES = 0.001
+
+RE_FETCH_INSTRUCTIONS = (
+    "Re-fetch instructions: data source is FXCM's public H1 candle archive "
+    "at https://candledata.fxcorporate.com/H1/EURUSD/<year>/<week>.csv.gz "
+    "(week numbers are FXCM's own numbering, not ISO -- see backtest/fx_data.py's "
+    "module docstring). Run with --fetch to download any missing weekly files "
+    "into the gitignored data/fxcm/H1/EURUSD/ cache; without --fetch this "
+    "script is CACHE-ONLY and exits BLOCKED if the cache is empty."
+)
 
 
 def build_history(*, fetch: bool, end_year: int) -> tuple:
@@ -92,11 +103,90 @@ def build_history(*, fetch: bool, end_year: int) -> tuple:
     return history, manifest
 
 
+def evaluate_blocked_reasons(
+    completeness: dict,
+    *,
+    complete_years: list,
+    pct_coherence: float,
+    pct_crossed_quotes: float,
+    n_saturday_bars: int,
+    max_pct_missing_weeks: float = MAX_PCT_MISSING_WEEKS,
+    max_pct_missing_rows: float = MAX_PCT_MISSING_ROWS,
+    max_pct_coherence: float = MAX_PCT_COHERENCE_VIOLATIONS,
+    max_pct_crossed_quotes: float = MAX_PCT_CROSSED_QUOTES,
+) -> list:
+    """Pure threshold-evaluation helper (reviewer round-1 must-fix 3):
+    mechanically decides which pre-registered BLOCKED thresholds are
+    crossed, given already-computed validation numbers. No I/O, no
+    printing — every crossing is APPENDED to the returned list (nothing is
+    short-circuited), so ``main()`` can print every reason before deciding
+    whether to continue.
+
+    Parameters
+    ----------
+    completeness:
+        ``fx_data.completeness_report()``'s output:
+        ``{year: {..., "pct_missing_weeks", "pct_rows_missing"}}``.
+    complete_years:
+        Years to actually evaluate against the missing-weeks/rows
+        thresholds (the current, still-publishing year is excluded by the
+        caller before this function ever sees it as "complete").
+    pct_coherence, pct_crossed_quotes:
+        Overall violation rates (fraction, e.g. 0.0238 for 2.38%).
+    n_saturday_bars:
+        From ``fx_data.check_weekend_bars`` — ANY Saturday-UTC bar is a
+        hard BLOCKED signal (the mechanical check that would have caught
+        reviewer round-1 must-fix 1's timezone bug).
+
+    Returns
+    -------
+    List of ``(label, reason)`` tuples; empty means nothing crossed.
+    """
+    reasons: list = []
+    for year in complete_years:
+        rep = completeness[year]
+        if rep["pct_missing_weeks"] > max_pct_missing_weeks:
+            reasons.append((
+                year,
+                f"missing weeks {rep['pct_missing_weeks']*100:.2f}% > "
+                f"{max_pct_missing_weeks*100:.2f}%",
+            ))
+        if rep["pct_rows_missing"] > max_pct_missing_rows:
+            reasons.append((
+                year,
+                f"missing rows {rep['pct_rows_missing']*100:.2f}% > "
+                f"{max_pct_missing_rows*100:.2f}%",
+            ))
+    if pct_coherence > max_pct_coherence:
+        reasons.append((
+            "all",
+            f"coherence violation rate {pct_coherence*100:.4f}% > "
+            f"{max_pct_coherence*100:.3f}%",
+        ))
+    if pct_crossed_quotes > max_pct_crossed_quotes:
+        reasons.append((
+            "all",
+            f"crossed-quotes rate {pct_crossed_quotes*100:.4f}% > "
+            f"{max_pct_crossed_quotes*100:.3f}%",
+        ))
+    if n_saturday_bars > 0:
+        reasons.append((
+            "all",
+            f"{n_saturday_bars} Saturday-UTC bars found (expected 0 -- "
+            "timezone-localization bug indicator)",
+        ))
+    return reasons
+
+
 def _classify_gaps(history: pd.DataFrame) -> dict:
     """Friday-close -> Sunday-open weekend gaps are EXPECTED (sanity, not a
     failure per the SUB_PLAN); anything else is an unexplained gap worth
     flagging. A gap is classified 'weekend' if it falls in [40h, 56h]
-    (covers the normal ~48-51h FX weekend plus a holiday Monday or two)."""
+    (covers the normal ~48-51h FX weekend). NOTE: this window does NOT cover
+    a full ~72h holiday-Monday gap (weekend + a whole extra closed day) —
+    those land in "other" gaps instead and are explained there (see the
+    research note's month-distribution breakdown, which shows the
+    Dec/Jan concentration this produces)."""
     diffs = history.index.to_series().diff().dropna()
     non_hourly = diffs[diffs != pd.Timedelta("1h")]
     weekend_like = non_hourly[
@@ -130,7 +220,17 @@ def _print_header(title: str) -> None:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="backtest.run_fx_plumbing_check")
+    parser = argparse.ArgumentParser(
+        prog="backtest.run_fx_plumbing_check",
+        description=(
+            "FXCM 4h EUR/USD PLUMBING CHECK (#371, batch #370) -- proves the "
+            "data loader, resampler, validator, cost model, and bar-loop "
+            "simulator fit together end to end on real archive data. NOT a "
+            "strategy result. " + RE_FETCH_INSTRUCTIONS
+        ),
+        epilog=RE_FETCH_INSTRUCTIONS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--fetch", action="store_true",
         help="download any missing weekly files into the local cache (else cache-only)",
@@ -156,14 +256,22 @@ def main(argv=None) -> int:
     dupes = fx_data.check_duplicates(history)
     mono = fx_data.check_monotonic(history)
     coherence = fx_data.check_ohlc_coherence(history)
+    weekend_bars = fx_data.check_weekend_bars(history)
     gaps = _classify_gaps(history)
     print(f"Duplicates: {dupes['n_duplicates']}")
     print(f"Monotonic: {mono['is_monotonic']}  (n_non_monotonic={mono['n_non_monotonic']})")
     print(f"OHLC coherence violations: {coherence['n_coherence_violations']}")
     print(f"Crossed quotes (ask<bid): {coherence['n_crossed_quotes']}")
     print(f"Non-positive prices: {coherence['n_non_positive_prices']}")
+    print(
+        f"Saturday-UTC bars: {weekend_bars['n_saturday_bars']} (expected 0 -- "
+        f"mechanical timezone-localization check) | Sunday-UTC bars: "
+        f"{weekend_bars['n_sunday_bars']} (session-open bars, expected > 0)"
+    )
     pct_coherence = coherence["n_coherence_violations"] / max(len(history), 1)
+    pct_crossed_quotes = coherence["n_crossed_quotes"] / max(len(history), 1)
     print(f"Coherence violation rate: {pct_coherence*100:.4f}%  (threshold: {MAX_PCT_COHERENCE_VIOLATIONS*100:.3f}%)")
+    print(f"Crossed-quotes rate: {pct_crossed_quotes*100:.4f}%  (threshold: {MAX_PCT_CROSSED_QUOTES*100:.3f}%)")
     print(f"Weekend gaps (Fri close -> Sun open): {gaps['n_weekend_gaps']} "
           f"(median {gaps['weekend_gap_hours_median']}h)")
     print(f"Other (unexplained) gaps: {gaps['n_other_gaps']}")
@@ -175,7 +283,6 @@ def main(argv=None) -> int:
     print(f"{'year':>6} | {'missing wks':>11} | {'pct wks':>8} | {'rows found':>10} | {'pct rows missing':>17}")
     print("-" * 96)
     complete_years = [y for y in completeness if y != args.end_year]
-    blocked_reasons = []
     for year, rep in completeness.items():
         flag = ""
         if year in complete_years:
@@ -189,14 +296,16 @@ def main(argv=None) -> int:
             f"{year:>6} | {rep['n_missing_weeks']:>11} | {rep['pct_missing_weeks']*100:7.2f}% | "
             f"{rep['n_rows_found']:>10} | {rep['pct_rows_missing']*100:16.2f}%{flag}"
         )
-        if flag.strip().startswith("["):
-            blocked_reasons.append((year, flag.strip()))
 
-    if pct_coherence > MAX_PCT_COHERENCE_VIOLATIONS:
-        blocked_reasons.append(("all", f"coherence violation rate {pct_coherence*100:.4f}% > 0.1%"))
-
+    blocked_reasons = evaluate_blocked_reasons(
+        completeness,
+        complete_years=complete_years,
+        pct_coherence=pct_coherence,
+        pct_crossed_quotes=pct_crossed_quotes,
+        n_saturday_bars=weekend_bars["n_saturday_bars"],
+    )
     if blocked_reasons:
-        print("\nBLOCKED thresholds crossed (investigate before proceeding):")
+        print("\nBLOCKED thresholds crossed (mechanical gate fired -- investigate before proceeding):")
         for year, reason in blocked_reasons:
             print(f"  - {year}: {reason}")
 
@@ -218,14 +327,31 @@ def main(argv=None) -> int:
         "FXCM bid/ask is measurement/cross-check only, per the SUB_PLAN."
     )
 
+    _print_header("4b. CROSSED-QUOTES BY HOUR OF DAY (UTC) — magnitude + distribution")
+    crossed_mask = history["AskClose"] < history["BidClose"]
+    crossed_by_hour = crossed_mask.groupby(history.index.hour).sum().astype(int)
+    print("Crossed-quote count by hour of day (UTC):")
+    print(crossed_by_hour.to_string())
+    if crossed_mask.any():
+        neg = (history.loc[crossed_mask, "AskClose"] - history.loc[crossed_mask, "BidClose"]) / 0.0001
+        print(
+            f"\nMagnitude (pips, negative=crossed): median={neg.median():.2f}  "
+            f"mean={neg.mean():.2f}  max_abs={neg.abs().max():.2f}"
+        )
+
     # --- Resample to 4h ---------------------------------------------------
     _print_header("5. RESAMPLE TO 4h (fixed grid 00/04/08/12/16/20 UTC)")
     bars_4h, resample_report = fx_data.resample_to_4h(history)
-    # Drop the in-progress final bar (no-look-ahead convention) — applies
-    # even to a static archive pull, so the harness is safe if ever pointed
-    # at a live-updating cache.
-    bars_4h = bars_4h.iloc[:-1]
-    print(f"4h bars: {len(bars_4h)}  |  partial boundary buckets: {resample_report['n_partial_boundary_buckets']}")
+    # Drop the in-progress final bar AT LOAD, in fx_data.py (no-look-ahead
+    # convention) — applies even to a static archive pull, so the harness is
+    # safe if ever pointed at a live-updating cache.
+    n_bars_before_drop = resample_report["n_bars"]
+    bars_4h = fx_data.drop_in_progress_bar(bars_4h)
+    print(
+        f"4h bars: {n_bars_before_drop} before dropping the in-progress final bar, "
+        f"{len(bars_4h)} after (the {len(bars_4h)} figure is what feeds the baseline "
+        f"below)  |  partial boundary buckets: {resample_report['n_partial_boundary_buckets']}"
+    )
     n_weeks_found = sum(1 for weeks in manifest.values() for n in weeks.values() if n is not None)
     print(f"Expected ~30 bars/week x {n_weeks_found} weeks found ~= {30*n_weeks_found} (sanity order-of-magnitude)")
 

@@ -34,14 +34,14 @@ def _row(dt: str, bo, bh, bl, bc, ao, ah, al, ac) -> str:
 
 
 def _normal_week_rows() -> list:
-    """A few real-shaped rows: winter week (EST, archive opens Sun 22:00 UTC
-    per the empirical timezone finding — see docs/research note), expressed
-    here in the archive's own America/New_York naive local time (17:00
-    Sunday ET)."""
+    """A few real-shaped rows, TRUE raw archive bytes (DateTime already UTC —
+    the corrected empirical finding, reviewer round-1 must-fix 1; verified
+    against the raw cached 2023 week 5 file: first row reads
+    ``01/29/2023 22:00:00.000``, a winter Sunday session open)."""
     return [
-        _row("01/29/2023 17:00:00.000", 1.08644, 1.08662, 1.08586, 1.08662,
+        _row("01/29/2023 22:00:00.000", 1.08644, 1.08662, 1.08586, 1.08662,
              1.08701, 1.08701, 1.08606, 1.08672),
-        _row("01/29/2023 18:00:00.000", 1.08662, 1.08726, 1.0866, 1.08717,
+        _row("01/29/2023 23:00:00.000", 1.08662, 1.08726, 1.0866, 1.08717,
              1.08672, 1.0873, 1.08664, 1.08719),
     ]
 
@@ -72,7 +72,7 @@ def test_parse_week_csv_produces_utc_index_and_mid_columns():
     raw = _make_csv_gzip(_normal_week_rows())
     df = fx_data.parse_week_csv(raw)
     assert len(df) == 2
-    # America/New_York 17:00 (EST, winter, UTC-5) -> 22:00 UTC
+    # DateTime column is already UTC (corrected finding) -> no offset applied.
     assert df.index[0] == pd.Timestamp("2023-01-29 22:00:00", tz="UTC")
     assert df.index.tz is not None
     assert str(df.index.tz) == "UTC"
@@ -81,15 +81,30 @@ def test_parse_week_csv_produces_utc_index_and_mid_columns():
     assert df["MidOpen"].iloc[0] == pytest.approx((1.08644 + 1.08701) / 2)
 
 
-def test_parse_week_csv_dst_summer_offset_differs_from_winter():
-    """Empirical timezone finding: the archive is served in America/New_York
-    LOCAL time (DST-aware), not fixed UTC — a summer (EDT, UTC-4) row must
-    land one hour later in UTC than the equivalent winter (EST) local time."""
+def test_parse_week_csv_winter_and_summer_opens_are_both_utc_verbatim():
+    """Corrected empirical timezone finding (reviewer round-1 must-fix 1):
+    the archive's ``DateTime`` column is already UTC — a winter week's raw
+    session open reads Sunday 22:00 and a summer week's reads Sunday 21:00
+    (both are the 17:00 ET session open expressed in UTC; verified against
+    the raw cached 2023 week 5 / week 28 bytes). Parsing must NOT apply any
+    DST-aware timezone conversion — the two opens are used here VERBATIM as
+    printed, each landing on its own UTC hour with no further offset."""
     raw = _make_csv_gzip([
-        _row("07/09/2023 17:00:00.000", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        _row("07/09/2023 21:00:00.000", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
     ])
     df = fx_data.parse_week_csv(raw)
     assert df.index[0] == pd.Timestamp("2023-07-09 21:00:00", tz="UTC")
+
+
+def test_parse_week_csv_true_raw_fixture_lands_on_sunday_not_saturday():
+    """The bug this must catch: a wrong DST-aware localization (e.g.
+    ``tz_localize("America/New_York")`` applied to an already-UTC column)
+    shifts a winter Sunday-22:00-UTC open forward into Monday, and — for
+    other rows in the week — can land on a spurious Saturday. Parsing the
+    TRUE raw fixture (22:00 UTC, winter) must land on Sunday, day-of-week 6."""
+    raw = _make_csv_gzip(_normal_week_rows())
+    df = fx_data.parse_week_csv(raw)
+    assert df.index[0].day_name() == "Sunday"
 
 
 def test_parse_week_csv_strict_datetime_format_rejects_ambiguous_date():
@@ -184,10 +199,6 @@ def test_fetch_week_raises_week_not_found_on_404(monkeypatch):
     class _FakeResp:
         status_code = 404
 
-    class _FakeSession:
-        def get(self, url, timeout):
-            return _FakeResp()
-
     import requests as _requests
     monkeypatch.setattr(_requests, "get", lambda url, timeout=30: _FakeResp())
     with pytest.raises(fx_data.WeekNotFoundError):
@@ -233,6 +244,25 @@ def test_resample_to_4h_counts_partial_boundary_bucket():
     resampled, report = fx_data.resample_to_4h(df)
     assert report["n_partial_boundary_buckets"] >= 1
     assert len(resampled) == report["n_bars"]
+
+
+def test_drop_in_progress_bar_removes_last_row():
+    """No-look-ahead convention (SUB_PLAN): the final resampled 4h bar is
+    dropped AT LOAD, in fx_data.py — not left to callers to remember."""
+    df = _h1_frame(start="2024-01-08 00:00", n=8)
+    resampled, _ = fx_data.resample_to_4h(df)
+    assert len(resampled) == 2
+    dropped = fx_data.drop_in_progress_bar(resampled)
+    assert len(dropped) == 1
+    assert list(dropped.index) == [pd.Timestamp("2024-01-08 00:00", tz="UTC")]
+
+
+def test_drop_in_progress_bar_empty_frame_returns_empty():
+    df = _h1_frame(start="2024-01-08 00:00", n=8)
+    resampled, _ = fx_data.resample_to_4h(df)
+    empty = resampled.iloc[0:0]
+    dropped = fx_data.drop_in_progress_bar(empty)
+    assert len(dropped) == 0
 
 
 def test_resample_to_4h_drops_empty_weekend_buckets():
@@ -332,6 +362,40 @@ def test_check_ohlc_coherence_clean_on_normal_fixture():
     assert report["n_coherence_violations"] == 0
     assert report["n_crossed_quotes"] == 0
     assert report["n_non_positive_prices"] == 0
+
+
+# ---------------------------------------------------------------------------
+# check_weekend_bars — the mechanical "zero Saturday bars" check (reviewer
+# round-1 must-fix 1: would have caught the timezone bug).
+# ---------------------------------------------------------------------------
+
+def test_check_weekend_bars_zero_saturdays_on_correctly_parsed_week():
+    """A correctly-parsed week (true UTC, no bogus DST shift) has FX
+    market-hours bars on Sunday (session open) but NEVER on Saturday."""
+    raw = _make_csv_gzip(_normal_week_rows())
+    df = fx_data.parse_week_csv(raw)
+    report = fx_data.check_weekend_bars(df)
+    assert report["n_saturday_bars"] == 0
+    assert report["n_sunday_bars"] == 2  # both fixture rows are Sunday 22:00/23:00 UTC
+
+
+def test_check_weekend_bars_fires_on_saturday_timestamp():
+    """Reproduces the bug class: a bar that lands on Saturday must be
+    flagged — this is the check that would have caught the reviewer's
+    must-fix 1 (a wrong tz_localize shifted bars onto impossible Saturdays)."""
+    idx = pd.DatetimeIndex(
+        ["2023-01-28 03:00", "2023-01-29 22:00"], tz="UTC", name="datetime_utc"
+    )  # 2023-01-28 is a Saturday
+    df = pd.DataFrame(
+        {c: [1.1, 1.2] for c in
+         ["BidOpen", "BidHigh", "BidLow", "BidClose",
+          "AskOpen", "AskHigh", "AskLow", "AskClose",
+          "MidOpen", "MidHigh", "MidLow", "MidClose"]},
+        index=idx,
+    )
+    report = fx_data.check_weekend_bars(df)
+    assert report["n_saturday_bars"] == 1
+    assert report["n_sunday_bars"] == 1
 
 
 # ---------------------------------------------------------------------------

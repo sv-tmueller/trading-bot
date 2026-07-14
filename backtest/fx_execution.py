@@ -26,8 +26,8 @@ Locked semantics (batch #370 decision log, mirrored from the #371 SUB_PLAN):
      extremes in time — skipping this would gift every trade 4h of stop
      immunity). Gap handling: if a bar OPENS beyond a level, fill at the
      open (no gap-through gift, no gap-through rescue); otherwise fill at
-     the level itself. The in-progress final bar is dropped upstream (by the
-     resample/load step in ``fx_data.py``), not here.
+     the level itself. The in-progress final bar is dropped upstream, at
+     load, by ``fx_data.drop_in_progress_bar`` — not here.
   5. Equity compounds as:
      ``equity *= 1 + dir*(exit/entry - 1) - cost_rt - nights*overnight_dir``
      — i.e. 100% of equity is exposed at 1x, no leverage.
@@ -40,7 +40,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 
@@ -52,7 +51,10 @@ def _test_bar_for_exit(
 
     Stop-first when both are touched in the same bar. Gap handling: if the
     bar's OPEN is already beyond a level, fill at the open (no gap-through
-    gift/rescue); otherwise fill at the level itself (reached mid-bar).
+    gift/rescue); otherwise fill at the level itself (reached mid-bar). Note
+    stop-first applies even when the bar gaps THROUGH the TP level too — SL
+    is tested and filled first regardless of which level the open itself has
+    already passed, so a bar that gaps past both levels always exits "sl".
 
     Returns (exit_price, reason) with reason in {"tp", "sl"}, or None if
     neither level is touched this bar.
