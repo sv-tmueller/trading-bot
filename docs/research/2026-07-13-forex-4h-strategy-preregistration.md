@@ -54,7 +54,7 @@ items before developer dispatch):
 - **4h grid anchor: fixed absolute grid** — 00/04/08/12/16/20, UTC-normalized (mirrored from
   #371's lead decision #1).
 - **Entry bar TP/SL testing: yes** — the entry bar's own high/low tests TP/SL; the fill is at that
-  bar's open, so its extremes occur after entry in time, no look-ahead (mirrored verbatim from
+  bar's open, so its extremes occur after entry in time, no look-ahead (mirrored from
   #371's lead decision #2).
 - **Symmetric TP = SL = R** (decision #3, this doc's own).
 - **Exit policy: TP/SL and walk-forward-window-end close only** — positions held over weekends,
