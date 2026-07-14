@@ -308,6 +308,25 @@ def drop_in_progress_bar(bars_4h: pd.DataFrame) -> pd.DataFrame:
     return bars_4h.iloc[:-1]
 
 
+def drop_saturday_bars(df: pd.DataFrame) -> tuple:
+    """Drop all Saturday-UTC rows (#376, SUB_PLAN §4 -- the frozen
+    carve-out). Applied at the H1 level, after validation reporting and
+    BEFORE ``resample_to_4h``: because the fixed 00/04/.../20 UTC 4h grid
+    never spans midnight, H1-level and 4h-level exclusion cover identical
+    data, but H1-level is chosen so no Saturday print can ever contaminate a
+    4h bucket's high/low (Saturday prints are exactly the kind of
+    off-market-hours outlier that would otherwise feed the TP/SL exit
+    test). A genuinely correct UTC-localized archive has zero Saturday bars
+    to begin with (``check_weekend_bars``) -- this is a defensive carve-out,
+    not expected to remove real market data.
+
+    Returns ``(df_without_saturdays, n_dropped)``.
+    """
+    saturday_mask = df.index.dayofweek == 5
+    n_dropped = int(saturday_mask.sum())
+    return df[~saturday_mask], n_dropped
+
+
 def empirical_spread_pips(df: pd.DataFrame) -> pd.Series:
     """Per-bar spread = AskClose - BidClose, in pips (1 pip = 0.0001 for a
     EURUSD-class pair)."""
