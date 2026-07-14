@@ -145,3 +145,183 @@ def test_slice_calendar_year_windows_stops_when_data_runs_out():
     years = [w["year"] for w in windows]
     assert max(years) <= 2015
     assert all(y >= 2013 for y in years)
+
+
+# ---------------------------------------------------------------------------
+# compute_window_metrics -- √260 Sharpe, CAGR, Calmar NaN-on-no-drawdown,
+# win rate, trade count (spec §5; SUB_PLAN §6)
+# ---------------------------------------------------------------------------
+
+def _daily_eq(values: list) -> pd.Series:
+    idx = pd.date_range("2013-01-01", periods=len(values), freq="D", tz="UTC")
+    return pd.Series(values, index=idx, dtype=float)
+
+
+def test_compute_window_metrics_hand_computed():
+    """eq = [100000, 110000, 99000] over 2 calendar days -- every figure
+    independently computed via the pinned formulas (not the implementation
+    under test): total_return, maxDD, CAGR (calendar-span/365.25), Calmar =
+    CAGR/|maxDD|, Sharpe/vol on daily pct_change with ddof=1, √260."""
+    eq = _daily_eq([100000.0, 110000.0, 99000.0])
+    trades = [{"pnl": 100.0}, {"pnl": -50.0}, {"pnl": 200.0}]
+    m = fx_survey.compute_window_metrics(eq, trades)
+
+    assert m["total_return"] == pytest.approx(-0.01)
+    assert m["max_drawdown"] == pytest.approx(-0.1)
+    assert m["cagr"] == pytest.approx(-0.8404571251824035)
+    assert m["calmar"] == pytest.approx(-8.404571251824034)
+    assert m["sharpe"] == pytest.approx(0.0, abs=1e-10)
+    assert m["annualized_vol"] == pytest.approx(2.2803508501982765)
+    assert m["trade_count"] == 3
+    assert m["win_rate"] == pytest.approx(2 / 3)
+
+
+def test_compute_window_metrics_calmar_nan_when_no_drawdown():
+    eq = _daily_eq([100000.0, 110000.0, 120000.0])  # monotonic up -> maxDD == 0
+    m = fx_survey.compute_window_metrics(eq, [])
+    assert m["max_drawdown"] == 0.0
+    assert pd.isna(m["calmar"])
+
+
+def test_compute_window_metrics_win_rate_nan_when_zero_trades():
+    eq = _daily_eq([100000.0, 100500.0])
+    m = fx_survey.compute_window_metrics(eq, [])
+    assert m["trade_count"] == 0
+    assert pd.isna(m["win_rate"])
+
+
+def test_compute_window_metrics_sharpe_uses_sqrt_260_not_252_or_365():
+    """Discriminating check: sqrt(260) != sqrt(252) != sqrt(365) by enough
+    margin that a wrong annualization constant would fail this assertion."""
+    import numpy as np
+    eq = _daily_eq([100000.0, 101000.0, 99500.0, 102000.0, 100500.0])
+    m = fx_survey.compute_window_metrics(eq, [])
+    daily_rets = eq.pct_change().dropna()
+    mean_r, std_r = daily_rets.mean(), daily_rets.std(ddof=1)
+    expected_sharpe_260 = mean_r / std_r * (260 ** 0.5)
+    expected_sharpe_252 = mean_r / std_r * (252 ** 0.5)
+    assert m["sharpe"] == pytest.approx(expected_sharpe_260)
+    assert m["sharpe"] != pytest.approx(expected_sharpe_252)
+
+
+# ---------------------------------------------------------------------------
+# Both tax modes wired (spec §5: German annual-netting PRIMARY,
+# no-loss-credit ledger model sensitivity-only)
+# ---------------------------------------------------------------------------
+
+def test_compute_after_tax_metrics_annual_netting_mode():
+    eq = _daily_eq([100000.0, 100000.0, 130000.0])
+    trades = [{
+        "entry_date": eq.index[0], "exit_date": eq.index[2], "pnl": 30000.0,
+    }]
+    m = fx_survey.compute_after_tax_metrics(eq, trades, mode="annual_netting")
+    # 30000 * 26.375% = 7912.5 tax deducted at the exit date -> after-tax
+    # equity at that point = 130000 - 7912.5 = 122087.5
+    assert m["total_return"] == pytest.approx(122087.5 / 100000.0 - 1.0)
+
+
+def test_compute_after_tax_metrics_de_sensitivity_mode():
+    eq = _daily_eq([100000.0, 100000.0, 130000.0])
+    trades = [{
+        "entry_date": eq.index[0], "exit_date": eq.index[2], "pnl": 30000.0,
+    }]
+    m = fx_survey.compute_after_tax_metrics(eq, trades, mode="de_sensitivity")
+    assert m["total_return"] == pytest.approx(122087.5 / 100000.0 - 1.0)
+
+
+def test_compute_after_tax_metrics_unknown_mode_raises():
+    eq = _daily_eq([100000.0, 100500.0])
+    with pytest.raises(ValueError):
+        fx_survey.compute_after_tax_metrics(eq, [], mode="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Cost matrix + FXCM-spread reconciliation row (spec §5; SUB_PLAN §3 pin f)
+# ---------------------------------------------------------------------------
+
+def test_cost_rows_has_nine_rows_four_venues_times_two_plus_reconciliation():
+    rows = fx_survey.cost_rows(measured_spread_pips=0.6)
+    assert len(rows) == 9
+    reconciliation = [r for r in rows if r["cost_mode"] == "reconciliation"]
+    assert len(reconciliation) == 1
+
+
+def test_cost_rows_co_primary_flags_xtb_base_and_6e_base_only():
+    rows = fx_survey.cost_rows(measured_spread_pips=0.6)
+    co_primary = {(r["venue_key"], r["cost_mode"]) for r in rows if r["is_co_primary"]}
+    assert co_primary == {("xtb", "base"), ("6e", "base")}
+
+
+def test_cost_rows_without_reconciliation_arg_has_eight_rows():
+    rows = fx_survey.cost_rows()
+    assert len(rows) == 8
+
+
+def test_reconciliation_cost_rt_formula():
+    # 0.6 pip spread on EURUSD (1 pip = 0.0001), ref price 1.10:
+    # cost_rt = 0.6 * 0.0001 / 1.10
+    expected = 0.6 * 0.0001 / 1.10
+    assert fx_survey.reconciliation_cost_rt(0.6, ref_price=1.10) == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# aggregate_metric_across_windows -- median/worst + NaN-Calmar handling
+# ---------------------------------------------------------------------------
+
+def test_aggregate_median_and_worst_window():
+    window_metrics = [
+        {"year": 2013, "total_return": 0.10, "calmar": 2.0},
+        {"year": 2014, "total_return": -0.05, "calmar": 1.0},
+        {"year": 2015, "total_return": 0.20, "calmar": 3.0},
+    ]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert agg["median_calmar"] == pytest.approx(2.0)
+    assert agg["median_total_return"] == pytest.approx(0.10)
+    assert agg["worst_window_total_return"] == pytest.approx(-0.05)
+    assert agg["worst_window_label"] == 2014
+    assert agg["n_windows"] == 3
+    assert agg["n_nan_calmar_windows"] == 0
+
+
+def test_aggregate_skips_nan_calmar_from_median_but_counts_it():
+    window_metrics = [
+        {"year": 2013, "total_return": 0.10, "calmar": float("nan")},
+        {"year": 2014, "total_return": 0.05, "calmar": 1.0},
+        {"year": 2015, "total_return": 0.20, "calmar": 3.0},
+    ]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert agg["n_nan_calmar_windows"] == 1
+    assert agg["median_calmar"] == pytest.approx(2.0)  # median of [1.0, 3.0]
+    assert agg["n_windows"] == 3
+
+
+def test_aggregate_all_nan_calmar_median_is_nan():
+    window_metrics = [
+        {"year": 2013, "total_return": 0.10, "calmar": float("nan")},
+        {"year": 2014, "total_return": 0.05, "calmar": float("nan")},
+    ]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert agg["n_nan_calmar_windows"] == 2
+    assert pd.isna(agg["median_calmar"])
+
+
+# ---------------------------------------------------------------------------
+# Baseline-4 degenerate-window convention (spec §6)
+# ---------------------------------------------------------------------------
+
+def test_baseline4_degenerate_window_return_and_calmar_set_to_zero():
+    window_metrics = [
+        {"year": 2013, "total_return": 0.10, "calmar": 2.0, "trade_count": 3},
+        {"year": 2014, "total_return": 0.0, "calmar": float("nan"), "trade_count": 0},  # flat all window
+    ]
+    adjusted = fx_survey.apply_baseline4_degenerate_convention(window_metrics)
+    assert adjusted[0]["total_return"] == pytest.approx(0.10)
+    assert adjusted[0]["calmar"] == pytest.approx(2.0)
+    assert adjusted[1]["total_return"] == pytest.approx(0.0)
+    assert adjusted[1]["calmar"] == pytest.approx(0.0)  # NOT NaN -- the pinned convention
+
+
+def test_baseline4_degenerate_convention_does_not_mutate_input():
+    window_metrics = [{"year": 2013, "total_return": 0.0, "calmar": float("nan"), "trade_count": 0}]
+    fx_survey.apply_baseline4_degenerate_convention(window_metrics)
+    assert pd.isna(window_metrics[0]["calmar"])  # original untouched

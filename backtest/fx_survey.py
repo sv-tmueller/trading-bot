@@ -19,15 +19,23 @@ reference.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from backtest import fx_data
+from backtest import fx_costs, fx_data, fx_execution, tax
 from backtest import run_fx_plumbing_check as _plumbing
 
 # spec §5: pre-roll length + first scored calendar year + the ND1 exclusion.
 DEFAULT_PRE_ROLL_BARS = 300
 DEFAULT_FIRST_TEST_YEAR = 2013
 DEFAULT_EXCLUDED_YEARS = (2026,)  # ND1: partial trailing year excluded from scoring
+
+# spec §5: forex 24/5 trading-day annualization constant (NOT 252 -- US
+# equity/NYSE calendar -- and NOT 365 -- crypto's continuous count).
+TRADING_DAYS_PER_YEAR = 260
+
+# spec §5: EURUSD-class pip size, used only by the reconciliation-row helper.
+_PIP_SIZE = 0.0001
 
 
 def _build_history(*, fetch: bool, start_year: int, end_year: int) -> tuple:
@@ -192,3 +200,231 @@ def slice_calendar_year_windows(
         year += 1
 
     return windows
+
+
+# ---------------------------------------------------------------------------
+# Metrics (spec §5): total return, maxDD, CAGR, Calmar, Sharpe/vol on
+# √260-annualized DAILY-resampled equity, trade count, win rate.
+# ---------------------------------------------------------------------------
+
+def compute_window_metrics(equity_test: pd.Series, trades: list) -> dict:
+    """Per-window metrics on a (pre-tax OR after-tax) equity slice.
+
+    Sharpe/vol are computed on the equity resampled to DAILY (via
+    ``fx_execution.equity_to_daily``) and annualized with **√260** (spec
+    §5 -- the forex 24/5 trading-day count, not 252/365). total_return,
+    max_drawdown, CAGR, and Calmar are computed directly on
+    ``equity_test`` at its native cadence (cadence-agnostic metrics; CAGR
+    uses the slice's CALENDAR span, matching
+    ``walkforward._compute_window_metrics``'s own convention, adopted by
+    reference per SUB_PLAN §3 pin (d)).
+
+    Calmar is NaN when max_drawdown == 0 (no drawdown to divide by --
+    SUB_PLAN §3 pin (e); aggregation skips NaN Calmar windows from the
+    median but counts them).
+
+    win_rate (SUB_PLAN §3 pin (c)): fraction of ``trades`` with ``pnl`` >
+    0; NaN when there are zero trades (undefined, not zero -- a
+    trade-free window says nothing about win rate one way or the other).
+    """
+    if len(equity_test) == 0:
+        return {
+            "total_return": 0.0, "max_drawdown": 0.0, "cagr": 0.0,
+            "calmar": float("nan"), "sharpe": 0.0, "annualized_vol": 0.0,
+            "trade_count": 0, "win_rate": float("nan"),
+        }
+
+    total_return = float(equity_test.iloc[-1] / equity_test.iloc[0] - 1.0)
+    rolling_max = equity_test.cummax()
+    max_dd = float(((equity_test - rolling_max) / rolling_max).min())
+
+    span_days = (equity_test.index[-1] - equity_test.index[0]).days
+    span_years = span_days / 365.25
+    if span_years > 0:
+        cagr = float((1.0 + total_return) ** (1.0 / span_years) - 1.0)
+    else:
+        cagr = 0.0
+
+    calmar = float(cagr / abs(max_dd)) if max_dd != 0 else float("nan")
+
+    daily = fx_execution.equity_to_daily(equity_test)
+    daily_rets = daily.pct_change().dropna()
+    if len(daily_rets) >= 2:
+        mean_r = float(daily_rets.mean())
+        std_r = float(daily_rets.std(ddof=1))
+        sharpe = (mean_r / std_r * (TRADING_DAYS_PER_YEAR ** 0.5)) if std_r > 0 else 0.0
+        annualized_vol = std_r * (TRADING_DAYS_PER_YEAR ** 0.5)
+    else:
+        sharpe = 0.0
+        annualized_vol = 0.0
+
+    trade_count = len(trades)
+    if trade_count > 0:
+        n_wins = sum(1 for t in trades if t.get("pnl", 0.0) > 0)
+        win_rate = n_wins / trade_count
+    else:
+        win_rate = float("nan")
+
+    return {
+        "total_return": total_return,
+        "max_drawdown": max_dd,
+        "cagr": cagr,
+        "calmar": calmar,
+        "sharpe": sharpe,
+        "annualized_vol": annualized_vol,
+        "trade_count": trade_count,
+        "win_rate": win_rate,
+    }
+
+
+def compute_after_tax_metrics(equity_test: pd.Series, trades: list, *, mode: str) -> dict:
+    """Apply one of the two pinned tax modes (spec §5) to ``equity_test``,
+    then compute the same metrics ``compute_window_metrics`` returns.
+
+    ``mode``:
+      - ``"annual_netting"`` -- ``tax.apply_annual_netting_tax`` (PRIMARY,
+        German calendar-year netting).
+      - ``"de_sensitivity"`` -- ``tax.apply_tax_to_ledger(jurisdiction="DE")``
+        (the existing no-loss-credit deduct-at-exit model, SENSITIVITY
+        only -- never a survivor basis, spec §5).
+    """
+    if mode == "annual_netting":
+        after_tax_eq = tax.apply_annual_netting_tax(trades, equity_test)
+    elif mode == "de_sensitivity":
+        after_tax_eq = tax.apply_tax_to_ledger(trades, equity_test, jurisdiction="DE")
+    else:
+        raise ValueError(f"unknown tax mode {mode!r}; expected 'annual_netting' or 'de_sensitivity'")
+    return compute_window_metrics(after_tax_eq, trades)
+
+
+# ---------------------------------------------------------------------------
+# Cost matrix (spec §5): 4 venues × {base, pessimistic} + the FXCM-spread
+# reconciliation row (SUB_PLAN §3 interpretive pin (f)).
+# ---------------------------------------------------------------------------
+
+def reconciliation_cost_rt(median_spread_pips: float, *, ref_price: float = 1.10) -> float:
+    """Convert a median MEASURED FXCM spread (pips) into a round-trip
+    ``cost_rt`` (fraction of notional) -- one round trip pays the spread
+    once (buy at ask, sell at bid). 1 pip = 0.0001 for a EURUSD-class pair
+    (``fx_data.empirical_spread_pips``'s own convention).
+
+    This is a RECONCILIATION row against the published/fetched venue
+    presets below, never a fifth cost preset or a survivor basis in its own
+    right (spec §5)."""
+    return (median_spread_pips * _PIP_SIZE) / ref_price
+
+
+def cost_rows(*, measured_spread_pips: "float | None" = None) -> list:
+    """Every row of the spec §5 cost matrix: all 4 ``fx_costs.PRESETS`` ×
+    {base, pessimistic} (8 rows; co-primary = XTB CFD base AND CME 6E base,
+    spec §5 lead decision #6 -- the rest are sensitivity), plus one
+    optional labeled reconciliation row (a 9th row) when
+    ``measured_spread_pips`` is given.
+
+    Each row: ``{label, venue_key, cost_mode, cost_rt, overnight,
+    is_co_primary}``. ``overnight`` mirrors
+    ``run_fx_plumbing_check.main()``'s own wiring exactly (``None`` for
+    futures presets -- no daily rollover charge; a ``{1: ..., -1: ...}``
+    dict of fractional per-night rates for spot/CFD presets).
+    """
+    rows: list = []
+    for key, preset in fx_costs.PRESETS.items():
+        for mode, bp in (("base", preset.base_bp), ("pessimistic", preset.pessimistic_bp)):
+            overnight = None
+            if preset.has_overnight:
+                overnight = {
+                    1: fx_costs.overnight_bp_for(preset, "long") / 10_000.0,
+                    -1: fx_costs.overnight_bp_for(preset, "short") / 10_000.0,
+                }
+            rows.append({
+                "label": f"{preset.name} ({mode})",
+                "venue_key": key,
+                "cost_mode": mode,
+                "cost_rt": bp / 10_000.0,
+                "overnight": overnight,
+                "is_co_primary": key in ("xtb", "6e") and mode == "base",
+            })
+
+    if measured_spread_pips is not None:
+        rows.append({
+            "label": "FXCM measured-spread reconciliation",
+            "venue_key": "fxcm_reconciliation",
+            "cost_mode": "reconciliation",
+            "cost_rt": reconciliation_cost_rt(measured_spread_pips),
+            "overnight": None,
+            "is_co_primary": False,
+        })
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Aggregation: median/worst-window across a cell's scored windows, with the
+# NaN-Calmar and baseline-4-degenerate-window conventions (spec §5/§6).
+# ---------------------------------------------------------------------------
+
+def aggregate_metric_across_windows(window_metrics: list) -> dict:
+    """Aggregate a cell's per-window metrics (SCORED windows only -- the
+    caller filters out ``scored=False`` windows, e.g. the ND1-excluded
+    partial 2026 year) into the per-cell summary the §6 survivor evaluator
+    consumes.
+
+    - ``median_calmar``: median of the NON-NaN calmar values (SUB_PLAN §3
+      pin (e)) -- NaN if every window's calmar is NaN.
+    - ``n_nan_calmar_windows``: count of windows skipped from that median.
+    - ``median_total_return``, ``worst_window_total_return`` (+ its
+      ``worst_window_label``): computed over ALL windows (total_return is
+      always defined, never NaN).
+    - ``n_windows``: total scored windows fed in.
+
+    Each element of ``window_metrics`` must carry at least ``"year"``,
+    ``"total_return"``, ``"calmar"``.
+    """
+    calmars = [m["calmar"] for m in window_metrics]
+    n_nan = sum(1 for c in calmars if pd.isna(c))
+    valid_calmars = [c for c in calmars if not pd.isna(c)]
+    median_calmar = float(np.median(valid_calmars)) if valid_calmars else float("nan")
+
+    returns = [m["total_return"] for m in window_metrics]
+    median_return = float(np.median(returns)) if returns else float("nan")
+
+    if returns:
+        worst_pos = int(np.argmin(returns))
+        worst_return = float(returns[worst_pos])
+        worst_label = window_metrics[worst_pos]["year"]
+    else:
+        worst_return = float("nan")
+        worst_label = None
+
+    return {
+        "median_calmar": median_calmar,
+        "n_nan_calmar_windows": n_nan,
+        "median_total_return": median_return,
+        "worst_window_total_return": worst_return,
+        "worst_window_label": worst_label,
+        "n_windows": len(window_metrics),
+    }
+
+
+def apply_baseline4_degenerate_convention(window_metrics: list) -> list:
+    """Baseline-4 (200-SMA regime) degenerate-window convention (spec §6):
+    in any window where baseline 4 is flat for the WHOLE window (zero
+    trades, an otherwise-undefined 0/0 Calmar ratio), that window's return
+    -- AND its Calmar -- are treated as EXACTLY 0 for the comparison,
+    mirroring baseline 1's "median return > 0" convention rather than
+    discarding the window or leaving it NaN (which would otherwise get
+    silently skipped by ``aggregate_metric_across_windows``'s NaN-Calmar
+    handling -- the wrong outcome here, since this is a "the baseline did
+    nothing" result, not a "the baseline is undefined" one).
+
+    Pure function; returns a NEW list (does not mutate the input)."""
+    adjusted = []
+    for m in window_metrics:
+        if m.get("trade_count", 0) == 0:
+            new_m = dict(m)
+            new_m["total_return"] = 0.0
+            new_m["calmar"] = 0.0
+            adjusted.append(new_m)
+        else:
+            adjusted.append(dict(m))
+    return adjusted
