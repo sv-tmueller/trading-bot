@@ -22,8 +22,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backtest import fx_costs, fx_data, fx_execution, tax
+from backtest import baselines as _equity_baselines
+from backtest import fx_costs, fx_data, fx_execution, regime, tax
 from backtest import run_fx_plumbing_check as _plumbing
+
+# spec §5: co-primary venues -- a survivor must clear the bar on BOTH.
+CO_PRIMARY_VENUES = ("xtb_base", "6e_base")
 
 # spec §5: pre-roll length + first scored calendar year + the ND1 exclusion.
 DEFAULT_PRE_ROLL_BARS = 300
@@ -428,3 +432,164 @@ def apply_baseline4_degenerate_convention(window_metrics: list) -> list:
         else:
             adjusted.append(dict(m))
     return adjusted
+
+
+# ---------------------------------------------------------------------------
+# SPY bar (spec §5, "the bar", inherited from #255 §2/§5): SPY buy-and-hold
+# after-tax Calmar on the SAME calendar test windows as the FX survey.
+# Smoke-only execution (lead decision ND2) -- offline-tested via a
+# monkeypatchable ``_fetch_spy`` seam, per the ``walkforward.py`` precedent.
+# ---------------------------------------------------------------------------
+
+def _fetch_spy(ticker: str, start, end) -> pd.DataFrame:
+    """Network seam -- yfinance. The ONLY function that touches the network
+    for the SPY bar. Patched by every offline test; never called by
+    anything in this package except ``run_fx_survey.py --smoke``, and even
+    there only against the synthetic SPY frame the smoke fixture builds (a
+    monkeypatched ``fetch=`` argument, not this function itself)."""
+    import yfinance as yf
+
+    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df[["Open", "Close"]].dropna()
+
+
+def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=None) -> list:
+    """SPY buy-and-hold, after-tax (German annual-netting, PRIMARY mode),
+    on the same calendar windows the FX survey uses (spec §5's "the bar").
+
+    Fetches ONCE for the whole span (min pre-roll start -> max test end),
+    reuses ``regime.py``'s existing ``SLIPPAGE_BPS``/``COMMISSION_BPS``
+    frictions and ``simulate_from_signal`` + ``baselines.buy_and_hold_signal``
+    (an all-True signal -- fee-adjusted buy-and-hold), same Trap-A
+    test-sub-window-only metrics convention as ``walkforward.py``.
+
+    Returns a list of per-window metrics dicts (``{"year", "scored",
+    **compute_after_tax_metrics(...)}``) -- windows with fewer than 2 test
+    bars are skipped (insufficient data for a return).
+    """
+    fetch_fn = fetch or _fetch_spy
+    if not calendar_windows:
+        return []
+
+    span_start = min(w["pre_roll_start"] for w in calendar_windows)
+    span_end = max(w["test_end"] for w in calendar_windows)
+    full = fetch_fn(ticker, pd.Timestamp(span_start).date(), pd.Timestamp(span_end).date())
+
+    rows: list = []
+    for w in calendar_windows:
+        mask = (full.index >= w["pre_roll_start"]) & (full.index <= w["test_end"])
+        window_df = full.loc[mask]
+        if len(window_df) < 2:
+            continue
+        sig = _equity_baselines.buy_and_hold_signal(window_df["Close"])
+        sim = regime.simulate_from_signal(
+            vehicle_df=window_df, is_bullish_close_t=sig,
+            slippage_bps=regime.SLIPPAGE_BPS, commission_bps=regime.COMMISSION_BPS,
+        )
+        eq_full = sim["equity_curve"]
+        test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
+        eq_test = eq_full.loc[test_mask]
+        if len(eq_test) < 2:
+            continue
+        test_trades = [
+            t for t in sim["trades"]
+            if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
+        ]
+        after_tax = compute_after_tax_metrics(eq_test, test_trades, mode="annual_netting")
+        rows.append({"year": w["year"], "scored": w.get("scored", True), **after_tax})
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# §6 survivor evaluator -- pure function over already-computed aggregates.
+# Truth-table-tested; executed only in smoke mode (lead decision ND2).
+# ---------------------------------------------------------------------------
+
+def evaluate_survivor(
+    *,
+    cell_agg: dict,
+    baseline_aggs: dict,
+    spy_median_calmar: float,
+    co_primary_venues: tuple = CO_PRIMARY_VENUES,
+) -> dict:
+    """A single (family, shape, R) cell is a survivor iff, at BOTH
+    co-primary venues and under the primary tax mode (both already baked
+    into ``cell_agg``/``baseline_aggs`` by the caller), all three spec §6
+    conditions hold simultaneously.
+
+    Parameters
+    ----------
+    cell_agg:
+        ``{venue: {"median_calmar", "median_total_return",
+        "worst_window_total_return"}}`` for the candidate cell, one entry
+        per venue in ``co_primary_venues``.
+    baseline_aggs:
+        ``{"buy_and_hold": {venue: {...}}, "persistence": {venue: {...}},
+        "sma200_regime": {venue: {...}}}`` -- baseline 1 (always-flat) is
+        NOT here; its criterion is applied directly to the candidate's own
+        ``median_total_return`` (condition 2's first clause, below).
+    spy_median_calmar:
+        SPY buy-and-hold's median-window after-tax Calmar (single value --
+        SPY has its own frictions, not an FX venue cost).
+
+    Returns ``{"is_survivor", "condition_1", "condition_2", "condition_3"}``.
+    NaN comparisons evaluate False in Python/numpy, so a NaN
+    ``median_calmar`` deterministically fails conditions 1/2 without any
+    special-casing (SUB_PLAN §3 pin (e)).
+    """
+    condition_1 = all(
+        cell_agg[v]["median_calmar"] > spy_median_calmar for v in co_primary_venues
+    )
+
+    beats_always_flat = all(
+        cell_agg[v]["median_total_return"] > 0 for v in co_primary_venues
+    )
+    beats_other_baselines = all(
+        cell_agg[v]["median_calmar"] > baseline_aggs[b][v]["median_calmar"]
+        for b in ("buy_and_hold", "persistence", "sma200_regime")
+        for v in co_primary_venues
+    )
+    condition_2 = beats_always_flat and beats_other_baselines
+
+    condition_3 = all(
+        cell_agg[v]["worst_window_total_return"] > 0 for v in co_primary_venues
+    )
+
+    return {
+        "is_survivor": condition_1 and condition_2 and condition_3,
+        "condition_1": condition_1,
+        "condition_2": condition_2,
+        "condition_3": condition_3,
+    }
+
+
+def family_kill(results: dict, cell_ids: list) -> bool:
+    """A family is dead iff NONE of its cells is a survivor (spec §6)."""
+    return not any(results[c]["is_survivor"] for c in cell_ids)
+
+
+def class_kill(results: dict) -> dict:
+    """The whole 4h EUR/USD candidate class is dead iff EITHER (a) none of
+    the 33 cells is a survivor, OR (b) every cell that clears the median
+    criterion (conditions 1-2) nonetheless fails the worst-window criterion
+    (condition 3) -- spec §6. (b) is a strict subset of "no survivor
+    exists" (a survivor requires all three conditions), so the actual gate
+    is simply "no survivor anywhere"; the two reasons below just
+    sub-classify WHY for reporting -- (a) no cell even clears the median
+    bar, vs (b) some do but none also survives its own worst window.
+
+    Returns ``{"class_dead": bool, "reason": str | None}``.
+    """
+    if any(r["is_survivor"] for r in results.values()):
+        return {"class_dead": False, "reason": None}
+
+    clears_median = [
+        cell_id for cell_id, r in results.items()
+        if r["condition_1"] and r["condition_2"]
+    ]
+    if not clears_median:
+        return {"class_dead": True, "reason": "a_no_cell_clears_median"}
+    return {"class_dead": True, "reason": "b_never_survives_worst_window"}

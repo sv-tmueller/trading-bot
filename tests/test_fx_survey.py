@@ -325,3 +325,183 @@ def test_baseline4_degenerate_convention_does_not_mutate_input():
     window_metrics = [{"year": 2013, "total_return": 0.0, "calmar": float("nan"), "trade_count": 0}]
     fx_survey.apply_baseline4_degenerate_convention(window_metrics)
     assert pd.isna(window_metrics[0]["calmar"])  # original untouched
+
+
+# ---------------------------------------------------------------------------
+# SPY bar -- SPY buy-and-hold after-tax Calmar on the same calendar windows
+# (spec §5 "the bar", inherited from #255 §2/§5). Smoke-only execution
+# (lead decision ND2); truth-table/offline-tested here via a patched _fetch.
+# ---------------------------------------------------------------------------
+
+def _synthetic_spy_frame(start: str, n: int, daily_return: float = 0.0005) -> pd.DataFrame:
+    idx = pd.date_range(start, periods=n, freq="B")
+    closes = 400.0 * (1.0 + daily_return) ** np.arange(n)
+    return pd.DataFrame({"Open": closes * 0.999, "Close": closes}, index=idx)
+
+
+def test_compute_spy_windows_uses_patched_fetch_and_returns_per_window_metrics(monkeypatch):
+    calendar_windows = [
+        {
+            "year": 2013, "scored": True,
+            "pre_roll_start": pd.Timestamp("2012-11-01"),
+            "test_start": pd.Timestamp("2013-01-01"),
+            "test_end": pd.Timestamp("2014-01-01"),
+        },
+        {
+            "year": 2014, "scored": True,
+            "pre_roll_start": pd.Timestamp("2013-11-01"),
+            "test_start": pd.Timestamp("2014-01-01"),
+            "test_end": pd.Timestamp("2015-01-01"),
+        },
+    ]
+    full_frame = _synthetic_spy_frame("2012-11-01", n=600)
+
+    calls = []
+
+    def fake_fetch(ticker, start, end):
+        calls.append((ticker, start, end))
+        return full_frame
+
+    rows = fx_survey.compute_spy_windows(calendar_windows=calendar_windows, fetch=fake_fetch)
+
+    assert len(calls) == 1  # fetched ONCE for the whole span, not per-window
+    assert calls[0][0] == "SPY"
+    assert len(rows) == 2
+    assert {r["year"] for r in rows} == {2013, 2014}
+    for r in rows:
+        assert "total_return" in r
+        assert "calmar" in r
+
+
+def test_compute_spy_windows_empty_input_returns_empty_list():
+    assert fx_survey.compute_spy_windows(calendar_windows=[], fetch=lambda *a: None) == []
+
+
+# ---------------------------------------------------------------------------
+# §6 survivor evaluator -- truth table (spec §6)
+# ---------------------------------------------------------------------------
+
+_CO_PRIMARY = ("xtb_base", "6e_base")
+
+
+def _agg(median_calmar, median_total_return, worst_window_total_return):
+    return {
+        "median_calmar": median_calmar,
+        "median_total_return": median_total_return,
+        "worst_window_total_return": worst_window_total_return,
+    }
+
+
+def _passing_cell_and_baselines():
+    cell_agg = {v: _agg(2.0, 0.05, 0.02) for v in _CO_PRIMARY}
+    baseline_aggs = {
+        "buy_and_hold": {v: _agg(0.5, 0.01, -0.05) for v in _CO_PRIMARY},
+        "persistence": {v: _agg(0.3, -0.01, -0.10) for v in _CO_PRIMARY},
+        "sma200_regime": {v: _agg(0.8, 0.02, -0.03) for v in _CO_PRIMARY},
+    }
+    spy_median_calmar = 1.0
+    return cell_agg, baseline_aggs, spy_median_calmar
+
+
+def test_survivor_all_conditions_pass():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_1"] is True
+    assert result["condition_2"] is True
+    assert result["condition_3"] is True
+    assert result["is_survivor"] is True
+
+
+def test_survivor_fails_condition_1_when_not_beating_spy_at_one_venue():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    cell_agg["6e_base"]["median_calmar"] = 0.5  # below SPY's 1.0
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_1"] is False
+    assert result["is_survivor"] is False
+
+
+def test_survivor_fails_condition_2_always_flat_median_return_not_positive():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    cell_agg["xtb_base"]["median_total_return"] = -0.01
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_2"] is False
+    assert result["is_survivor"] is False
+
+
+def test_survivor_fails_condition_2_does_not_beat_a_baseline():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    baseline_aggs["persistence"]["6e_base"]["median_calmar"] = 5.0  # now beats the cell
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_2"] is False
+    assert result["is_survivor"] is False
+
+
+def test_survivor_fails_condition_3_negative_worst_window():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    cell_agg["xtb_base"]["worst_window_total_return"] = -0.001
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_3"] is False
+    assert result["is_survivor"] is False
+
+
+def test_survivor_nan_median_calmar_fails_condition_1_deterministically():
+    cell_agg, baseline_aggs, spy_calmar = _passing_cell_and_baselines()
+    cell_agg["xtb_base"]["median_calmar"] = float("nan")
+    result = fx_survey.evaluate_survivor(
+        cell_agg=cell_agg, baseline_aggs=baseline_aggs, spy_median_calmar=spy_calmar,
+    )
+    assert result["condition_1"] is False
+    assert result["is_survivor"] is False
+
+
+def test_family_kill_true_when_no_cell_in_family_survives():
+    results = {
+        "T1_sma_5_20_R20": {"is_survivor": False},
+        "T1_sma_5_20_R30": {"is_survivor": False},
+    }
+    assert fx_survey.family_kill(results, list(results.keys())) is True
+
+
+def test_family_kill_false_when_one_cell_survives():
+    results = {
+        "T1_sma_5_20_R20": {"is_survivor": False},
+        "T1_sma_5_20_R30": {"is_survivor": True},
+    }
+    assert fx_survey.family_kill(results, list(results.keys())) is False
+
+
+def test_class_kill_false_when_any_survivor_exists():
+    results = {"cell_a": {"is_survivor": True, "condition_1": True, "condition_2": True, "condition_3": True}}
+    out = fx_survey.class_kill(results)
+    assert out["class_dead"] is False
+    assert out["reason"] is None
+
+
+def test_class_kill_pattern_a_no_cell_clears_median():
+    results = {
+        "cell_a": {"is_survivor": False, "condition_1": False, "condition_2": True, "condition_3": True},
+        "cell_b": {"is_survivor": False, "condition_1": True, "condition_2": False, "condition_3": True},
+    }
+    out = fx_survey.class_kill(results)
+    assert out["class_dead"] is True
+    assert out["reason"] == "a_no_cell_clears_median"
+
+
+def test_class_kill_pattern_b_clears_median_but_never_survives_worst_window():
+    results = {
+        "cell_a": {"is_survivor": False, "condition_1": True, "condition_2": True, "condition_3": False},
+        "cell_b": {"is_survivor": False, "condition_1": True, "condition_2": True, "condition_3": False},
+    }
+    out = fx_survey.class_kill(results)
+    assert out["class_dead"] is True
+    assert out["reason"] == "b_never_survives_worst_window"
