@@ -361,10 +361,16 @@ def simulate_fx_state(
                 entry_ts = ts
                 entry_idx = i
                 equity_at_entry = equity
-                unreal_ret = direction * (float(closes[i]) / entry_price - 1.0)
-                eq_curve.append((ts, equity_at_entry * (1.0 + unreal_ret)))
-            else:
-                eq_curve.append((ts, equity))
+                # Entry-bar equity-curve convention matches ``simulate_fx``
+                # exactly: the point at the bar that OPENS a position (with
+                # no same-bar exit) is the PRE-entry equity, not a
+                # same-bar mark-to-market against this bar's own close.
+                # Mark-to-market starts from the NEXT bar's "already in a
+                # position" branch below. Aligned deliberately -- the two
+                # sibling simulators must agree here, or max-drawdown
+                # detection would be biased differently between candidate
+                # cells (``simulate_fx``) and baselines (this function).
+            eq_curve.append((ts, equity))
             i += 1
             continue
 

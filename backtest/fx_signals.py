@@ -203,10 +203,6 @@ def bollinger_signal(mid_close: pd.Series, n: int = 20, num_std: float = 2.0) ->
 # Registry (§4) -- 11 shapes x 3 R values = 33 cells
 # ---------------------------------------------------------------------------
 
-def _mid_close(df: pd.DataFrame) -> pd.Series:
-    return df["MidClose"]
-
-
 SHAPES: "Dict[str, Callable[[pd.DataFrame], pd.Series]]" = {
     "T1_sma_5_20": lambda df: sma_cross_signal(df["MidClose"], 5, 20),
     "T1_sma_20_50": lambda df: sma_cross_signal(df["MidClose"], 20, 50),

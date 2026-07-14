@@ -75,6 +75,8 @@ def test_prepare_history_offline_pipeline_order(monkeypatch):
     assert (bars_4h.index.dayofweek == 5).sum() == 0
     # The in-progress final bar was dropped (bars_4h shorter than the raw resample).
     assert result["resample_report"]["n_bars"] > len(bars_4h)
+    # Duplicate-timestamp count is reported, not silently computed and discarded.
+    assert result["n_duplicates"] == 0
 
 
 def test_prepare_history_blocked_on_no_cached_data(monkeypatch):
@@ -303,6 +305,51 @@ def test_aggregate_all_nan_calmar_median_is_nan():
     agg = fx_survey.aggregate_metric_across_windows(window_metrics)
     assert agg["n_nan_calmar_windows"] == 2
     assert pd.isna(agg["median_calmar"])
+
+
+def test_aggregate_computes_median_for_every_pinned_metric():
+    """The reviewer's must-fix: the summary must carry a median for EVERY
+    pinned metric (total return, maxDD, CAGR, after-tax Calmar, Sharpe,
+    trade count, win rate) -- not just calmar/total_return."""
+    window_metrics = [
+        {
+            "year": 2013, "total_return": 0.10, "max_drawdown": -0.05, "cagr": 0.10,
+            "calmar": 2.0, "sharpe": 1.0, "annualized_vol": 0.1, "trade_count": 4, "win_rate": 0.5,
+        },
+        {
+            "year": 2014, "total_return": 0.20, "max_drawdown": -0.10, "cagr": 0.20,
+            "calmar": 2.0, "sharpe": 1.5, "annualized_vol": 0.2, "trade_count": 6, "win_rate": 0.75,
+        },
+    ]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert agg["median_total_return"] == pytest.approx(0.15)
+    assert agg["median_max_drawdown"] == pytest.approx(-0.075)
+    assert agg["median_cagr"] == pytest.approx(0.15)
+    assert agg["median_calmar"] == pytest.approx(2.0)
+    assert agg["median_sharpe"] == pytest.approx(1.25)
+    assert agg["median_trade_count"] == pytest.approx(5.0)
+    assert agg["median_win_rate"] == pytest.approx(0.625)
+
+
+def test_aggregate_median_skips_nan_win_rate_windows():
+    """win_rate is NaN on a zero-trade window (SUB_PLAN pin (c)) -- the
+    median must skip it, the same NaN-tolerant treatment as Calmar."""
+    window_metrics = [
+        {"year": 2013, "total_return": 0.0, "calmar": float("nan"), "win_rate": float("nan"), "trade_count": 0},
+        {"year": 2014, "total_return": 0.10, "calmar": 1.0, "win_rate": 0.6, "trade_count": 5},
+    ]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert agg["median_win_rate"] == pytest.approx(0.6)
+
+
+def test_aggregate_missing_metric_keys_default_to_nan():
+    """Backward/forward compatible: a window dict missing a metric key
+    (e.g. a minimal test fixture) contributes NaN for that metric's
+    median rather than raising KeyError."""
+    window_metrics = [{"year": 2013, "total_return": 0.10, "calmar": 1.0}]
+    agg = fx_survey.aggregate_metric_across_windows(window_metrics)
+    assert pd.isna(agg["median_sharpe"])
+    assert pd.isna(agg["median_trade_count"])
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +615,7 @@ def _tiny_bars_4h(n=40, start="2020-06-01"):
     return df
 
 
-def test_run_cell_across_windows_returns_aggregate_shape():
+def test_run_cell_across_windows_returns_windows_and_summary_shape():
     bars = _tiny_bars_4h(n=60)
     windows = [{
         "year": 2020, "scored": True,
@@ -577,45 +624,226 @@ def test_run_cell_across_windows_returns_aggregate_shape():
     from backtest import fx_signals
 
     fn = fx_signals.SHAPES["M1_roc_12"]
-    agg = fx_survey.run_cell_across_windows(
+    result = fx_survey.run_cell_across_windows(
         bars, fn, 0.0030, windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
     )
+    assert set(result.keys()) == {"windows", "summary"}
+    assert len(result["windows"]) == 1
+    row = result["windows"][0]
+    assert row["year"] == 2020
+    assert row["scored"] is True
+    assert row["skipped"] is False
+    assert row["skip_reason"] is None
+    assert row["n_pre_roll_bars"] > 0
+    assert row["n_test_bars"] > 0
+    for key in fx_survey.METRIC_KEYS:
+        assert key in row
+
+    summary = result["summary"]
     for key in ("median_calmar", "n_nan_calmar_windows", "median_total_return",
+                "median_max_drawdown", "median_cagr", "median_sharpe",
+                "median_trade_count", "median_win_rate",
                 "worst_window_total_return", "worst_window_label", "n_windows"):
-        assert key in agg
+        assert key in summary
 
 
-def test_run_baseline_across_windows_returns_aggregate_shape():
+def test_run_cell_across_windows_includes_unscored_window_but_excludes_it_from_summary():
+    """ND1-style partial-year window (scored=False): the row is still
+    reported in "windows" (unscored coverage, per spec §7's "results are
+    reported, not discarded"), but never feeds the summary's n_windows."""
+    bars = _tiny_bars_4h(n=60)
+    windows = [
+        {
+            "year": 2020, "scored": True,
+            "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[40],
+        },
+        {
+            "year": 2021, "scored": False,  # e.g. ND1's excluded partial trailing year
+            "pre_roll_start": bars.index[10], "test_start": bars.index[40], "test_end": bars.index[-1],
+        },
+    ]
+    from backtest import fx_signals
+
+    fn = fx_signals.SHAPES["M1_roc_12"]
+    result = fx_survey.run_cell_across_windows(
+        bars, fn, 0.0030, windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    assert len(result["windows"]) == 2
+    assert [row["year"] for row in result["windows"]] == [2020, 2021]
+    assert result["windows"][1]["scored"] is False
+    assert result["summary"]["n_windows"] == 1  # only the scored window
+
+
+def test_run_cell_across_windows_records_skip_reason_for_insufficient_pre_roll_bars():
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[-1],
+        "test_start": bars.index[-1],
+        "test_end": bars.index[-1] + pd.Timedelta("4h"),
+    }]
+    from backtest import fx_signals
+
+    fn = fx_signals.SHAPES["M1_roc_12"]
+    result = fx_survey.run_cell_across_windows(
+        bars, fn, 0.0030, windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    row = result["windows"][0]
+    assert row["skipped"] is True
+    assert row["skip_reason"] == "insufficient_pre_roll_bars"
+    assert row["n_test_bars"] is None
+    assert result["summary"]["n_windows"] == 0
+
+
+def test_run_cell_across_windows_records_skip_reason_for_insufficient_test_bars():
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[0],
+        "test_start": bars.index[-2],
+        "test_end": bars.index[-1],  # exclusive -- only 1 bar in [test_start, test_end)
+    }]
+    from backtest import fx_signals
+
+    fn = fx_signals.SHAPES["M1_roc_12"]
+    result = fx_survey.run_cell_across_windows(
+        bars, fn, 0.0030, windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    row = result["windows"][0]
+    assert row["skipped"] is True
+    assert row["skip_reason"] == "insufficient_test_bars"
+    assert row["n_pre_roll_bars"] > 0
+    assert result["summary"]["n_windows"] == 0
+
+
+def test_run_baseline_across_windows_returns_windows_and_summary_shape():
     bars = _tiny_bars_4h(n=60)
     windows = [{
         "year": 2020, "scored": True,
         "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[-1],
     }]
-    agg = fx_survey.run_baseline_across_windows(
+    result = fx_survey.run_baseline_across_windows(
         bars, "persistence", windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
     )
+    assert set(result.keys()) == {"windows", "summary"}
+    assert len(result["windows"]) == 1
+    row = result["windows"][0]
+    assert row["n_pre_roll_bars"] > 0
+    assert row["n_test_bars"] > 0
     for key in ("median_calmar", "n_windows"):
-        assert key in agg
+        assert key in result["summary"]
+
+
+def test_run_baseline_across_windows_records_skip_reason():
+    bars = _tiny_bars_4h(n=60)
+    windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": bars.index[-1],
+        "test_start": bars.index[-1],
+        "test_end": bars.index[-1] + pd.Timedelta("4h"),
+    }]
+    result = fx_survey.run_baseline_across_windows(
+        bars, "persistence", windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
+    )
+    row = result["windows"][0]
+    assert row["skipped"] is True
+    assert row["skip_reason"] == "insufficient_pre_roll_bars"
 
 
 def test_run_baseline_across_windows_sma200_applies_degenerate_convention():
     """A window entirely too short for SMA(200) to ever turn on (all-flat,
-    zero trades) must aggregate to calmar=0, not NaN (spec §6)."""
+    zero trades) must aggregate to calmar=0, not NaN (spec §6) -- in the
+    SUMMARY; the raw per-window row still shows the true (NaN) calmar and
+    zero trade_count, undisguised."""
     bars = _tiny_bars_4h(n=60)
     windows = [{
         "year": 2020, "scored": True,
         "pre_roll_start": bars.index[0], "test_start": bars.index[20], "test_end": bars.index[-1],
     }]
-    agg = fx_survey.run_baseline_across_windows(
+    result = fx_survey.run_baseline_across_windows(
         bars, "sma200_regime", windows, cost_rt=0.0001, overnight=None, tax_mode="annual_netting",
     )
-    assert agg["n_nan_calmar_windows"] == 0
-    assert agg["median_calmar"] == pytest.approx(0.0)
+    assert result["summary"]["n_nan_calmar_windows"] == 0
+    assert result["summary"]["median_calmar"] == pytest.approx(0.0)
+    # The raw row is NOT rewritten by the convention -- it shows the truth.
+    row = result["windows"][0]
+    assert row["trade_count"] == 0
+    assert pd.isna(row["calmar"])
+
+
+# ---------------------------------------------------------------------------
+# run_survey -- the extracted, parameterized combinatorial loop (SUB_PLAN
+# should-fix #3). Takes ALREADY-PREPARED bars_4h + windows; does no data
+# loading of its own, so it is import-callable for stage 2c against real
+# data with zero changes -- and, in this package, is exercised only against
+# synthetic/tiny fixtures, never real cache data.
+# ---------------------------------------------------------------------------
+
+def _survey_ready_bars(n=400, start="2020-01-01"):
+    idx = pd.date_range(start, periods=n, freq="4h", tz="UTC")
+    idx.name = "datetime_utc"
+    rng = np.random.default_rng(3)
+    mid_close = 1.10 + np.cumsum(rng.normal(0, 0.0002, n))
+    return pd.DataFrame({
+        "MidOpen": mid_close, "MidHigh": mid_close + 0.0003,
+        "MidLow": mid_close - 0.0003, "MidClose": mid_close,
+    }, index=idx)
+
+
+def test_run_survey_returns_full_digest_with_full_structure_in_cell_matrix():
+    bars = _survey_ready_bars(n=400)
+    windows = fx_survey.slice_calendar_year_windows(
+        bars.index, first_test_year=bars.index[0].year, pre_roll_bars=50, excluded_years=(),
+    )
+    spy_frame = _synthetic_spy_frame("2019-11-01", n=300)
+
+    result = fx_survey.run_survey(
+        bars, windows, measured_spread_pips=0.6,
+        spy_fetch=lambda ticker, start, end: spy_frame,
+    )
+
+    assert len(result["survivor_results"]) == 33
+    assert set(result["family_kills"].keys()) == {"T", "M", "R"}
+    assert "class_dead" in result["class_kill"]
+    assert "spy_median_calmar" in result
+
+    # Must-fix: cell_full_matrix carries the FULL {"windows","summary"}
+    # structure, not just a flattened summary -- through every cell x
+    # venue/cost-mode x tax-mode cell.
+    one_cell = next(iter(result["cell_full_matrix"].values()))
+    one_row = one_cell["xtb_base"]["annual_netting"]
+    assert set(one_row.keys()) == {"windows", "summary"}
+    assert isinstance(one_row["windows"], list)
+
+
+def test_run_survey_is_import_callable_and_never_touches_cache(monkeypatch):
+    from backtest import fx_data
+
+    def _raise(*a, **kw):
+        raise AssertionError("run_survey must never touch the FXCM cache -- it takes prepared bars_4h")
+
+    monkeypatch.setattr(fx_data, "read_cache", _raise)
+    monkeypatch.setattr(fx_data, "get_week_bytes", _raise)
+
+    bars = _survey_ready_bars(n=400)
+    windows = fx_survey.slice_calendar_year_windows(
+        bars.index, first_test_year=bars.index[0].year, pre_roll_bars=50, excluded_years=(),
+    )
+    spy_frame = _synthetic_spy_frame("2019-11-01", n=300)
+
+    result = fx_survey.run_survey(
+        bars, windows, measured_spread_pips=0.6,
+        spy_fetch=lambda ticker, start, end: spy_frame,
+    )
+    assert len(result["survivor_results"]) == 33
 
 
 # ---------------------------------------------------------------------------
 # Full smoke composition (spec §7) -- offline, synthetic-only, zero cache
-# access. This is the SAME composition run_fx_survey.py --smoke executes.
+# access. This is the SAME composition run_fx_survey.py --smoke executes
+# (run_smoke_survey is now a THIN wrapper around run_survey: generates the
+# synthetic fixture + windows, then delegates the entire combinatorial loop
+# to run_survey).
 # ---------------------------------------------------------------------------
 
 def test_run_smoke_survey_never_touches_cache(monkeypatch):
@@ -634,7 +862,12 @@ def test_run_smoke_survey_never_touches_cache(monkeypatch):
     assert len(result["survivor_results"]) == 33
     assert set(result["family_kills"].keys()) == {"T", "M", "R"}
     assert "class_dead" in result["class_kill"]
-    assert not pd.isna(result["spy_median_calmar"]) or pd.isna(result["spy_median_calmar"])  # always present (may be NaN)
+    assert "spy_median_calmar" in result  # always present (value itself may legitimately be NaN)
+
+    # Full structure carried through cell_full_matrix (must-fix #1), end to end.
+    one_cell = next(iter(result["cell_full_matrix"].values()))
+    one_row = one_cell["xtb_base"]["annual_netting"]
+    assert set(one_row.keys()) == {"windows", "summary"}
 
 
 def test_run_smoke_survey_is_deterministic():

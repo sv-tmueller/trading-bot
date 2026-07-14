@@ -103,11 +103,13 @@ def prepare_history(
     -------
     dict with keys ``bars_4h`` (the ready-to-simulate 4h mid/bid/ask OHLC
     frame), ``n_saturday_dropped``, ``resample_report``, ``completeness``,
-    ``history_rows``.
+    ``history_rows``, ``n_duplicates`` (duplicate H1 timestamps found --
+    reported for visibility; not itself a BLOCKED threshold in this
+    function, per ``fx_data.check_duplicates``).
     """
     history, manifest = _build_history(fetch=fetch, start_year=start_year, end_year=end_year)
 
-    dupes = fx_data.check_duplicates(history)  # noqa: F841 (reported, not gated here)
+    dupes = fx_data.check_duplicates(history)  # reported below, not gated here
     coherence = fx_data.check_ohlc_coherence(history)
     completeness = fx_data.completeness_report(manifest)
 
@@ -145,6 +147,7 @@ def prepare_history(
         "resample_report": resample_report,
         "completeness": completeness,
         "history_rows": len(history),
+        "n_duplicates": dupes["n_duplicates"],
     }
 
 
@@ -367,47 +370,73 @@ def cost_rows(*, measured_spread_pips: "float | None" = None) -> list:
 # NaN-Calmar and baseline-4-degenerate-window conventions (spec §5/§6).
 # ---------------------------------------------------------------------------
 
+# Every metric `compute_window_metrics` returns -- the summary carries a
+# median of EACH of these (SUB_PLAN §6: "full per-window rows plus a
+# summary -- median across windows of EACH metric"), not just calmar and
+# total_return.
+METRIC_KEYS = (
+    "total_return", "max_drawdown", "cagr", "calmar",
+    "sharpe", "annualized_vol", "trade_count", "win_rate",
+)
+
+
+def _median_skip_nan(values: list) -> float:
+    """Median of the non-NaN values in ``values``; NaN if the list is empty
+    or every value is NaN. Plain-Python filtering (not ``np.nanmedian``) so
+    an all-NaN metric never raises a numpy RuntimeWarning."""
+    non_nan = [v for v in values if not pd.isna(v)]
+    return float(np.median(non_nan)) if non_nan else float("nan")
+
+
 def aggregate_metric_across_windows(window_metrics: list) -> dict:
-    """Aggregate a cell's per-window metrics (SCORED windows only -- the
-    caller filters out ``scored=False`` windows, e.g. the ND1-excluded
-    partial 2026 year) into the per-cell summary the §6 survivor evaluator
+    """Aggregate a cell's per-window metrics (SCORED, non-skipped windows
+    only -- the caller filters out ``scored=False`` windows, e.g. the
+    ND1-excluded partial 2026 year, and any window recorded as skipped for
+    insufficient bars) into the per-cell summary the §6 survivor evaluator
     consumes.
 
-    - ``median_calmar``: median of the NON-NaN calmar values (SUB_PLAN §3
-      pin (e)) -- NaN if every window's calmar is NaN.
-    - ``n_nan_calmar_windows``: count of windows skipped from that median.
-    - ``median_total_return``, ``worst_window_total_return`` (+ its
-      ``worst_window_label``): computed over ALL windows (total_return is
-      always defined, never NaN).
-    - ``n_windows``: total scored windows fed in.
-
-    Each element of ``window_metrics`` must carry at least ``"year"``,
-    ``"total_return"``, ``"calmar"``.
+    - ``median_<key>`` for every key in ``METRIC_KEYS``: median of the
+      NON-NaN values (SUB_PLAN §3 pin (e); a metric missing from an
+      element -- e.g. a minimal test fixture -- contributes NaN via
+      ``dict.get``, never a ``KeyError``) -- NaN if every window's value
+      for that metric is NaN.
+    - ``n_nan_calmar_windows``: count of windows skipped from the Calmar
+      median specifically (the one metric SUB_PLAN §3 calls out by name).
+    - ``worst_window_total_return`` (+ its ``worst_window_label``):
+      computed over ALL windows fed in (total_return is always defined,
+      never NaN).
+    - ``n_windows``: total scored, non-skipped windows fed in.
     """
-    calmars = [m["calmar"] for m in window_metrics]
-    n_nan = sum(1 for c in calmars if pd.isna(c))
-    valid_calmars = [c for c in calmars if not pd.isna(c)]
-    median_calmar = float(np.median(valid_calmars)) if valid_calmars else float("nan")
+    if not window_metrics:
+        summary = {f"median_{key}": float("nan") for key in METRIC_KEYS}
+        summary.update({
+            "worst_window_total_return": float("nan"),
+            "worst_window_label": None,
+            "n_windows": 0,
+            "n_nan_calmar_windows": 0,
+        })
+        return summary
+
+    summary = {
+        f"median_{key}": _median_skip_nan([m.get(key, float("nan")) for m in window_metrics])
+        for key in METRIC_KEYS
+    }
+
+    calmars = [m.get("calmar", float("nan")) for m in window_metrics]
+    n_nan_calmar = sum(1 for c in calmars if pd.isna(c))
 
     returns = [m["total_return"] for m in window_metrics]
-    median_return = float(np.median(returns)) if returns else float("nan")
+    worst_pos = int(np.argmin(returns))
+    worst_return = float(returns[worst_pos])
+    worst_label = window_metrics[worst_pos]["year"]
 
-    if returns:
-        worst_pos = int(np.argmin(returns))
-        worst_return = float(returns[worst_pos])
-        worst_label = window_metrics[worst_pos]["year"]
-    else:
-        worst_return = float("nan")
-        worst_label = None
-
-    return {
-        "median_calmar": median_calmar,
-        "n_nan_calmar_windows": n_nan,
-        "median_total_return": median_return,
+    summary.update({
         "worst_window_total_return": worst_return,
         "worst_window_label": worst_label,
         "n_windows": len(window_metrics),
-    }
+        "n_nan_calmar_windows": n_nan_calmar,
+    })
+    return summary
 
 
 def apply_baseline4_degenerate_convention(window_metrics: list) -> list:
@@ -684,15 +713,37 @@ def run_cell_across_windows(
     cost_rt: float, overnight, tax_mode: str, starting_equity: float = 100_000.0,
 ) -> dict:
     """Run one (shape, R, cost, tax-mode) candidate cell across every
-    window, Trap-A-slicing metrics to each window's test sub-window only,
-    and aggregate the SCORED windows (spec §5 walk-forward convention)."""
-    scored_metrics = []
+    window, Trap-A-slicing metrics to each window's test sub-window only.
+
+    Returns ``{"windows": [...], "summary": {...}}``:
+
+    - ``windows``: one row PER window passed in, in order -- including
+      windows with ``scored=False`` (e.g. ND1's excluded partial trailing
+      year: still reported as unscored coverage, per spec §7's "results are
+      reported, not discarded") and windows skipped for insufficient bars
+      (``skipped=True``, ``skip_reason`` in {"insufficient_pre_roll_bars",
+      "insufficient_test_bars"}, plus ``n_pre_roll_bars``/``n_test_bars``
+      bar counts -- SUB_PLAN §5: "reported so 2c sees the vendor data
+      holes instead of silently interpolating"). A non-skipped row carries
+      every key in ``METRIC_KEYS`` plus the bar counts.
+    - ``summary``: ``aggregate_metric_across_windows`` over the SCORED,
+      non-skipped rows only (spec §5 walk-forward convention).
+    """
+    window_rows: list = []
     for w in windows:
+        scored = w.get("scored", True)
         pre_rolled = bars_4h.loc[
             (bars_4h.index >= w["pre_roll_start"]) & (bars_4h.index < w["test_end"])
         ]
-        if len(pre_rolled) < 2:
+        n_pre_roll_bars = len(pre_rolled)
+        if n_pre_roll_bars < 2:
+            window_rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_pre_roll_bars",
+                "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": None,
+            })
             continue
+
         entry_dir = signal_fn(pre_rolled)
         exec_bars = _mid_ohlc_to_exec_bars(pre_rolled)
         sim = fx_execution.simulate_fx(
@@ -702,17 +753,30 @@ def run_cell_across_windows(
         eq_full = sim["equity_curve"]
         test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
         eq_test = eq_full.loc[test_mask]
-        if len(eq_test) < 2:
+        n_test_bars = len(eq_test)
+        if n_test_bars < 2:
+            window_rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_test_bars",
+                "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": n_test_bars,
+            })
             continue
+
         test_trades = [
             t for t in sim["trades"]
             if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
         ]
         after_tax = compute_after_tax_metrics(eq_test, test_trades, mode=tax_mode)
-        if w.get("scored", True):
-            scored_metrics.append({"year": w["year"], **after_tax})
+        window_rows.append({
+            "year": w["year"], "scored": scored, "skipped": False, "skip_reason": None,
+            "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": n_test_bars,
+            **after_tax,
+        })
 
-    return aggregate_metric_across_windows(scored_metrics)
+    scored_rows = [
+        row for row in window_rows if row["scored"] and not row["skipped"]
+    ]
+    return {"windows": window_rows, "summary": aggregate_metric_across_windows(scored_rows)}
 
 
 _BASELINE_STATE_FNS = {
@@ -736,22 +800,36 @@ def run_baseline_across_windows(
     execution asymmetry). ``baseline_key`` in {"always_flat",
     "buy_and_hold", "persistence", "sma200_regime"}.
 
+    Same ``{"windows": [...], "summary": {...}}`` return shape as
+    ``run_cell_across_windows`` (full per-window rows incl. unscored/
+    skipped, bar counts, a summary over the scored non-skipped rows).
+
     The baseline-4 (``sma200_regime``) degenerate-window convention (spec
     §6 -- a window entirely flat, zero trades, treated as return=0/calmar=0
-    rather than left NaN) is applied automatically here before
-    aggregation.
+    rather than left NaN) is applied ONLY when building the summary
+    aggregate -- the raw per-window row in ``windows`` is left untouched
+    (the true NaN calmar / zero trade_count), so a downstream consumer can
+    always see what actually happened, not the convention's substitute.
     """
     if baseline_key not in _BASELINE_STATE_FNS:
         raise ValueError(f"unknown baseline_key {baseline_key!r}")
     state_fn = _BASELINE_STATE_FNS[baseline_key]
 
-    scored_metrics = []
+    window_rows: list = []
     for w in windows:
+        scored = w.get("scored", True)
         pre_rolled = bars_4h.loc[
             (bars_4h.index >= w["pre_roll_start"]) & (bars_4h.index < w["test_end"])
         ]
-        if len(pre_rolled) < 2:
+        n_pre_roll_bars = len(pre_rolled)
+        if n_pre_roll_bars < 2:
+            window_rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_pre_roll_bars",
+                "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": None,
+            })
             continue
+
         state = state_fn(pre_rolled, w)
         exec_bars = _mid_ohlc_to_exec_bars(pre_rolled)
         sim = fx_execution.simulate_fx_state(
@@ -760,50 +838,68 @@ def run_baseline_across_windows(
         eq_full = sim["equity_curve"]
         test_mask = (eq_full.index >= w["test_start"]) & (eq_full.index < w["test_end"])
         eq_test = eq_full.loc[test_mask]
-        if len(eq_test) < 2:
+        n_test_bars = len(eq_test)
+        if n_test_bars < 2:
+            window_rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_test_bars",
+                "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": n_test_bars,
+            })
             continue
+
         test_trades = [
             t for t in sim["trades"]
             if t["exit_date"] >= w["test_start"] and t["exit_date"] < w["test_end"]
         ]
         after_tax = compute_after_tax_metrics(eq_test, test_trades, mode=tax_mode)
-        if w.get("scored", True):
-            scored_metrics.append({"year": w["year"], **after_tax})
+        window_rows.append({
+            "year": w["year"], "scored": scored, "skipped": False, "skip_reason": None,
+            "n_pre_roll_bars": n_pre_roll_bars, "n_test_bars": n_test_bars,
+            **after_tax,
+        })
 
+    scored_rows = [
+        row for row in window_rows if row["scored"] and not row["skipped"]
+    ]
     if baseline_key == "sma200_regime":
-        scored_metrics = apply_baseline4_degenerate_convention(scored_metrics)
+        scored_rows = apply_baseline4_degenerate_convention(scored_rows)
 
-    return aggregate_metric_across_windows(scored_metrics)
+    return {"windows": window_rows, "summary": aggregate_metric_across_windows(scored_rows)}
 
 
 # ---------------------------------------------------------------------------
-# Full smoke composition (spec §7) -- the ENTIRE survey composition run on
-# the synthetic fixture above. This is the ONLY runnable end-to-end path in
-# this package; ``run_fx_survey.py --smoke`` is a thin CLI wrapper around
-# this function. NEVER touches ``fx_data.read_cache``/``get_week_bytes``.
+# run_survey -- the full combinatorial composition (SUB_PLAN should-fix #3),
+# extracted as a parameterized, import-callable function: ALL 33 cells x
+# the full cost matrix x both tax modes, all 4 baselines, the SPY bar, and
+# the §6 evaluator. Takes ALREADY-PREPARED ``bars_4h``/``windows`` -- it
+# does no data loading of its own (no cache/network access whatsoever),
+# so stage 2c can call it directly against real data (via
+# ``prepare_history`` + ``slice_calendar_year_windows`` + a real
+# ``spy_fetch``) with zero changes. The BLOCKED guard lives ONLY in the CLI
+# (``run_fx_survey.py``); this function has no such guard and no full-
+# history opinion of its own -- it just runs whatever it's given.
 # ---------------------------------------------------------------------------
 
-def run_smoke_survey(*, seed: int = 42) -> dict:
-    """Compose the entire survey (data prep, all 33 cells x cost matrix x
-    both tax modes, all 4 baselines, the SPY bar, the §6 evaluator) on the
-    code-generated synthetic fixture. Returns a dict digest; never prints
-    (the CLI owns presentation)."""
-    h1 = make_smoke_fixture(seed=seed)
-    h1_no_saturdays, n_saturday_dropped = fx_data.drop_saturday_bars(h1)
-    post_check = fx_data.check_weekend_bars(h1_no_saturdays)
-    assert post_check["n_saturday_bars"] == 0
+def run_survey(
+    bars_4h: pd.DataFrame, windows: list, *, measured_spread_pips: float, spy_fetch,
+) -> dict:
+    """Run the entire survey composition over already-prepared ``bars_4h``
+    and already-sliced ``windows``. Returns a dict digest (never prints --
+    the CLI owns presentation):
 
-    bars_4h, resample_report = fx_data.resample_to_4h(h1_no_saturdays)
-    bars_4h = fx_data.drop_in_progress_bar(bars_4h)
+    ``cell_full_matrix``: ``{cell_id: {"<venue>_<cost_mode>": {"<tax_mode>":
+    {"windows": [...], "summary": {...}}}}}`` -- the FULL per-window +
+    summary structure survives all the way through, for every one of the
+    33 cells x 9 cost rows x 2 tax modes (must-fix #1).
 
-    measured_spread_pips = float(fx_data.empirical_spread_pips(h1_no_saturdays).median())
+    ``cell_co_primary_annual``, ``baseline_co_primary_annual``: the
+    co-primary-venue, primary-tax-mode SUMMARY slices the §6 evaluator
+    consumes (still nested under the venue key for symmetry with
+    ``cell_full_matrix``).
 
-    first_test_year = bars_4h.index[0].year + 1
-    windows = slice_calendar_year_windows(
-        bars_4h.index, first_test_year=first_test_year,
-        pre_roll_bars=DEFAULT_PRE_ROLL_BARS, excluded_years=(),
-    )
-
+    ``spy_median_calmar``, ``survivor_results``, ``family_kills``,
+    ``class_kill``: as before.
+    """
     costs = cost_rows(measured_spread_pips=measured_spread_pips)
     tax_modes = ("annual_netting", "de_sensitivity")
 
@@ -817,33 +913,32 @@ def run_smoke_survey(*, seed: int = 42) -> dict:
             row_key = f"{cost_row['venue_key']}_{cost_row['cost_mode']}"
             cell_full_matrix[cid][row_key] = {}
             for tmode in tax_modes:
-                agg = run_cell_across_windows(
+                cell_full_matrix[cid][row_key][tmode] = run_cell_across_windows(
                     bars_4h, cell["fn"], cell["r"], windows,
                     cost_rt=cost_row["cost_rt"], overnight=cost_row["overnight"], tax_mode=tmode,
                 )
-                cell_full_matrix[cid][row_key][tmode] = agg
         cell_co_primary_annual[cid] = {
-            "xtb_base": cell_full_matrix[cid]["xtb_base"]["annual_netting"],
-            "6e_base": cell_full_matrix[cid]["6e_base"]["annual_netting"],
+            "xtb_base": cell_full_matrix[cid]["xtb_base"]["annual_netting"]["summary"],
+            "6e_base": cell_full_matrix[cid]["6e_base"]["annual_netting"]["summary"],
         }
 
     base_cost_by_venue = {
         c["venue_key"]: c for c in costs if c["cost_mode"] == "base" and c["venue_key"] in ("xtb", "6e")
     }
+    baseline_full_matrix: dict = {}
     baseline_co_primary_annual: dict = {}
     for bname in ("buy_and_hold", "persistence", "sma200_regime"):
+        baseline_full_matrix[bname] = {}
         baseline_co_primary_annual[bname] = {}
         for venue_key, cost_row in base_cost_by_venue.items():
-            agg = run_baseline_across_windows(
+            full = run_baseline_across_windows(
                 bars_4h, bname, windows,
                 cost_rt=cost_row["cost_rt"], overnight=cost_row["overnight"], tax_mode="annual_netting",
             )
-            baseline_co_primary_annual[bname][f"{venue_key}_base"] = agg
+            baseline_full_matrix[bname][f"{venue_key}_base"] = full
+            baseline_co_primary_annual[bname][f"{venue_key}_base"] = full["summary"]
 
-    spy_frame = make_smoke_spy_fixture(seed=seed + 1)
-    spy_windows_metrics = compute_spy_windows(
-        calendar_windows=windows, fetch=lambda ticker, start, end: spy_frame,
-    )
+    spy_windows_metrics = compute_spy_windows(calendar_windows=windows, fetch=spy_fetch)
     spy_scored = [m for m in spy_windows_metrics if m.get("scored", True)]
     spy_agg = (
         aggregate_metric_across_windows(spy_scored) if spy_scored
@@ -868,16 +963,53 @@ def run_smoke_survey(*, seed: int = 42) -> dict:
     overall_class_kill = class_kill(survivor_results)
 
     return {
-        "n_saturday_dropped": n_saturday_dropped,
-        "bars_4h_len": len(bars_4h),
-        "resample_report": resample_report,
         "measured_spread_pips": measured_spread_pips,
         "windows": windows,
         "cell_full_matrix": cell_full_matrix,
         "cell_co_primary_annual": cell_co_primary_annual,
+        "baseline_full_matrix": baseline_full_matrix,
         "baseline_co_primary_annual": baseline_co_primary_annual,
         "spy_median_calmar": spy_median_calmar,
         "survivor_results": survivor_results,
         "family_kills": family_kills,
         "class_kill": overall_class_kill,
     }
+
+
+# ---------------------------------------------------------------------------
+# Full smoke composition (spec §7) -- run_smoke_survey is a THIN wrapper:
+# generate the synthetic fixture + windows, then delegate the entire
+# combinatorial loop to run_survey. This is the ONLY runnable end-to-end
+# path in this package; ``run_fx_survey.py --smoke`` calls this. NEVER
+# touches ``fx_data.read_cache``/``get_week_bytes``.
+# ---------------------------------------------------------------------------
+
+def run_smoke_survey(*, seed: int = 42) -> dict:
+    """Compose the entire survey on the code-generated synthetic fixture.
+    Returns a dict digest; never prints (the CLI owns presentation)."""
+    h1 = make_smoke_fixture(seed=seed)
+    h1_no_saturdays, n_saturday_dropped = fx_data.drop_saturday_bars(h1)
+    post_check = fx_data.check_weekend_bars(h1_no_saturdays)
+    assert post_check["n_saturday_bars"] == 0
+
+    bars_4h, resample_report = fx_data.resample_to_4h(h1_no_saturdays)
+    bars_4h = fx_data.drop_in_progress_bar(bars_4h)
+
+    measured_spread_pips = float(fx_data.empirical_spread_pips(h1_no_saturdays).median())
+
+    first_test_year = bars_4h.index[0].year + 1
+    windows = slice_calendar_year_windows(
+        bars_4h.index, first_test_year=first_test_year,
+        pre_roll_bars=DEFAULT_PRE_ROLL_BARS, excluded_years=(),
+    )
+
+    spy_frame = make_smoke_spy_fixture(seed=seed + 1)
+    result = run_survey(
+        bars_4h, windows, measured_spread_pips=measured_spread_pips,
+        spy_fetch=lambda ticker, start, end: spy_frame,
+    )
+
+    result["n_saturday_dropped"] = n_saturday_dropped
+    result["bars_4h_len"] = len(bars_4h)
+    result["resample_report"] = resample_report
+    return result

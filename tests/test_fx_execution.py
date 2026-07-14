@@ -434,6 +434,25 @@ def test_state_entry_fills_at_next_bar_open_not_decision_bar_close():
     assert t["exit_reason"] == "state_flat"
 
 
+def test_state_entry_bar_equity_curve_point_matches_simulate_fx_convention():
+    """On the bar that OPENS a new position (no same-bar exit), the equity
+    CURVE point at that bar is the pre-entry (stale) equity, exactly as
+    ``simulate_fx`` marks it (see that function's own entry-bar branch) --
+    NOT a same-bar mark-to-market using this bar's own close. The two
+    sibling simulators must agree here; a divergence would silently bias
+    max-drawdown detection differently between candidate cells
+    (``simulate_fx``) and baselines (``simulate_fx_state``)."""
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),  # bar0: state decided +1 here
+        (entry, entry * 1.10, entry - 0.0005, entry * 1.05),  # bar1: entry bar, big favorable move
+        (entry * 1.05, entry * 1.05 + 0.0005, entry * 1.05 - 0.0005, entry * 1.05),  # bar2: forced close
+    ])
+    state = _sig(bars, [1, 1, 1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None, starting_equity=100_000.0)
+    assert result["equity_curve"].loc[bars.index[1]] == pytest.approx(100_000.0)
+
+
 def test_state_flip_closes_old_and_reopens_at_same_open():
     entry = 1.1000
     bars = _bars([

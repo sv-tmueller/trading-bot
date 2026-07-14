@@ -180,7 +180,7 @@ def test_wilder_rsi_first_value_lands_at_bar_n_not_before():
     assert not pd.isna(rsi.iloc[2])
 
 
-def test_wilder_rsi_avg_loss_zero_is_rsi_100_degenerate(n=14):
+def test_wilder_rsi_avg_loss_zero_is_rsi_100_degenerate():
     """All-gains 14-bar seed window (avgLoss==0) -> RSI=100 (Wilder's
     degenerate convention). Crafted series (§3 R1/R2 pin, SUB_PLAN §8):
     prices p0..p14 = 100..114 (14 diffs of +1 each) -> seed avgGain=1.0,
