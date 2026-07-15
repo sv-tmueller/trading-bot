@@ -178,7 +178,9 @@ event's `message`, codepoint-safe-truncated to Discord's 2,000-character limit) 
 renders natively, plus the full structured fields for any future JSON-consuming forwarder. Set
 `NOTIFY_WEBHOOK_URL` via `supabase secrets set` — see
 [`docs/runbooks/discord-notifications.md`](docs/runbooks/discord-notifications.md) for the setup
-steps. If unset, notifications are silently skipped and the bot keeps trading.
+steps. If unset, notifications are skipped and the bot keeps trading; the skip (and any fetch
+rejection or non-2xx webhook response) is logged via `console.warn` — visible in Supabase function
+logs — without ever logging the webhook URL or the full payload (#366).
 
 Note: the webhook must be reachable from Supabase's cloud — a `localhost` URL will not work.
 Notifications are best-effort, so the bot runs fine without them (they are intentionally unset
