@@ -7,26 +7,53 @@
 // characters — Discord's hard content limit — so a long message still posts
 // instead of 400ing the whole webhook call. The full untruncated text always
 // survives in `message`. NEVER throws — a notification outage must not crash
-// the bot.
+// the bot. An unset secret, a fetch rejection, or a non-2xx response are all
+// logged via console.warn (visible in Supabase function logs, #366) — never
+// the webhook URL or the full payload — so an outage is silent to the caller
+// but visible in ops.
 import { getNotifyWebhookUrl } from "./config.ts";
 
 const DISCORD_CONTENT_MAX_CODEPOINTS = 2000;
+const WARN_BODY_SNIPPET_MAX_CODEPOINTS = 200;
+
+function truncateCodepoints(s: string, max: number): string {
+  return [...s].slice(0, max).join("");
+}
 
 export async function notify(event: Record<string, unknown>): Promise<void> {
   const url = getNotifyWebhookUrl();
-  if (url === "") return;
+  const eventType = String(event.event_type ?? "unknown");
+  if (url === "") {
+    console.warn(`notify: skipped (NOTIFY_WEBHOOK_URL unset), event_type=${eventType}`);
+    return;
+  }
   const message = event.message;
   const body = typeof message === "string" && message !== ""
-    ? { ...event, content: [...message].slice(0, DISCORD_CONTENT_MAX_CODEPOINTS).join("") }
+    ? { ...event, content: truncateCodepoints(message, DISCORD_CONTENT_MAX_CODEPOINTS) }
     : event;
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-  } catch (_e) {
-    // swallow — outage must not crash the bot
+    if (!res.ok) {
+      const text = await res.text();
+      // Redact the FULL untruncated text first, then truncate — the reverse
+      // order would leave an un-redacted prefix of the URL (including part of
+      // any secret token) in the snippet whenever the URL straddles the cut.
+      const snippet = truncateCodepoints(
+        text.replaceAll(url, "[webhook-url]"),
+        WARN_BODY_SNIPPET_MAX_CODEPOINTS,
+      );
+      console.warn(
+        `notify: webhook responded ${res.status}: ${snippet}, event_type=${eventType}`,
+      );
+    }
+  } catch (e) {
+    const name = e instanceof Error ? e.name : "Error";
+    const msg = String(e instanceof Error ? e.message : e).replaceAll(url, "[webhook-url]");
+    console.warn(`notify: webhook POST failed: ${name}: ${msg}, event_type=${eventType}`);
   }
 }
 

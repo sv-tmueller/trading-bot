@@ -139,9 +139,11 @@ values differ.
 ### Notifications
 
 `notifications.ts` POSTs directly to a Discord incoming webhook (`NOTIFY_WEBHOOK_URL` secret) — no
-n8n or other forwarder in the path. Silently skips if the secret is unset or the request fails, so
-a notification outage never crashes the bot. The webhook must be reachable from Supabase's cloud —
-a `localhost` URL won't work.
+n8n or other forwarder in the path. Skips if the secret is unset, and swallows fetch rejections and
+non-2xx responses, so a notification outage never crashes the bot; each of those three cases is
+`console.warn`ed (visible in Supabase function logs, #366) without ever logging the webhook URL or
+the full payload. The webhook must be reachable from Supabase's cloud — a `localhost` URL won't
+work.
 
 The helpers post structured JSON dicts (`event_type` + event-specific fields, plus a `message`
 field) so a future JSON-consuming forwarder could still route on shape: `notifyRegimeFlip`,

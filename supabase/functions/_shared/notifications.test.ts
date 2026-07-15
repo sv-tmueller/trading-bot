@@ -11,6 +11,15 @@ import {
   notifyTradeFailed,
 } from "./notifications.ts";
 
+function stubWarn(): { calls: unknown[][]; restore: () => void } {
+  const original = console.warn;
+  const calls: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  return { calls, restore: () => (console.warn = original) };
+}
+
 Deno.test("notify posts JSON to the webhook", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let capturedUrl = "";
@@ -37,10 +46,12 @@ Deno.test("notify is a no-op when URL unset", async () => {
     called = true;
     return new Response("ok");
   });
+  const { restore: restoreWarn } = stubWarn(); // side-effect warn (#366); clean test output only
   try {
     await notify({ event_type: "test" });
     assertEquals(called, false);
   } finally {
+    restoreWarn();
     restore();
   }
 });
@@ -48,9 +59,11 @@ Deno.test("notify is a no-op when URL unset", async () => {
 Deno.test("notify swallows fetch errors (never throws)", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   const restore = stubFetch(() => Promise.reject(new Error("network down")));
+  const { restore: restoreWarn } = stubWarn(); // side-effect warn (#366); clean test output only
   try {
     await notify({ event_type: "test" }); // must not throw
   } finally {
+    restoreWarn();
     restore();
     Deno.env.delete("NOTIFY_WEBHOOK_URL");
   }
@@ -191,6 +204,134 @@ Deno.test("notify: empty-string message produces no content field", async () => 
     assertEquals("content" in body, false);
   } finally {
     restore();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #366: notify() failures must be visible via console.warn — unset-secret
+// skip, fetch rejection (redacted), and non-2xx webhook responses.
+// ---------------------------------------------------------------------------
+
+Deno.test("notify: unset secret warns once with event_type and makes zero fetch calls", async () => {
+  Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  let fetchCalls = 0;
+  const restoreFetch = stubFetch(async () => {
+    fetchCalls++;
+    return new Response("ok");
+  });
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" }); // must not throw
+    assertEquals(fetchCalls, 0);
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    assertEquals(joined.includes("NOTIFY_WEBHOOK_URL unset"), true);
+    assertEquals(joined.includes("test_event"), true);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+  }
+});
+
+Deno.test("notify: fetch rejection warns once and redacts the webhook URL", async () => {
+  const stubUrl = "http://localhost:5678/hook";
+  Deno.env.set("NOTIFY_WEBHOOK_URL", stubUrl);
+  const restoreFetch = stubFetch(() =>
+    Promise.reject(new TypeError(`error sending request for url (${stubUrl})`))
+  );
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" }); // must not throw
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    assertEquals(joined.includes(stubUrl), false);
+    assertEquals(joined.includes("test_event"), true);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("notify: non-2xx response warns with status and truncated body snippet", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restoreFetch = stubFetch(async () => new Response("x".repeat(300), { status: 400 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" }); // must not throw
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    assertEquals(joined.includes("400"), true);
+    assertEquals(joined.includes("test_event"), true);
+    assertEquals(joined.includes("x".repeat(200)), true);
+    assertEquals(joined.includes("x".repeat(201)), false);
+    assertEquals(joined.includes("http://localhost:5678/hook"), false);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("notify: non-2xx body containing the webhook URL straddling the snippet boundary never leaks a URL fragment", async () => {
+  const stubUrl = "http://localhost:5678/hook/tok_9f8e7d6c5b4a3210SECRET";
+  Deno.env.set("NOTIFY_WEBHOOK_URL", stubUrl);
+  // Position the full URL so it straddles the 200-codepoint snippet cutoff.
+  // Redacting AFTER truncating (the bug) leaves an un-redacted prefix of the
+  // URL -- including part of the secret token -- inside the logged snippet.
+  const prefixLen = 200 - Math.floor(stubUrl.length / 2);
+  const body = "z".repeat(prefixLen) + stubUrl;
+  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "probe_token" }); // must not throw
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    assertEquals(joined.includes(stubUrl), false);
+    assertEquals(joined.includes("tok_"), false);
+    assertEquals(joined.includes("localhost"), false);
+    assertEquals(joined.includes("probe_token"), true);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("notify: non-2xx body snippet truncation is codepoint-safe across an astral-character boundary", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  // 199 ascii chars + one astral codepoint (🛑, a surrogate pair in UTF-16)
+  // straddling the 200-codepoint snippet cut, then more filler.
+  const body = "e".repeat(199) + "🛑" + "f".repeat(50);
+  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" });
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    // No lone surrogate leaks into the log line, and the snippet is cut at
+    // exactly the astral codepoint (not mid-surrogate-pair).
+    assertEquals(joined.includes("�"), false);
+    assertEquals(joined.includes("e".repeat(199) + "🛑"), true);
+    assertEquals(joined.includes("f".repeat(50)), false);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("notify: 2xx response emits no warn", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restoreFetch = stubFetch(async () => new Response("ok", { status: 200 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" });
+    assertEquals(calls.length, 0);
+  } finally {
+    restoreWarn();
+    restoreFetch();
     Deno.env.delete("NOTIFY_WEBHOOK_URL");
   }
 });
