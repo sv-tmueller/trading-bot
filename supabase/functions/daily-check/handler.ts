@@ -14,6 +14,7 @@ import {
   insertAuditLog,
   insertTrade,
   updateAuditLog,
+  upsertEquitySnapshot,
   upsertRegimeState,
 } from "../_shared/db.ts";
 import {
@@ -46,6 +47,7 @@ function buildDeps(): DailyCheckDeps {
       insertTrade: (p) => insertTrade(sb, p),
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),
+      upsertEquitySnapshot: (p) => upsertEquitySnapshot(sb, p),
     },
     notifications: { notifyRegimeFlip, notifyStateDesync, notifyTradeFailed, notifyBrokerError },
   };
