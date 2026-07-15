@@ -238,7 +238,16 @@ Deno.test("default mode (no windowDays): shape-lock - exact current 8 keys (#383
   const digest = await runStatus(deps);
   assertEquals(
     Object.keys(digest).sort(),
-    ["alpaca", "audit_7d", "generated_at", "last_trade", "market_open", "paused", "regime", "returns"],
+    [
+      "alpaca",
+      "audit_7d",
+      "generated_at",
+      "last_trade",
+      "market_open",
+      "paused",
+      "regime",
+      "returns",
+    ],
   );
   assertEquals("trades" in digest, false);
   assertEquals("regime_history" in digest, false);

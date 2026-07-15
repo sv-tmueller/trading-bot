@@ -563,7 +563,9 @@ Deno.test("skipped:trading_paused -> no equity snapshot", async () => {
 
 Deno.test("skipped:market_closed -> no equity snapshot", async () => {
   const { deps, calls } = makeDeps({
-    alpaca: { getClock: () => Promise.resolve({ isOpen: false }) } as unknown as DailyCheckDeps["alpaca"],
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: false }),
+    } as unknown as DailyCheckDeps["alpaca"],
   });
   assertEquals(await runDailyCheck(deps), "skipped:market_closed");
   assertEquals(calls.equitySnapshot, undefined);

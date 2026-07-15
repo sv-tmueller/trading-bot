@@ -193,7 +193,10 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
       // and must back off, not place a duplicate order.
       const claimed = await db.claimTradeDate("daily-check", ymd(deps.now()));
       if (!claimed) {
-        await finish("skipped:duplicate_run", "trade_claims conflict: another invocation claimed this date");
+        await finish(
+          "skipped:duplicate_run",
+          "trade_claims conflict: another invocation claimed this date",
+        );
         return "skipped:duplicate_run";
       }
 

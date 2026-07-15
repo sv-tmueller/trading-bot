@@ -535,7 +535,8 @@ Deno.test({
     await sb.from("equity_snapshots").delete().eq("date", "2030-01-02");
     await upsertEquitySnapshot(sb, { date: "2030-01-02", equityUsd: 100000 });
     await upsertEquitySnapshot(sb, { date: "2030-01-02", equityUsd: 100500.25 });
-    const { data } = await sb.from("equity_snapshots").select("*").eq("date", "2030-01-02").single();
+    const { data } = await sb.from("equity_snapshots").select("*").eq("date", "2030-01-02")
+      .single();
     assertEquals(Number(data?.equity_usd), 100500.25);
     await sb.from("equity_snapshots").delete().eq("date", "2030-01-02");
   },
