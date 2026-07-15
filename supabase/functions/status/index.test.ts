@@ -13,6 +13,7 @@ const DIGEST: StatusDigest = {
   market_open: true,
   paused: false,
   regime: null,
+  regime_margin_pct: null,
   audit_7d: { since: "2026-07-02T15:00:00.000Z", outcome_counts: {}, errors: [] },
   last_trade: null,
   alpaca: { equity_usd: 100_000, position: { symbol: "UPRO", qty: 0 } },
