@@ -93,6 +93,88 @@ def test_prepare_history_blocked_on_no_cached_data(monkeypatch):
         fx_survey.prepare_history(fetch=False, start_year=2023, end_year=2023)
 
 
+def _patch_clean_offline_cache(monkeypatch):
+    """One cached week of clean H1 data (no Saturday rows, no threshold
+    crossings) -- lets prepare_history run its real pipeline up to the
+    BLOCKED gate, whose decision (``evaluate_blocked_reasons``'s return
+    value) individual tests then monkeypatch to exercise the ND-A
+    adjudicated-reasons whitelist in isolation."""
+    from backtest import fx_data
+
+    raw = _make_csv_gzip(_week_of_hourly_rows("2023-01-29 22:00", n=20))
+
+    def fake_read_cache(year, week, *, root=fx_data.CACHE_ROOT):
+        return raw if (year, week) == (2023, 5) else None
+
+    def fake_get_week_bytes(year, week, *, fetch=False, root=fx_data.CACHE_ROOT):
+        cached = fake_read_cache(year, week, root=root)
+        if cached is not None:
+            return cached
+        raise FileNotFoundError("no cached data (offline test)")
+
+    monkeypatch.setattr(fx_data, "read_cache", fake_read_cache)
+    monkeypatch.setattr(fx_data, "get_week_bytes", fake_get_week_bytes)
+
+
+# ---------------------------------------------------------------------------
+# ND-A (lead decision, batch #378): prepare_history's strictly-additive,
+# keyword-only adjudicated_reasons whitelist. Exact (label, reason) matches
+# against the #374-adjudicated crossings are collected into the returned
+# dict's "adjudicated_crossings" instead of raising; any unmatched reason
+# still BLOCKs. Default () = behavior byte-identical.
+# ---------------------------------------------------------------------------
+
+def test_prepare_history_default_adjudicated_reasons_still_blocks(monkeypatch):
+    from backtest import run_fx_plumbing_check
+
+    _patch_clean_offline_cache(monkeypatch)
+    monkeypatch.setattr(
+        run_fx_plumbing_check, "evaluate_blocked_reasons",
+        lambda *a, **kw: [(2024, "missing weeks 7.55% > 2.00%")],
+    )
+    with pytest.raises(SystemExit, match="BLOCKED"):
+        fx_survey.prepare_history(fetch=False, start_year=2023, end_year=2023)
+
+
+def test_prepare_history_adjudicated_reasons_matched_are_collected_not_raised(monkeypatch):
+    from backtest import run_fx_plumbing_check
+
+    _patch_clean_offline_cache(monkeypatch)
+    crossings = (
+        (2024, "missing weeks 7.55% > 2.00%"),
+        (2025, "missing weeks 7.55% > 2.00%"),
+        ("all", "crossed-quotes rate 2.3791% > 0.100%"),
+    )
+    monkeypatch.setattr(
+        run_fx_plumbing_check, "evaluate_blocked_reasons",
+        lambda *a, **kw: list(crossings),
+    )
+    result = fx_survey.prepare_history(
+        fetch=False, start_year=2023, end_year=2023, adjudicated_reasons=crossings,
+    )
+    assert result["adjudicated_crossings"] == list(crossings)
+    assert len(result["bars_4h"]) > 0  # the pipeline actually ran to completion
+
+
+def test_prepare_history_one_unmatched_reason_still_blocks_even_when_others_match(monkeypatch):
+    from backtest import run_fx_plumbing_check
+
+    _patch_clean_offline_cache(monkeypatch)
+    adjudicated = (
+        (2024, "missing weeks 7.55% > 2.00%"),
+        (2025, "missing weeks 7.55% > 2.00%"),
+        ("all", "crossed-quotes rate 2.3791% > 0.100%"),
+    )
+    monkeypatch.setattr(
+        run_fx_plumbing_check, "evaluate_blocked_reasons",
+        lambda *a, **kw: list(adjudicated) + [(2023, "missing weeks 99.00% > 2.00%")],
+    )
+    with pytest.raises(SystemExit, match="BLOCKED"):
+        fx_survey.prepare_history(
+            fetch=False, start_year=2023, end_year=2023, adjudicated_reasons=adjudicated,
+        )
+
+
 # ---------------------------------------------------------------------------
 # slice_calendar_year_windows (spec §5)
 # ---------------------------------------------------------------------------

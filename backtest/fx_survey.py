@@ -78,6 +78,7 @@ def _build_history(*, fetch: bool, start_year: int, end_year: int) -> tuple:
 
 def prepare_history(
     *, fetch: bool = False, start_year: int = _plumbing.START_YEAR, end_year: int,
+    adjudicated_reasons: tuple = (),
 ) -> dict:
     """Load -> validate (BLOCKED data-kill gate) -> Saturday carve-out ->
     resample to 4h -> drop the in-progress final bar (SUB_PLAN §4).
@@ -94,10 +95,28 @@ def prepare_history(
          raise ``SystemExit("BLOCKED: ...")`` if crossed (the #371 "data
          kill" rule, spec §6: "If #371's data/harness package is BLOCKED on
          validation, the survey defined by this document does not run at
-         all").
+         all") -- UNLESS a crossing exact-matches an entry in
+         ``adjudicated_reasons`` (ND-A, lead decision batch #378): those
+         crossings are collected into the returned dict's
+         ``adjudicated_crossings`` instead of raising. Any reason NOT in
+         the whitelist still raises BLOCKED, even when other reasons in the
+         same run match -- the whitelist is a pin against ONE already-
+         investigated cache snapshot (#374's merged note), not a blanket
+         relaxation. Default ``()`` -- behavior byte-identical to before
+         this parameter existed.
       3. ``fx_data.drop_saturday_bars`` (the count is reported).
       4. Assert ``check_weekend_bars`` now reports 0 Saturday bars.
       5. ``fx_data.resample_to_4h`` then ``fx_data.drop_in_progress_bar``.
+
+    Parameters
+    ----------
+    adjudicated_reasons:
+        Tuple of ``(label, reason)`` pairs -- exact matches (by ``==``)
+        against ``evaluate_blocked_reasons``'s own ``(label, reason)``
+        return entries -- pre-adjudicated as safe to proceed past (e.g. the
+        three #374-documented crossings on the pinned FXCM cache). A
+        drifted/refreshed cache changes the percentages in ``reason``, so
+        this exact-string pin doubles as a cache-integrity check.
 
     Returns
     -------
@@ -105,7 +124,9 @@ def prepare_history(
     frame), ``n_saturday_dropped``, ``resample_report``, ``completeness``,
     ``history_rows``, ``n_duplicates`` (duplicate H1 timestamps found --
     reported for visibility; not itself a BLOCKED threshold in this
-    function, per ``fx_data.check_duplicates``).
+    function, per ``fx_data.check_duplicates``), ``adjudicated_crossings``
+    (the whitelisted crossings that fired this run -- ``[]`` when none did
+    or the gate raised).
     """
     history, manifest = _build_history(fetch=fetch, start_year=start_year, end_year=end_year)
 
@@ -128,8 +149,10 @@ def prepare_history(
         pct_crossed_quotes=pct_crossed_quotes,
         n_saturday_bars=0,  # excluded from THIS gate -- carved out unconditionally below
     )
-    if blocked_reasons:
-        reasons_str = "; ".join(f"{year}: {reason}" for year, reason in blocked_reasons)
+    adjudicated_crossings = [r for r in blocked_reasons if r in adjudicated_reasons]
+    unmatched_reasons = [r for r in blocked_reasons if r not in adjudicated_reasons]
+    if unmatched_reasons:
+        reasons_str = "; ".join(f"{year}: {reason}" for year, reason in unmatched_reasons)
         raise SystemExit(f"BLOCKED: data validation thresholds crossed: {reasons_str}")
 
     history_no_saturdays, n_saturday_dropped = fx_data.drop_saturday_bars(history)
@@ -148,6 +171,7 @@ def prepare_history(
         "completeness": completeness,
         "history_rows": len(history),
         "n_duplicates": dupes["n_duplicates"],
+        "adjudicated_crossings": adjudicated_crossings,
     }
 
 
