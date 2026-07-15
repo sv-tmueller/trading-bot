@@ -424,6 +424,68 @@ def test_compute_spy_windows_empty_input_returns_empty_list():
     assert fx_survey.compute_spy_windows(calendar_windows=[], fetch=lambda *a: None) == []
 
 
+def test_compute_spy_windows_records_skip_reason_for_insufficient_window_bars():
+    """Skip-row parity with the FX runners (Nit 1, PR #377 final review): a
+    window whose [pre_roll_start, test_end] span has fewer than 2 SPY rows
+    is reported as a skip row (same shape as run_cell_across_windows'/
+    run_baseline_across_windows' skip rows), not silently ``continue``d."""
+    full_frame = _synthetic_spy_frame("2019-11-01", n=300)
+    calendar_windows = [{
+        "year": 2013, "scored": True,
+        "pre_roll_start": pd.Timestamp("2013-01-01"),
+        "test_start": pd.Timestamp("2013-01-01"),
+        "test_end": pd.Timestamp("2013-01-01"),  # entirely outside the fetched frame
+    }]
+    rows = fx_survey.compute_spy_windows(
+        calendar_windows=calendar_windows, fetch=lambda *a: full_frame,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["year"] == 2013
+    assert row["scored"] is True
+    assert row["skipped"] is True
+    assert row["skip_reason"] == "insufficient_window_bars"
+    assert row["n_window_bars"] < 2
+    assert row["n_test_bars"] is None
+
+
+def test_compute_spy_windows_records_skip_reason_for_insufficient_test_bars():
+    full_frame = _synthetic_spy_frame("2019-11-01", n=300)
+    calendar_windows = [{
+        "year": 2020, "scored": True,
+        "pre_roll_start": full_frame.index[0],
+        "test_start": full_frame.index[-2],
+        "test_end": full_frame.index[-1],  # exclusive -- only 1 bar in [test_start, test_end)
+    }]
+    rows = fx_survey.compute_spy_windows(
+        calendar_windows=calendar_windows, fetch=lambda *a: full_frame,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["skipped"] is True
+    assert row["skip_reason"] == "insufficient_test_bars"
+    assert row["n_window_bars"] >= 2
+    assert row["n_test_bars"] < 2
+
+
+def test_compute_spy_windows_non_skipped_rows_carry_skipped_false_and_none_reason():
+    calendar_windows = [
+        {
+            "year": 2013, "scored": True,
+            "pre_roll_start": pd.Timestamp("2012-11-01"),
+            "test_start": pd.Timestamp("2013-01-01"),
+            "test_end": pd.Timestamp("2014-01-01"),
+        },
+    ]
+    full_frame = _synthetic_spy_frame("2012-11-01", n=600)
+    rows = fx_survey.compute_spy_windows(
+        calendar_windows=calendar_windows, fetch=lambda *a: full_frame,
+    )
+    assert len(rows) == 1
+    assert rows[0]["skipped"] is False
+    assert rows[0]["skip_reason"] is None
+
+
 # ---------------------------------------------------------------------------
 # §6 survivor evaluator -- truth table (spec §6)
 # ---------------------------------------------------------------------------
@@ -836,6 +898,29 @@ def test_run_survey_is_import_callable_and_never_touches_cache(monkeypatch):
         spy_fetch=lambda ticker, start, end: spy_frame,
     )
     assert len(result["survivor_results"]) == 33
+
+
+def test_run_survey_spy_skip_row_does_not_break_aggregation():
+    """Mandatory companion to the Nit 1 SPY skip-row fix: a skip row has no
+    ``total_return``/``calmar`` keys, so run_survey's own scored-window
+    filter must exclude ``skipped=True`` rows before they reach
+    ``aggregate_metric_across_windows`` (which indexes ``m["total_return"]``
+    directly) -- otherwise this KeyErrors instead of computing a real
+    spy_median_calmar over the windows that DID have enough SPY data."""
+    bars = _survey_ready_bars(n=400)
+    windows = fx_survey.slice_calendar_year_windows(
+        bars.index, first_test_year=bars.index[0].year, pre_roll_bars=50, excluded_years=(),
+    )
+    # A short SPY frame: covers the later windows fully but leaves the
+    # earliest window(s) with fewer than 2 SPY rows -- a real skip row.
+    spy_frame = _synthetic_spy_frame("2021-06-01", n=250)
+
+    result = fx_survey.run_survey(
+        bars, windows, measured_spread_pips=0.6,
+        spy_fetch=lambda ticker, start, end: spy_frame,
+    )
+    # Must not raise KeyError; a finite/NaN median_calmar is fine either way.
+    assert "spy_median_calmar" in result
 
 
 # ---------------------------------------------------------------------------

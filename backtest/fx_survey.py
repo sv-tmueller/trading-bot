@@ -494,9 +494,15 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
     (an all-True signal -- fee-adjusted buy-and-hold), same Trap-A
     test-sub-window-only metrics convention as ``walkforward.py``.
 
-    Returns a list of per-window metrics dicts (``{"year", "scored",
-    **compute_after_tax_metrics(...)}``) -- windows with fewer than 2 test
-    bars are skipped (insufficient data for a return).
+    Returns a list of per-window row dicts, same skip-row shape as
+    ``run_cell_across_windows``/``run_baseline_across_windows`` (Nit 1, PR
+    #377 final review): a window whose ``[pre_roll_start, test_end]`` span
+    has fewer than 2 SPY rows, or whose test sub-window has fewer than 2
+    rows after simulation, is reported as ``{"year", "scored",
+    "skipped": True, "skip_reason": "insufficient_window_bars" |
+    "insufficient_test_bars", "n_window_bars", "n_test_bars"}`` rather than
+    silently dropped -- a non-skipped row is ``{"year", "scored",
+    "skipped": False, "skip_reason": None, **compute_after_tax_metrics(...)}``.
     """
     fetch_fn = fetch or _fetch_spy
     if not calendar_windows:
@@ -508,6 +514,7 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
 
     rows: list = []
     for w in calendar_windows:
+        scored = w.get("scored", True)
         # SPY's daily calendar is tz-naive (yfinance convention); the FX
         # survey's own windows are tz-aware UTC -- strip tz for this
         # comparison only, since a calendar DAY boundary is what matters
@@ -518,7 +525,13 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
 
         mask = (full.index >= pre_roll_start) & (full.index <= test_end)
         window_df = full.loc[mask]
-        if len(window_df) < 2:
+        n_window_bars = len(window_df)
+        if n_window_bars < 2:
+            rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_window_bars",
+                "n_window_bars": n_window_bars, "n_test_bars": None,
+            })
             continue
         sig = _equity_baselines.buy_and_hold_signal(window_df["Close"])
         sim = regime.simulate_from_signal(
@@ -528,14 +541,24 @@ def compute_spy_windows(*, calendar_windows: list, ticker: str = "SPY", fetch=No
         eq_full = sim["equity_curve"]
         test_mask = (eq_full.index >= test_start) & (eq_full.index < test_end)
         eq_test = eq_full.loc[test_mask]
-        if len(eq_test) < 2:
+        n_test_bars = len(eq_test)
+        if n_test_bars < 2:
+            rows.append({
+                "year": w["year"], "scored": scored, "skipped": True,
+                "skip_reason": "insufficient_test_bars",
+                "n_window_bars": n_window_bars, "n_test_bars": n_test_bars,
+            })
             continue
         test_trades = [
             t for t in sim["trades"]
             if t["exit_date"] >= test_start and t["exit_date"] < test_end
         ]
         after_tax = compute_after_tax_metrics(eq_test, test_trades, mode="annual_netting")
-        rows.append({"year": w["year"], "scored": w.get("scored", True), **after_tax})
+        rows.append({
+            "year": w["year"], "scored": scored, "skipped": False, "skip_reason": None,
+            "n_window_bars": n_window_bars, "n_test_bars": n_test_bars,
+            **after_tax,
+        })
 
     return rows
 
@@ -940,7 +963,10 @@ def run_survey(
             baseline_co_primary_annual[bname][f"{venue_key}_base"] = full["summary"]
 
     spy_windows_metrics = compute_spy_windows(calendar_windows=windows, fetch=spy_fetch)
-    spy_scored = [m for m in spy_windows_metrics if m.get("scored", True)]
+    spy_scored = [
+        m for m in spy_windows_metrics
+        if m.get("scored", True) and not m.get("skipped", False)
+    ]
     spy_agg = (
         aggregate_metric_across_windows(spy_scored) if spy_scored
         else {"median_calmar": float("nan")}
