@@ -10,7 +10,10 @@ import { getServiceClient } from "../_shared/supabase_client.ts";
 import {
   getAuditLogSince,
   getConfig,
+  getEarliestEquitySnapshot,
+  getEquitySnapshotsSince,
   getLastTrade,
+  getLatestEquitySnapshot,
   getLatestRegimeState,
   getRegimeStatesSince,
   getTradesSince,
@@ -36,6 +39,9 @@ function buildDeps(): StatusDeps {
       getConfig: (k) => getConfig(sb, k),
       getTradesSince: (sinceIso) => getTradesSince(sb, sinceIso),
       getRegimeStatesSince: (sinceDate) => getRegimeStatesSince(sb, sinceDate),
+      getEarliestEquitySnapshot: () => getEarliestEquitySnapshot(sb),
+      getLatestEquitySnapshot: () => getLatestEquitySnapshot(sb),
+      getEquitySnapshotsSince: (sinceDate) => getEquitySnapshotsSince(sb, sinceDate),
     },
   };
 }
