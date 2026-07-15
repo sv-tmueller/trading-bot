@@ -274,6 +274,54 @@ Deno.test("notify: non-2xx response warns with status and truncated body snippet
   }
 });
 
+Deno.test("notify: non-2xx body containing the webhook URL straddling the snippet boundary never leaks a URL fragment", async () => {
+  const stubUrl = "http://localhost:5678/hook/tok_9f8e7d6c5b4a3210SECRET";
+  Deno.env.set("NOTIFY_WEBHOOK_URL", stubUrl);
+  // Position the full URL so it straddles the 200-codepoint snippet cutoff.
+  // Redacting AFTER truncating (the bug) leaves an un-redacted prefix of the
+  // URL -- including part of the secret token -- inside the logged snippet.
+  const prefixLen = 200 - Math.floor(stubUrl.length / 2);
+  const body = "z".repeat(prefixLen) + stubUrl;
+  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "probe_token" }); // must not throw
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    assertEquals(joined.includes(stubUrl), false);
+    assertEquals(joined.includes("tok_"), false);
+    assertEquals(joined.includes("localhost"), false);
+    assertEquals(joined.includes("probe_token"), true);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("notify: non-2xx body snippet truncation is codepoint-safe across an astral-character boundary", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  // 199 ascii chars + one astral codepoint (🛑, a surrogate pair in UTF-16)
+  // straddling the 200-codepoint snippet cut, then more filler.
+  const body = "e".repeat(199) + "🛑" + "f".repeat(50);
+  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const { calls, restore: restoreWarn } = stubWarn();
+  try {
+    await notify({ event_type: "test_event" });
+    assertEquals(calls.length, 1);
+    const joined = calls[0].map((a) => String(a)).join(" ");
+    // No lone surrogate leaks into the log line, and the snippet is cut at
+    // exactly the astral codepoint (not mid-surrogate-pair).
+    assertEquals(joined.includes("�"), false);
+    assertEquals(joined.includes("e".repeat(199) + "🛑"), true);
+    assertEquals(joined.includes("f".repeat(50)), false);
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
 Deno.test("notify: 2xx response emits no warn", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   const restoreFetch = stubFetch(async () => new Response("ok", { status: 200 }));

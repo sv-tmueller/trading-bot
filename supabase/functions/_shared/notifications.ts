@@ -39,9 +39,12 @@ export async function notify(event: Record<string, unknown>): Promise<void> {
     });
     if (!res.ok) {
       const text = await res.text();
-      const snippet = truncateCodepoints(text, WARN_BODY_SNIPPET_MAX_CODEPOINTS).replaceAll(
-        url,
-        "[webhook-url]",
+      // Redact the FULL untruncated text first, then truncate — the reverse
+      // order would leave an un-redacted prefix of the URL (including part of
+      // any secret token) in the snippet whenever the URL straddles the cut.
+      const snippet = truncateCodepoints(
+        text.replaceAll(url, "[webhook-url]"),
+        WARN_BODY_SNIPPET_MAX_CODEPOINTS,
       );
       console.warn(
         `notify: webhook responded ${res.status}: ${snippet}, event_type=${eventType}`,
