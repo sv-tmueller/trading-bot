@@ -870,7 +870,8 @@ def run_baseline_across_windows(
 # ---------------------------------------------------------------------------
 # run_survey -- the full combinatorial composition (SUB_PLAN should-fix #3),
 # extracted as a parameterized, import-callable function: ALL 33 cells x
-# the full cost matrix x both tax modes, all 4 baselines, the SPY bar, and
+# the full cost matrix x both tax modes, 3 simulated dumb baselines +
+# always-flat applied as the median-return>0 criterion, the SPY bar, and
 # the §6 evaluator. Takes ALREADY-PREPARED ``bars_4h``/``windows`` -- it
 # does no data loading of its own (no cache/network access whatsoever),
 # so stage 2c can call it directly against real data (via

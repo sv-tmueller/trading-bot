@@ -6,8 +6,9 @@ Without ``--smoke``, ``main()`` exits ``SystemExit("BLOCKED: ...")`` BEFORE
 any data access -- there is no full-history code path reachable from
 ``main()`` in this package (that is stage 2c). ``--smoke`` runs the ENTIRE
 survey composition (all 33 pre-registered cells x the full cost/tax matrix,
-all 4 dumb baselines, the SPY bar, and the §6 survivor/family/class-kill
-evaluator) on a code-generated deterministic SYNTHETIC fixture
+3 simulated dumb baselines + always-flat applied as the median-return>0
+criterion, the SPY bar, and the §6 survivor/family/class-kill evaluator) on
+a code-generated deterministic SYNTHETIC fixture
 (``fx_survey.make_smoke_fixture``/``make_smoke_spy_fixture``) -- never real
 EUR/USD or SPY history, and never touches the gitignored FXCM cache. This
 is mechanically enforced (``tests/test_run_fx_survey.py`` monkeypatches
