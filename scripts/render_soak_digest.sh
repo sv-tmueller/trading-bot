@@ -55,7 +55,7 @@ margin_direction=""
 if [ "$margin_raw" != "null" ]; then
   margin_direction="$(printf '%s' "$DIGEST" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
   margin_abs_raw="$(printf '%s' "$DIGEST" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
-  margin_abs="$(printf '%.1f' "$margin_abs_raw")"
+  margin_abs="$(LC_NUMERIC=C printf '%.1f' "$margin_abs_raw")"
   if [ "$margin_direction" = "above" ]; then
     margin_signed="+${margin_abs}"
   else

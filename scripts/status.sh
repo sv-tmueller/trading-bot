@@ -59,7 +59,18 @@ fi
 # body (e.g. the 400/401/500 { "error": "..." } JSON) before exiting non-zero,
 # so an operator sees *why* the request failed instead of just a curl error.
 if command -v jq >/dev/null 2>&1; then
+  # #384 fix: capture curl's exit status explicitly instead of letting a bare
+  # `RESPONSE="$(curl ...)"` assignment trip `set -e` — under errexit, a
+  # failing command substitution exits the script immediately, before the
+  # captured body (which --fail-with-body promises above) is ever printed.
+  set +e
   RESPONSE="$(curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL")"
+  curl_status=$?
+  set -e
+  if [ "$curl_status" -ne 0 ]; then
+    printf '%s\n' "$RESPONSE" >&2
+    exit "$curl_status"
+  fi
 
   # #384: short one-line "why" summary (same construction as
   # scripts/render_soak_digest.sh's headline) above the raw dump below.
@@ -69,7 +80,7 @@ if command -v jq >/dev/null 2>&1; then
     position_symbol="$(printf '%s' "$RESPONSE" | jq -r '.alpaca.position.symbol')"
     margin_direction="$(printf '%s' "$RESPONSE" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
     margin_abs_raw="$(printf '%s' "$RESPONSE" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
-    margin_abs="$(printf '%.1f' "$margin_abs_raw")"
+    margin_abs="$(LC_NUMERIC=C printf '%.1f' "$margin_abs_raw")"
     if [ "$current_state" = "CASH" ]; then
       echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
     else
