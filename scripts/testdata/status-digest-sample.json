@@ -12,6 +12,7 @@
     "kill_switch_active": false,
     "kill_switch_fired_at": null
   },
+  "regime_margin_pct": 7.195963413981852,
   "audit_7d": {
     "since": "2026-07-03T13:45:02.123Z",
     "outcome_counts": {

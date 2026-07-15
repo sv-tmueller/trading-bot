@@ -31,7 +31,8 @@ if ! printf '%s' "$RAW" | jq -e '
     (.audit_7d.errors | type == "array") and
     (.alpaca.equity_usd | type == "number") and
     (.alpaca.position.symbol | type == "string") and
-    (.alpaca.position.qty | type == "number")
+    (.alpaca.position.qty | type == "number") and
+    ((.regime_margin_pct | type == "number") or (.regime_margin_pct | type == "null"))
   ' >/dev/null 2>/dev/null; then
   echo "error: input is not a valid StatusDigest JSON (garbled, partial, truncated, or missing/mistyped required keys)" >&2
   exit 1
@@ -44,8 +45,42 @@ market_open="$(printf '%s' "$DIGEST" | jq -r '.market_open')"
 paused="$(printf '%s' "$DIGEST" | jq -r '.paused')"
 audit_since="$(printf '%s' "$DIGEST" | jq -r '.audit_7d.since')"
 
+# #384: signed, 1-decimal SPY-vs-200-DMA margin + above/below, derived from
+# the SIGN of regime_margin_pct (not from target_state/current_state, so the
+# wording can never contradict the number). Empty when regime is null (no
+# regime_state row) or regime_margin_pct is null (e.g. sma <= 0).
+margin_raw="$(printf '%s' "$DIGEST" | jq -r '.regime_margin_pct // "null"')"
+margin_signed=""
+margin_direction=""
+if [ "$margin_raw" != "null" ]; then
+  margin_direction="$(printf '%s' "$DIGEST" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
+  margin_abs_raw="$(printf '%s' "$DIGEST" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
+  margin_abs="$(printf '%.1f' "$margin_abs_raw")"
+  if [ "$margin_direction" = "above" ]; then
+    margin_signed="+${margin_abs}"
+  else
+    margin_signed="-${margin_abs}"
+  fi
+fi
+
 echo "## Weekly soak digest — ${generated_at}"
 echo
+
+# #384: one headline sentence contextualizing the currently-held position
+# (current_state — the reason for the position currently held) against the
+# SPY-vs-200-DMA margin. Skipped when regime is null (keep the existing
+# fallback below) or regime_margin_pct is null.
+if printf '%s' "$DIGEST" | jq -e '.regime != null' >/dev/null && [ -n "$margin_signed" ]; then
+  current_state="$(printf '%s' "$DIGEST" | jq -r '.regime.current_state')"
+  position_symbol="$(printf '%s' "$DIGEST" | jq -r '.alpaca.position.symbol')"
+  if [ "$current_state" = "CASH" ]; then
+    echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+  else
+    echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+  fi
+  echo
+fi
+
 echo "- Market open: \`${market_open}\`"
 echo "- Trading paused: \`${paused}\`"
 echo
@@ -61,6 +96,9 @@ else
     "- Position drawdown: \(if .position_drawdown_pct == null then "n/a" else (.position_drawdown_pct | tostring) + "%" end)",
     "- Kill switch active: `\(.kill_switch_active)`" + (if .kill_switch_active then " (fired at \(.kill_switch_fired_at // "unknown"))" else "" end)
   '
+  if [ -n "$margin_signed" ]; then
+    echo "- SPY vs 200-DMA: \`${margin_signed}%\` (${margin_direction})"
+  fi
 fi
 echo
 

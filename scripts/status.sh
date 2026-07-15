@@ -59,7 +59,26 @@ fi
 # body (e.g. the 400/401/500 { "error": "..." } JSON) before exiting non-zero,
 # so an operator sees *why* the request failed instead of just a curl error.
 if command -v jq >/dev/null 2>&1; then
-  curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL" | jq .
+  RESPONSE="$(curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL")"
+
+  # #384: short one-line "why" summary (same construction as
+  # scripts/render_soak_digest.sh's headline) above the raw dump below.
+  # Guarded on regime/regime_margin_pct being present — skipped otherwise.
+  if printf '%s' "$RESPONSE" | jq -e '.regime != null and .regime_margin_pct != null' >/dev/null 2>&1; then
+    current_state="$(printf '%s' "$RESPONSE" | jq -r '.regime.current_state')"
+    position_symbol="$(printf '%s' "$RESPONSE" | jq -r '.alpaca.position.symbol')"
+    margin_direction="$(printf '%s' "$RESPONSE" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
+    margin_abs_raw="$(printf '%s' "$RESPONSE" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
+    margin_abs="$(printf '%.1f' "$margin_abs_raw")"
+    if [ "$current_state" = "CASH" ]; then
+      echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    else
+      echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    fi
+    echo
+  fi
+
+  printf '%s' "$RESPONSE" | jq .
 else
   echo "warning: jq not found; printing raw response" >&2
   curl --fail-with-body -sS -H "x-status-token: $STATUS_TOKEN" "$REQUEST_URL"

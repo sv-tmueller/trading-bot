@@ -3,6 +3,7 @@
   "market_open": false,
   "paused": true,
   "regime": null,
+  "regime_margin_pct": null,
   "audit_7d": {
     "since": "2026-07-03T13:45:02.123Z",
     "outcome_counts": {},
