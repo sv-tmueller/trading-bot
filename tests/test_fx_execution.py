@@ -410,3 +410,159 @@ def test_self_check_passes_on_valid_same_bar_exit():
 
 def test_self_check_passes_on_valid_later_bar_exit():
     fx._assert_trade_ordering(entry_idx=3, exit_idx=5, same_bar_exit=False)
+
+
+# ---------------------------------------------------------------------------
+# simulate_fx_state (#376) -- state-based long/short sibling, no TP/SL:
+# exits only on state flip or window end.
+# ---------------------------------------------------------------------------
+
+def test_state_entry_fills_at_next_bar_open_not_decision_bar_close():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),  # state decided here: +1
+        (entry + 0.001, entry + 0.002, entry, entry + 0.0015),  # fill AT this bar's open
+        (entry + 0.001, entry + 0.002, entry, entry + 0.0015),  # decided state=0 last bar -> close here
+    ])
+    state = _sig(bars, [1, 0, 0])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    assert result["trade_count"] == 1
+    t = result["trades"][0]
+    assert t["entry_price"] == pytest.approx(entry + 0.001)
+    assert t["entry_date"] == bars.index[1]
+    assert t["exit_date"] == bars.index[2]
+    assert t["exit_reason"] == "state_flat"
+
+
+def test_state_entry_bar_equity_curve_point_matches_simulate_fx_convention():
+    """On the bar that OPENS a new position (no same-bar exit), the equity
+    CURVE point at that bar is the pre-entry (stale) equity, exactly as
+    ``simulate_fx`` marks it (see that function's own entry-bar branch) --
+    NOT a same-bar mark-to-market using this bar's own close. The two
+    sibling simulators must agree here; a divergence would silently bias
+    max-drawdown detection differently between candidate cells
+    (``simulate_fx``) and baselines (``simulate_fx_state``)."""
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),  # bar0: state decided +1 here
+        (entry, entry * 1.10, entry - 0.0005, entry * 1.05),  # bar1: entry bar, big favorable move
+        (entry * 1.05, entry * 1.05 + 0.0005, entry * 1.05 - 0.0005, entry * 1.05),  # bar2: forced close
+    ])
+    state = _sig(bars, [1, 1, 1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None, starting_equity=100_000.0)
+    assert result["equity_curve"].loc[bars.index[1]] == pytest.approx(100_000.0)
+
+
+def test_state_flip_closes_old_and_reopens_at_same_open():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),         # decide +1
+        (entry, entry + 0.0010, entry - 0.0010, entry + 0.0005),  # enter long @ open
+        (entry + 0.002, entry + 0.003, entry + 0.001, entry + 0.0025),  # decide -1 here (flip fires next bar)
+        (entry - 0.003, entry - 0.001, entry - 0.005, entry - 0.002),  # flip: close long + open short, same open
+    ])
+    state = _sig(bars, [1, 1, -1, -1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    assert result["trade_count"] == 2  # forced close at window end closes the second (short) trade too
+    closed_long, opened_short = result["trades"][0], result["trades"][1]
+    assert closed_long["direction"] == 1
+    assert closed_long["exit_reason"] == "state_flip"
+    assert closed_long["exit_date"] == bars.index[3]
+    assert opened_short["direction"] == -1
+    assert opened_short["entry_date"] == bars.index[3]
+    # Both trades share the exact same fill price -- the flip's single open.
+    assert opened_short["entry_price"] == pytest.approx(closed_long["exit_price"])
+    assert opened_short["entry_price"] == pytest.approx(entry - 0.003)
+
+
+def test_state_one_cost_per_closed_trade():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0010, entry - 0.0010, entry + 0.0005),
+        (entry + 0.002, entry + 0.003, entry + 0.001, entry + 0.0025),
+        (entry - 0.003, entry - 0.001, entry - 0.005, entry - 0.002),
+    ])
+    state = _sig(bars, [1, 1, -1, -1])
+    cost_rt = 0.0002
+    result = fx.simulate_fx_state(bars, state, cost_rt=cost_rt, overnight=None)
+    assert result["trade_count"] == 2
+    closed_long = result["trades"][0]
+    gross = closed_long["exit_price"] / closed_long["entry_price"] - 1.0
+    assert closed_long["return_pct"] == pytest.approx(gross - cost_rt)
+
+
+def test_state_overnight_financing_charged_per_night_held():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry),  # entry bar (day 1)
+        (entry, entry + 0.0005, entry - 0.0005, entry),  # day 2
+        (entry, entry + 0.0005, entry - 0.0005, entry * 1.001),  # day 3 -- forced close, still holding
+    ], start="2024-01-08 20:00", freq="24h")
+    state = _sig(bars, [1, 1, 1, 1])
+    overnight = {1: 0.0001, -1: 0.00005}
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=overnight)
+    assert result["trade_count"] == 1
+    t = result["trades"][0]
+    nights = (t["exit_date"].normalize() - t["entry_date"].normalize()).days
+    assert nights >= 1
+    gross = t["exit_price"] / t["entry_price"] - 1.0
+    expected_net = gross - nights * overnight[1]
+    assert t["return_pct"] == pytest.approx(expected_net)
+
+
+def test_state_forced_close_at_window_end():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry * 1.002),  # never flips -> forced close
+    ])
+    state = _sig(bars, [1, 1, 1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    assert result["trade_count"] == 1
+    t = result["trades"][0]
+    assert t["exit_reason"] == "end_of_window"
+    assert t["exit_price"] == pytest.approx(entry * 1.002)
+    assert t["exit_date"] == bars.index[-1]
+
+
+def test_state_no_tp_sl_position_held_through_large_favorable_and_adverse_moves():
+    """No TP/SL bracket at all -- large intra-window swings never trigger an
+    exit; only a state flip or window end can close the position."""
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry * 1.20, entry * 0.80, entry),  # huge swing both ways, no exit
+        (entry, entry + 0.0005, entry - 0.0005, entry * 1.01),
+    ])
+    state = _sig(bars, [1, 1, 1, 1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    assert result["trade_count"] == 1
+    assert result["trades"][0]["exit_reason"] == "end_of_window"
+
+
+def test_state_result_dict_has_simulate_fx_compatible_shape():
+    entry = 1.1000
+    bars = _bars([
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry),
+        (entry, entry + 0.0005, entry - 0.0005, entry * 1.001),
+    ])
+    state = _sig(bars, [1, 1, 1])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    for key in ("equity_curve", "trades", "total_return", "max_drawdown", "trade_count"):
+        assert key in result
+    assert isinstance(result["equity_curve"], pd.Series)
+    for key in ("entry_date", "exit_date", "pnl", "return_pct", "exit_reason", "direction"):
+        assert key in result["trades"][0]
+
+
+def test_state_no_signal_ever_produces_zero_trades():
+    bars = _bars([(1.1, 1.1005, 1.0995, 1.1)] * 4)
+    state = _sig(bars, [0, 0, 0, 0])
+    result = fx.simulate_fx_state(bars, state, cost_rt=0.0, overnight=None)
+    assert result["trade_count"] == 0
+    assert result["total_return"] == pytest.approx(0.0)

@@ -432,3 +432,50 @@ def test_completeness_report_all_present_zero_pct_missing():
     assert report[2023]["n_missing_weeks"] == 0
     assert report[2023]["pct_missing_weeks"] == 0.0
     assert report[2023]["pct_rows_missing"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# drop_saturday_bars (#376 -- the frozen carve-out, SUB_PLAN §4)
+# ---------------------------------------------------------------------------
+
+def test_drop_saturday_bars_drops_exactly_saturday_rows_and_returns_count():
+    idx = pd.DatetimeIndex(
+        [
+            "2023-01-27 20:00",  # Friday
+            "2023-01-28 03:00",  # Saturday
+            "2023-01-28 15:00",  # Saturday
+            "2023-01-29 22:00",  # Sunday
+        ],
+        tz="UTC", name="datetime_utc",
+    )
+    df = pd.DataFrame({"MidClose": [1.1, 1.2, 1.3, 1.4]}, index=idx)
+    result, n_dropped = fx_data.drop_saturday_bars(df)
+    assert n_dropped == 2
+    assert len(result) == 2
+    assert list(result.index) == [idx[0], idx[3]]
+
+
+def test_drop_saturday_bars_no_saturdays_is_a_no_op():
+    idx = pd.DatetimeIndex(
+        ["2023-01-27 20:00", "2023-01-29 22:00"], tz="UTC", name="datetime_utc",
+    )
+    df = pd.DataFrame({"MidClose": [1.1, 1.4]}, index=idx)
+    result, n_dropped = fx_data.drop_saturday_bars(df)
+    assert n_dropped == 0
+    assert len(result) == 2
+
+
+def test_drop_saturday_bars_check_weekend_bars_zero_afterward():
+    idx = pd.DatetimeIndex(
+        [
+            "2023-01-27 20:00",  # Friday
+            "2023-01-28 03:00",  # Saturday
+            "2023-01-29 22:00",  # Sunday
+        ],
+        tz="UTC", name="datetime_utc",
+    )
+    df = pd.DataFrame({"MidClose": [1.1, 1.2, 1.4]}, index=idx)
+    result, _ = fx_data.drop_saturday_bars(df)
+    report = fx_data.check_weekend_bars(result)
+    assert report["n_saturday_bars"] == 0
+    assert report["n_sunday_bars"] == 1
