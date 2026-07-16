@@ -13,7 +13,11 @@
 // duplicates`, i.e. `INSERT ... ON CONFLICT DO NOTHING`. This can never
 // modify an existing row (daily-check's rows are canonical) and closes the
 // TOCTOU window between the read and the write.
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { type AlpacaConfig, getAlpacaConfig } from "../supabase/functions/_shared/config.ts";
+import { getServiceClient } from "../supabase/functions/_shared/supabase_client.ts";
 import { requireNumber } from "../supabase/functions/_shared/num.ts";
+
 // ---------------------------------------------------------------------------
 // T1 — arg parsing
 // ---------------------------------------------------------------------------
@@ -293,4 +297,168 @@ export async function runBackfill(
 
   logSummary(deps.log, summary);
   return summary;
+}
+
+// ---------------------------------------------------------------------------
+// T4 — real-deps adapters. Each is a thin wrapper over `sb`/`fetch`; no
+// business logic lives here, so the T1-T3 pure/injected-deps functions above
+// stay fully unit-testable without a real Supabase client or network call.
+// ---------------------------------------------------------------------------
+
+export async function getEarliestAuditStartedAtAdapter(
+  sb: SupabaseClient,
+): Promise<string | null> {
+  const { data, error } = await sb
+    .from("audit_log")
+    .select("started_at")
+    .order("started_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getEarliestAuditStartedAt: ${error.message}`);
+  return (data as { started_at: string } | null)?.started_at ?? null;
+}
+
+export async function getExistingSnapshotDatesAdapter(
+  sb: SupabaseClient,
+  since: string,
+): Promise<string[]> {
+  const { data, error } = await sb
+    .from("equity_snapshots")
+    .select("date")
+    .gte("date", since)
+    // Defensive cap, not a pagination need — same rationale as
+    // _shared/db.ts's getEquitySnapshotsSince, just wider: a multi-year daily
+    // backfill window still can't plausibly exceed 1000 trading days.
+    .limit(1000);
+  if (error) {
+    if ((error as { code?: string }).code === "42P01") {
+      throw new EquitySnapshotsTableMissingError(error.message);
+    }
+    throw new Error(`getExistingSnapshotDates: ${error.message}`);
+  }
+  return ((data ?? []) as { date: string }[]).map((r) => r.date);
+}
+
+export async function insertSnapshotsIgnoreDuplicatesAdapter(
+  sb: SupabaseClient,
+  rows: { date: string; equity_usd: number }[],
+): Promise<string[]> {
+  if (rows.length === 0) return [];
+  const { data, error } = await sb
+    .from("equity_snapshots")
+    .upsert(rows, { onConflict: "date", ignoreDuplicates: true })
+    .select("date");
+  if (error) throw new Error(`insertSnapshotsIgnoreDuplicates: ${error.message}`);
+  return ((data ?? []) as { date: string }[]).map((r) => r.date);
+}
+
+// Alpaca portfolio-history param verification (developer, live docs,
+// 2026-07): `start`/`end` (RFC3339 datetime, e.g. "2026-01-01T00:00:00Z") are
+// the current, documented params — not the legacy `period`/`date_start`
+// pair. `timeframe=1D` ignores `intraday_reporting` entirely and returns
+// entries only for days the market was open. `start`/`end` are normalized to
+// America/New_York and rounded backward to the nearest timeframe interval, so
+// passing a UTC midnight start can round back into the prior ET day — this
+// script filters client-side by mapped ET date regardless (D3), so the
+// request param only needs to guarantee window *coverage*, not precision.
+// No `period`/`date_start` fallback is needed: `start` is live and current.
+export async function fetchPortfolioHistoryAdapter(
+  cfg: Pick<AlpacaConfig, "tradingBaseUrl" | "apiKeyId" | "apiSecretKey">,
+  startYmd: string,
+): Promise<PortfolioHistory> {
+  const url = `${cfg.tradingBaseUrl}/v2/account/portfolio/history` +
+    `?timeframe=1D&start=${encodeURIComponent(`${startYmd}T00:00:00Z`)}`;
+  const headers = {
+    "APCA-API-KEY-ID": cfg.apiKeyId,
+    "APCA-API-SECRET-KEY": cfg.apiSecretKey,
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers });
+  } catch (e) {
+    // Never interpolate `headers`/`cfg` here — only the underlying fetch
+    // error's own message, so a secret can't leak into the thrown error.
+    throw new Error(
+      `GET /v2/account/portfolio/history failed: ${(e as Error).message}`,
+    );
+  }
+  if (!res.ok) {
+    throw new Error(
+      `GET /v2/account/portfolio/history -> ${res.status}: ${await res.text()}`,
+    );
+  }
+  const body = await res.json();
+  if (!Array.isArray(body?.timestamp) || !Array.isArray(body?.equity)) {
+    throw new Error(
+      "GET /v2/account/portfolio/history -> unexpected response shape (missing timestamp/equity arrays)",
+    );
+  }
+  return { timestamp: body.timestamp, equity: body.equity };
+}
+
+// ---------------------------------------------------------------------------
+// Real-deps wiring + CLI entry point. Not exercised by any test — everything
+// above this point is unit-tested with injected deps/mocks.
+// ---------------------------------------------------------------------------
+
+function usage(): string {
+  return [
+    "Usage: deno run --allow-env --allow-net --env-file=.env.backfill \\",
+    "  scripts/backfill_equity_snapshots.ts [--since YYYY-MM-DD] [--execute]",
+    "",
+    "One-time backfill of equity_snapshots from Alpaca's portfolio-history.",
+    "Dry-run by default (prints the plan); pass --execute to write.",
+    "",
+    "  --since YYYY-MM-DD  backfill window start (default: earliest audit_log row)",
+    "  --execute           write missing rows (default: dry-run, no writes)",
+    "  -h, --help          show this help",
+    "",
+    "See docs/runbooks/equity-backfill.md for the one-time setup.",
+  ].join("\n");
+}
+
+async function main(): Promise<void> {
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseArgs(Deno.args);
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`);
+    if (e instanceof UnknownArgError) {
+      console.error("");
+      console.error(usage());
+    }
+    Deno.exit(1);
+    return;
+  }
+
+  if (parsed.help) {
+    console.log(usage());
+    Deno.exit(0);
+    return;
+  }
+
+  try {
+    const cfg = getAlpacaConfig();
+    const sb = getServiceClient();
+    const deps: BackfillDeps = {
+      now: () => new Date(),
+      fetchPortfolioHistory: (startYmd) => fetchPortfolioHistoryAdapter(cfg, startYmd),
+      db: {
+        getEarliestAuditStartedAt: () => getEarliestAuditStartedAtAdapter(sb),
+        getExistingSnapshotDates: (since) => getExistingSnapshotDatesAdapter(sb, since),
+        insertSnapshotsIgnoreDuplicates: (rows) => insertSnapshotsIgnoreDuplicatesAdapter(sb, rows),
+      },
+      log: (line) => console.log(line),
+    };
+    await runBackfill(deps, { since: parsed.since, execute: parsed.execute });
+    Deno.exit(0);
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
+}
+
+if (import.meta.main) {
+  main();
 }

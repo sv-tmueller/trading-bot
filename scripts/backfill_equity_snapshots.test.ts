@@ -4,9 +4,14 @@
 // adds no mutating broker helper, so the guard is inert here (defense in
 // depth only).
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   type BackfillDeps,
   EquitySnapshotsTableMissingError,
+  fetchPortfolioHistoryAdapter,
+  getEarliestAuditStartedAtAdapter,
+  getExistingSnapshotDatesAdapter,
+  insertSnapshotsIgnoreDuplicatesAdapter,
   mapHistoryToDailyRows,
   parseArgs,
   runBackfill,
@@ -125,7 +130,10 @@ Deno.test("mapHistoryToDailyRows: requireNumber accepts numeric strings", () => 
 });
 
 Deno.test("mapHistoryToDailyRows: parallel-array length mismatch throws a clear error", () => {
-  const history = { timestamp: [sec("2026-07-10T20:00:00Z"), sec("2026-07-11T20:00:00Z")], equity: [1] };
+  const history = {
+    timestamp: [sec("2026-07-10T20:00:00Z"), sec("2026-07-11T20:00:00Z")],
+    equity: [1],
+  };
   assertThrows(
     () => mapHistoryToDailyRows(history, "2026-07-15"),
     Error,
@@ -247,7 +255,7 @@ Deno.test("runBackfill: PostgREST 42P01 surfaces a migration-0009 message, not a
     db: {
       getEarliestAuditStartedAt: () => Promise.resolve("2026-01-01T13:37:00Z"),
       getExistingSnapshotDates: () => {
-        throw new EquitySnapshotsTableMissingError("relation \"equity_snapshots\" does not exist");
+        throw new EquitySnapshotsTableMissingError('relation "equity_snapshots" does not exist');
       },
       insertSnapshotsIgnoreDuplicates: (rows) => Promise.resolve(rows.map((r) => r.date)),
     },
@@ -275,4 +283,187 @@ Deno.test("runBackfill: execute-mode summary carries window + all four counts", 
   const joined = logs.join("\n");
   assertEquals(joined.includes("execute"), true);
   assertEquals(joined.includes("inserted"), true);
+});
+
+// ---------------------------------------------------------------------------
+// T4 — real-deps adapters. No test constructs real network traffic: DB
+// adapters get a hand-rolled chainable stub (every method records the call
+// and returns itself; the chain resolves via `.then`, matching how the real
+// PostgREST query builder is awaited); the fetch adapter stubs
+// `globalThis.fetch` for the duration of each test.
+// ---------------------------------------------------------------------------
+
+interface StubCall {
+  method: string;
+  args: unknown[];
+}
+
+function makeChainable(result: { data: unknown; error: unknown }): {
+  sb: unknown;
+  calls: StubCall[];
+} {
+  const calls: StubCall[] = [];
+  // deno-lint-ignore no-explicit-any
+  const proxy: any = new Proxy(function () {}, {
+    get(_t, prop) {
+      if (prop === "then") {
+        return (onFulfilled: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+          Promise.resolve(result).then(onFulfilled, onRejected);
+      }
+      return (...args: unknown[]) => {
+        calls.push({ method: String(prop), args });
+        return proxy;
+      };
+    },
+  });
+  return { sb: proxy, calls };
+}
+
+Deno.test("getEarliestAuditStartedAtAdapter: audit_log ordered ascending, limit 1, maybeSingle", async () => {
+  const { sb, calls } = makeChainable({
+    data: { started_at: "2026-01-01T00:00:00Z" },
+    error: null,
+  });
+  const result = await getEarliestAuditStartedAtAdapter(sb as unknown as SupabaseClient);
+  assertEquals(result, "2026-01-01T00:00:00Z");
+  assertEquals(calls[0], { method: "from", args: ["audit_log"] });
+  assertEquals(
+    calls.some((c) =>
+      c.method === "order" && c.args[0] === "started_at" &&
+      (c.args[1] as { ascending: boolean }).ascending === true
+    ),
+    true,
+  );
+  assertEquals(calls.some((c) => c.method === "limit" && c.args[0] === 1), true);
+});
+
+Deno.test("getEarliestAuditStartedAtAdapter: empty audit_log (null data) -> null", async () => {
+  const { sb } = makeChainable({ data: null, error: null });
+  const result = await getEarliestAuditStartedAtAdapter(sb as unknown as SupabaseClient);
+  assertEquals(result, null);
+});
+
+Deno.test("getExistingSnapshotDatesAdapter: selects date, .gte('date', since), .limit(1000), maps rows", async () => {
+  const { sb, calls } = makeChainable({
+    data: [{ date: "2026-01-01" }, { date: "2026-01-02" }],
+    error: null,
+  });
+  const result = await getExistingSnapshotDatesAdapter(
+    sb as unknown as SupabaseClient,
+    "2026-01-01",
+  );
+  assertEquals(result, ["2026-01-01", "2026-01-02"]);
+  assertEquals(calls[0], { method: "from", args: ["equity_snapshots"] });
+  assertEquals(
+    calls.some((c) => c.method === "gte" && c.args[0] === "date" && c.args[1] === "2026-01-01"),
+    true,
+  );
+  assertEquals(calls.some((c) => c.method === "limit" && c.args[0] === 1000), true);
+});
+
+Deno.test("getExistingSnapshotDatesAdapter: PostgREST 42P01 throws EquitySnapshotsTableMissingError", async () => {
+  const { sb } = makeChainable({
+    data: null,
+    error: { code: "42P01", message: 'relation "equity_snapshots" does not exist' },
+  });
+  await assertRejects(
+    () => getExistingSnapshotDatesAdapter(sb as unknown as SupabaseClient, "2026-01-01"),
+    EquitySnapshotsTableMissingError,
+  );
+});
+
+Deno.test("insertSnapshotsIgnoreDuplicatesAdapter: pins onConflict:'date' + ignoreDuplicates:true, selects date", async () => {
+  const rows = [{ date: "2026-01-01", equity_usd: 100 }];
+  const { sb, calls } = makeChainable({ data: [{ date: "2026-01-01" }], error: null });
+  const result = await insertSnapshotsIgnoreDuplicatesAdapter(
+    sb as unknown as SupabaseClient,
+    rows,
+  );
+  assertEquals(result, ["2026-01-01"]);
+  const upsertCall = calls.find((c) => c.method === "upsert");
+  assertEquals(upsertCall?.args[0], rows);
+  assertEquals(upsertCall?.args[1], { onConflict: "date", ignoreDuplicates: true });
+  assertEquals(calls.some((c) => c.method === "select" && c.args[0] === "date"), true);
+});
+
+Deno.test("insertSnapshotsIgnoreDuplicatesAdapter: empty rows -> no DB call, returns []", async () => {
+  const { sb, calls } = makeChainable({ data: [], error: null });
+  const result = await insertSnapshotsIgnoreDuplicatesAdapter(sb as unknown as SupabaseClient, []);
+  assertEquals(result, []);
+  assertEquals(calls.length, 0);
+});
+
+function withStubbedFetch<T>(
+  impl: (url: string, init?: RequestInit) => Promise<Response>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const original = globalThis.fetch;
+  // deno-lint-ignore no-explicit-any
+  globalThis.fetch = ((url: any, init?: RequestInit) => impl(String(url), init)) as typeof fetch;
+  return fn().finally(() => {
+    globalThis.fetch = original;
+  });
+}
+
+const ALPACA_CFG = {
+  tradingBaseUrl: "https://paper-api.alpaca.markets",
+  apiKeyId: "key123",
+  apiSecretKey: "secret456",
+};
+
+Deno.test("fetchPortfolioHistoryAdapter: builds timeframe=1D + start URL, sends Alpaca auth headers", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const result = await withStubbedFetch(
+    (url, init) => {
+      calls.push({ url, init });
+      return Promise.resolve(
+        new Response(JSON.stringify({ timestamp: [1], equity: [100] }), { status: 200 }),
+      );
+    },
+    () => fetchPortfolioHistoryAdapter(ALPACA_CFG, "2026-01-01"),
+  );
+  assertEquals(result, { timestamp: [1], equity: [100] });
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0].url.includes("timeframe=1D"), true);
+  assertEquals(calls[0].url.includes("2026-01-01"), true);
+  const headers = new Headers(calls[0].init?.headers);
+  assertEquals(headers.get("APCA-API-KEY-ID"), "key123");
+  assertEquals(headers.get("APCA-API-SECRET-KEY"), "secret456");
+});
+
+Deno.test("fetchPortfolioHistoryAdapter: non-2xx throws with status, no secret in message", async () => {
+  const err = await withStubbedFetch(
+    () => Promise.resolve(new Response("unauthorized", { status: 401 })),
+    () =>
+      assertRejects(
+        () => fetchPortfolioHistoryAdapter(ALPACA_CFG, "2026-01-01"),
+        Error,
+      ),
+  );
+  assertEquals(err.message.includes("401"), true);
+  assertEquals(err.message.includes("secret456"), false);
+});
+
+Deno.test("fetchPortfolioHistoryAdapter: a fetch rejection is wrapped, not swallowed", async () => {
+  const err = await withStubbedFetch(
+    () => Promise.reject(new Error("network down")),
+    () =>
+      assertRejects(
+        () => fetchPortfolioHistoryAdapter(ALPACA_CFG, "2026-01-01"),
+        Error,
+      ),
+  );
+  assertEquals(err.message.includes("network down"), true);
+});
+
+Deno.test("fetchPortfolioHistoryAdapter: missing timestamp/equity arrays throws a clear error", async () => {
+  const err = await withStubbedFetch(
+    () => Promise.resolve(new Response(JSON.stringify({ foo: "bar" }), { status: 200 })),
+    () =>
+      assertRejects(
+        () => fetchPortfolioHistoryAdapter(ALPACA_CFG, "2026-01-01"),
+        Error,
+      ),
+  );
+  assertEquals(err.message.includes("unexpected response shape"), true);
 });
