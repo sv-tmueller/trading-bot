@@ -38,6 +38,24 @@ The script uses `curl --fail-with-body`, which requires **curl >= 7.76**
 body before exiting non-zero, so a 400/401/500 error's `{ "error": "…" }` JSON
 reaches the operator instead of just a bare `curl: (22) ...` line.
 
+When `jq` is available and the digest has a `regime` row with a non-null
+`regime_margin_pct` (SPY's raw % distance from its 200-DMA, positive above /
+negative below), `scripts/status.sh` prints a one-line "why" summary above
+the raw JSON dump — e.g. `LONG \`UPRO\` because SPY is 7.2% above its
+200-DMA.` (or `CASH because SPY is 4.3% below its 200-DMA.` with no ticker
+when `current_state` is `CASH`) — built from `alpaca.position.symbol` and
+`regime.current_state`. It's skipped when `regime` or `regime_margin_pct` is
+`null`. The causal "because" phrasing only appears when `target_state ==
+current_state` and `kill_switch_active` is not `true` — i.e. when the margin
+is genuinely why the position is held. If the kill-switch has fired, or a
+flip is pending (`target_state != current_state`), the line instead states
+the state and the signed margin without asserting a cause (e.g. `CASH — SPY
+vs 200-DMA: +7.2% (above).`), since a kill-switch-forced liquidation or a
+pending flip means the margin isn't the real reason for the current
+position. The weekly `scripts/render_soak_digest.sh` markdown report renders
+the same headline plus a signed, 1-decimal `SPY vs 200-DMA` line in the
+`### Regime` section.
+
 ### `--days N`: history window
 
 `--days N` (1-60; the server default is 7 when omitted) widens the
@@ -143,10 +161,12 @@ a schedule so the project sees real gateway traffic and stays active.
 ## What the digest contains
 
 Latest regime state (date, target/current state, drawdown %, kill-switch
-flag), 7-day (or `--days N`) `audit_log` outcome counts plus any `error:*`
-rows verbatim, the last trade, the `bot_config.paused` flag, and the Alpaca
-paper account equity + open position. When `--days`/`?days=` is supplied, the
-digest additionally carries `trades` and `regime_history` (see above). See
+flag), a top-level `regime_margin_pct` — SPY's raw (unrounded) % distance
+from its 200-DMA, `null` when `regime` is `null` — 7-day (or `--days N`)
+`audit_log` outcome counts plus any `error:*` rows verbatim, the last trade,
+the `bot_config.paused` flag, and the Alpaca paper account equity + open
+position. When `--days`/`?days=` is supplied, the digest additionally
+carries `trades` and `regime_history` (see above). See
 `supabase/functions/status/logic.ts` (`StatusDigest`) for the exact shape —
 the function is strictly read-only and writes nothing, not even its own
 `audit_log` row.

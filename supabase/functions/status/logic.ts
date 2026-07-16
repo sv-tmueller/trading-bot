@@ -43,6 +43,12 @@ export interface StatusDigest {
   market_open: boolean;
   paused: boolean;
   regime: RegimeStateRow | null;
+  // #384: SPY's raw (unrounded) % distance from its 200-DMA, derived from
+  // `regime.spy_close`/`regime.spy_sma200` — positive above the line (LONG
+  // side), negative below (CASH side), matching computeTargetState's sense.
+  // Required (always present, both digest modes) and nullable — null when
+  // regime is null (no regime_state row yet).
+  regime_margin_pct: number | null;
   // Legacy key name kept in both modes (#358 D4) so the response shape never
   // forks between default and extended mode; `since` is self-describing and
   // reflects the widened window when `windowDays` is set.
@@ -80,6 +86,16 @@ export interface StatusDigest {
 // CLAUDE.md: "outcome is written before exit so a crashed run leaves a row
 // with no finished_at") — group those under this label instead of "null".
 const UNFINISHED_LABEL = "(unfinished)";
+
+// #384: pure helper — SPY's % distance from its 200-DMA. Stored/returned
+// unrounded (raw float); rounding to 1 decimal happens in the shell renderers.
+// Guards spySma200 <= 0 and non-finite inputs -> null (never Infinity/NaN).
+export function computeRegimeMarginPct(spyClose: number, spySma200: number): number | null {
+  if (!Number.isFinite(spyClose) || !Number.isFinite(spySma200) || spySma200 <= 0) {
+    return null;
+  }
+  return ((spyClose - spySma200) / spySma200) * 100;
+}
 
 // #383 T4: `returns` helpers — pure, calendar-date arithmetic on
 // EquitySnapshotRow, anchored on the latest snapshot's date (not deps.now()),
@@ -198,6 +214,7 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     market_open: clock.isOpen,
     paused: pausedRaw === "true",
     regime,
+    regime_margin_pct: regime ? computeRegimeMarginPct(regime.spy_close, regime.spy_sma200) : null,
     audit_7d: { since, outcome_counts, errors },
     last_trade: lastTrade,
     alpaca: {

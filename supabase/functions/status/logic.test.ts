@@ -3,7 +3,7 @@
 // no DB writes. runStatus performs zero writes: StatusDeps has no
 // insert/update/upsert method at all (compile-time enforcement).
 import { assertEquals, assertRejects } from "@std/assert";
-import { runStatus, type StatusDeps } from "./logic.ts";
+import { computeRegimeMarginPct, runStatus, type StatusDeps } from "./logic.ts";
 import type { AuditLogRow, EquitySnapshotRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
 
 const REGIME_ROW: RegimeStateRow = {
@@ -236,6 +236,10 @@ Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () =>
 Deno.test("default mode (no windowDays): shape-lock - exact current 8 keys (#383 adds `returns`), no trades/regime_history, windowed helpers not called", async () => {
   const { deps, calls } = makeDeps();
   const digest = await runStatus(deps);
+  // #384: regime_margin_pct is a new required top-level key (intended,
+  // in-scope consequence of task 1 — the #358 byte-identical-shape
+  // constraint was scoped to proving the windowDays param's absence didn't
+  // change the response, not a permanent field freeze).
   assertEquals(
     Object.keys(digest).sort(),
     [
@@ -246,6 +250,7 @@ Deno.test("default mode (no windowDays): shape-lock - exact current 8 keys (#383
       "market_open",
       "paused",
       "regime",
+      "regime_margin_pct",
       "returns",
     ],
   );
@@ -289,6 +294,44 @@ Deno.test("windowDays set: empty window -> trades and regime_history are [] not 
   const digest = await runStatus(deps, 7);
   assertEquals(digest.trades, []);
   assertEquals(digest.regime_history, []);
+});
+
+// ---------------------------------------------------------------------------
+// #384 T1: computeRegimeMarginPct pure helper + wiring into runStatus.
+// ---------------------------------------------------------------------------
+
+Deno.test("computeRegimeMarginPct: above the 200-DMA -> positive exact value", () => {
+  assertEquals(computeRegimeMarginPct(620.5, 590.25), (620.5 - 590.25) / 590.25 * 100);
+});
+
+Deno.test("computeRegimeMarginPct: below the 200-DMA -> negative exact value", () => {
+  assertEquals(computeRegimeMarginPct(560.87, 601.23), (560.87 - 601.23) / 601.23 * 100);
+});
+
+Deno.test("computeRegimeMarginPct: spy_sma200 <= 0 -> null", () => {
+  assertEquals(computeRegimeMarginPct(600, 0), null);
+  assertEquals(computeRegimeMarginPct(600, -10), null);
+});
+
+Deno.test("computeRegimeMarginPct: non-finite inputs -> null", () => {
+  assertEquals(computeRegimeMarginPct(NaN, 590.25), null);
+  assertEquals(computeRegimeMarginPct(620.5, NaN), null);
+  assertEquals(computeRegimeMarginPct(Infinity, 590.25), null);
+  assertEquals(computeRegimeMarginPct(620.5, Infinity), null);
+});
+
+Deno.test("runStatus: regime present -> regime_margin_pct computed from spy_close/spy_sma200", async () => {
+  const { deps } = makeDeps();
+  const digest = await runStatus(deps);
+  assertEquals(digest.regime_margin_pct, (620.5 - 590.25) / 590.25 * 100);
+});
+
+Deno.test("runStatus: regime null -> regime_margin_pct: null", async () => {
+  const { deps } = makeDeps({
+    db: { getLatestRegimeState: () => Promise.resolve(null) } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.regime_margin_pct, null);
 });
 
 Deno.test("outcome_counts sums correctly across a 1500-row page-boundary-spanning window", async () => {
