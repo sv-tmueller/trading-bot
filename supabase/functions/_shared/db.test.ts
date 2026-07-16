@@ -1,11 +1,15 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
+  coerceEquitySnapshotRow,
   coerceRegimeRow,
   coerceTradeRow,
   getAuditLogSince,
   getConfig,
+  getEarliestEquitySnapshot,
+  getEquitySnapshotsSince,
   getLastTrade,
+  getLatestEquitySnapshot,
   getLatestRegimeState,
   getRegimeStatesSince,
   getTradesSince,
@@ -13,6 +17,7 @@ import {
   insertTrade,
   setConfig,
   updateAuditLog,
+  upsertEquitySnapshot,
   upsertRegimeState,
 } from "./db.ts";
 import { DataError } from "./num.ts";
@@ -483,5 +488,94 @@ Deno.test({
     assertEquals(rows[0].date, "2030-01-03");
     assertEquals(rows[1].date, "2030-01-02");
     await sb.from("regime_state").delete().in("date", ["2029-12-31", "2030-01-02", "2030-01-03"]);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #383 T2: equity_snapshots — one row per trading day, sourced from
+// alpaca.getAccountValue() via daily-check; read by status for trailing
+// returns.
+// ---------------------------------------------------------------------------
+
+Deno.test("coerceEquitySnapshotRow: numeric string -> number (PostgREST returns numeric as string)", () => {
+  const row = coerceEquitySnapshotRow({
+    date: "2026-07-08",
+    equity_usd: "101234.5600",
+    created_at: "2026-07-08T13:38:00Z",
+  });
+  assertEquals(row.date, "2026-07-08");
+  assertEquals(row.equity_usd, 101234.56);
+  assertEquals(row.created_at, "2026-07-08T13:38:00Z");
+});
+
+Deno.test("coerceEquitySnapshotRow: also accepts numbers (round-trip)", () => {
+  const row = coerceEquitySnapshotRow({
+    date: "2026-07-08",
+    equity_usd: 100000,
+  });
+  assertEquals(row.equity_usd, 100000);
+});
+
+Deno.test("coerceEquitySnapshotRow: non-numeric equity_usd throws", () => {
+  assertThrows(
+    () =>
+      coerceEquitySnapshotRow({
+        date: "2026-07-08",
+        equity_usd: "not-a-number",
+      }),
+    DataError,
+  );
+});
+
+Deno.test({
+  name: "upsertEquitySnapshot: same-date upsert replaces equity_usd (idempotent re-run)",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    await sb.from("equity_snapshots").delete().eq("date", "2030-01-02");
+    await upsertEquitySnapshot(sb, { date: "2030-01-02", equityUsd: 100000 });
+    await upsertEquitySnapshot(sb, { date: "2030-01-02", equityUsd: 100500.25 });
+    const { data } = await sb.from("equity_snapshots").select("*").eq("date", "2030-01-02")
+      .single();
+    assertEquals(Number(data?.equity_usd), 100500.25);
+    await sb.from("equity_snapshots").delete().eq("date", "2030-01-02");
+  },
+});
+
+Deno.test({
+  name: "getEarliestEquitySnapshot / getLatestEquitySnapshot: return the min/max date row",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const dates = ["2030-02-01", "2030-02-02", "2030-02-03"];
+    await sb.from("equity_snapshots").delete().in("date", dates);
+    await upsertEquitySnapshot(sb, { date: "2030-02-01", equityUsd: 90000 });
+    await upsertEquitySnapshot(sb, { date: "2030-02-02", equityUsd: 91000 });
+    await upsertEquitySnapshot(sb, { date: "2030-02-03", equityUsd: 92000 });
+    const earliest = await getEarliestEquitySnapshot(sb);
+    const latest = await getLatestEquitySnapshot(sb);
+    assertEquals(earliest?.date, "2030-02-01");
+    assertEquals(earliest?.equity_usd, 90000);
+    assertEquals(latest?.date, "2030-02-03");
+    assertEquals(latest?.equity_usd, 92000);
+    await sb.from("equity_snapshots").delete().in("date", dates);
+  },
+});
+
+Deno.test({
+  name: "getEquitySnapshotsSince: returns rows with date >= sinceDate, ascending",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const dates = ["2030-03-01", "2030-03-02", "2030-03-03"];
+    await sb.from("equity_snapshots").delete().in("date", dates);
+    await upsertEquitySnapshot(sb, { date: "2030-03-01", equityUsd: 90000 });
+    await upsertEquitySnapshot(sb, { date: "2030-03-02", equityUsd: 91000 });
+    await upsertEquitySnapshot(sb, { date: "2030-03-03", equityUsd: 92000 });
+    const rows = await getEquitySnapshotsSince(sb, "2030-03-02");
+    assertEquals(rows.length, 2);
+    assertEquals(rows[0].date, "2030-03-02");
+    assertEquals(rows[1].date, "2030-03-03");
+    await sb.from("equity_snapshots").delete().in("date", dates);
   },
 });
