@@ -55,7 +55,14 @@ margin_direction=""
 if [ "$margin_raw" != "null" ]; then
   margin_direction="$(printf '%s' "$DIGEST" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
   margin_abs_raw="$(printf '%s' "$DIGEST" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
-  margin_abs="$(LC_ALL=C printf '%.1f' "$margin_abs_raw")"
+  # Use the external `printf` binary (not bash's builtin) under a forced C
+  # locale: on macOS's stock bash 3.2.57, the builtin `printf` ignores a
+  # same-line `LC_ALL=C` prefix and, under a non-C ambient locale that
+  # exports LC_ALL (e.g. LC_ALL=de_DE.UTF-8), aborts with "invalid number"
+  # because it expects a comma decimal separator. `env LC_ALL=C printf`
+  # forces exec of the external printf, which does honor the env override on
+  # both bash 3.2 and modern bash/coreutils (macOS + Linux).
+  margin_abs="$(env LC_ALL=C printf '%.1f' "$margin_abs_raw")"
   if [ "$margin_direction" = "above" ]; then
     margin_signed="+${margin_abs}"
   else
