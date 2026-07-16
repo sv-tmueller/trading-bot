@@ -88,8 +88,24 @@ Deno.test("mapHistoryToDailyRows: maps epoch seconds to America/New_York calenda
     timestamp: [sec("2026-01-06T04:30:00Z")],
     equity: [100234.56],
   };
-  const { rows } = mapHistoryToDailyRows(history, "2026-07-15");
+  const { rows } = mapHistoryToDailyRows(history, "2026-01-01", "2026-07-15");
   assertEquals(rows, [{ date: "2026-01-05", equity_usd: 100234.56 }]);
+});
+
+Deno.test("mapHistoryToDailyRows: excludes dates before `since` (lower bound)", () => {
+  // Mirrors the todayEt upper-bound exclusion: the fetch adapter requests
+  // start=<since>T00:00:00Z, which Alpaca rounds *backward* into the prior ET
+  // day (see the doc-comment on fetchPortfolioHistoryAdapter) — so a
+  // pre-`since` row can come back from Alpaca and must be dropped client-side.
+  const history = {
+    timestamp: [
+      sec("2026-07-09T20:00:00Z"), // 2026-07-09 ET — before since, excluded
+      sec("2026-07-10T20:00:00Z"), // 2026-07-10 ET == since, included
+    ],
+    equity: [100, 200],
+  };
+  const { rows } = mapHistoryToDailyRows(history, "2026-07-10", "2026-07-15");
+  assertEquals(rows, [{ date: "2026-07-10", equity_usd: 200 }]);
 });
 
 Deno.test("mapHistoryToDailyRows: excludes today (ET) and later", () => {
@@ -100,7 +116,7 @@ Deno.test("mapHistoryToDailyRows: excludes today (ET) and later", () => {
     ],
     equity: [100, 200],
   };
-  const { rows, alpacaDays } = mapHistoryToDailyRows(history, "2026-07-15");
+  const { rows, alpacaDays } = mapHistoryToDailyRows(history, "2026-07-01", "2026-07-15");
   assertEquals(rows, [{ date: "2026-07-14", equity_usd: 100 }]);
   assertEquals(alpacaDays, 2);
 });
@@ -115,7 +131,7 @@ Deno.test("mapHistoryToDailyRows: drops zero/negative/non-finite equity, counted
     ],
     equity: [0, -5, NaN, 42],
   };
-  const { rows, zeroEquityDropped } = mapHistoryToDailyRows(history, "2026-07-15");
+  const { rows, zeroEquityDropped } = mapHistoryToDailyRows(history, "2026-07-01", "2026-07-15");
   assertEquals(rows, [{ date: "2026-07-13", equity_usd: 42 }]);
   assertEquals(zeroEquityDropped, 3);
 });
@@ -125,8 +141,20 @@ Deno.test("mapHistoryToDailyRows: requireNumber accepts numeric strings", () => 
     timestamp: [sec("2026-07-10T20:00:00Z")],
     equity: ["1234.5"],
   };
-  const { rows } = mapHistoryToDailyRows(history, "2026-07-15");
+  const { rows } = mapHistoryToDailyRows(history, "2026-07-01", "2026-07-15");
   assertEquals(rows, [{ date: "2026-07-10", equity_usd: 1234.5 }]);
+});
+
+Deno.test("mapHistoryToDailyRows: dedupes two timestamps mapping to the same ET date, keeping the last", () => {
+  const history = {
+    timestamp: [
+      sec("2026-07-10T14:00:00Z"), // 2026-07-10 10:00 ET (EDT)
+      sec("2026-07-10T20:00:00Z"), // 2026-07-10 16:00 ET (EDT) — same ET date
+    ],
+    equity: [100, 200],
+  };
+  const { rows } = mapHistoryToDailyRows(history, "2026-07-01", "2026-07-15");
+  assertEquals(rows, [{ date: "2026-07-10", equity_usd: 200 }]);
 });
 
 Deno.test("mapHistoryToDailyRows: parallel-array length mismatch throws a clear error", () => {
@@ -135,7 +163,7 @@ Deno.test("mapHistoryToDailyRows: parallel-array length mismatch throws a clear 
     equity: [1],
   };
   assertThrows(
-    () => mapHistoryToDailyRows(history, "2026-07-15"),
+    () => mapHistoryToDailyRows(history, "2026-07-01", "2026-07-15"),
     Error,
     "length mismatch",
   );
@@ -275,6 +303,12 @@ Deno.test("runBackfill: dry-run summary carries window + all four counts", async
   assertEquals(joined.includes("2026-01-01"), true);
   assertEquals(joined.includes("2026-07-15"), true);
   assertEquals(joined.includes("re-run with --execute"), true);
+  // The four summary counts (D5) — makeDeps' default fixture fetches 2 days,
+  // drops none, has nothing already present, so both are missing.
+  assertEquals(joined.includes("alpaca days fetched: 2"), true);
+  assertEquals(joined.includes("zero/invalid equity dropped: 0"), true);
+  assertEquals(joined.includes("already present: 0"), true);
+  assertEquals(joined.includes("to insert: 2"), true);
 });
 
 Deno.test("runBackfill: execute-mode summary carries window + all four counts", async () => {
@@ -283,6 +317,10 @@ Deno.test("runBackfill: execute-mode summary carries window + all four counts", 
   const joined = logs.join("\n");
   assertEquals(joined.includes("execute"), true);
   assertEquals(joined.includes("inserted"), true);
+  assertEquals(joined.includes("alpaca days fetched: 2"), true);
+  assertEquals(joined.includes("zero/invalid equity dropped: 0"), true);
+  assertEquals(joined.includes("already present: 0"), true);
+  assertEquals(joined.includes("inserted: 2"), true);
 });
 
 // ---------------------------------------------------------------------------

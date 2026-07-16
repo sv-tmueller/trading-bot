@@ -114,6 +114,7 @@ export function etDateOf(d: Date): string {
 
 export function mapHistoryToDailyRows(
   history: PortfolioHistory,
+  since: string,
   todayEt: string,
 ): MappedHistory {
   const { timestamp, equity } = history;
@@ -123,7 +124,12 @@ export function mapHistoryToDailyRows(
     );
   }
 
-  const rows: { date: string; equity_usd: number }[] = [];
+  // Keyed by ET date so a later duplicate entry for the same date (Alpaca can
+  // return more than one timestamp bucket per calendar day) overwrites an
+  // earlier one — insertion order is preserved for dates seen only once, and
+  // Alpaca returns timestamps in chronological order, so iterating the Map
+  // still yields ascending dates.
+  const rowsByDate = new Map<string, number>();
   let zeroEquityDropped = 0;
 
   for (let i = 0; i < timestamp.length; i++) {
@@ -131,6 +137,12 @@ export function mapHistoryToDailyRows(
     // Today (ET) and later belong exclusively to daily-check — its value can
     // be an in-progress intraday number (D3).
     if (date >= todayEt) continue;
+    // Below the requested window start. The fetch adapter requests
+    // start=<since>T00:00:00Z, which Alpaca rounds *backward* into the prior
+    // ET day (see fetchPortfolioHistoryAdapter's doc-comment) — this client-
+    // side lower bound is what actually enforces the window, mirroring the
+    // todayEt upper-bound exclusion above.
+    if (date < since) continue;
 
     let value: number;
     try {
@@ -143,9 +155,11 @@ export function mapHistoryToDailyRows(
       zeroEquityDropped++;
       continue;
     }
-    rows.push({ date, equity_usd: value });
+    // Last entry for a given ET date wins (dedupe before the bulk upsert).
+    rowsByDate.set(date, value);
   }
 
+  const rows = Array.from(rowsByDate, ([date, equity_usd]) => ({ date, equity_usd }));
   return { rows, zeroEquityDropped, alpacaDays: timestamp.length };
 }
 
@@ -273,7 +287,7 @@ export async function runBackfill(
   const existingSet = new Set(existing);
 
   const history = await deps.fetchPortfolioHistory(since);
-  const mapped = mapHistoryToDailyRows(history, todayEt);
+  const mapped = mapHistoryToDailyRows(history, since, todayEt);
 
   const candidateRows = mapped.rows.filter((r) => !existingSet.has(r.date));
   const alreadyPresent = mapped.rows.length - candidateRows.length;

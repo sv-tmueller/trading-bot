@@ -96,6 +96,9 @@ After a successful `--execute` run, confirm the digest picked it up:
 bash scripts/status.sh
 ```
 
+(Requires `.env.status` to already be configured — see
+`docs/runbooks/status-check.md` if you haven't set it up yet.)
+
 The `returns` block's `since_inception_pct` (and `trailing_7d_pct`/
 `trailing_30d_pct`, once enough history exists) should now be populated
 instead of showing `null` or a near-zero value computed from only a few
