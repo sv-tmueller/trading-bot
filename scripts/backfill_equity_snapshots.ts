@@ -144,3 +144,153 @@ export function mapHistoryToDailyRows(
 
   return { rows, zeroEquityDropped, alpacaDays: timestamp.length };
 }
+
+// ---------------------------------------------------------------------------
+// T3 — runBackfill orchestration (D6 deps-injection, same style as the Edge
+// Functions' logic.ts modules).
+// ---------------------------------------------------------------------------
+
+// Thrown by the getExistingSnapshotDates adapter when PostgREST reports
+// 42P01 (relation does not exist) — i.e. migration 0009 hasn't been applied
+// yet. runBackfill catches this and rethrows a friendly, single-line message
+// (no stack trace reaches the operator).
+export class EquitySnapshotsTableMissingError extends Error {
+  override name = "EquitySnapshotsTableMissingError";
+}
+
+// Thrown when no --since is given and audit_log has no rows to infer the
+// bot's go-live date from.
+export class NoAuditHistoryError extends Error {
+  override name = "NoAuditHistoryError";
+}
+
+export interface BackfillDeps {
+  now: () => Date;
+  fetchPortfolioHistory: (startYmd: string) => Promise<PortfolioHistory>;
+  db: {
+    getEarliestAuditStartedAt: () => Promise<string | null>;
+    getExistingSnapshotDates: (since: string) => Promise<string[]>;
+    insertSnapshotsIgnoreDuplicates: (
+      rows: { date: string; equity_usd: number }[],
+    ) => Promise<string[]>;
+  };
+  log: (line: string) => void;
+}
+
+export interface BackfillOpts {
+  since?: string;
+  execute: boolean;
+}
+
+export interface BackfillSummary {
+  mode: "dry-run" | "execute";
+  since: string;
+  until: string;
+  alpacaDays: number;
+  zeroEquityDropped: number;
+  alreadyPresent: number;
+  // Missing dates found at read time (the backfill "plan"). In dry-run mode
+  // this is what *would* be written; in execute mode it's what was attempted.
+  candidateRows: { date: string; equity_usd: number }[];
+  // Actually written this run. Always [] in dry-run mode. In execute mode,
+  // shorter than candidateRows only if another process raced in a write
+  // between the read and this run's insert (D2 — safely skipped, never an
+  // error).
+  insertedRows: { date: string; equity_usd: number }[];
+}
+
+async function resolveSince(deps: BackfillDeps, since: string | undefined): Promise<string> {
+  if (since !== undefined) return since;
+  const earliest = await deps.db.getEarliestAuditStartedAt();
+  if (earliest === null) {
+    throw new NoAuditHistoryError(
+      "audit_log is empty, so the bot's go-live date can't be inferred — pass --since YYYY-MM-DD explicitly.",
+    );
+  }
+  // Same UTC-ymd convention daily-check uses for `regime_state.date` (D3).
+  return earliest.slice(0, 10);
+}
+
+// Cap on the per-date lines printed in the summary so a multi-month backfill
+// doesn't dump hundreds of lines to the terminal.
+const SUMMARY_ROW_LIMIT = 20;
+
+function formatRows(rows: { date: string; equity_usd: number }[]): string[] {
+  const shown = rows.slice(0, SUMMARY_ROW_LIMIT).map((r) => `  ${r.date}: ${r.equity_usd}`);
+  if (rows.length > SUMMARY_ROW_LIMIT) {
+    shown.push(`  ... and ${rows.length - SUMMARY_ROW_LIMIT} more`);
+  }
+  return shown;
+}
+
+function logSummary(log: (line: string) => void, summary: BackfillSummary): void {
+  log(`mode: ${summary.mode}`);
+  log(`window: ${summary.since} .. ${summary.until} (exclusive of ${summary.until})`);
+  log(`alpaca days fetched: ${summary.alpacaDays}`);
+  log(`zero/invalid equity dropped: ${summary.zeroEquityDropped}`);
+  log(`already present: ${summary.alreadyPresent}`);
+  if (summary.mode === "dry-run") {
+    log(`to insert: ${summary.candidateRows.length}`);
+    for (const line of formatRows(summary.candidateRows)) log(line);
+    if (summary.candidateRows.length > 0) {
+      log("re-run with --execute to write");
+    }
+  } else {
+    log(`inserted: ${summary.insertedRows.length}`);
+    for (const line of formatRows(summary.insertedRows)) log(line);
+    const racedAway = summary.candidateRows.length - summary.insertedRows.length;
+    if (racedAway > 0) {
+      log(
+        `note: ${racedAway} candidate date(s) were written by another process between read ` +
+          `and write — safely skipped, not an error`,
+      );
+    }
+  }
+}
+
+export async function runBackfill(
+  deps: BackfillDeps,
+  opts: BackfillOpts,
+): Promise<BackfillSummary> {
+  const since = await resolveSince(deps, opts.since);
+  const todayEt = etDateOf(deps.now());
+
+  let existing: string[];
+  try {
+    existing = await deps.db.getExistingSnapshotDates(since);
+  } catch (e) {
+    if (e instanceof EquitySnapshotsTableMissingError) {
+      throw new Error(
+        "equity_snapshots table not found — apply migration 0009 (supabase db push) first.",
+      );
+    }
+    throw e;
+  }
+  const existingSet = new Set(existing);
+
+  const history = await deps.fetchPortfolioHistory(since);
+  const mapped = mapHistoryToDailyRows(history, todayEt);
+
+  const candidateRows = mapped.rows.filter((r) => !existingSet.has(r.date));
+  const alreadyPresent = mapped.rows.length - candidateRows.length;
+
+  let insertedRows: { date: string; equity_usd: number }[] = [];
+  if (opts.execute && candidateRows.length > 0) {
+    const insertedDates = new Set(await deps.db.insertSnapshotsIgnoreDuplicates(candidateRows));
+    insertedRows = candidateRows.filter((r) => insertedDates.has(r.date));
+  }
+
+  const summary: BackfillSummary = {
+    mode: opts.execute ? "execute" : "dry-run",
+    since,
+    until: todayEt,
+    alpacaDays: mapped.alpacaDays,
+    zeroEquityDropped: mapped.zeroEquityDropped,
+    alreadyPresent,
+    candidateRows,
+    insertedRows,
+  };
+
+  logSummary(deps.log, summary);
+  return summary;
+}
