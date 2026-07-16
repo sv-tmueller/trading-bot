@@ -13,6 +13,7 @@
 // duplicates`, i.e. `INSERT ... ON CONFLICT DO NOTHING`. This can never
 // modify an existing row (daily-check's rows are canonical) and closes the
 // TOCTOU window between the read and the write.
+import { requireNumber } from "../supabase/functions/_shared/num.ts";
 // ---------------------------------------------------------------------------
 // T1 — arg parsing
 // ---------------------------------------------------------------------------
@@ -75,4 +76,71 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return { help, since, execute };
+}
+
+// ---------------------------------------------------------------------------
+// T2 — pure mapping/filtering from Alpaca's portfolio-history response to
+// candidate equity_snapshots rows.
+// ---------------------------------------------------------------------------
+
+export interface PortfolioHistory {
+  timestamp: number[];
+  equity: unknown[];
+}
+
+export interface MappedHistory {
+  rows: { date: string; equity_usd: number }[];
+  // Dropped for being non-finite or <= 0 (Alpaca pads pre-funding days with
+  // zeros; a 0 anchor would poison since_inception_pct). Counted separately
+  // from the "today (ET) and later" exclusion, which is not itself a data
+  // problem — it's just out of this script's scope (daily-check owns today).
+  zeroEquityDropped: number;
+  // Raw count of entries Alpaca returned, pre-filter — one of the four
+  // summary counts (D5).
+  alpacaDays: number;
+}
+
+// Alpaca's portfolio-history `timestamp` values are Unix epoch seconds (not
+// milliseconds) for every documented timeframe, including 1D.
+const etDateFormatter = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" });
+
+export function etDateOf(d: Date): string {
+  return etDateFormatter.format(d);
+}
+
+export function mapHistoryToDailyRows(
+  history: PortfolioHistory,
+  todayEt: string,
+): MappedHistory {
+  const { timestamp, equity } = history;
+  if (timestamp.length !== equity.length) {
+    throw new Error(
+      `portfolio-history: timestamp/equity length mismatch (${timestamp.length} vs ${equity.length})`,
+    );
+  }
+
+  const rows: { date: string; equity_usd: number }[] = [];
+  let zeroEquityDropped = 0;
+
+  for (let i = 0; i < timestamp.length; i++) {
+    const date = etDateOf(new Date(timestamp[i] * 1000));
+    // Today (ET) and later belong exclusively to daily-check — its value can
+    // be an in-progress intraday number (D3).
+    if (date >= todayEt) continue;
+
+    let value: number;
+    try {
+      value = requireNumber(equity[i], `equity[${i}]`);
+    } catch {
+      zeroEquityDropped++;
+      continue;
+    }
+    if (value <= 0) {
+      zeroEquityDropped++;
+      continue;
+    }
+    rows.push({ date, equity_usd: value });
+  }
+
+  return { rows, zeroEquityDropped, alpacaDays: timestamp.length };
 }
