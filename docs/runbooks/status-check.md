@@ -45,7 +45,14 @@ the raw JSON dump — e.g. `LONG \`UPRO\` because SPY is 7.2% above its
 200-DMA.` (or `CASH because SPY is 4.3% below its 200-DMA.` with no ticker
 when `current_state` is `CASH`) — built from `alpaca.position.symbol` and
 `regime.current_state`. It's skipped when `regime` or `regime_margin_pct` is
-`null`. The weekly `scripts/render_soak_digest.sh` markdown report renders
+`null`. The causal "because" phrasing only appears when `target_state ==
+current_state` and `kill_switch_active` is not `true` — i.e. when the margin
+is genuinely why the position is held. If the kill-switch has fired, or a
+flip is pending (`target_state != current_state`), the line instead states
+the state and the signed margin without asserting a cause (e.g. `CASH — SPY
+vs 200-DMA: +7.2% (above).`), since a kill-switch-forced liquidation or a
+pending flip means the margin isn't the real reason for the current
+position. The weekly `scripts/render_soak_digest.sh` markdown report renders
 the same headline plus a signed, 1-decimal `SPY vs 200-DMA` line in the
 `### Regime` section.
 

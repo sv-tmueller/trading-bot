@@ -55,7 +55,7 @@ margin_direction=""
 if [ "$margin_raw" != "null" ]; then
   margin_direction="$(printf '%s' "$DIGEST" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
   margin_abs_raw="$(printf '%s' "$DIGEST" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
-  margin_abs="$(LC_NUMERIC=C printf '%.1f' "$margin_abs_raw")"
+  margin_abs="$(LC_ALL=C printf '%.1f' "$margin_abs_raw")"
   if [ "$margin_direction" = "above" ]; then
     margin_signed="+${margin_abs}"
   else
@@ -70,13 +70,32 @@ echo
 # (current_state — the reason for the position currently held) against the
 # SPY-vs-200-DMA margin. Skipped when regime is null (keep the existing
 # fallback below) or regime_margin_pct is null.
+#
+# D5 (#384 fix round): the margin is only the TRUE cause of the current
+# position when target_state == current_state AND the kill-switch hasn't
+# fired — otherwise (kill-switch active, or a pending flip where
+# target_state != current_state) the margin can be positive while the
+# position is CASH for an unrelated reason, and asserting "because" would be
+# a false causal claim. In those cases state the margin without the causal
+# clause; the "Target / current state" and "Kill switch active" lines below
+# already carry the real reason.
 if printf '%s' "$DIGEST" | jq -e '.regime != null' >/dev/null && [ -n "$margin_signed" ]; then
   current_state="$(printf '%s' "$DIGEST" | jq -r '.regime.current_state')"
+  target_state="$(printf '%s' "$DIGEST" | jq -r '.regime.target_state')"
+  kill_switch_active="$(printf '%s' "$DIGEST" | jq -r '.regime.kill_switch_active')"
   position_symbol="$(printf '%s' "$DIGEST" | jq -r '.alpaca.position.symbol')"
-  if [ "$current_state" = "CASH" ]; then
-    echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+  if [ "$target_state" = "$current_state" ] && [ "$kill_switch_active" != "true" ]; then
+    if [ "$current_state" = "CASH" ]; then
+      echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    else
+      echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    fi
   else
-    echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    if [ "$current_state" = "CASH" ]; then
+      echo "${current_state} — SPY vs 200-DMA: ${margin_signed}% (${margin_direction})."
+    else
+      echo "${current_state} \`${position_symbol}\` — SPY vs 200-DMA: ${margin_signed}% (${margin_direction})."
+    fi
   fi
   echo
 fi

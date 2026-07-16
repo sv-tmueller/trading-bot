@@ -75,16 +75,37 @@ if command -v jq >/dev/null 2>&1; then
   # #384: short one-line "why" summary (same construction as
   # scripts/render_soak_digest.sh's headline) above the raw dump below.
   # Guarded on regime/regime_margin_pct being present — skipped otherwise.
+  #
+  # D5 (#384 fix round): the margin is only the TRUE cause of the current
+  # position when target_state == current_state AND the kill-switch hasn't
+  # fired — otherwise (kill-switch active, or a pending flip where
+  # target_state != current_state) state the margin without the causal
+  # "because" clause; the raw JSON dump below still carries target_state and
+  # kill_switch_active for the real reason.
   if printf '%s' "$RESPONSE" | jq -e '.regime != null and .regime_margin_pct != null' >/dev/null 2>&1; then
     current_state="$(printf '%s' "$RESPONSE" | jq -r '.regime.current_state')"
+    target_state="$(printf '%s' "$RESPONSE" | jq -r '.regime.target_state')"
+    kill_switch_active="$(printf '%s' "$RESPONSE" | jq -r '.regime.kill_switch_active')"
     position_symbol="$(printf '%s' "$RESPONSE" | jq -r '.alpaca.position.symbol')"
     margin_direction="$(printf '%s' "$RESPONSE" | jq -r 'if .regime_margin_pct >= 0 then "above" else "below" end')"
     margin_abs_raw="$(printf '%s' "$RESPONSE" | jq -r '(.regime_margin_pct | if . < 0 then -. else . end)')"
-    margin_abs="$(LC_NUMERIC=C printf '%.1f' "$margin_abs_raw")"
-    if [ "$current_state" = "CASH" ]; then
-      echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+    margin_abs="$(LC_ALL=C printf '%.1f' "$margin_abs_raw")"
+    if [ "$target_state" = "$current_state" ] && [ "$kill_switch_active" != "true" ]; then
+      if [ "$current_state" = "CASH" ]; then
+        echo "${current_state} because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+      else
+        echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+      fi
     else
-      echo "${current_state} \`${position_symbol}\` because SPY is ${margin_abs}% ${margin_direction} its 200-DMA."
+      margin_signed="+${margin_abs}"
+      if [ "$margin_direction" = "below" ]; then
+        margin_signed="-${margin_abs}"
+      fi
+      if [ "$current_state" = "CASH" ]; then
+        echo "${current_state} — SPY vs 200-DMA: ${margin_signed}% (${margin_direction})."
+      else
+        echo "${current_state} \`${position_symbol}\` — SPY vs 200-DMA: ${margin_signed}% (${margin_direction})."
+      fi
     fi
     echo
   fi

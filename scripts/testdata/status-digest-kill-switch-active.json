@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-07-10T13:45:02.123Z",
+  "market_open": true,
+  "paused": false,
+  "regime": {
+    "date": "2026-07-09",
+    "spy_close": 601.23,
+    "spy_sma200": 560.87,
+    "target_state": "LONG",
+    "current_state": "CASH",
+    "position_drawdown_pct": null,
+    "kill_switch_active": true,
+    "kill_switch_fired_at": "2026-07-10T14:05:00.000Z"
+  },
+  "regime_margin_pct": 7.195963413981852,
+  "audit_7d": {
+    "since": "2026-07-03T13:45:02.123Z",
+    "outcome_counts": {
+      "success": 3,
+      "error:kill_switch_fired": 1
+    },
+    "errors": []
+  },
+  "last_trade": {
+    "symbol": "UPRO",
+    "side": "SELL",
+    "qty": 42,
+    "fill_price": 121.10,
+    "fill_time": "2026-07-10T14:05:03.000Z",
+    "reason": "kill_switch",
+    "broker_order_id": "1a2b3c4d-5e6f-7a8b-9c1d-2e3f4a5b6c7d"
+  },
+  "alpaca": {
+    "equity_usd": 99850.12,
+    "position": {
+      "symbol": "UPRO",
+      "qty": 0
+    }
+  }
+}
