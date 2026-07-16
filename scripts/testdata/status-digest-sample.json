@@ -8,7 +8,7 @@
     "spy_sma200": 560.87,
     "target_state": "LONG",
     "current_state": "LONG",
-    "position_drawdown_pct": 3.42,
+    "position_drawdown_pct": -0.0342,
     "kill_switch_active": false,
     "kill_switch_fired_at": null
   },

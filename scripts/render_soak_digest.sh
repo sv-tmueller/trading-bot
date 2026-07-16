@@ -115,15 +115,27 @@ echo "- Market open: \`${market_open}\`"
 echo "- Trading paused: \`${paused}\`"
 echo
 
+# #385: `position_drawdown_pct` is stored as a fraction (kill-switch/logic.ts:
+# `lastPrice/refHigh - 1`), not a percent; ×100 here is display-only. Gate on
+# null the same way as the margin block above — under `set -euo pipefail`,
+# don't let jq arithmetic touch a null.
+drawdown_raw="$(printf '%s' "$DIGEST" | jq -r '.regime.position_drawdown_pct // "null"')"
+if [ "$drawdown_raw" != "null" ]; then
+  drawdown_pct_raw="$(printf '%s' "$DIGEST" | jq -r '.regime.position_drawdown_pct * 100')"
+  drawdown_rendered="$(env LC_ALL=C printf '%.1f' "$drawdown_pct_raw")%"
+else
+  drawdown_rendered="n/a"
+fi
+
 echo "### Regime"
 if printf '%s' "$DIGEST" | jq -e '.regime == null' >/dev/null; then
   echo "No \`regime_state\` row."
 else
-  printf '%s' "$DIGEST" | jq -r '
+  printf '%s' "$DIGEST" | jq -r --arg drawdown "$drawdown_rendered" '
     .regime |
     "- Date: `\(.date)`",
     "- Target / current state: `\(.target_state)` / `\(.current_state)`",
-    "- Position drawdown: \(if .position_drawdown_pct == null then "n/a" else (.position_drawdown_pct | tostring) + "%" end)",
+    "- Position drawdown: \($drawdown)",
     "- Kill switch active: `\(.kill_switch_active)`" + (if .kill_switch_active then " (fired at \(.kill_switch_fired_at // "unknown"))" else "" end)
   '
   if [ -n "$margin_signed" ]; then
