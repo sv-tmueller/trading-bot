@@ -553,6 +553,57 @@ Deno.test("SELL flip day: writes equity snapshot, reuses the same accountValue (
   assertEquals(calls.accountValueCalls, 1);
 });
 
+function stubWarn(): { calls: unknown[][]; restore: () => void } {
+  const original = console.warn;
+  const calls: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  return { calls, restore: () => (console.warn = original) };
+}
+
+Deno.test("no-flip day: upsertEquitySnapshot throws -> outcome stays success, warning logged (#383 D4)", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+      upsertEquitySnapshot: () => Promise.reject(new Error("db unavailable")),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  const warn = stubWarn();
+  try {
+    const outcome = await runDailyCheck(deps);
+    assertEquals(outcome, "success");
+    assertEquals(calls.audit, {
+      id: 42,
+      finishedAt: "2026-06-05T13:37:00.000Z",
+      outcome: "success",
+      notes: "target=LONG current=LONG",
+    });
+    assertEquals(warn.calls.length > 0, true);
+  } finally {
+    warn.restore();
+  }
+});
+
+Deno.test("BUY flip day: upsertEquitySnapshot throws -> outcome stays success, warning logged (#383 D4)", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      upsertEquitySnapshot: () => Promise.reject(new Error("db unavailable")),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  const warn = stubWarn();
+  try {
+    const outcome = await runDailyCheck(deps);
+    assertEquals(outcome, "success");
+    assertEquals(calls.placeMarketOrder, { symbol: "UPRO", side: "BUY", qty: 99 });
+    assertEquals(warn.calls.length > 0, true);
+  } finally {
+    warn.restore();
+  }
+});
+
 Deno.test("skipped:trading_paused -> no equity snapshot", async () => {
   const { deps, calls } = makeDeps({
     db: { getConfig: () => Promise.resolve("true") } as unknown as DailyCheckDeps["db"],

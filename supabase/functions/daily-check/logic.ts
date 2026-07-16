@@ -299,10 +299,22 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
     // no-flip days — required for the trailing-return windows to have data
     // most days rather than only on the few-times-a-year regime flips.
     // Ordered after upsertRegimeState (D2) so a snapshot-write failure can
-    // never block the trading-critical state write; no defensive swallow —
-    // it propagates to the outer catch like any other DB write here.
+    // never block the trading-critical state write.
     if (accountValue === undefined) accountValue = await alpaca.getAccountValue();
-    await db.upsertEquitySnapshot({ date: ymd(deps.now()), equityUsd: accountValue });
+    try {
+      await db.upsertEquitySnapshot({ date: ymd(deps.now()), equityUsd: accountValue });
+    } catch (snapshotErr) {
+      // #383 D4: the snapshot is a non-critical reporting side-effect. By this
+      // point the trade (if any) has filled and upsertRegimeState has already
+      // succeeded, so a write failure here must never propagate to the outer
+      // catch and mislabel a completed, state-persisted trade day as
+      // `error:*`. Warn (no secrets/PII, matching the notifications.ts
+      // console.warn style) and continue to the normal outcome; it self-heals
+      // on the next run (target==current -> no re-trade -> snapshot retried).
+      console.warn(
+        `daily-check: equity snapshot write failed: ${(snapshotErr as Error).message}`,
+      );
+    }
 
     await finish(outcome, `target=${targetState} current=${newCurrentState}`);
     return outcome;

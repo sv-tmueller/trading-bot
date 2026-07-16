@@ -90,8 +90,9 @@ const UNFINISHED_LABEL = "(unfinished)";
 // fetch candidate rows for the trailing_30d_pct search. 60 gives 30 days of
 // buffer beyond the widest trailing window (30d) to tolerate gaps (an
 // error:*/skipped:* day writes no snapshot), while staying within
-// getEquitySnapshotsSince's .limit(60) row cap (at most one row per
-// calendar day).
+// getEquitySnapshotsSince's .limit(60) row cap: daily-check only writes a
+// snapshot on trading days, so 60 calendar days yields ~44 rows at most —
+// comfortably under the cap even before accounting for gap days.
 const EQUITY_WINDOW_LOOKBACK_DAYS = 60;
 
 function shiftDate(dateStr: string, days: number): string {
