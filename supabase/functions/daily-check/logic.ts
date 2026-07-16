@@ -47,6 +47,10 @@ export interface DailyCheckDeps {
     updateAuditLog: (
       p: { id: number; finishedAt: string; outcome: string; notes?: string | null },
     ) => Promise<void>;
+    // #383 T3: one equity_snapshots row per trading day, written after
+    // upsertRegimeState so a snapshot-write failure can never block the
+    // trading-critical state write (D2).
+    upsertEquitySnapshot: (p: { date: string; equityUsd: number }) => Promise<void>;
   };
   notifications: {
     notifyRegimeFlip: (p: {
@@ -176,6 +180,11 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
 
     let newCurrentState: State = currentState;
     const outcome = "success";
+    // #383 T3/D1: hoisted so it can be filled in by the flip branch below (a
+    // read already needed for sizing/notification) or, on a no-flip day,
+    // reused-or-fetched once more just before the equity snapshot write —
+    // either way alpaca.getAccountValue() is called exactly once per run.
+    let accountValue: number | undefined;
 
     if (targetState !== currentState) {
       // Concurrency guard (#293): at most one order per trading day. The first
@@ -184,15 +193,19 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
       // and must back off, not place a duplicate order.
       const claimed = await db.claimTradeDate("daily-check", ymd(deps.now()));
       if (!claimed) {
-        await finish("skipped:duplicate_run", "trade_claims conflict: another invocation claimed this date");
+        await finish(
+          "skipped:duplicate_run",
+          "trade_claims conflict: another invocation claimed this date",
+        );
         return "skipped:duplicate_run";
       }
 
       // Read account value once, before any order, so a transient read failure
       // errors cleanly pre-trade rather than after a fill — a post-fill read
       // failure would skip the state write and mislabel a completed trade as
-      // error. Reused by both the LONG (sizing) and CASH (notification) paths.
-      const accountValue = await alpaca.getAccountValue();
+      // error. Reused by both the LONG (sizing) and CASH (notification) paths,
+      // and by the end-of-run equity snapshot (D1) so it is fetched only once.
+      accountValue = await alpaca.getAccountValue();
       if (targetState === "LONG") {
         const vehiclePrice = await marketdata.getLatestTradePrice(config.botTicker);
         const targetQty = Math.floor((accountValue * 0.99) / vehiclePrice);
@@ -281,6 +294,28 @@ export async function runDailyCheck(deps: DailyCheckDeps): Promise<string> {
       // never overwrite it with null once it exists.
       killSwitchFiredAt: latest?.kill_switch_fired_at ?? null,
     });
+
+    // #383 T3/D1/D2: one equity_snapshots row per trading day, including
+    // no-flip days — required for the trailing-return windows to have data
+    // most days rather than only on the few-times-a-year regime flips.
+    // Ordered after upsertRegimeState (D2) so a snapshot-write failure can
+    // never block the trading-critical state write.
+    if (accountValue === undefined) accountValue = await alpaca.getAccountValue();
+    try {
+      await db.upsertEquitySnapshot({ date: ymd(deps.now()), equityUsd: accountValue });
+    } catch (snapshotErr) {
+      // #383 D4: the snapshot is a non-critical reporting side-effect. By this
+      // point the trade (if any) has filled and upsertRegimeState has already
+      // succeeded, so a write failure here must never propagate to the outer
+      // catch and mislabel a completed, state-persisted trade day as
+      // `error:*`. Warn (no secrets/PII, matching the notifications.ts
+      // console.warn style) and continue to the normal outcome; it self-heals
+      // on the next run (target==current -> no re-trade -> snapshot retried).
+      console.warn(
+        `daily-check: equity snapshot write failed: ${(snapshotErr as Error).message}`,
+      );
+    }
+
     await finish(outcome, `target=${targetState} current=${newCurrentState}`);
     return outcome;
   } catch (e) {

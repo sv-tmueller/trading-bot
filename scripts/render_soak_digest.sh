@@ -32,7 +32,11 @@ if ! printf '%s' "$RAW" | jq -e '
     (.alpaca.equity_usd | type == "number") and
     (.alpaca.position.symbol | type == "string") and
     (.alpaca.position.qty | type == "number") and
-    ((.regime_margin_pct | type == "number") or (.regime_margin_pct | type == "null"))
+    ((.regime_margin_pct | type == "number") or (.regime_margin_pct | type == "null")) and
+    (.returns | type == "object") and
+    (.returns.since_inception_pct | type == "number" or type == "null") and
+    (.returns.trailing_7d_pct | type == "number" or type == "null") and
+    (.returns.trailing_30d_pct | type == "number" or type == "null")
   ' >/dev/null 2>/dev/null; then
   echo "error: input is not a valid StatusDigest JSON (garbled, partial, truncated, or missing/mistyped required keys)" >&2
   exit 1
@@ -167,6 +171,15 @@ printf '%s' "$DIGEST" | jq -r '
   .alpaca |
   "- Equity: $\(.equity_usd) USD",
   "- Position: \(.position.qty) `\(.position.symbol)`"
+'
+echo
+
+echo "### Returns"
+printf '%s' "$DIGEST" | jq -r '
+  .returns |
+  "- Since inception: \(if .since_inception_pct == null then "n/a" else (.since_inception_pct | tostring) + "%" end)",
+  "- Trailing 7d: \(if .trailing_7d_pct == null then "n/a" else (.trailing_7d_pct | tostring) + "%" end)",
+  "- Trailing 30d: \(if .trailing_30d_pct == null then "n/a" else (.trailing_30d_pct | tostring) + "%" end)"
 '
 echo
 

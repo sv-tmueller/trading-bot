@@ -27,5 +27,10 @@
       "symbol": "UPRO",
       "qty": 0
     }
+  },
+  "returns": {
+    "since_inception_pct": 0,
+    "trailing_7d_pct": null,
+    "trailing_30d_pct": null
   }
 }

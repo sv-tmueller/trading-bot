@@ -7,7 +7,7 @@
 // audit_log row: status is deliberately invisible to that table so it stays
 // a clean record of trading actions.
 import type { StrategyConfig } from "../_shared/config.ts";
-import type { AuditLogRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
+import type { AuditLogRow, EquitySnapshotRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -28,6 +28,13 @@ export interface StatusDeps {
     // Only called when a windowDays is passed to runStatus.
     getTradesSince: (sinceIso: string) => Promise<TradeRow[]>;
     getRegimeStatesSince: (sinceDate: string) => Promise<RegimeStateRow[]>;
+    // #383 T4: equity_snapshots reads for the `returns` block. Always called
+    // (both default and extended mode) — independent of windowDays/`?days=N`,
+    // and independent of the live alpaca.getAccountValue() read used for
+    // `alpaca.equity_usd`.
+    getEarliestEquitySnapshot: () => Promise<EquitySnapshotRow | null>;
+    getLatestEquitySnapshot: () => Promise<EquitySnapshotRow | null>;
+    getEquitySnapshotsSince: (sinceDate: string) => Promise<EquitySnapshotRow[]>;
   };
 }
 
@@ -55,6 +62,18 @@ export interface StatusDigest {
     equity_usd: number;
     position: { symbol: string; qty: number };
   };
+  // #383 T4: trailing portfolio returns computed from equity_snapshots.
+  // Top-level, always present in both default and extended (`?days=N`) mode
+  // — unlike `trades`/`regime_history` below, presence does not depend on
+  // `windowDays`. Sourced only from equity_snapshots; never cross-wired to
+  // the live `alpaca.getAccountValue()` read used for `alpaca.equity_usd` —
+  // the two numbers may legitimately differ intraday. No manual rounding
+  // (raw float, like `position_drawdown_pct`).
+  returns: {
+    since_inception_pct: number | null;
+    trailing_7d_pct: number | null;
+    trailing_30d_pct: number | null;
+  };
   // #358: only present when `runStatus` is called with a `windowDays`
   // (i.e. `?days=N` was supplied). Never set to `undefined` — the keys are
   // conditionally spread so they are entirely absent from the JSON in
@@ -78,6 +97,65 @@ export function computeRegimeMarginPct(spyClose: number, spySma200: number): num
   return ((spyClose - spySma200) / spySma200) * 100;
 }
 
+// #383 T4: `returns` helpers — pure, calendar-date arithmetic on
+// EquitySnapshotRow, anchored on the latest snapshot's date (not deps.now()),
+// so a stale digest (e.g. daily-check hasn't run in a couple of days) still
+// reports trailing windows relative to the data it actually has.
+
+// EQUITY_WINDOW_LOOKBACK_DAYS: how far back of the latest snapshot's date to
+// fetch candidate rows for the trailing_30d_pct search. 60 gives 30 days of
+// buffer beyond the widest trailing window (30d) to tolerate gaps (an
+// error:*/skipped:* day writes no snapshot), while staying within
+// getEquitySnapshotsSince's .limit(60) row cap: daily-check only writes a
+// snapshot on trading days, so 60 calendar days yields ~44 rows at most —
+// comfortably under the cap even before accounting for gap days.
+const EQUITY_WINDOW_LOOKBACK_DAYS = 60;
+
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function pctChange(from: number, to: number): number {
+  return (to - from) / from * 100;
+}
+
+// Closest snapshot with date <= thresholdDate, out of an ascending-by-date
+// array. Returns null if every row postdates the threshold (not old enough).
+function closestOnOrBefore(
+  ascendingRows: EquitySnapshotRow[],
+  thresholdDate: string,
+): EquitySnapshotRow | null {
+  let result: EquitySnapshotRow | null = null;
+  for (const row of ascendingRows) {
+    if (row.date <= thresholdDate) {
+      result = row;
+    } else {
+      break;
+    }
+  }
+  return result;
+}
+
+function computeReturns(
+  earliest: EquitySnapshotRow | null,
+  latest: EquitySnapshotRow | null,
+  window: EquitySnapshotRow[],
+): StatusDigest["returns"] {
+  if (!earliest || !latest) {
+    return { since_inception_pct: null, trailing_7d_pct: null, trailing_30d_pct: null };
+  }
+  const sorted = [...window].sort((a, b) => a.date.localeCompare(b.date));
+  const sevenBase = closestOnOrBefore(sorted, shiftDate(latest.date, 7));
+  const thirtyBase = closestOnOrBefore(sorted, shiftDate(latest.date, 30));
+  return {
+    since_inception_pct: pctChange(earliest.equity_usd, latest.equity_usd),
+    trailing_7d_pct: sevenBase ? pctChange(sevenBase.equity_usd, latest.equity_usd) : null,
+    trailing_30d_pct: thirtyBase ? pctChange(thirtyBase.equity_usd, latest.equity_usd) : null,
+  };
+}
+
 // windowDays: presence (not value) toggles extended mode (#358 D3). Absent ->
 // the legacy 7-day-window, 7-key response (byte-identical to the current
 // deployment); present -> same base shape plus `trades`/`regime_history`.
@@ -98,6 +176,8 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     positionQty,
     trades,
     regimeHistory,
+    earliestSnapshot,
+    latestSnapshot,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -110,6 +190,8 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     // date part of `since` (already UTC via toISOString) is the boundary for
     // the once-a-day regime_state table.
     extended ? db.getRegimeStatesSince(since.slice(0, 10)) : Promise.resolve(undefined),
+    db.getEarliestEquitySnapshot(),
+    db.getLatestEquitySnapshot(),
   ]);
 
   const outcome_counts: Record<string, number> = {};
@@ -118,6 +200,14 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     outcome_counts[key] = (outcome_counts[key] ?? 0) + 1;
   }
   const errors = auditRows.filter((r) => r.outcome?.startsWith("error:"));
+
+  // #383 T4: the window query needs latestSnapshot's date, so it can't join
+  // the Promise.all above; always computed (both modes), independent of
+  // windowDays.
+  const equityWindow = latestSnapshot
+    ? await db.getEquitySnapshotsSince(shiftDate(latestSnapshot.date, EQUITY_WINDOW_LOOKBACK_DAYS))
+    : [];
+  const returns = computeReturns(earliestSnapshot, latestSnapshot, equityWindow);
 
   return {
     generated_at: now.toISOString(),
@@ -131,6 +221,7 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
       equity_usd: equity,
       position: { symbol: config.botTicker, qty: positionQty },
     },
+    returns,
     ...(extended
       ? { trades: trades as TradeRow[], regime_history: regimeHistory as RegimeStateRow[] }
       : {}),

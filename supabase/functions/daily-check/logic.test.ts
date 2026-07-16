@@ -26,11 +26,16 @@ function makeDeps(
     getDailyCloses: () => Promise.resolve(bars([390, 400, 410])),
     getLatestTradePrice: () => Promise.resolve(70),
   };
+  let accountValueCalls = 0;
   const defaultAlpaca: DailyCheckDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
     getCalendar: () => Promise.resolve(["2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"]),
     getPosition: () => Promise.resolve(0),
-    getAccountValue: () => Promise.resolve(7000),
+    getAccountValue: () => {
+      accountValueCalls++;
+      calls.accountValueCalls = accountValueCalls;
+      return Promise.resolve(7000);
+    },
     placeMarketOrder: (a) => {
       calls.placeMarketOrder = a;
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: a.qty, fillTime: "t" });
@@ -58,6 +63,10 @@ function makeDeps(
     insertAuditLog: () => Promise.resolve(42),
     updateAuditLog: (p) => {
       calls.audit = p;
+      return Promise.resolve();
+    },
+    upsertEquitySnapshot: (p) => {
+      calls.equitySnapshot = p;
       return Promise.resolve();
     },
   };
@@ -500,4 +509,172 @@ Deno.test("concurrency: skipped:* run (market_closed) before claim gate — clai
   });
   assertEquals(await runDailyCheck(deps), "skipped:market_closed");
   assertEquals(calls.claim, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// #383 T3: daily equity snapshot (D1 hoist-and-reuse, D2 write point after
+// upsertRegimeState).
+// ---------------------------------------------------------------------------
+
+Deno.test("no-flip day: writes equity snapshot, getAccountValue called exactly once", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+  assertEquals(calls.equitySnapshot, { date: "2026-06-05", equityUsd: 7000 });
+  assertEquals(calls.accountValueCalls, 1);
+});
+
+Deno.test("BUY flip day: writes equity snapshot, reuses the same accountValue (getAccountValue called exactly once)", async () => {
+  const { deps, calls } = makeDeps();
+  assertEquals(await runDailyCheck(deps), "success");
+  assertEquals(calls.equitySnapshot, { date: "2026-06-05", equityUsd: 7000 });
+  assertEquals(calls.accountValueCalls, 1);
+});
+
+Deno.test("SELL flip day: writes equity snapshot, reuses the same accountValue (getAccountValue called exactly once)", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([410, 400, 390])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "success");
+  assertEquals(calls.equitySnapshot, { date: "2026-06-05", equityUsd: 7000 });
+  assertEquals(calls.accountValueCalls, 1);
+});
+
+function stubWarn(): { calls: unknown[][]; restore: () => void } {
+  const original = console.warn;
+  const calls: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  return { calls, restore: () => (console.warn = original) };
+}
+
+Deno.test("no-flip day: upsertEquitySnapshot throws -> outcome stays success, warning logged (#383 D4)", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+      upsertEquitySnapshot: () => Promise.reject(new Error("db unavailable")),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  const warn = stubWarn();
+  try {
+    const outcome = await runDailyCheck(deps);
+    assertEquals(outcome, "success");
+    assertEquals(calls.audit, {
+      id: 42,
+      finishedAt: "2026-06-05T13:37:00.000Z",
+      outcome: "success",
+      notes: "target=LONG current=LONG",
+    });
+    assertEquals(warn.calls.length > 0, true);
+  } finally {
+    warn.restore();
+  }
+});
+
+Deno.test("BUY flip day: upsertEquitySnapshot throws -> outcome stays success, warning logged (#383 D4)", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      upsertEquitySnapshot: () => Promise.reject(new Error("db unavailable")),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  const warn = stubWarn();
+  try {
+    const outcome = await runDailyCheck(deps);
+    assertEquals(outcome, "success");
+    assertEquals(calls.placeMarketOrder, { symbol: "UPRO", side: "BUY", qty: 99 });
+    assertEquals(warn.calls.length > 0, true);
+  } finally {
+    warn.restore();
+  }
+});
+
+Deno.test("skipped:trading_paused -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    db: { getConfig: () => Promise.resolve("true") } as unknown as DailyCheckDeps["db"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:trading_paused");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("skipped:market_closed -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getClock: () => Promise.resolve({ isOpen: false }),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:market_closed");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("skipped:stale_data -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve([]),
+    } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:stale_data");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("skipped:insufficient_history -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([400, 410])),
+    } as unknown as DailyCheckDeps["marketdata"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:insufficient_history");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("skipped:duplicate_run -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    db: {
+      claimTradeDate: () => Promise.resolve(false),
+    } as unknown as DailyCheckDeps["db"],
+  });
+  assertEquals(await runDailyCheck(deps), "skipped:duplicate_run");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("error:insufficient_funds -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: { getAccountValue: () => Promise.resolve(10) } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "error:insufficient_funds");
+  assertEquals(calls.equitySnapshot, undefined);
+});
+
+Deno.test("error:liquidate_failed -> no equity snapshot", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([410, 400, 390])),
+      getLatestTradePrice: () => Promise.resolve(70),
+    } as unknown as DailyCheckDeps["marketdata"],
+    db: {
+      getLatestRegimeState: () =>
+        Promise.resolve({ current_state: "LONG", kill_switch_active: false } as never),
+    } as unknown as DailyCheckDeps["db"],
+    alpaca: {
+      getPosition: () => Promise.resolve(99),
+      liquidate: () => Promise.resolve(null),
+    } as unknown as DailyCheckDeps["alpaca"],
+  });
+  assertEquals(await runDailyCheck(deps), "error:liquidate_failed");
+  assertEquals(calls.equitySnapshot, undefined);
 });

@@ -259,6 +259,83 @@ export async function setConfig(sb: SupabaseClient, key: string, value: string):
   if (error) throw new Error(`setConfig: ${error.message}`);
 }
 
+// ---------------------------------------------------------------------------
+// #383 T2: equity_snapshots — one row per trading day, written by daily-check
+// from the existing alpaca.getAccountValue() read-only helper (D1), read by
+// status to compute trailing returns. Same coerce/upsert shape as
+// coerceRegimeRow/upsertRegimeState.
+// ---------------------------------------------------------------------------
+
+export interface EquitySnapshotRow {
+  date: string;
+  equity_usd: number;
+  created_at?: string;
+}
+
+// PostgREST returns `numeric` columns as JSON strings to preserve precision
+// (same reason as coerceRegimeRow/coerceTradeRow above).
+export function coerceEquitySnapshotRow(raw: Record<string, unknown>): EquitySnapshotRow {
+  return {
+    date: raw.date as string,
+    equity_usd: requireNumber(raw.equity_usd, "equity_usd"),
+    created_at: raw.created_at as string | undefined,
+  };
+}
+
+export async function upsertEquitySnapshot(sb: SupabaseClient, p: {
+  date: string;
+  equityUsd: number;
+}): Promise<void> {
+  const { error } = await sb.from("equity_snapshots").upsert({
+    date: p.date,
+    equity_usd: p.equityUsd,
+  }, { onConflict: "date" });
+  if (error) throw new Error(`upsertEquitySnapshot: ${error.message}`);
+}
+
+export async function getEarliestEquitySnapshot(
+  sb: SupabaseClient,
+): Promise<EquitySnapshotRow | null> {
+  const { data, error } = await sb
+    .from("equity_snapshots")
+    .select("*")
+    .order("date", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getEarliestEquitySnapshot: ${error.message}`);
+  return data ? coerceEquitySnapshotRow(data as Record<string, unknown>) : null;
+}
+
+export async function getLatestEquitySnapshot(
+  sb: SupabaseClient,
+): Promise<EquitySnapshotRow | null> {
+  const { data, error } = await sb
+    .from("equity_snapshots")
+    .select("*")
+    .order("date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLatestEquitySnapshot: ${error.message}`);
+  return data ? coerceEquitySnapshotRow(data as Record<string, unknown>) : null;
+}
+
+// Windowed read for status's trailing-return computation. .limit(60) is a
+// defensive cap: one row per trading day means even the widest allowed
+// `?days=60` window cannot plausibly exceed it.
+export async function getEquitySnapshotsSince(
+  sb: SupabaseClient,
+  sinceDate: string,
+): Promise<EquitySnapshotRow[]> {
+  const { data, error } = await sb
+    .from("equity_snapshots")
+    .select("*")
+    .gte("date", sinceDate)
+    .order("date", { ascending: true })
+    .limit(60);
+  if (error) throw new Error(`getEquitySnapshotsSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceEquitySnapshotRow);
+}
+
 // Per-trading-day concurrency guard (#293). Attempts to INSERT a claim row
 // for (scriptName, tradeDate). Returns:
 //   true  — claim succeeded; this invocation may proceed to place an order

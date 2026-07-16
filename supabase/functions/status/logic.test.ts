@@ -4,7 +4,7 @@
 // insert/update/upsert method at all (compile-time enforcement).
 import { assertEquals, assertRejects } from "@std/assert";
 import { computeRegimeMarginPct, runStatus, type StatusDeps } from "./logic.ts";
-import type { AuditLogRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
+import type { AuditLogRow, EquitySnapshotRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
 
 const REGIME_ROW: RegimeStateRow = {
   date: "2026-07-08",
@@ -55,6 +55,12 @@ function makeDeps(
     getRegimeStatesSince: (_sinceDate: string) => {
       calls.regimeStatesSinceCalled = true;
       return Promise.resolve<RegimeStateRow[]>([]);
+    },
+    getEarliestEquitySnapshot: () => Promise.resolve<EquitySnapshotRow | null>(null),
+    getLatestEquitySnapshot: () => Promise.resolve<EquitySnapshotRow | null>(null),
+    getEquitySnapshotsSince: (sinceDate: string) => {
+      calls.equitySnapshotsSinceArg = sinceDate;
+      return Promise.resolve<EquitySnapshotRow[]>([]);
     },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
@@ -227,7 +233,7 @@ Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () =>
 // must stay shape-identical to the current deployment (hard constraint).
 // ---------------------------------------------------------------------------
 
-Deno.test("default mode (no windowDays): shape-lock - exact current 7 keys, no trades/regime_history, windowed helpers not called", async () => {
+Deno.test("default mode (no windowDays): shape-lock - exact current 8 keys (#383 adds `returns`), no trades/regime_history, windowed helpers not called", async () => {
   const { deps, calls } = makeDeps();
   const digest = await runStatus(deps);
   // #384: regime_margin_pct is a new required top-level key (intended,
@@ -245,6 +251,7 @@ Deno.test("default mode (no windowDays): shape-lock - exact current 7 keys, no t
       "paused",
       "regime",
       "regime_margin_pct",
+      "returns",
     ],
   );
   assertEquals("trades" in digest, false);
@@ -344,4 +351,156 @@ Deno.test("outcome_counts sums correctly across a 1500-row page-boundary-spannin
     0,
   );
   assertEquals(total, 1500);
+});
+
+// ---------------------------------------------------------------------------
+// #383 T4: `returns` — trailing portfolio returns computed from
+// equity_snapshots, independent of the live alpaca.getAccountValue() read
+// used for `alpaca.equity_usd`.
+// ---------------------------------------------------------------------------
+
+function snap(date: string, equityUsd: number): EquitySnapshotRow {
+  return { date, equity_usd: equityUsd };
+}
+
+Deno.test("returns: 0 snapshots -> all null", async () => {
+  const { deps } = makeDeps();
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns, {
+    since_inception_pct: null,
+    trailing_7d_pct: null,
+    trailing_30d_pct: null,
+  });
+});
+
+Deno.test("returns: exactly 1 snapshot -> since_inception_pct is 0 (not null), trailing windows null", async () => {
+  const only = snap("2026-07-09", 100_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(only),
+      getLatestEquitySnapshot: () => Promise.resolve(only),
+      getEquitySnapshotsSince: () => Promise.resolve([only]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.since_inception_pct, 0);
+  assertEquals(digest.returns.trailing_7d_pct, null);
+  assertEquals(digest.returns.trailing_30d_pct, null);
+});
+
+Deno.test("returns: since_inception_pct = (latest - earliest) / earliest * 100", async () => {
+  const earliest = snap("2026-01-01", 100_000);
+  const latest = snap("2026-07-09", 110_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(earliest),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([earliest, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.since_inception_pct, 10);
+});
+
+Deno.test("returns: trailing_7d_pct uses the snapshot exactly on latest.date - 7 calendar days", async () => {
+  const latest = snap("2026-07-09", 110_000);
+  const sevenDaysBack = snap("2026-07-02", 100_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(sevenDaysBack),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([sevenDaysBack, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.trailing_7d_pct, 10);
+});
+
+Deno.test("returns: gap handling — picks the closest snapshot on-or-before the threshold, not the nearest overall", async () => {
+  // latest = 2026-07-09; trailing_7d threshold = 2026-07-02. No snapshot lands
+  // exactly there; candidates are 2026-06-30 (before threshold) and 2026-07-05
+  // (after threshold, i.e. only 4 days back). Must pick 2026-06-30, not
+  // 2026-07-05, even though 07-05 is calendar-closer to latest.
+  const tooRecent = snap("2026-07-05", 105_000);
+  const correct = snap("2026-06-30", 100_000);
+  const latest = snap("2026-07-09", 120_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(correct),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([correct, tooRecent, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.trailing_7d_pct, 20); // (120000-100000)/100000*100
+});
+
+Deno.test("returns: window not old enough for trailing_30d -> null, but trailing_7d present", async () => {
+  const latest = snap("2026-07-09", 110_000);
+  const fiveDaysBack = snap("2026-07-04", 100_000); // covers 7d window (>=7 back? no: 5 days back < 7)
+  // Use a snapshot exactly 7 days back so trailing_7d resolves, but nothing
+  // 30 days back so trailing_30d stays null.
+  const sevenDaysBack = snap("2026-07-02", 105_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(sevenDaysBack),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([sevenDaysBack, fiveDaysBack, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.trailing_7d_pct, (110_000 - 105_000) / 105_000 * 100);
+  assertEquals(digest.returns.trailing_30d_pct, null);
+});
+
+Deno.test("returns: anchored on latest.date, not deps.now()", async () => {
+  // deps.now() is 2026-07-09T15:00:00Z (see makeDeps), but the latest snapshot
+  // is dated 2026-07-05 (e.g. daily-check hasn't run in a couple of days).
+  // trailing_7d threshold must be 2026-07-05 - 7 = 2026-06-28, not
+  // now() - 7 = 2026-07-02.
+  const latest = snap("2026-07-05", 110_000);
+  const atThreshold = snap("2026-06-28", 100_000);
+  const wouldMatchIfAnchoredOnNow = snap("2026-07-02", 999_999);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(atThreshold),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () =>
+        Promise.resolve([atThreshold, wouldMatchIfAnchoredOnNow, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.returns.trailing_7d_pct, 10);
+});
+
+Deno.test("returns: present in extended (?days=N) mode too", async () => {
+  const earliest = snap("2026-01-01", 100_000);
+  const latest = snap("2026-07-09", 110_000);
+  const { deps } = makeDeps({
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(earliest),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([earliest, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, 30);
+  assertEquals(digest.returns.since_inception_pct, 10);
+});
+
+Deno.test("returns: computed strictly from equity_snapshots, independent of the live getAccountValue() mock", async () => {
+  const earliest = snap("2026-01-01", 100_000);
+  const latest = snap("2026-07-09", 110_000);
+  const { deps } = makeDeps({
+    alpaca: {
+      getAccountValue: () => Promise.resolve(999_999), // deliberately different
+    } as unknown as StatusDeps["alpaca"],
+    db: {
+      getEarliestEquitySnapshot: () => Promise.resolve(earliest),
+      getLatestEquitySnapshot: () => Promise.resolve(latest),
+      getEquitySnapshotsSince: () => Promise.resolve([earliest, latest]),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.alpaca.equity_usd, 999_999);
+  assertEquals(digest.returns.since_inception_pct, 10);
 });
