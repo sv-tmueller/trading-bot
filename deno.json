@@ -7,6 +7,7 @@
     "test": "CLAUDE_AGENT_NO_BROKER=1 deno test --allow-env --allow-net --allow-read=supabase/functions,scripts supabase/functions/ scripts/",
     "test:db": "RUN_DB_TESTS=1 deno test --allow-env --allow-net supabase/functions/_shared/db.test.ts",
     "fmt": "deno fmt supabase/functions/ scripts/",
+    "fmt:check": "deno fmt --check supabase/functions/ scripts/",
     "lint": "deno lint supabase/functions/ scripts/"
   },
   "fmt": { "lineWidth": 100 }

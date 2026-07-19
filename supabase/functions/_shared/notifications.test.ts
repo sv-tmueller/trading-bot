@@ -24,10 +24,10 @@ Deno.test("notify posts JSON to the webhook", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let capturedUrl = "";
   let capturedBody: unknown = null;
-  const restore = stubFetch(async (input, init) => {
+  const restore = stubFetch((input, init) => {
     capturedUrl = typeof input === "string" ? input : input.toString();
     capturedBody = JSON.parse(String(init?.body));
-    return new Response("ok", { status: 200 });
+    return Promise.resolve(new Response("ok", { status: 200 }));
   });
   try {
     await notify({ event_type: "test", foo: 1, message: "hi" });
@@ -42,9 +42,9 @@ Deno.test("notify posts JSON to the webhook", async () => {
 Deno.test("notify is a no-op when URL unset", async () => {
   Deno.env.delete("NOTIFY_WEBHOOK_URL");
   let called = false;
-  const restore = stubFetch(async () => {
+  const restore = stubFetch(() => {
     called = true;
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   const { restore: restoreWarn } = stubWarn(); // side-effect warn (#366); clean test output only
   try {
@@ -72,9 +72,9 @@ Deno.test("notify swallows fetch errors (never throws)", async () => {
 Deno.test("notifyRegimeFlip builds the structured payload", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     await notifyRegimeFlip({
@@ -111,9 +111,9 @@ Deno.test("notifyRegimeFlip builds the structured payload", async () => {
 Deno.test("notify: no message -> body has no content field, and is otherwise unchanged", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     await notify({ event_type: "test", foo: 1 });
@@ -128,9 +128,9 @@ Deno.test("notify: no message -> body has no content field, and is otherwise unc
 Deno.test("notify: content truncation boundary at exactly 2000 chars (untruncated)", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     const message = "a".repeat(2000);
@@ -146,9 +146,9 @@ Deno.test("notify: content truncation boundary at exactly 2000 chars (untruncate
 Deno.test("notify: content truncation boundary at 2001 chars (truncated to first 2000, message untouched)", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     const message = "b".repeat(2001);
@@ -167,9 +167,9 @@ Deno.test("notify: content truncation boundary at 2001 chars (truncated to first
 Deno.test("notify: content truncation is codepoint-safe across an astral-character boundary", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     // 1999 ascii chars + one astral codepoint (🛑, a surrogate pair in UTF-16)
@@ -195,9 +195,9 @@ Deno.test("notify: content truncation is codepoint-safe across an astral-charact
 Deno.test("notify: empty-string message produces no content field", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   let body: Record<string, unknown> = {};
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     body = JSON.parse(String(init?.body));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     await notify({ event_type: "test", message: "" });
@@ -216,9 +216,9 @@ Deno.test("notify: empty-string message produces no content field", async () => 
 Deno.test("notify: unset secret warns once with event_type and makes zero fetch calls", async () => {
   Deno.env.delete("NOTIFY_WEBHOOK_URL");
   let fetchCalls = 0;
-  const restoreFetch = stubFetch(async () => {
+  const restoreFetch = stubFetch(() => {
     fetchCalls++;
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   const { calls, restore: restoreWarn } = stubWarn();
   try {
@@ -256,7 +256,9 @@ Deno.test("notify: fetch rejection warns once and redacts the webhook URL", asyn
 
 Deno.test("notify: non-2xx response warns with status and truncated body snippet", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
-  const restoreFetch = stubFetch(async () => new Response("x".repeat(300), { status: 400 }));
+  const restoreFetch = stubFetch(() =>
+    Promise.resolve(new Response("x".repeat(300), { status: 400 }))
+  );
   const { calls, restore: restoreWarn } = stubWarn();
   try {
     await notify({ event_type: "test_event" }); // must not throw
@@ -282,7 +284,7 @@ Deno.test("notify: non-2xx body containing the webhook URL straddling the snippe
   // URL -- including part of the secret token -- inside the logged snippet.
   const prefixLen = 200 - Math.floor(stubUrl.length / 2);
   const body = "z".repeat(prefixLen) + stubUrl;
-  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const restoreFetch = stubFetch(() => Promise.resolve(new Response(body, { status: 400 })));
   const { calls, restore: restoreWarn } = stubWarn();
   try {
     await notify({ event_type: "probe_token" }); // must not throw
@@ -304,7 +306,7 @@ Deno.test("notify: non-2xx body snippet truncation is codepoint-safe across an a
   // 199 ascii chars + one astral codepoint (🛑, a surrogate pair in UTF-16)
   // straddling the 200-codepoint snippet cut, then more filler.
   const body = "e".repeat(199) + "🛑" + "f".repeat(50);
-  const restoreFetch = stubFetch(async () => new Response(body, { status: 400 }));
+  const restoreFetch = stubFetch(() => Promise.resolve(new Response(body, { status: 400 })));
   const { calls, restore: restoreWarn } = stubWarn();
   try {
     await notify({ event_type: "test_event" });
@@ -324,7 +326,7 @@ Deno.test("notify: non-2xx body snippet truncation is codepoint-safe across an a
 
 Deno.test("notify: 2xx response emits no warn", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
-  const restoreFetch = stubFetch(async () => new Response("ok", { status: 200 }));
+  const restoreFetch = stubFetch(() => Promise.resolve(new Response("ok", { status: 200 })));
   const { calls, restore: restoreWarn } = stubWarn();
   try {
     await notify({ event_type: "test_event" });
@@ -339,9 +341,9 @@ Deno.test("notify: 2xx response emits no warn", async () => {
 Deno.test("all seven notify helpers carry content === message", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   const bodies: Record<string, unknown>[] = [];
-  const restore = stubFetch(async (_i, init) => {
+  const restore = stubFetch((_i, init) => {
     bodies.push(JSON.parse(String(init?.body)));
-    return new Response("ok");
+    return Promise.resolve(new Response("ok"));
   });
   try {
     await notifyRegimeFlip({
