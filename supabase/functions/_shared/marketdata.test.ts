@@ -126,9 +126,7 @@ Deno.test("getLatestQuote throws DataError when quote is missing", async () => {
 
 Deno.test("getLatestQuote throws DataError when bid is non-numeric", async () => {
   setKeys();
-  const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ quote: { bp: "x", ap: 10 } }))
-  );
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: { bp: "x", ap: 10 } })));
   try {
     await assertRejects(() => getLatestQuote("UPRO"), DataError, "quote bid");
   } finally {
@@ -139,9 +137,7 @@ Deno.test("getLatestQuote throws DataError when bid is non-numeric", async () =>
 
 Deno.test("getLatestQuote throws DataError when ask is non-numeric", async () => {
   setKeys();
-  const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ quote: { bp: 10, ap: "x" } }))
-  );
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: { bp: 10, ap: "x" } })));
   try {
     await assertRejects(() => getLatestQuote("UPRO"), DataError, "quote ask");
   } finally {
@@ -156,9 +152,7 @@ Deno.test("getLatestQuote throws DataError when ask is non-numeric", async () =>
 
 Deno.test("getLatestQuote throws DataError on crossed market (bid > ask)", async () => {
   setKeys();
-  const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ quote: { bp: 11, ap: 10 } }))
-  );
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: { bp: 11, ap: 10 } })));
   try {
     await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
   } finally {
@@ -169,9 +163,7 @@ Deno.test("getLatestQuote throws DataError on crossed market (bid > ask)", async
 
 Deno.test("getLatestQuote throws DataError on zero bid", async () => {
   setKeys();
-  const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ quote: { bp: 0, ap: 10 } }))
-  );
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: { bp: 0, ap: 10 } })));
   try {
     await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
   } finally {
@@ -182,9 +174,7 @@ Deno.test("getLatestQuote throws DataError on zero bid", async () => {
 
 Deno.test("getLatestQuote throws DataError on negative ask", async () => {
   setKeys();
-  const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ quote: { bp: 10, ap: -1 } }))
-  );
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ quote: { bp: 10, ap: -1 } })));
   try {
     await assertRejects(() => getLatestQuote("UPRO"), DataError, "implausible quote");
   } finally {

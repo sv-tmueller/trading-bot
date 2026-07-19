@@ -214,7 +214,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       const bidDrawdown = quote.bid / refHigh - 1;
       if (bidDrawdown > -config.killSwitchDrawdownPct) {
         const msg = `breach unconfirmed: trade dd=${drawdown.toFixed(4)} (px=${lastPrice}) ` +
-          `but quote-bid dd=${bidDrawdown.toFixed(4)} (bid=${quote.bid}) within threshold — NOT liquidating`;
+          `but quote-bid dd=${
+            bidDrawdown.toFixed(4)
+          } (bid=${quote.bid}) within threshold — NOT liquidating`;
         await notifications.notifyError(`kill-switch: ${msg}`);
         await finish("skipped:breach_unconfirmed", msg);
         return "skipped:breach_unconfirmed";
@@ -225,7 +227,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     } catch (e) {
       await notifications.notifyError(
         `kill-switch: quote fetch failed for ${config.botTicker} ` +
-          `(${String((e as Error)?.message ?? e).slice(0, 200)}) — liquidating on trade price alone (fail-toward-protection)`,
+          `(${
+            String((e as Error)?.message ?? e).slice(0, 200)
+          }) — liquidating on trade price alone (fail-toward-protection)`,
       );
       // confirmation stays "unverified_quote_outage"; fall through to claim + liquidate
     }
@@ -240,7 +244,10 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     // trading day" but is a real behavior change (stated in PR description).
     const claimed = await db.claimTradeDate("kill-switch", ymd(deps.now()));
     if (!claimed) {
-      await finish("skipped:duplicate_run", "trade_claims conflict: another invocation already liquidated today");
+      await finish(
+        "skipped:duplicate_run",
+        "trade_claims conflict: another invocation already liquidated today",
+      );
       return "skipped:duplicate_run";
     }
 

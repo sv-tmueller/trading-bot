@@ -44,8 +44,9 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
 
 export async function getLatestTradePrice(symbol: string): Promise<number> {
   const cfg = getAlpacaConfig();
-  const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/trades/latest?feed=${cfg.dataFeed}`;
+  const url = `${cfg.dataBaseUrl}/v2/stocks/${
+    encodeURIComponent(symbol)
+  }/trades/latest?feed=${cfg.dataFeed}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET latest trade ${symbol} -> ${res.status}: ${await res.text()}`);
@@ -61,8 +62,9 @@ export async function getLatestQuote(
   symbol: string,
 ): Promise<{ bid: number; ask: number; mid: number }> {
   const cfg = getAlpacaConfig();
-  const url =
-    `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/quotes/latest?feed=${cfg.dataFeed}`;
+  const url = `${cfg.dataBaseUrl}/v2/stocks/${
+    encodeURIComponent(symbol)
+  }/quotes/latest?feed=${cfg.dataFeed}`;
   const res = await fetch(url, { headers: headers() });
   if (!res.ok) {
     throw new Error(`GET latest quote ${symbol} -> ${res.status}: ${await res.text()}`);

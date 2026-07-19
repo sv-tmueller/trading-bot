@@ -1,5 +1,8 @@
 // Supabase persistence. Mirrors tools/database.py. Each function takes the
 // Supabase client so callers (Edge Functions) inject the service-role client.
+// `supabase functions deploy`'s bundler does not resolve the repo-root deno.json import map, so
+// this inline jsr: specifier is load-bearing for deployment.
+// deno-lint-ignore no-import-prefix
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@^2.45.0";
 import { requireNumber } from "./num.ts";
 
