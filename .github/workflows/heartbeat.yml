@@ -10,28 +10,59 @@
 #
 # Two independent targets in one job:
 #   - dev  (STATUS_URL / STATUS_TOKEN)            - already deployed, live now
-#   - prod (STATUS_URL_PROD / STATUS_TOKEN_PROD)  - not yet deployed; inert
-#     until the go-live runbook sets these two secrets (docs/runbooks/
-#     mvp2-deploy-and-decommission.md)
+#   - prod - three-way coverage, resolved in one place (the "Resolve prod
+#     coverage" step below), in precedence order:
+#       1. status  - STATUS_URL_PROD / STATUS_TOKEN_PROD are set (go-live,
+#          #230) - unchanged status ping, takes precedence over keep-alive.
+#       2. keepalive - interim pre-go-live coverage: KEEPALIVE_URL_PROD /
+#          KEEPALIVE_ANON_KEY_PROD are set - curls an anon REST read of the
+#          RLS-deny-all `public.keepalive` table on prod. Exists because
+#          Supabase's free-tier pause criterion counts requests that reach
+#          the *database* - gateway-only endpoints (e.g. /auth/v1/health)
+#          don't reliably count, and pg_cron already doesn't count (#361).
+#          See docs/runbooks/status-check.md for the one-time operator SQL
+#          that creates the table (deliberately not a migration - pushing
+#          migrations to prod pre-go-live would also install the pg_cron
+#          trading schedules).
+#       3. none - neither pair is fully set: inert green skip, unless
+#          HEARTBEAT_REQUIRE_PROD=true, in which case this fails the run red
+#          instead (loud missing-coverage signal for a scheduled run).
+#     At go-live, setting the status secrets supersedes the keep-alive pair,
+#     which can then be removed (docs/runbooks/mvp2-deploy-and-decommission.md).
 # The prod steps carry `if: !cancelled()` so a failing/red dev ping cannot
 # skip them (GitHub Actions' default step gate is `success()`, which would
 # otherwise suppress every later step once dev fails) - a workflow_dispatch
 # cancellation is the only thing that still skips them.
 #
 # Failure contract per target: secrets unset -> inert green skip (`::notice::`
-# + no request), matching backup-db.yml's default-OFF idiom. Secrets set ->
-# `curl --fail-with-body` against the endpoint; a non-200 response or a
+# + no request), matching backup-db.yml's default-OFF idiom, unless
+# HEARTBEAT_REQUIRE_PROD=true (see mode 3 above). Secrets set ->
+# `curl --fail-with-body` against the endpoint; a non-2xx response or a
 # timeout fails the run red, same idiom as soak-digest.yml's "Fetch digest"
-# step. The JSON digest body prints to the step log on success for forensics
-# (same exposure class as the soak-digest already posted to issue #229 -
-# paper equity/position, no secrets); a failing response body is included in
-# curl's --fail-with-body error output. Never echo the token.
+# step. The JSON digest/response body prints to the step log on success for
+# forensics (same exposure class as the soak-digest already posted to issue
+# #229 - paper equity/position, no secrets); a failing response body is
+# included in curl's --fail-with-body error output. Never echo the token or
+# key. This repo is PUBLIC - forks get neither the secrets nor the variable
+# below, so a fork's prod leg is always an inert skip.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
-#   STATUS_URL          - dev status function URL (same as .env.status)
-#   STATUS_TOKEN         - dev status function token (same as .env.status)
-#   STATUS_URL_PROD      - prod status function URL (set at go-live, #230)
-#   STATUS_TOKEN_PROD    - prod status function token (set at go-live, #230)
+#   STATUS_URL              - dev status function URL (same as .env.status)
+#   STATUS_TOKEN             - dev status function token (same as .env.status)
+#   STATUS_URL_PROD          - prod status function URL (set at go-live, #230)
+#   STATUS_TOKEN_PROD        - prod status function token (set at go-live, #230)
+#   KEEPALIVE_URL_PROD       - prod `keepalive` table REST endpoint (interim,
+#                              pre-go-live; see docs/runbooks/status-check.md)
+#   KEEPALIVE_ANON_KEY_PROD  - prod anon/publishable-class key for the above
+#                              (never the service-role key)
+#
+# Optional repo variable (Settings -> Secrets and variables -> Actions ->
+# Variables):
+#   HEARTBEAT_REQUIRE_PROD   - default unset (today's inert-skip behavior).
+#                              Set to the exact string `true` to make a prod
+#                              leg with no coverage configured fail the run
+#                              red instead of skipping - so a scheduled
+#                              failure notifies the operator by email.
 name: heartbeat
 
 on:
@@ -74,22 +105,30 @@ jobs:
           STATUS_URL: ${{ secrets.STATUS_URL }}
           STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
 
-      - name: Check prod secrets configured
+      - name: Resolve prod coverage
         id: check_prod
         if: ${{ !cancelled() }}
         run: |
-          if [ -z "$STATUS_URL_PROD" ] || [ -z "$STATUS_TOKEN_PROD" ]; then
-            echo "::notice::heartbeat (prod) is inert — STATUS_URL_PROD and/or STATUS_TOKEN_PROD repo secrets are not set. Prod is not yet deployed (#230); set these two secrets at go-live to activate. Skipping."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
+          if [ -n "$STATUS_URL_PROD" ] && [ -n "$STATUS_TOKEN_PROD" ]; then
+            echo "mode=status" >> "$GITHUB_OUTPUT"
+          elif [ -n "$KEEPALIVE_URL_PROD" ] && [ -n "$KEEPALIVE_ANON_KEY_PROD" ]; then
+            echo "mode=keepalive" >> "$GITHUB_OUTPUT"
+          elif [ "$HEARTBEAT_REQUIRE_PROD" = "true" ]; then
+            echo "::error::heartbeat (prod) has no coverage — neither STATUS_URL_PROD/STATUS_TOKEN_PROD nor KEEPALIVE_URL_PROD/KEEPALIVE_ANON_KEY_PROD repo secrets are fully set, and HEARTBEAT_REQUIRE_PROD is true. Set one of these secret pairs, or unset HEARTBEAT_REQUIRE_PROD to allow an inert skip. See docs/runbooks/status-check.md."
+            exit 1
           else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::heartbeat (prod) is inert — neither STATUS_URL_PROD/STATUS_TOKEN_PROD nor KEEPALIVE_URL_PROD/KEEPALIVE_ANON_KEY_PROD repo secrets are fully set. Prod is not yet deployed (#230); set the status pair at go-live, or the keep-alive pair before then. Skipping. See docs/runbooks/status-check.md."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
           fi
         env:
           STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
           STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
+          KEEPALIVE_URL_PROD: ${{ secrets.KEEPALIVE_URL_PROD }}
+          KEEPALIVE_ANON_KEY_PROD: ${{ secrets.KEEPALIVE_ANON_KEY_PROD }}
+          HEARTBEAT_REQUIRE_PROD: ${{ vars.HEARTBEAT_REQUIRE_PROD }}
 
-      - name: Ping prod
-        if: ${{ !cancelled() && steps.check_prod.outputs.configured == 'true' }}
+      - name: Ping prod (status)
+        if: ${{ !cancelled() && steps.check_prod.outputs.mode == 'status' }}
         run: |
           curl --fail-with-body -sS --max-time 60 \
             -H "x-status-token: $STATUS_TOKEN_PROD" \
@@ -97,3 +136,13 @@ jobs:
         env:
           STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
           STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
+
+      - name: Ping prod (keep-alive)
+        if: ${{ !cancelled() && steps.check_prod.outputs.mode == 'keepalive' }}
+        run: |
+          curl --fail-with-body -sS --max-time 60 \
+            -H "apikey: $KEEPALIVE_ANON_KEY_PROD" \
+            "$KEEPALIVE_URL_PROD"
+        env:
+          KEEPALIVE_URL_PROD: ${{ secrets.KEEPALIVE_URL_PROD }}
+          KEEPALIVE_ANON_KEY_PROD: ${{ secrets.KEEPALIVE_ANON_KEY_PROD }}

@@ -123,20 +123,67 @@ a schedule so the project sees real gateway traffic and stays active.
   - **dev** — gated on the same `STATUS_URL`/`STATUS_TOKEN` repo secrets as
     soak-digest (deliberate reuse, not new `_DEV`-suffixed secrets — see the
     sub-plan on #361). Already active as of this workflow merging.
-  - **prod** — gated on `STATUS_URL_PROD`/`STATUS_TOKEN_PROD`, which are unset
-    today (prod is not yet deployed). Prod stays subject to inactivity
-    warnings/manual restore until go-live (#230); setting these two secrets
-    at go-live activates the prod step with no code change (see
-    `docs/runbooks/mvp2-deploy-and-decommission.md`).
+  - **prod** — a single "Resolve prod coverage" step picks one of three
+    modes, in precedence order:
+    1. **status** — `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` are both set
+       (go-live, #230): the unchanged status ping runs. Takes precedence
+       over keep-alive whenever both pairs happen to be set.
+    2. **keepalive** — `KEEPALIVE_URL_PROD`/`KEEPALIVE_ANON_KEY_PROD` are both
+       set: the interim pre-go-live keep-alive ping runs instead (see
+       "Interim prod keep-alive" below).
+    3. **none** — neither pair is fully set: inert green skip, unless the
+       `HEARTBEAT_REQUIRE_PROD` repo variable is set to the exact string
+       `true`, in which case the run fails red instead (see below).
 - **Failure contract — inert skip vs red run:** unlike soak-digest, missing
-  secrets for a target make that target's steps an **inert green skip**
-  (`::notice::`, no request made) — matching `backup-db.yml`'s default-OFF
-  idiom, since this workflow is meant to be safe to merge into forks or
-  before secrets exist. Once a target's two secrets are both set, a non-200
-  response or a timeout from that target **fails the run red** (same
+  coverage for prod is an **inert green skip** (`::notice::`, no request
+  made) — matching `backup-db.yml`'s default-OFF idiom, since this workflow
+  is meant to be safe to merge into forks or before secrets exist — *unless*
+  the `HEARTBEAT_REQUIRE_PROD` repo variable is set to the exact string
+  `true`, in which case a prod leg with no coverage configured fails the run
+  red (`::error::` + exit 1) instead, so a scheduled failure notifies the
+  operator by email. Default is unset (today's inert-skip behavior); this is
+  a repo **variable**, not a secret. Once prod coverage resolves to `status`
+  or `keepalive`, a non-2xx response or a timeout from that target **fails
+  the run red** regardless of `HEARTBEAT_REQUIRE_PROD` (same
   `curl --fail-with-body --max-time 60` idiom as soak-digest). The dev and
-  prod steps are independent — a red prod run (post go-live) doesn't block
-  dev's ping, and vice versa.
+  prod steps are independent — a red prod run doesn't block dev's ping, and
+  vice versa.
+
+### Interim prod keep-alive (pre-go-live)
+
+Prod (`yomamlrozydhgleumnon`) gets no user-initiated traffic before go-live,
+so Supabase's free-tier inactivity policy pauses it every ~7 days even though
+`pg_cron` is already proven not to count toward that criterion (#361) and the
+`status` function isn't deployed there yet. The keep-alive is a stand-in: it
+curls an anon REST read of a dedicated `public.keepalive` table, because
+Supabase's pause criterion counts requests that reach the **database** —
+gateway-only endpoints such as `/auth/v1/health` return `200` but don't
+reliably count.
+
+One-time operator setup (SQL editor, prod project only):
+
+```sql
+create table if not exists public.keepalive (id bigint primary key);
+alter table public.keepalive enable row level security;
+```
+
+No policies are added, so RLS denies all access by default and an anon
+`SELECT` returns `200 []` — no data is ever exposed. This is deliberately
+**not** a repo migration: running `supabase db push` against prod before
+go-live would also install the pg_cron trading schedules from
+`0002_schedule.sql`, which is a non-goal until go-live (#230).
+
+Required repo secrets (Settings -> Secrets and variables -> Actions):
+- `KEEPALIVE_URL_PROD` — the `public.keepalive` table's REST endpoint (e.g.
+  `https://yomamlrozydhgleumnon.supabase.co/rest/v1/keepalive?select=id&limit=1`)
+- `KEEPALIVE_ANON_KEY_PROD` — the prod project's anon/publishable-class key
+  (never the service-role key), sent as the `apikey` header
+
+At go-live, setting `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` supersedes the
+keep-alive pair (status takes precedence per the mode order above); the
+`KEEPALIVE_URL_PROD`/`KEEPALIVE_ANON_KEY_PROD` secrets and the
+`public.keepalive` table can then be removed. See
+`docs/runbooks/mvp2-deploy-and-decommission.md`.
 - **GitHub's 60-day auto-disable caveat:** GitHub automatically disables a
   scheduled workflow after 60 days with no repository activity at all. This
   repo has weekly commits from `backup-db.yml` alone, so this is a low but
