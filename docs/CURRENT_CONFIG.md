@@ -57,8 +57,12 @@ to prod at go-live. See `web/.env.example`.
 - Deployment: dev (`qdaxxsuicyiscdvsdowc`) paper, soaking; prod not yet deployed.
 - `NOTIFY_WEBHOOK_URL` set on **dev and prod** since 2026-07-13 (direct Discord webhook, #362 —
   verified end-to-end with a panic-resume test). Notifications remain best-effort/fire-and-forget.
-- **Heartbeat (#361):** `.github/workflows/heartbeat.yml` pings the `status` Edge Function on
+- **Heartbeat (#361, #400):** `.github/workflows/heartbeat.yml` pings the `status` Edge Function on
   weekdays so Supabase sees real API traffic — `pg_cron` alone does not count toward the free-tier
   inactivity/pause criterion. Dev is covered now (reuses the existing `STATUS_URL`/`STATUS_TOKEN`
-  repo secrets); prod remains uncovered and subject to manual restore until `STATUS_URL_PROD`/
-  `STATUS_TOKEN_PROD` are set at go-live (#230). See `docs/runbooks/status-check.md`.
+  repo secrets). Prod has been covered since 2026-07-20 via an interim keep-alive (`KEEPALIVE_URL_PROD`/
+  `KEEPALIVE_ANON_KEY_PROD` — an anon REST read of the RLS-deny-all `public.keepalive` table); setting
+  `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` at go-live (#230) takes precedence over the keep-alive and lets
+  it be retired. The optional `HEARTBEAT_REQUIRE_PROD` repo variable (default unset) makes a prod leg
+  with neither pair configured fail the run red instead of an inert skip. See
+  `docs/runbooks/status-check.md`.
