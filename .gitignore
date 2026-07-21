@@ -35,3 +35,7 @@ supabase/.branches/
 # Downloaded FXCM EUR/USD archive cache (#371) — never committed; re-fetch via
 # backtest/run_fx_plumbing_check.py --fetch (see backtest/fx_data.py docstring).
 /data/
+
+# Exported live trading history (#403) — CSVs from scripts/export_live_history.sh,
+# consumed by backtest/run_live_divergence.py. Account data; never committed.
+/live_export/
