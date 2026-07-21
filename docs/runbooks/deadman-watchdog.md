@@ -113,11 +113,13 @@ without waiting for a real incident, temporarily point `STATUS_URL`/
 `STATUS_TOKEN` at a scratch/broken endpoint (or manually pipe a synthetic
 digest through the evaluator: `echo '{"last_runs":{"daily_check":null,
 "kill_switch":null}}' | deno run scripts/deadman_check.ts` — **during an
-armed weekday window** (see the table under "What it monitors"; roughly
-13:20–22:10 UTC) **this exits 2 with findings printed**, confirming the pure
-evaluation path independent of any network call; **outside the armed
-windows — nights, weekends — the same command exits 0 because nothing is
-armed**), then revert.
+armed weekday window** (see the table under "What it monitors"; kill-switch
+arms 13:20–22:10 UTC, and daily-check stays armed from 15:00 UTC to the end
+of the UTC day — so roughly 13:20–24:00 UTC weekdays overall) **this exits 2
+with findings printed**, confirming the pure evaluation path independent of
+any network call; **outside those windows — weekday early hours before 13:20
+UTC, and weekends — the same command exits 0 because nothing is armed**),
+then revert.
 
 ## Caveats
 
