@@ -35,6 +35,9 @@ export interface StatusDeps {
     getEarliestEquitySnapshot: () => Promise<EquitySnapshotRow | null>;
     getLatestEquitySnapshot: () => Promise<EquitySnapshotRow | null>;
     getEquitySnapshotsSince: (sinceDate: string) => Promise<EquitySnapshotRow[]>;
+    // #396 T1: latest audit_log row for a single script, used to build
+    // `last_runs` for the dead-man watchdog (scripts/deadman_check.ts).
+    getLatestAuditForScript: (scriptName: string) => Promise<AuditLogRow | null>;
   };
 }
 
@@ -80,6 +83,18 @@ export interface StatusDigest {
   // default mode (D3), keeping the no-param response byte-identical.
   trades?: TradeRow[];
   regime_history?: RegimeStateRow[];
+  // #396 T1: latest audit_log row per monitored script, so an external
+  // dead-man watchdog can detect a stalled pg_cron pipeline (a stack that
+  // has stopped invoking daily-check/kill-switch entirely can't be caught by
+  // audit_7d's outcome counts alone — a widened `?days=N` window can still
+  // miss a stall shorter than the window, and audit_7d.errors only carries
+  // `error:*` rows, not the latest row overall). Required (always present,
+  // both digest modes), snake_case JSON keys so `jq` paths need no quoting.
+  // `null` per script when that script has never written an audit_log row.
+  last_runs: {
+    daily_check: { started_at: string; outcome: string | null } | null;
+    kill_switch: { started_at: string; outcome: string | null } | null;
+  };
 }
 
 // A crashed/still-open run leaves outcome NULL in the DB (documented in
@@ -178,6 +193,8 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     regimeHistory,
     earliestSnapshot,
     latestSnapshot,
+    latestDailyCheckAudit,
+    latestKillSwitchAudit,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -192,6 +209,10 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     extended ? db.getRegimeStatesSince(since.slice(0, 10)) : Promise.resolve(undefined),
     db.getEarliestEquitySnapshot(),
     db.getLatestEquitySnapshot(),
+    // #396 T1: script names match audit_log.script_name exactly, as written
+    // by daily-check/kill-switch's insertAuditLog calls.
+    db.getLatestAuditForScript("daily-check"),
+    db.getLatestAuditForScript("kill-switch"),
   ]);
 
   const outcome_counts: Record<string, number> = {};
@@ -222,6 +243,14 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
       position: { symbol: config.botTicker, qty: positionQty },
     },
     returns,
+    last_runs: {
+      daily_check: latestDailyCheckAudit
+        ? { started_at: latestDailyCheckAudit.started_at, outcome: latestDailyCheckAudit.outcome }
+        : null,
+      kill_switch: latestKillSwitchAudit
+        ? { started_at: latestKillSwitchAudit.started_at, outcome: latestKillSwitchAudit.outcome }
+        : null,
+    },
     ...(extended
       ? { trades: trades as TradeRow[], regime_history: regimeHistory as RegimeStateRow[] }
       : {}),

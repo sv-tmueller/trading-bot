@@ -9,6 +9,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getLastTrade,
+  getLatestAuditForScript,
   getLatestEquitySnapshot,
   getLatestRegimeState,
   getRegimeStatesSince,
@@ -253,6 +254,59 @@ Deno.test({
       newerInWindowId,
       aboveUntilId,
     ]);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #396 T1: getLatestAuditForScript — used by the status digest's `last_runs`
+// field (dead-man watchdog).
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "getLatestAuditForScript: returns the newest row for that script only, ignores other scripts",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const otherScriptId = await insertAuditLog(sb, {
+      scriptName: "db-test-other",
+      startedAt: "2030-01-05T00:00:00Z",
+    });
+    const olderId = await insertAuditLog(sb, {
+      scriptName: "db-test-target",
+      startedAt: "2030-01-02T15:00:00Z",
+    });
+    await updateAuditLog(sb, {
+      id: olderId,
+      finishedAt: "2030-01-02T15:00:01Z",
+      outcome: "success",
+      notes: "older",
+    });
+    const newerId = await insertAuditLog(sb, {
+      scriptName: "db-test-target",
+      startedAt: "2030-01-03T15:00:00Z",
+    });
+    await updateAuditLog(sb, {
+      id: newerId,
+      finishedAt: "2030-01-03T15:00:01Z",
+      outcome: "skipped:trading_paused",
+      notes: null,
+    });
+    const latest = await getLatestAuditForScript(sb, "db-test-target");
+    assertEquals(latest?.notes, null);
+    assertEquals(latest?.outcome, "skipped:trading_paused");
+    assertEquals(latest?.script_name, "db-test-target");
+    await sb.from("audit_log").delete().in("id", [otherScriptId, olderId, newerId]);
+  },
+});
+
+Deno.test({
+  name: "getLatestAuditForScript: no rows for that script -> null",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const latest = await getLatestAuditForScript(sb, "db-test-nonexistent-script");
+    assertEquals(latest, null);
   },
 });
 

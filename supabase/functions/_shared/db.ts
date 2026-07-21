@@ -248,6 +248,24 @@ export async function getAuditLogSince(
   );
 }
 
+// #396 T1: latest audit_log row for a single script, used by the status
+// digest's `last_runs` field (consumed by the dead-man watchdog,
+// scripts/deadman_check.ts). SELECT-only, same shape as getLatestRegimeState.
+export async function getLatestAuditForScript(
+  sb: SupabaseClient,
+  scriptName: string,
+): Promise<AuditLogRow | null> {
+  const { data, error } = await sb
+    .from("audit_log")
+    .select("script_name, started_at, finished_at, outcome, notes")
+    .eq("script_name", scriptName)
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLatestAuditForScript: ${error.message}`);
+  return data as AuditLogRow | null;
+}
+
 export async function getConfig(sb: SupabaseClient, key: string): Promise<string | null> {
   const { data, error } = await sb.from("bot_config").select("value").eq("key", key).maybeSingle();
   if (error) throw new Error(`getConfig: ${error.message}`);
