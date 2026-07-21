@@ -1,7 +1,7 @@
 // Direct-to-Discord webhook poster (#362 — no n8n middleman). Every event
 // carries structured `event_type` + event-specific fields (kept for any
 // future JSON-consuming forwarder), plus a human-readable `message`. When
-// `message` is present, notify() also derives a Discord-native `content`
+// `message` is present, postEvent() also derives a Discord-native `content`
 // field (Discord's incoming-webhook API renders `content` directly, and
 // ignores unrecognised extra fields), codepoint-safe-truncated to 2,000
 // characters — Discord's hard content limit — so a long message still posts
@@ -11,6 +11,14 @@
 // logged via console.warn (visible in Supabase function logs, #366) — never
 // the webhook URL or the full payload — so an outage is silent to the caller
 // but visible in ops.
+//
+// #397: postEvent() is notify()'s former body, now returning a NotifyStatus
+// instead of discarding it, so outbox.ts's notifyDurable can enqueue a
+// "failed" post for retry. notify() stays a thin `Promise<void>` wrapper —
+// its signature and observable behavior are UNCHANGED (see notifications.test.ts,
+// every pre-#397 case still passes unmodified) because widening notify()'s own
+// return type would force edits to the DailyCheckDeps/KillSwitchDeps
+// notifications interfaces in both logic.ts files, which must stay untouched.
 import { getNotifyWebhookUrl } from "./config.ts";
 
 const DISCORD_CONTENT_MAX_CODEPOINTS = 2000;
@@ -20,12 +28,14 @@ function truncateCodepoints(s: string, max: number): string {
   return [...s].slice(0, max).join("");
 }
 
-export async function notify(event: Record<string, unknown>): Promise<void> {
+export type NotifyStatus = "sent" | "failed" | "skipped_unset";
+
+export async function postEvent(event: Record<string, unknown>): Promise<NotifyStatus> {
   const url = getNotifyWebhookUrl();
   const eventType = String(event.event_type ?? "unknown");
   if (url === "") {
     console.warn(`notify: skipped (NOTIFY_WEBHOOK_URL unset), event_type=${eventType}`);
-    return;
+    return "skipped_unset";
   }
   const message = event.message;
   const body = typeof message === "string" && message !== ""
@@ -49,15 +59,22 @@ export async function notify(event: Record<string, unknown>): Promise<void> {
       console.warn(
         `notify: webhook responded ${res.status}: ${snippet}, event_type=${eventType}`,
       );
+      return "failed";
     }
+    return "sent";
   } catch (e) {
     const name = e instanceof Error ? e.name : "Error";
     const msg = String(e instanceof Error ? e.message : e).replaceAll(url, "[webhook-url]");
     console.warn(`notify: webhook POST failed: ${name}: ${msg}, event_type=${eventType}`);
+    return "failed";
   }
 }
 
-export function notifyRegimeFlip(p: {
+export async function notify(event: Record<string, unknown>): Promise<void> {
+  await postEvent(event);
+}
+
+export function regimeFlipEvent(p: {
   targetState: "LONG" | "CASH";
   spyClose: number;
   spySma200: number;
@@ -66,13 +83,13 @@ export function notifyRegimeFlip(p: {
   qty: number;
   accountValue: number;
   dryRun?: boolean;
-}): Promise<void> {
+}): Record<string, unknown> {
   const titlePrefix = p.dryRun ? "[DRY-RUN] " : "";
   const message = `${titlePrefix}Regime flip -> ${p.targetState}: ${p.ticker} qty=${p.qty} ` +
     `@ $${p.fillPrice.toFixed(2)} (SPY $${p.spyClose.toFixed(2)} vs 200-DMA $${
       p.spySma200.toFixed(2)
     })`;
-  return notify({
+  return {
     event_type: "regime_flip",
     title: `${titlePrefix}regime_flip ${p.targetState}`,
     message,
@@ -84,22 +101,26 @@ export function notifyRegimeFlip(p: {
     qty: p.qty,
     account_value: p.accountValue,
     dry_run: p.dryRun ?? false,
-  });
+  };
 }
 
-export function notifyKillSwitchFired(p: {
+export function notifyRegimeFlip(p: Parameters<typeof regimeFlipEvent>[0]): Promise<void> {
+  return notify(regimeFlipEvent(p));
+}
+
+export function killSwitchFiredEvent(p: {
   ticker: string;
   drawdownPct: number;
   refHigh: number;
   lastPrice: number;
   qty: number;
   fillPrice: number;
-}): Promise<void> {
+}): Record<string, unknown> {
   const message =
     `Kill switch fired on ${p.ticker}: drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
     `(ref high $${p.refHigh.toFixed(2)}, last $${p.lastPrice.toFixed(2)}), ` +
     `liquidated qty=${p.qty} @ $${p.fillPrice.toFixed(2)}`;
-  return notify({
+  return {
     event_type: "kill_switch_fired",
     message,
     ticker: p.ticker,
@@ -108,58 +129,82 @@ export function notifyKillSwitchFired(p: {
     last_price: p.lastPrice,
     qty: p.qty,
     fill_price: p.fillPrice,
-  });
+  };
 }
 
-export function notifyTradeFailed(p: {
+export function notifyKillSwitchFired(
+  p: Parameters<typeof killSwitchFiredEvent>[0],
+): Promise<void> {
+  return notify(killSwitchFiredEvent(p));
+}
+
+export function tradeFailedEvent(p: {
   symbol: string;
   side: "BUY" | "SELL";
   qty: number;
   reason: string;
-}): Promise<void> {
+}): Record<string, unknown> {
   const message = `Trade failed: ${p.side} ${p.qty} ${p.symbol} -- ${p.reason}`;
-  return notify({
+  return {
     event_type: "trade_failed",
     message,
     symbol: p.symbol,
     side: p.side,
     qty: p.qty,
     reason: p.reason,
-  });
+  };
 }
 
-export function notifyStateDesync(p: {
+export function notifyTradeFailed(p: Parameters<typeof tradeFailedEvent>[0]): Promise<void> {
+  return notify(tradeFailedEvent(p));
+}
+
+export function stateDesyncEvent(p: {
   dbState: "LONG" | "CASH";
   brokerState: "LONG" | "CASH";
   symbol: string;
   actionTaken: string;
-}): Promise<void> {
+}): Record<string, unknown> {
   const message =
     `State desync on ${p.symbol}: DB=${p.dbState}, broker=${p.brokerState}. ${p.actionTaken}`;
-  return notify({
+  return {
     event_type: "state_desync",
     message,
     db_state: p.dbState,
     broker_state: p.brokerState,
     symbol: p.symbol,
     action_taken: p.actionTaken,
-  });
+  };
+}
+
+export function notifyStateDesync(p: Parameters<typeof stateDesyncEvent>[0]): Promise<void> {
+  return notify(stateDesyncEvent(p));
 }
 
 // Replaces notify_tws_disconnected — Alpaca is stateless REST, so this covers
 // any broker/API error (connection, 5xx, auth).
-export function notifyBrokerError(p: { context: string; errorMsg: string }): Promise<void> {
+export function brokerErrorEvent(
+  p: { context: string; errorMsg: string },
+): Record<string, unknown> {
   const message = `Broker API error (${p.context}): ${p.errorMsg}`;
-  return notify({
+  return {
     event_type: "broker_error",
     message,
     context: p.context,
     error_msg: p.errorMsg,
-  });
+  };
+}
+
+export function notifyBrokerError(p: Parameters<typeof brokerErrorEvent>[0]): Promise<void> {
+  return notify(brokerErrorEvent(p));
+}
+
+export function errorEvent(message: string): Record<string, unknown> {
+  return { event_type: "error", message };
 }
 
 export function notifyError(message: string): Promise<void> {
-  return notify({ event_type: "error", message });
+  return notify(errorEvent(message));
 }
 
 export function notifyPanic(p: { action: string; result: string }): Promise<void> {

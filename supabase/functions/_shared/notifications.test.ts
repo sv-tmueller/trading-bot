@@ -9,6 +9,7 @@ import {
   notifyRegimeFlip,
   notifyStateDesync,
   notifyTradeFailed,
+  postEvent,
 } from "./notifications.ts";
 
 function stubWarn(): { calls: unknown[][]; restore: () => void } {
@@ -382,5 +383,70 @@ Deno.test("all seven notify helpers carry content === message", async () => {
   } finally {
     restore();
     Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #397 T3: postEvent -- notify()'s body extracted so outbox.ts's
+// notifyDurable can branch on delivery status. Identical fetch/warn/redaction
+// behavior; every test above (unmodified) is the regression proof that
+// notify()'s Promise<void> observable behavior didn't change.
+// ---------------------------------------------------------------------------
+
+Deno.test("postEvent: 2xx response -> returns 'sent'", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restore = stubFetch(() => Promise.resolve(new Response("ok", { status: 200 })));
+  try {
+    const status = await postEvent({ event_type: "test" });
+    assertEquals(status, "sent");
+  } finally {
+    restore();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("postEvent: non-2xx response -> returns 'failed'", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restoreFetch = stubFetch(() => Promise.resolve(new Response("nope", { status: 500 })));
+  const { restore: restoreWarn } = stubWarn();
+  try {
+    const status = await postEvent({ event_type: "test" });
+    assertEquals(status, "failed");
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("postEvent: fetch rejection -> returns 'failed'", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restoreFetch = stubFetch(() => Promise.reject(new Error("network down")));
+  const { restore: restoreWarn } = stubWarn();
+  try {
+    const status = await postEvent({ event_type: "test" });
+    assertEquals(status, "failed");
+  } finally {
+    restoreWarn();
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("postEvent: unset webhook URL -> returns 'skipped_unset', no fetch call", async () => {
+  Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  let called = false;
+  const restoreFetch = stubFetch(() => {
+    called = true;
+    return Promise.resolve(new Response("ok"));
+  });
+  const { restore: restoreWarn } = stubWarn();
+  try {
+    const status = await postEvent({ event_type: "test" });
+    assertEquals(status, "skipped_unset");
+    assertEquals(called, false);
+  } finally {
+    restoreWarn();
+    restoreFetch();
   }
 });
