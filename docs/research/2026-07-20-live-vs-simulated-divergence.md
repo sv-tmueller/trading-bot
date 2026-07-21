@@ -205,10 +205,13 @@ value. It reads **+10.628 pp** — within ~0.6 pp of `terminal_equity_ratio − 
 +11.234 pp), the two being close-but-not-identical only because the ratio's denominator is the sim's
 *terminal* value (which itself drifted a little from `starting_cash` over the 30 days) rather than
 `starting_cash` itself; both numbers agree that the true from-equal-cash full-window gap is
-**≈ +10.6–11.2 pp, roughly 3x the close-normalized headline**, not the ~+3.6 pp originally reported.
+**≈ +10.6–11.2 pp, roughly 2.4x this revision's own +4.433 pp close-normalized headline** (and
+roughly 3x the ~+3.58 pp close-normalized figure originally reported in round 1, before the
+yfinance re-fetch described in Section 2).
 **Corrected ramp magnitude:** the go-live ramp (Section 5) therefore cost the live account on the
 order of **10–11 percentage points** of relative terminal return over this 30-day window — not the
-~3.6 pp the close-normalization artifact implied — because it both delayed entry by six trading days
++4.433 pp this revision's own close-normalization artifact implies (nor the ~+3.58 pp of the
+original round-1 report) — because it both delayed entry by six trading days
 *and* caused the close-normalized comparison to hide the sim's own day-one execution loss inside its
 baseline.
 
