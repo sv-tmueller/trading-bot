@@ -62,6 +62,21 @@ function makeDeps(
       calls.equitySnapshotsSinceArg = sinceDate;
       return Promise.resolve<EquitySnapshotRow[]>([]);
     },
+    // #396 T1: last_runs — latest audit_log row per monitored script, used
+    // by the dead-man watchdog. Default mock returns a fixed row regardless
+    // of scriptName; tests that need per-script behavior override this.
+    getLatestAuditForScript: (scriptName: string) => {
+      const seen = (calls.latestAuditForScriptArgs as string[] | undefined) ?? [];
+      seen.push(scriptName);
+      calls.latestAuditForScriptArgs = seen;
+      return Promise.resolve<AuditLogRow | null>({
+        script_name: scriptName,
+        started_at: "2026-07-09T13:37:00Z",
+        finished_at: "2026-07-09T13:37:05Z",
+        outcome: "success",
+        notes: null,
+      });
+    },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
@@ -233,19 +248,25 @@ Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () =>
 // must stay shape-identical to the current deployment (hard constraint).
 // ---------------------------------------------------------------------------
 
-Deno.test("default mode (no windowDays): shape-lock - exact current 8 keys (#383 adds `returns`), no trades/regime_history, windowed helpers not called", async () => {
+Deno.test("default mode (no windowDays): shape-lock - exact current 9 keys (#396 adds `last_runs`), no trades/regime_history, windowed helpers not called", async () => {
   const { deps, calls } = makeDeps();
   const digest = await runStatus(deps);
   // #384: regime_margin_pct is a new required top-level key (intended,
   // in-scope consequence of task 1 — the #358 byte-identical-shape
   // constraint was scoped to proving the windowDays param's absence didn't
   // change the response, not a permanent field freeze).
+  // #396 T1: `last_runs` is the same kind of deliberate additive change
+  // (precedent: `regime_margin_pct` #384, `returns` #383) — the dead-man
+  // watchdog (#396) needs per-script last-run timestamps that audit_7d
+  // cannot provide (its window can exclude both scripts entirely, and its
+  // `errors` array only carries `error:*` rows, not the latest row overall).
   assertEquals(
     Object.keys(digest).sort(),
     [
       "alpaca",
       "audit_7d",
       "generated_at",
+      "last_runs",
       "last_trade",
       "market_open",
       "paused",
@@ -503,4 +524,70 @@ Deno.test("returns: computed strictly from equity_snapshots, independent of the 
   const digest = await runStatus(deps);
   assertEquals(digest.alpaca.equity_usd, 999_999);
   assertEquals(digest.returns.since_inception_pct, 10);
+});
+
+// ---------------------------------------------------------------------------
+// #396 T1: `last_runs` — latest audit_log row per monitored script
+// (daily-check, kill-switch), consumed by the dead-man watchdog
+// (scripts/deadman_check.ts). Always present, both default and extended
+// (`windowDays`) mode.
+// ---------------------------------------------------------------------------
+
+Deno.test("last_runs: populated from mocks for both daily-check and kill-switch", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getLatestAuditForScript: (scriptName: string) =>
+        Promise.resolve<AuditLogRow>({
+          script_name: scriptName,
+          started_at: scriptName === "daily-check"
+            ? "2026-07-09T13:37:00Z"
+            : "2026-07-09T14:35:00Z",
+          finished_at: null,
+          outcome: scriptName === "daily-check" ? "success" : "skipped:market_closed",
+          notes: null,
+        }),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.last_runs, {
+    daily_check: { started_at: "2026-07-09T13:37:00Z", outcome: "success" },
+    kill_switch: { started_at: "2026-07-09T14:35:00Z", outcome: "skipped:market_closed" },
+  });
+});
+
+Deno.test("last_runs: getLatestAuditForScript is called with exactly 'daily-check' and 'kill-switch'", async () => {
+  const { deps, calls } = makeDeps();
+  await runStatus(deps);
+  assertEquals(
+    (calls.latestAuditForScriptArgs as string[]).sort(),
+    ["daily-check", "kill-switch"],
+  );
+});
+
+Deno.test("last_runs: no rows for a script -> null for that script", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getLatestAuditForScript: (scriptName: string) =>
+        scriptName === "daily-check" ? Promise.resolve(null) : Promise.resolve<AuditLogRow>({
+          script_name: "kill-switch",
+          started_at: "2026-07-09T14:35:00Z",
+          finished_at: "2026-07-09T14:35:01Z",
+          outcome: "success",
+          notes: null,
+        }),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.last_runs.daily_check, null);
+  assertEquals(digest.last_runs.kill_switch, {
+    started_at: "2026-07-09T14:35:00Z",
+    outcome: "success",
+  });
+});
+
+Deno.test("last_runs: present in extended (?days=N) mode too", async () => {
+  const { deps } = makeDeps();
+  const digest = await runStatus(deps, 30);
+  assertEquals(digest.last_runs.daily_check?.outcome, "success");
+  assertEquals(digest.last_runs.kill_switch?.outcome, "success");
 });

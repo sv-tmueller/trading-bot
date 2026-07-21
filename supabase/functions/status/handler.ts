@@ -13,6 +13,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getLastTrade,
+  getLatestAuditForScript,
   getLatestEquitySnapshot,
   getLatestRegimeState,
   getRegimeStatesSince,
@@ -42,6 +43,7 @@ function buildDeps(): StatusDeps {
       getEarliestEquitySnapshot: () => getEarliestEquitySnapshot(sb),
       getLatestEquitySnapshot: () => getLatestEquitySnapshot(sb),
       getEquitySnapshotsSince: (sinceDate) => getEquitySnapshotsSince(sb, sinceDate),
+      getLatestAuditForScript: (scriptName) => getLatestAuditForScript(sb, scriptName),
     },
   };
 }

@@ -18,6 +18,7 @@ const DIGEST: StatusDigest = {
   last_trade: null,
   alpaca: { equity_usd: 100_000, position: { symbol: "UPRO", qty: 0 } },
   returns: { since_inception_pct: null, trailing_7d_pct: null, trailing_30d_pct: null },
+  last_runs: { daily_check: null, kill_switch: null },
 };
 
 function req(opts: { method?: string; token?: string; days?: string }): Request {
