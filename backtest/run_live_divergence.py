@@ -110,13 +110,30 @@ def replay_signal(spy_df: pd.DataFrame, sma_days: int = 200) -> pd.Series:
     return (close > sma).fillna(False)
 
 
-def compute_tracking(live_snap: pd.DataFrame, sim_equity: pd.Series) -> dict:
+def compute_tracking(
+    live_snap: pd.DataFrame,
+    sim_equity: pd.Series,
+    starting_cash: Optional[float] = None,
+) -> dict:
     """Tracking-error stats between the live equity record and the replay.
 
     ``live_snap`` has ``date``/``equity_usd`` columns (as loaded by
     ``load_live_export``); ``sim_equity`` is a date-indexed Series (the
     ``equity_curve`` from ``simulate_from_signal``, sliced to the comparison
     window). Compares on the inner-joined (common) dates.
+
+    ``terminal_return_diff``/``terminal_equity_ratio`` (and the daily-gap
+    stats) are **close-normalized**: each curve is expressed as a return
+    relative to *its own* first common-date value. That normalization is an
+    artifact when the two curves' first common date does not fall on
+    literally identical starting cash for both — e.g. the go-live-ramp
+    Trap-A restart, where the sim's tracking window can already open with a
+    day-1 execution loss baked into its own first value, silently excluding
+    that loss from the close-normalized comparison (#403 finding 1). When
+    ``starting_cash`` is supplied, this also returns
+    ``terminal_return_diff_cash_normalized`` — ``(live_final - sim_final) /
+    starting_cash`` — anchored to the shared cash amount both curves actually
+    started from, not each curve's own first-common-date value.
     """
     live = live_snap.copy()
     live["date"] = pd.to_datetime(live["date"])
@@ -140,7 +157,7 @@ def compute_tracking(live_snap: pd.DataFrame, sim_equity: pd.Series) -> dict:
     daily_sim_ret = sim_c.pct_change().dropna()
     daily_diff = (daily_live_ret - daily_sim_ret).dropna()
 
-    return {
+    result = {
         "n_days": int(len(common)),
         "terminal_return_diff": float(live_ret.iloc[-1] - sim_ret.iloc[-1]),
         "terminal_equity_ratio": float(live_c.iloc[-1] / sim_c.iloc[-1]),
@@ -150,6 +167,11 @@ def compute_tracking(live_snap: pd.DataFrame, sim_equity: pd.Series) -> dict:
             float(daily_diff.std(ddof=1)) if len(daily_diff) >= 2 else 0.0
         ),
     }
+    if starting_cash is not None:
+        result["terminal_return_diff_cash_normalized"] = float(
+            (live_c.iloc[-1] - sim_c.iloc[-1]) / starting_cash
+        )
+    return result
 
 
 _FILL_SLIPPAGE_COLUMNS = [
@@ -199,6 +221,25 @@ def compute_fill_slippage(trades_df: pd.DataFrame, vehicle_df: pd.DataFrame) -> 
     return pd.DataFrame(rows, columns=_FILL_SLIPPAGE_COLUMNS)
 
 
+def _join_audit_values(a: object, b: object) -> Optional[str]:
+    """Join two same-day audit_log field values with ``"; "``, skipping
+    None/NaN/empty parts. Used to aggregate a two-slot day's outcomes/notes
+    instead of the later invocation silently overwriting the earlier one."""
+    parts = []
+    for v in (a, b):
+        if v is None:
+            continue
+        if isinstance(v, float) and pd.isna(v):
+            continue
+        s = str(v)
+        if s == "":
+            continue
+        parts.append(s)
+    if not parts:
+        return a if a is not None else b
+    return "; ".join(parts)
+
+
 def compute_divergence_dates(
     regime_state_df: pd.DataFrame,
     replayed_signal: pd.Series,
@@ -231,7 +272,19 @@ def compute_divergence_dates(
     if audit_df is not None and not audit_df.empty:
         for _, a in audit_df.iterrows():
             d = pd.Timestamp(a["started_at"]).tz_localize(None).normalize()
-            audit_by_date[d] = {"outcome": a.get("outcome"), "notes": a.get("notes")}
+            outcome, notes = a.get("outcome"), a.get("notes")
+            if d in audit_by_date:
+                # A two-slot day (13:37 + 14:37 UTC) can have two daily-check
+                # invocations; aggregate rather than let the later row
+                # silently overwrite an earlier error:* outcome (#403
+                # finding 3).
+                prev = audit_by_date[d]
+                audit_by_date[d] = {
+                    "outcome": _join_audit_values(prev["outcome"], outcome),
+                    "notes": _join_audit_values(prev["notes"], notes),
+                }
+            else:
+                audit_by_date[d] = {"outcome": outcome, "notes": notes}
 
     rows = []
     for _, row in regime_state_df.iterrows():
@@ -328,7 +381,7 @@ def run_report(
     window_mask = (eq_full.index >= window_start) & (eq_full.index <= window_end)
     eq_window = eq_full.loc[window_mask]
 
-    tracking_full = compute_tracking(equity, eq_window)
+    tracking_full = compute_tracking(equity, eq_window, starting_cash=starting_cash)
 
     trades = data["trades"]
     tracking_since_first_fill = None

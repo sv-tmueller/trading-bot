@@ -161,6 +161,50 @@ def test_compute_tracking_nonzero_gap_when_live_lags():
     assert result["max_abs_daily_gap"] > 0
 
 
+def test_compute_tracking_cash_normalized_variant_zero_for_perfect_parity():
+    """When both series are supplied with the shared starting_cash and track
+    identically, both the close-normalized and cash-normalized terminal-diff
+    variants read ~0 (#403 finding 1)."""
+    idx = pd.bdate_range("2026-01-02", periods=10)
+    curve = pd.Series([100_000.0 * (1.001 ** i) for i in range(10)], index=idx)
+    live_snap = pd.DataFrame({"date": idx, "equity_usd": curve.values})
+
+    result = rld.compute_tracking(live_snap, curve, starting_cash=100_000.0)
+
+    assert result["terminal_return_diff"] == pytest.approx(0.0, abs=1e-9)
+    assert result["terminal_return_diff_cash_normalized"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_compute_tracking_cash_normalized_reveals_day1_loss_hidden_by_close_normalization():
+    """Reproduces the #403 finding-1 artifact: compute_tracking's close
+    normalization uses each curve's own first-common-date value as its 100%
+    baseline. If the sim's tracking window already opens post-loss (e.g. a
+    pre-roll trade executed and lost value before this window's first date,
+    as happens with the go-live-ramp Trap-A restart), that loss is baked into
+    the sim's own baseline and the close-normalized terminal_return_diff is
+    blind to it -- even though live (which never traded) is flat the whole
+    time. The cash-normalized variant, anchored to the *shared* starting_cash
+    instead of each curve's own first value, reveals the loss exactly.
+    """
+    starting_cash = 100_000.0
+    loss = 0.063  # 6.3% day-1 open-to-close loss, matching the real report
+    idx = pd.bdate_range("2026-06-05", periods=5)
+
+    # The sim's first tracking-window value already embeds the day-1 loss.
+    sim = pd.Series([starting_cash * (1 - loss)] * len(idx), index=idx)
+
+    # Live stayed in cash (no fill yet) for the whole window.
+    live_snap = pd.DataFrame({"date": idx, "equity_usd": [starting_cash] * len(idx)})
+
+    result = rld.compute_tracking(live_snap, sim, starting_cash=starting_cash)
+
+    assert result["terminal_return_diff"] == pytest.approx(0.0, abs=1e-9)
+    assert result["terminal_return_diff_cash_normalized"] == pytest.approx(loss, abs=1e-9)
+    # The two variants diverge by exactly the hidden day-1 loss.
+    diff = result["terminal_return_diff_cash_normalized"] - result["terminal_return_diff"]
+    assert diff == pytest.approx(loss, abs=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # compute_fill_slippage
 # ---------------------------------------------------------------------------
@@ -302,6 +346,45 @@ def test_compute_divergence_dates_flags_execution_mismatch_and_attaches_audit():
     assert result["notes"].iloc[0] == "manual pause"
 
 
+def test_compute_divergence_dates_aggregates_same_day_audit_rows():
+    """Two daily-check invocations on the same trading day (13:37 + 14:37 UTC
+    cron slots) with differing outcomes both survive in the attached
+    outcome/notes columns -- a same-day join must not silently drop the
+    earlier row's outcome (#403 finding 3)."""
+    prices = [100.0] * 210
+    idx = pd.bdate_range("2025-01-02", periods=len(prices))
+    spy_df = pd.DataFrame({"Open": prices, "Close": prices}, index=idx)
+    signal = rld.replay_signal(spy_df, sma_days=200)  # all False (flat series)
+
+    row_date = idx[205]
+    regime_state_df = pd.DataFrame({
+        "date": [row_date],
+        "spy_close": [100.0], "spy_sma200": [100.0],
+        "target_state": ["CASH"], "current_state": ["CASH"],
+        "kill_switch_active": [False],
+    })
+    audit_df = pd.DataFrame({
+        "started_at": [
+            row_date + pd.Timedelta(hours=13, minutes=37),
+            row_date + pd.Timedelta(hours=14, minutes=37),
+        ],
+        "finished_at": [
+            row_date + pd.Timedelta(hours=13, minutes=37, seconds=5),
+            row_date + pd.Timedelta(hours=14, minutes=37, seconds=5),
+        ],
+        "outcome": ["error:OrderTimeoutError", "success"],
+        "notes": ["", "no-op re-run"],
+    })
+
+    result = rld.compute_divergence_dates(regime_state_df, signal, audit_df)
+
+    assert len(result) == 1
+    outcome = result["outcome"].iloc[0]
+    assert "error:OrderTimeoutError" in outcome
+    assert "success" in outcome
+    assert result["notes"].iloc[0] == "no-op re-run"
+
+
 def test_compute_divergence_dates_reports_data_drift_when_benchmark_given():
     prices = [100.0] * 210
     idx = pd.bdate_range("2025-01-02", periods=len(prices))
@@ -405,6 +488,9 @@ def test_run_report_perfect_parity_zero_tracking_error(tmp_path: Path, monkeypat
 
     assert report["tracking_full"]["terminal_return_diff"] == pytest.approx(0.0, abs=1e-6)
     assert report["tracking_full"]["terminal_equity_ratio"] == pytest.approx(1.0, abs=1e-6)
+    assert report["tracking_full"]["terminal_return_diff_cash_normalized"] == pytest.approx(
+        0.0, abs=1e-6
+    )
     assert report["divergence"]["signal_mismatch"].sum() == 0
     assert report["divergence"]["execution_mismatch"].sum() == 0
     assert report["fill_slippage"]["delta_vs_slippage_bps"].iloc[0] == pytest.approx(0.0, abs=1e-6)
