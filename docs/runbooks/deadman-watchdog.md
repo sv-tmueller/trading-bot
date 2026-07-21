@@ -112,9 +112,12 @@ exit green with no issue activity. To exercise the alert path end-to-end
 without waiting for a real incident, temporarily point `STATUS_URL`/
 `STATUS_TOKEN` at a scratch/broken endpoint (or manually pipe a synthetic
 digest through the evaluator: `echo '{"last_runs":{"daily_check":null,
-"kill_switch":null}}' | deno run scripts/deadman_check.ts` — exits 2 with
-findings printed, confirming the pure evaluation path independent of any
-network call), then revert.
+"kill_switch":null}}' | deno run scripts/deadman_check.ts` — **during an
+armed weekday window** (see the table under "What it monitors"; roughly
+13:20–22:10 UTC) **this exits 2 with findings printed**, confirming the pure
+evaluation path independent of any network call; **outside the armed
+windows — nights, weekends — the same command exits 0 because nothing is
+armed**), then revert.
 
 ## Caveats
 

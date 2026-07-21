@@ -415,6 +415,11 @@ def test_evaluate_gate_reasons_lists_failed_subgates():
     result = og.evaluate_gate(**inputs, pbo_n_splits=8, bootstrap_n_boot=500, bootstrap_seed=99)
     assert result["passed"] is False
     assert len(result["reasons"]) >= 1
-    assert any("dsr" in reason for reason in result["reasons"]) or any(
-        "pbo" in reason or "bootstrap" in reason for reason in result["reasons"]
-    )
+    expected_failures = {
+        "dsr": result["dsr"] < og.DSR_THRESHOLD,
+        "pbo": result["pbo"] >= og.PBO_THRESHOLD,
+        "bootstrap": result["ci_low"] <= 0.0,
+    }
+    assert len(result["reasons"]) == sum(expected_failures.values())
+    for name, failed in expected_failures.items():
+        assert any(reason.startswith(name) for reason in result["reasons"]) == failed

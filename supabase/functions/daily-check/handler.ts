@@ -19,7 +19,7 @@ import {
 } from "../_shared/db.ts";
 import { createOutbox } from "../_shared/outbox.ts";
 
-function buildDeps(): { deps: DailyCheckDeps; flush: () => Promise<void> } {
+function buildDeps(): DailyCheckDeps {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient();
   const outbox = createOutbox(sb);
@@ -47,11 +47,11 @@ function buildDeps(): { deps: DailyCheckDeps; flush: () => Promise<void> } {
     },
     notifications: outbox.notifications,
   };
-  return { deps, flush: outbox.flush };
+  return deps;
 }
 
 function runWithRealDeps(): Promise<string> {
-  return runDailyCheck(buildDeps().deps);
+  return runDailyCheck(buildDeps());
 }
 
 // #397 T5: flush is called after run() completes, never inside logic.ts --
@@ -60,7 +60,7 @@ function runWithRealDeps(): Promise<string> {
 // every 5 minutes for free by the kill-switch cadence. Wrapped in its own
 // try/catch as belt-and-braces even though flushOutbox itself never throws.
 function flushWithRealDeps(): Promise<void> {
-  return buildDeps().flush();
+  return createOutbox(getServiceClient()).flush();
 }
 
 export async function handleDailyCheck(
@@ -74,8 +74,8 @@ export async function handleDailyCheck(
   const outcome = await run();
   try {
     await flush();
-  } catch {
-    console.warn("daily-check: outbox flush threw unexpectedly");
+  } catch (e) {
+    console.warn(`daily-check: outbox flush threw unexpectedly: ${String(e).slice(0, 200)}`);
   }
   return new Response(JSON.stringify({ outcome }), {
     headers: { "content-type": "application/json" },

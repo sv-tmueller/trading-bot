@@ -75,7 +75,9 @@ mistake is structurally hard to make; `deflated_sharpe_ratio`'s result dict also
 
 ## No scipy
 
-Per the codebase's no-scipy stance (`CLAUDE.md` "Commands" / codebase map), the module implements
+Per the codebase's no-scipy stance (`docs/architecture/2026-07-05-codebase-map.md`, §4
+"Dependency summary", Python 3.9 stack entry — "Options pricing uses stdlib `math` only (no
+scipy)"), the module implements
 the normal CDF via stdlib `math.erfc` and the inverse-normal (probit) via a clean-room
 implementation of Acklam's rational approximation (2003, public domain) with one Halley refinement
 step, rather than importing `scipy.stats.norm`.

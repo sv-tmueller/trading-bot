@@ -64,9 +64,9 @@ name: deadman-watchdog
 on:
   schedule:
     # 18 evaluations/weekday (minutes :07 and :37, hours 13-21 UTC) — free on
-    # a public repo. Offset from daily-check's :37/:37 and kill-switch's
-    # */5 slots on purpose, so a watchdog run never races a trading
-    # invocation's own audit_log write.
+    # a public repo. The :07/:37 minutes avoid kill-switch's */5 slots; :37
+    # coincides with daily-check's 13:37/14:37 UTC runs, which is harmless —
+    # both trading functions write their audit_log row at run start.
     - cron: "7,37 13-21 * * 1-5"
   workflow_dispatch:
 
