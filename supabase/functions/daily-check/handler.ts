@@ -17,17 +17,13 @@ import {
   upsertEquitySnapshot,
   upsertRegimeState,
 } from "../_shared/db.ts";
-import {
-  notifyBrokerError,
-  notifyRegimeFlip,
-  notifyStateDesync,
-  notifyTradeFailed,
-} from "../_shared/notifications.ts";
+import { createOutbox } from "../_shared/outbox.ts";
 
-function buildDeps(): DailyCheckDeps {
+function buildDeps(): { deps: DailyCheckDeps; flush: () => Promise<void> } {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient();
-  return {
+  const outbox = createOutbox(sb);
+  const deps: DailyCheckDeps = {
     config: getStrategyConfig(),
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice },
@@ -49,22 +45,38 @@ function buildDeps(): DailyCheckDeps {
       updateAuditLog: (p) => updateAuditLog(sb, p),
       upsertEquitySnapshot: (p) => upsertEquitySnapshot(sb, p),
     },
-    notifications: { notifyRegimeFlip, notifyStateDesync, notifyTradeFailed, notifyBrokerError },
+    notifications: outbox.notifications,
   };
+  return { deps, flush: outbox.flush };
 }
 
 function runWithRealDeps(): Promise<string> {
-  return runDailyCheck(buildDeps());
+  return runDailyCheck(buildDeps().deps);
+}
+
+// #397 T5: flush is called after run() completes, never inside logic.ts --
+// trading never waits behind a webhook-outage backlog. It writes no
+// audit_log row (same principle as status's read-only path) and is retried
+// every 5 minutes for free by the kill-switch cadence. Wrapped in its own
+// try/catch as belt-and-braces even though flushOutbox itself never throws.
+function flushWithRealDeps(): Promise<void> {
+  return buildDeps().flush();
 }
 
 export async function handleDailyCheck(
   req: Request,
   run: () => Promise<string> = runWithRealDeps,
+  flush: () => Promise<void> = flushWithRealDeps,
 ): Promise<Response> {
   const authError = requireServiceRole(req);
   if (authError !== null) return authError;
 
   const outcome = await run();
+  try {
+    await flush();
+  } catch {
+    console.warn("daily-check: outbox flush threw unexpectedly");
+  }
   return new Response(JSON.stringify({ outcome }), {
     headers: { "content-type": "application/json" },
   });

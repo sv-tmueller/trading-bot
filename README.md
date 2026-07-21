@@ -184,7 +184,10 @@ logs — without ever logging the webhook URL or the full payload (#366).
 
 Note: the webhook must be reachable from Supabase's cloud — a `localhost` URL will not work.
 Notifications are best-effort, so the bot runs fine without them (they are intentionally unset
-during the paper soak).
+during the paper soak). A failed post (non-2xx or a fetch rejection) is persisted to the
+`notification_outbox` table and retried on subsequent `daily-check`/`kill-switch` runs, bounded by a
+72-hour TTL and a 500-attempt cap (#397); if the DB itself is unavailable, delivery degrades to
+warn-only rather than blocking the trading pipeline.
 
 ## History
 

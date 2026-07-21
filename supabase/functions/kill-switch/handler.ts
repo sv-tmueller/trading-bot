@@ -15,17 +15,13 @@ import {
   updateAuditLog,
   upsertRegimeState,
 } from "../_shared/db.ts";
-import {
-  notifyBrokerError,
-  notifyError,
-  notifyKillSwitchFired,
-  notifyStateDesync,
-} from "../_shared/notifications.ts";
+import { createOutbox } from "../_shared/outbox.ts";
 
-function buildDeps(): KillSwitchDeps {
+function buildDeps(): { deps: KillSwitchDeps; flush: () => Promise<void> } {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient();
-  return {
+  const outbox = createOutbox(sb);
+  const deps: KillSwitchDeps = {
     config: getStrategyConfig(),
     now: () => new Date(),
     marketdata: { getDailyCloses, getLatestTradePrice, getLatestQuote },
@@ -42,27 +38,40 @@ function buildDeps(): KillSwitchDeps {
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),
     },
-    notifications: {
-      notifyKillSwitchFired,
-      notifyBrokerError,
-      notifyStateDesync,
-      notifyError,
-    },
+    notifications: outbox.notifications,
   };
+  return { deps, flush: outbox.flush };
 }
 
 function runWithRealDeps(): Promise<string> {
-  return runKillSwitch(buildDeps());
+  return runKillSwitch(buildDeps().deps);
+}
+
+// #397 T5: flush is called after run() completes, never inside logic.ts --
+// trading never waits behind a webhook-outage backlog. It writes no
+// audit_log row (same principle as status's read-only path) and, on this
+// function's own 5-minute cadence during market hours, gets essentially-free
+// retries of anything the daily-check flush couldn't clear. Wrapped in its
+// own try/catch as belt-and-braces even though flushOutbox itself never
+// throws.
+function flushWithRealDeps(): Promise<void> {
+  return buildDeps().flush();
 }
 
 export async function handleKillSwitch(
   req: Request,
   run: () => Promise<string> = runWithRealDeps,
+  flush: () => Promise<void> = flushWithRealDeps,
 ): Promise<Response> {
   const authError = requireServiceRole(req);
   if (authError !== null) return authError;
 
   const outcome = await run();
+  try {
+    await flush();
+  } catch {
+    console.warn("kill-switch: outbox flush threw unexpectedly");
+  }
   return new Response(JSON.stringify({ outcome }), {
     headers: { "content-type": "application/json" },
   });

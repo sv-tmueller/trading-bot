@@ -4,6 +4,8 @@ import {
   coerceEquitySnapshotRow,
   coerceRegimeRow,
   coerceTradeRow,
+  deleteNotifications,
+  enqueueNotification,
   getAuditLogSince,
   getConfig,
   getEarliestEquitySnapshot,
@@ -11,10 +13,12 @@ import {
   getLastTrade,
   getLatestEquitySnapshot,
   getLatestRegimeState,
+  getPendingNotifications,
   getRegimeStatesSince,
   getTradesSince,
   insertAuditLog,
   insertTrade,
+  markNotificationAttempt,
   setConfig,
   updateAuditLog,
   upsertEquitySnapshot,
@@ -577,5 +581,39 @@ Deno.test({
     assertEquals(rows[0].date, "2030-03-02");
     assertEquals(rows[1].date, "2030-03-03");
     await sb.from("equity_snapshots").delete().in("date", dates);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #397 T2 (optional): notification_outbox roundtrip -- requires 0010 applied
+// locally. Not a gate; the unit-level orchestration coverage lives in
+// outbox.test.ts against plain fake deps.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "notification_outbox: enqueue -> getPending -> markAttempt -> delete roundtrip",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    await enqueueNotification(sb, {
+      eventType: "test_event",
+      event: { event_type: "test_event", foo: "bar" },
+    });
+    const pending = await getPendingNotifications(sb, 10);
+    const row = pending.find((r) => r.event_type === "test_event");
+    if (!row) throw new Error("enqueued row not found in getPendingNotifications");
+    assertEquals(row.attempts, 0);
+    assertEquals(row.last_attempt_at, null);
+    assertEquals(row.event, { event_type: "test_event", foo: "bar" });
+
+    await markNotificationAttempt(sb, row.id, row.attempts + 1);
+    const afterMark = await getPendingNotifications(sb, 10);
+    const marked = afterMark.find((r) => r.id === row.id);
+    assertEquals(marked?.attempts, 1);
+    assertEquals(typeof marked?.last_attempt_at, "string");
+
+    await deleteNotifications(sb, [row.id]);
+    const afterDelete = await getPendingNotifications(sb, 10);
+    assertEquals(afterDelete.some((r) => r.id === row.id), false);
   },
 });
