@@ -339,6 +339,70 @@ export async function getEquitySnapshotsSince(
   return ((data ?? []) as Record<string, unknown>[]).map(coerceEquitySnapshotRow);
 }
 
+// ---------------------------------------------------------------------------
+// #397 T2: notification_outbox — durable retry queue for notifications.ts
+// posts that come back "failed" (see outbox.ts's notifyDurable/flushOutbox).
+// Throw-on-error, same convention as every other helper in this file; the
+// never-throw guarantee for the notification path lives one layer up in
+// outbox.ts, not here.
+// ---------------------------------------------------------------------------
+
+export interface OutboxRow {
+  id: number;
+  event_type: string;
+  event: Record<string, unknown>;
+  attempts: number;
+  last_attempt_at: string | null;
+  created_at: string;
+}
+
+export async function enqueueNotification(sb: SupabaseClient, p: {
+  eventType: string;
+  event: Record<string, unknown>;
+}): Promise<void> {
+  const { error } = await sb.from("notification_outbox").insert({
+    event_type: p.eventType,
+    event: p.event,
+  });
+  if (error) throw new Error(`enqueueNotification: ${error.message}`);
+}
+
+// Oldest first, so TTL-expired rows are naturally processed (and dropped)
+// before fresher ones within a batch.
+export async function getPendingNotifications(
+  sb: SupabaseClient,
+  limit: number,
+): Promise<OutboxRow[]> {
+  const { data, error } = await sb
+    .from("notification_outbox")
+    .select("*")
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`getPendingNotifications: ${error.message}`);
+  return (data ?? []) as OutboxRow[];
+}
+
+export async function deleteNotifications(sb: SupabaseClient, ids: number[]): Promise<void> {
+  const { error } = await sb.from("notification_outbox").delete().in("id", ids);
+  if (error) throw new Error(`deleteNotifications: ${error.message}`);
+}
+
+// Caller passes attempts = row.attempts + 1. Two concurrent flushers can lose
+// an increment or double-send a row — benign for alerts (at-least-once is the
+// documented delivery semantic), and deliberately unlocked: notifications are
+// not orders, so there is no trade_claims analog here.
+export async function markNotificationAttempt(
+  sb: SupabaseClient,
+  id: number,
+  attempts: number,
+): Promise<void> {
+  const { error } = await sb.from("notification_outbox").update({
+    attempts,
+    last_attempt_at: new Date().toISOString(),
+  }).eq("id", id);
+  if (error) throw new Error(`markNotificationAttempt: ${error.message}`);
+}
+
 // Per-trading-day concurrency guard (#293). Attempts to INSERT a claim row
 // for (scriptName, tradeDate). Returns:
 //   true  — claim succeeded; this invocation may proceed to place an order
