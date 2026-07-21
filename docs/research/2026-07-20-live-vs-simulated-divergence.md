@@ -42,7 +42,21 @@ Section 8 states concrete numbers for when that verdict should flip.
 `equity_usd` ($999,996.85); simulated one trading day before the window start so the T+1-shifted
 signal is valid on day 1, then sliced to the window (the `backtest/walkforward.py` Trap-A idiom).
 Tracking error is reported twice — full window, and since the first live fill (2026-06-11) — so the
-execution model's fidelity can be read separately from the go-live entry-timing effect.
+execution model's fidelity can be read separately from the go-live entry-timing effect. As of this
+revision, `compute_tracking`/`run_report` also emit a `starting_cash`-normalized
+`terminal_return_diff_cash_normalized` alongside the original close-normalized
+`terminal_return_diff` for the full-window comparison — see Section 6 for why both are needed.
+
+**Re-run note (this revision, #403 review round 1):** the export CSVs are the same
+2026-07-20-captured snapshot used in the original report (`live_export/` is gitignored and never
+re-exported from Supabase for a docs fix), but the yfinance SPY/UPRO fetch was re-run on
+2026-07-21 to pick up the `terminal_return_diff_cash_normalized` field. yfinance's own history for
+recent trading days can shift slightly between fetches (adjustment recalculation as new bars/
+dividends land), so the tracking-error numbers below differ modestly from the original capture
+(full-window terminal diff moved from +3.58pp to +4.43pp close-normalized); the fill-slippage and
+divergence-date numbers, which only depend on values from specific fixed historical dates, did not
+move. All numbers in this doc come from this single fresh run and are internally consistent with
+each other.
 
 **Captured output** (this run, `venv/bin/python -m backtest.run_live_divergence --export-dir live_export/`):
 
@@ -51,19 +65,20 @@ Live window: 2026-06-05 -> 2026-07-20  (starting cash $999,996.85)
 
 Tracking error (full window):
   n_days                   30
-  terminal_return_diff     0.035771
-  terminal_equity_ratio    1.102975
-  mean_abs_daily_gap       0.031224
+  terminal_return_diff     0.044325
+  terminal_equity_ratio    1.112334
+  mean_abs_daily_gap       0.031509
   max_abs_daily_gap        0.049735
-  daily_return_diff_std    0.010388
+  daily_return_diff_std    0.010198
+  terminal_return_diff_cash_normalized 0.106279
 
 Tracking error (since first live fill):
   n_days                   26
-  terminal_return_diff     0.001785
-  terminal_equity_ratio    1.102975
-  mean_abs_daily_gap       0.002424
+  terminal_return_diff     0.010353
+  terminal_equity_ratio    1.112334
+  mean_abs_daily_gap       0.002754
   max_abs_daily_gap        0.011832
-  daily_return_diff_std    0.003402
+  daily_return_diff_std    0.002781
 
 Fill slippage: 2 fill(s)
                     fill_time symbol side  qty  fill_price  open_price    cost_bps  delta_vs_slippage_bps  delta_vs_total_bps
@@ -86,8 +101,15 @@ Divergence dates: 0 signal-parity, 0 execution-parity (of 30 rows)
   timestamps (18:44 and 22:30 UTC — outside the standard 13:37/14:37 UTC cron slots), consistent
   with manual smoke-test runs before the scheduled cron went live. Two of these hit
   `error:Error`/`error:OrderTimeoutError` ("BUY ... did not fill within 30000ms; cancelled") at
-  22:30 UTC and 13:37 UTC — the 22:30 UTC attempts fall outside US market hours, so a timeout is
-  expected there. From 2026-06-11 onward, the schedule is the standard two-slot cron
+  22:30 UTC and 13:37 UTC. The 22:30 UTC timeout being "expected outside market hours" is an
+  *inference*, not settled fact: `daily-check`'s `/v2/clock` gate is designed to exit
+  `skipped:market_closed` before placing any order when the US market is closed, so a 22:30 UTC
+  order attempt reaching a live-broker order-timeout path at all is itself the anomaly this doc
+  is inferring an explanation for — most plausibly a manual/ad-hoc invocation during
+  pre-production bring-up that bypassed or predated the clock gate (or invoked the function
+  directly rather than via cron), rather than the standard `daily-check` path behaving as
+  documented. This has not been independently confirmed against the dev Supabase project's
+  invocation history. From 2026-06-11 onward, the schedule is the standard two-slot cron
   (13:37/14:37 UTC) with no further errors through 2026-07-20.
 - **Second fill:** 2026-07-07, BUY 53 UPRO @ $141.5266 (`reason=regime_flip_long` — a small top-up,
   not a CASH→LONG flip; no intervening CASH day appears in the exported `regime_state`, so this is
@@ -134,9 +156,20 @@ between "when the backtest would have entered" and "when the live bot actually e
 open (SPY was already above its SMA200 on day 1), while the live bot's first confirmed fill was
 2026-06-11 — six trading days later, spanning the pre-production bring-up window described in
 Section 3 (irregular manual invocations, two order timeouts outside market hours). This is exactly
-the "genuine, explainable divergence" the SUB_PLAN flagged in advance: it is fully explained by
-`audit_log` (deploy-week manual testing, not a live-production execution failure), and Section 6's
-since-first-fill tracking isolates its cost from the execution model's own fidelity.
+the "genuine, explainable divergence" the SUB_PLAN flagged in advance.
+
+**Caveat — this axis did not itself detect the ramp.** `compute_divergence_dates`'s
+execution-parity check compares the replayed position against `regime_state.current_state` as
+*recorded*, and that record read `LONG` for 2026-06-05 → 06-10 despite no live fill existing yet
+and equity being flat over that span — i.e. the DB row was written ahead of an actual execution
+during bring-up, so the comparison is structurally blind to the ramp in this dataset (0 execution
+mismatches, not because the axis caught and explained the ramp, but because the recorded state
+already matched the replay for reasons unrelated to a real fill). The go-live ramp was actually
+detected by cross-referencing `trades` (first fill 2026-06-11) against the flat 2026-06-05→06-10
+equity, not by an execution-parity mismatch — `audit_log` then supplies the "why" (deploy-week
+manual testing, not a live-production execution failure). Section 6's since-first-fill tracking
+isolates the ramp's cost from the execution model's own fidelity regardless of which axis surfaced
+it.
 
 ---
 
@@ -144,24 +177,53 @@ since-first-fill tracking isolates its cost from the execution model's own fidel
 
 | | Full window (30d) | Since first live fill (26d) |
 |---|---|---|
-| Terminal return diff (live − sim) | **+3.577 pp** | **+0.178 pp** |
-| Terminal equity ratio (live / sim) | 1.1030 | 1.1030 |
-| Mean abs daily gap | 3.122% | 0.242% |
+| Terminal return diff, **close-normalized** (live − sim) | +4.433 pp | **+1.035 pp** |
+| Terminal return diff, **cash-normalized** (live − sim, ÷ `starting_cash`) | **+10.628 pp** | n/a — see below |
+| Terminal equity ratio (live / sim) | 1.1123 | 1.1123 |
+| Mean abs daily gap | 3.151% | 0.275% |
 | Max abs daily gap | 4.974% | 1.183% |
-| Std of daily return diffs | 1.039% | 0.340% |
+| Std of daily return diffs | 1.020% | 0.278% |
 
 (Terminal equity ratio is endpoint-only, so it is identical in both columns — both windows end on
 the same date.)
 
-The full-window gap (+3.6 percentage points, live ahead) is almost entirely the go-live ramp from
-Section 5: a from-scratch replay buys immediately on 2026-06-05 at that day's open, while the live
-account sat in cash for six extra trading days before its first fill on 2026-06-11 — during a period
-SPY happened to be roughly flat-to-down, so the live account's cash-holding delay came out ahead by
-coincidence, not by execution-model skill. Once that ramp is excluded (since-first-fill), the
-residual gap collapses to **+0.18 pp terminal / 0.24% mean daily / 1.18% max daily** over 26 days —
-noise-level for a 26-day sample, and consistent with the execution model (T+1 open fill, 5 bps
-slippage, 5 bps commission) being a reasonable approximation of the real Alpaca fills once the entry
-timing is held equal.
+**Reconciling the two full-window headline numbers.** `compute_tracking`'s original
+`terminal_return_diff` (+4.433 pp) is **close-normalized**: it expresses each curve as a return
+relative to *its own* first common-date value, then diffs the two returns. That normalization is an
+artifact for this specific comparison. The replay's Trap-A restart already executes the go-live-ramp
+entry trade at the very first day of the tracking window (Section 5) — SPY was already above its
+SMA200 on day 1 — so by the close of that first day the sim's own equity value already embeds that
+day's ~6.3% open-to-close loss on the entry trade. Because close-normalization treats the sim's
+first-common-date value as its 100% baseline, that day-one loss is silently absorbed into the
+baseline rather than counted as tracking error — understating the true from-equal-cash gap. The live
+account, still in cash for that stretch, has no such baseline distortion.
+
+The **cash-normalized** variant (`terminal_return_diff_cash_normalized`, added to `compute_tracking`/
+`run_report` in this revision) fixes this: it anchors both curves to the single `starting_cash` value
+they were both actually funded with (D3's anchor), rather than to each curve's own first-common-date
+value. It reads **+10.628 pp** — within ~0.6 pp of `terminal_equity_ratio − 1` (1.1123 − 1 =
++11.234 pp), the two being close-but-not-identical only because the ratio's denominator is the sim's
+*terminal* value (which itself drifted a little from `starting_cash` over the 30 days) rather than
+`starting_cash` itself; both numbers agree that the true from-equal-cash full-window gap is
+**≈ +10.6–11.2 pp, roughly 3x the close-normalized headline**, not the ~+3.6 pp originally reported.
+**Corrected ramp magnitude:** the go-live ramp (Section 5) therefore cost the live account on the
+order of **10–11 percentage points** of relative terminal return over this 30-day window — not the
+~3.6 pp the close-normalization artifact implied — because it both delayed entry by six trading days
+*and* caused the close-normalized comparison to hide the sim's own day-one execution loss inside its
+baseline.
+
+Once the ramp period is excluded entirely (since-first-fill, which needs no cash-normalization
+because both curves are anchored to the same first-common-date equity value in that sub-window — the
+live account's actual post-fill balance), the residual gap is **+1.035 pp terminal / 0.275% mean
+daily / 1.183% max daily** over 26 days. This is larger than the ~0.18 pp originally reported (a
+same-day yfinance re-fetch shifted the late-window prices slightly, per the Section 2 re-run note)
+but still small relative to the full-window ramp effect, and — cross-checked against Section 7's
+two realized fill-cost deltas (+59.6 bps and −164.7 bps vs modeled total, a net of −52.5 bps) — is
+consistent with the execution model (T+1 open fill, 5 bps slippage, 5 bps commission) being a
+reasonable approximation of the real Alpaca fills once the entry timing is held equal; it is not
+distinguishable from cost-model noise at n=2 fills. (Section 8's tracking-axis threshold is derived
+from this since-first-fill residual and is updated below to match this revision's re-run numbers;
+it is a re-derivation from the same methodology, not a change in verdict.)
 
 ---
 
@@ -208,11 +270,12 @@ investigate before acting on it further:
   signal disagreement should never occur from data-vendor noise alone, and one occurring is itself
   the signal that something (a stale Alpaca bar, an unadjusted corporate action, a code regression)
   needs investigating before the bot's next decision is trusted.
-- **Tracking axis.** Using the since-first-fill residual (+0.178 pp = +17.8 bps over 26 trading
-  days ≈ **+14–15 bps synthetic "per month" pace** at ~21 trading days/month, Section 6) as the
+- **Tracking axis.** Using the since-first-fill residual (+1.035 pp = +103.5 bps over 26 trading
+  days ≈ **+84 bps synthetic "per month" pace** at ~21 trading days/month, Section 6 — this pace,
+  not the full-window number, is the right noise floor since it excludes the go-live ramp) as the
   current noise floor: **distrust the backtest if the unexplained residual tracking gap — after
   subtracting the sum of that period's per-fill cost deltas (Section 7) from the raw gap — exceeds
-  roughly 50 bps/month.** That is a little over 3× what a quiet, no-flip month like this one shows,
+  roughly 250 bps/month.** That is a little over 3× what a quiet, no-flip month like this one shows,
   leaving headroom for a few more real fills' worth of cost-model noise before it would trigger,
   while still catching a genuine execution-model breakdown (e.g. repeated missed fills, a
   systematic pricing bug) well before it compounds into a materially wrong forward expectation.
