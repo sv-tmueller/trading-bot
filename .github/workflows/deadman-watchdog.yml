@@ -1,0 +1,270 @@
+# Dead-man watchdog: detects a stalled trading pipeline — daily-check and/or
+# kill-switch have stopped being invoked by pg_cron — from OUTSIDE Supabase
+# (the Actions runner + curl + this repo's `status` Edge Function + a Discord
+# webhook is the whole alert path), so it still fires even if every Supabase
+# component is dead. See docs/runbooks/deadman-watchdog.md for the full
+# write-up and #396 for the design.
+#
+# What it monitors and the threshold table (derived from the pg_cron
+# schedules — see CLAUDE.md "Daily flow" / "Intraday kill-switch" — and
+# encoded as named constants in scripts/deadman_check.ts, which owns the
+# actual evaluation logic; this workflow only fetches + latches):
+#
+#   Script       | Armed window (UTC, weekdays only) | Stale threshold
+#   -------------|------------------------------------|--------------------
+#   daily-check  | >= 15:00                            | no row started
+#                |                                      | today >= 13:30 UTC
+#   kill-switch  | [13:20, 22:10]                       | latest row > 20 min
+#                |                                      | old (or absent)
+#
+# No holiday calendar is needed anywhere in this package: both daily-check
+# and kill-switch write their audit_log row *before any gate* (market-closed,
+# paused, etc.), so even a market holiday leaves a fresh row with a
+# `skipped:*` outcome — a real staleness only happens when the scheduled
+# invocation itself stops firing. Weekends are excluded by UTC weekday.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   STATUS_URL / STATUS_TOKEN            - dev status function (same values
+#                                           as .env.status / soak-digest.yml)
+#   NOTIFY_WEBHOOK_URL                    - Discord incoming webhook (same
+#                                           value as the Supabase
+#                                           NOTIFY_WEBHOOK_URL secret)
+#   STATUS_URL_PROD / STATUS_TOKEN_PROD   - prod status function, set at
+#                                           go-live (#230); prod leg is an
+#                                           inert skip until both are set
+#
+# Latch semantics (dedup — at most one alarm per incident): on a finding, the
+# workflow ensures a `deadman-dev` (or `deadman-prod`) label exists, then
+# looks for an open issue with that label. None open -> create one (title +
+# findings + a link to this run) and post the single Discord alert. One
+# already open -> no-op (that open issue IS the dedup — no second alert). On
+# a healthy evaluation with an open latch issue, the workflow closes it with
+# a "recovered" comment, which re-arms the alarm for the next incident.
+#
+# Alarm delivery vs run status: a run that successfully delivers an alarm
+# (creates the issue + posts to Discord, or dedups against an already-open
+# issue) exits **green** — the open issue is the incident marker; a red X on
+# every poll while an incident is open would be its own spam channel. Red is
+# reserved for watchdog-internal failure: dev secrets missing (loud-fail,
+# same idiom as soak-digest.yml — a silently-skipping watchdog is worthless)
+# or the Discord post failing while there are findings and no issue was
+# already open to dedup against (the issue is still created in that case —
+# only the run goes red, so the incident is never silently unrecorded).
+#
+# Silencing during maintenance: set the repo **variable** (not secret)
+# DEADMAN_SILENCED to the exact string `true` -> every step short-circuits to
+# an inert `::notice::` green exit (same idiom as heartbeat.yml's
+# HEARTBEAT_REQUIRE_PROD). Unset it (or set to anything else) to re-arm.
+#
+# This repo is PUBLIC: forks get none of the secrets above, and GitHub
+# disables scheduled workflows on forks by default, so a fork's watchdog is
+# inert.
+name: deadman-watchdog
+
+on:
+  schedule:
+    # 18 evaluations/weekday (minutes :07 and :37, hours 13-21 UTC) — free on
+    # a public repo. Offset from daily-check's :37/:37 and kill-switch's
+    # */5 slots on purpose, so a watchdog run never races a trading
+    # invocation's own audit_log write.
+    - cron: "7,37 13-21 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: deadman
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check silence flag
+        id: silence
+        run: |
+          if [ "$DEADMAN_SILENCED" = "true" ]; then
+            echo "::notice::deadman-watchdog is silenced (DEADMAN_SILENCED=true repo variable). Skipping this run. Unset the variable to re-arm. See docs/runbooks/deadman-watchdog.md."
+            echo "silenced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "silenced=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DEADMAN_SILENCED: ${{ vars.DEADMAN_SILENCED }}
+
+      - name: Checkout
+        if: steps.silence.outputs.silenced != 'true'
+        uses: actions/checkout@v5
+
+      - name: Setup Deno
+        if: steps.silence.outputs.silenced != 'true'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # -----------------------------------------------------------------
+      # dev leg — required coverage, mirrors soak-digest.yml's loud-fail
+      # idiom on missing secrets (a silently-skipping watchdog is worthless).
+      # -----------------------------------------------------------------
+
+      - name: Check dev secrets configured
+        id: check_dev
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          if [ -z "$STATUS_URL" ] || [ -z "$STATUS_TOKEN" ]; then
+            echo "::error::deadman-watchdog (dev) requires STATUS_URL and STATUS_TOKEN repo secrets to be set (Settings -> Secrets and variables -> Actions). See docs/runbooks/deadman-watchdog.md. Failing loudly — no silent skip."
+            exit 1
+          fi
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - name: Fetch dev digest
+        id: fetch_dev
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_dev.outcome == 'success' }}
+        run: |
+          if curl --fail-with-body -sS --max-time 60 --retry 2 \
+              -H "x-status-token: $STATUS_TOKEN" \
+              "$STATUS_URL" -o digest-dev.json; then
+            echo "fetched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::deadman-watchdog (dev): status endpoint unreachable or errored"
+            echo "fetched=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      # Never prints digest-dev.json (may contain account/position data) —
+      # only the evaluator's findings (timestamps + outcome strings) reach
+      # the log, same exposure class as the existing soak-digest.
+      - name: Evaluate dev
+        id: eval_dev
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_dev.outcome == 'success' }}
+        run: |
+          if [ "$FETCHED" != "true" ]; then
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "findings<<DEADMAN_EOF"
+              echo "status endpoint (dev) unreachable or errored (curl failed after retries)."
+              echo "DEADMAN_EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          OUT=$(deno run scripts/deadman_check.ts < digest-dev.json 2>&1)
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            OUT=""
+          elif [ "$CODE" -eq 1 ]; then
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            OUT="status (dev) returned a malformed digest — deadman_check.ts could not evaluate it: $OUT"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "findings<<DEADMAN_EOF"
+            echo "$OUT"
+            echo "DEADMAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          FETCHED: ${{ steps.fetch_dev.outputs.fetched }}
+
+      - name: Latch dev
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_dev.outcome == 'success' }}
+        run: bash scripts/deadman_latch.sh
+        env:
+          LABEL: deadman-dev
+          TITLE_PREFIX: "[deadman][dev]"
+          MESSAGE_PREFIX: "[dev]"
+          HEALTHY: ${{ steps.eval_dev.outputs.healthy }}
+          FINDINGS: ${{ steps.eval_dev.outputs.findings }}
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+
+      # -----------------------------------------------------------------
+      # prod leg — inert skip pre-go-live (#230), mirrors heartbeat.yml.
+      # Gated on !cancelled() (not success()) so a red dev leg can't skip it.
+      # -----------------------------------------------------------------
+
+      - name: Check prod secrets configured
+        id: check_prod
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' }}
+        run: |
+          if [ -z "$STATUS_URL_PROD" ] || [ -z "$STATUS_TOKEN_PROD" ]; then
+            echo "::notice::deadman-watchdog (prod) is inert — STATUS_URL_PROD and/or STATUS_TOKEN_PROD repo secrets are not set. Prod is not yet deployed (#230); set both at go-live. See docs/runbooks/deadman-watchdog.md. Skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
+          STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
+
+      - name: Fetch prod digest
+        id: fetch_prod
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_prod.outputs.configured == 'true' }}
+        run: |
+          if curl --fail-with-body -sS --max-time 60 --retry 2 \
+              -H "x-status-token: $STATUS_TOKEN_PROD" \
+              "$STATUS_URL_PROD" -o digest-prod.json; then
+            echo "fetched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::deadman-watchdog (prod): status endpoint unreachable or errored"
+            echo "fetched=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
+          STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
+
+      - name: Evaluate prod
+        id: eval_prod
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_prod.outputs.configured == 'true' }}
+        run: |
+          if [ "$FETCHED" != "true" ]; then
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "findings<<DEADMAN_EOF"
+              echo "status endpoint (prod) unreachable or errored (curl failed after retries)."
+              echo "DEADMAN_EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          OUT=$(deno run scripts/deadman_check.ts < digest-prod.json 2>&1)
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 0 ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            OUT=""
+          elif [ "$CODE" -eq 1 ]; then
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            OUT="status (prod) returned a malformed digest — deadman_check.ts could not evaluate it: $OUT"
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "findings<<DEADMAN_EOF"
+            echo "$OUT"
+            echo "DEADMAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          FETCHED: ${{ steps.fetch_prod.outputs.fetched }}
+
+      - name: Latch prod
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_prod.outputs.configured == 'true' }}
+        run: bash scripts/deadman_latch.sh
+        env:
+          LABEL: deadman-prod
+          TITLE_PREFIX: "[deadman][prod]"
+          MESSAGE_PREFIX: "[prod]"
+          HEALTHY: ${{ steps.eval_prod.outputs.healthy }}
+          FINDINGS: ${{ steps.eval_prod.outputs.findings }}
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
