@@ -151,6 +151,13 @@ field) so a future JSON-consuming forwarder could still route on shape: `notifyR
 `notifyError`, `notifyPanic`. `notify()` derives a Discord-native `content` field from `message`
 (codepoint-safe-truncated to Discord's 2,000-character limit), which Discord renders directly.
 
+A failed post (non-2xx or a fetch rejection) is persisted to the `notification_outbox` table
+(`_shared/outbox.ts`, #397) and retried on subsequent `daily-check`/`kill-switch` runs — the flush
+hook lives in each function's `handler.ts`, after `run()` completes, never inside `logic.ts` — bounded
+by a 72-hour TTL and a 500-attempt cap; a DB failure while enqueuing or flushing degrades to
+warn-only rather than throwing into the trading pipeline. `panic` and `status` are not wired to the
+outbox.
+
 ### Settings
 
 `config.ts` reads + range-validates settings from Edge Function secrets at function start and throws
