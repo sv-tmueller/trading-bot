@@ -217,3 +217,10 @@ carries `trades` and `regime_history` (see above). See
 `supabase/functions/status/logic.ts` (`StatusDigest`) for the exact shape —
 the function is strictly read-only and writes nothing, not even its own
 `audit_log` row.
+
+`last_runs` (#396) is always present alongside the above: the latest
+`audit_log` row's `started_at`/`outcome` for each of `daily_check` and
+`kill_switch` (`null` if that script has never written a row). This exists
+specifically so an external process can detect a stalled `pg_cron` pipeline
+without having to page through `audit_7d` — see
+`docs/runbooks/deadman-watchdog.md`.
