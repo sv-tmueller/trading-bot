@@ -102,8 +102,11 @@ dominant cost is the bid/ask spread, which — per
 `docs/research/mvp2-alpaca-options-data-spike.md` — is **not observable for free**: the TL;DR states
 "Bid/ask QUOTES are OPRA-gated" and the `quotes` endpoint returns "HTTP 404... on the free tier for
 every window tested," with real NBBO bid/ask requiring the $99/mo Algo Trader Plus (OPRA) tier (per
-the doc's "Bottom line": "the spread — the dominant cost in a credit spread — must be *modeled*
-regardless of source"). Written options (naked or covered) carry margin requirements distinct from
+the doc's TL;DR "Consequence" bullet: "the spread — the dominant cost in a credit spread — must be
+*modeled* regardless of source"). Beyond spread, the long-options cost model also carries **theta
+decay** — time-value erosion is this class's per-day carrying cost, the analog of CFD overnight
+financing — plus per-contract **OCC/regulatory fees** (the spike doc's own cost model is
+"configurable bps on mid + OCC/reg fees"). Written options (naked or covered) carry margin requirements distinct from
 premium-limited long options; this document does not price a written-options cost model at all —
 the fixed-fractional-risk framing in §5 is naturally long-options-only, so no such model is needed
 for this candidate's shape. **Options data floor: ~2024-01-18** per the spike doc's TL;DR ("Real
@@ -217,9 +220,6 @@ marked **to verify before survey**.
 **Micro index futures (MES-class) are recommended as the instrument wrapper**, based on the sourced
 facts above:
 
-- **Cheapest proportional cost among the automatable venues actually priced in this repo** — 6E
-  futures at 0.56–1.00 bp round-trip beats XTB CFD (0.79–1.75 bp) and IC Markets ECN (1.04–2.35 bp)
-  at both base and pessimistic cost (§2.2, §2.3).
 - **No overnight-financing drag** — a structural advantage over CFDs for any hold longer than a
   single session (§2.3), which matters for a "smaller trading windows" candidate that is still
   likely to hold across at least one session rather than scalp intraday (the intraday shape is
@@ -235,6 +235,12 @@ facts above:
   (MES) keeps the eventual candidate's benchmark comparison as close as possible to the existing
   after-tax-Calmar-vs-SPY bar, rather than introducing a currency-pair benchmark mismatch the way 6E
   would.
+- **Competitive proportional cost at standard contract size — with the micro premium flagged.** At
+  standard size, 6E futures (0.56–1.00 bp round-trip) beat XTB CFD (0.79–1.75 bp) and IC Markets
+  ECN (1.04–2.35 bp) at both base and pessimistic cost (§2.2, §2.3). The priced *micro* (M6E,
+  1.23–2.10 bp) is proportionally dearer and does **not** beat the cheapest CFD per round-trip, and
+  MES's own per-trip cost is unpriced in this repo (**to verify before survey**). At micro size the
+  cost leg alone therefore does not decide the class — the three structural legs above do.
 
 **Options are the defined-risk runner-up**: the premium-caps-max-loss property is attractive for a
 fixed-fractional-risk framing, but the in-repo evidence is thinner and less favorable — no confirmed
@@ -255,10 +261,10 @@ an a priori preference for futures.
 | Killed evidence | Source doc + anchor | Key figures |
 |---|---|---|
 | 4h EUR/USD 33-cell **class kill** (trend, momentum, mean-reversion families) | `docs/research/2026-07-15-forex-4h-survey-verdict.md` — Status line, §6 (line 169), §8 (lines 269–284) | Best cell median after-tax Calmar **0.337** vs SPY **1.309**; 0/33 survivors; families T (trend), M (momentum), R (mean-reversion) each dead |
-| The frozen 33-cell grid (the exact killed shapes) | `docs/research/2026-07-13-forex-4h-strategy-preregistration.md` §3 (lines 106–190), §4 (lines 194–219), freeze SHA `e409bf8` | Trend: MA-cross (5/20, 20/50, 50/200), Donchian (20, 55); Momentum: ROC (12/24/48); Mean-reversion: RSI(14) 30/70, RSI(2) 10/90, Bollinger(20,2); × R ∈ {20, 30, 50} bp |
+| The frozen 33-cell grid (the exact killed shapes) | `docs/research/2026-07-13-forex-4h-strategy-preregistration.md` §3 (lines 106–190), §4 (lines 194–219); freeze SHA `e409bf8` as recorded in `2026-07-15-forex-4h-survey-verdict.md` (lines 4, 294 — a doc cannot contain its own merge SHA) | Trend: MA-cross (5/20, 20/50, 50/200), Donchian (20, 55); Momentum: ROC (12/24/48); Mean-reversion: RSI(14) 30/70, RSI(2) 10/90, Bollinger(20,2); × R ∈ {20, 30, 50} bp |
 | Colleague **intraday / London-ORB kill** | `docs/research/2026-07-20-colleague-repo-audit.md` §2 "Forexbot" + §3 table row 1 (lands via PR #409, batch #405) | "every London-Open-Range-Breakout variant he tried lost... 'Intraday-Frage endgültig geschlossen'" |
 | Our own **intraday cost-wall kills** | `docs/research/2026-06-23-scalping-cost-wall-demonstration.md`; `docs/research/2026-06-23-short-horizon-feasibility-gate.md` §(c) | Empirical BTC cost-wall demonstration; §(c) "Go/no-go on the high-churn end" — gate failed at cost alone for the equity/crypto high-churn case |
-| **Multi-signal voting kill** | `docs/research/2026-07-20-colleague-repo-audit.md` §2 "KryptoBot" + §3 table row 4 (PR #409) | Profit factor **0.28–0.83** after costs on every variant, locked to research-only; structurally the same architecture as the pre-pivot v1.14 bot (`docs/decisions/2026-07-06-keep-200dma-regime-signal.md` for our own incumbent-vs-multi-signal reasoning) |
+| **Multi-signal voting kill** | `docs/research/2026-07-20-colleague-repo-audit.md` §2 "KryptoBot" + §3 table row 4 (PR #409) | Profit factor **0.28–0.83** after costs on every variant, locked to research-only; structurally the same architecture as the pre-pivot v1.14 bot (our own multi-signal kill rationale is the 2026-05-07 pivot history recorded in CLAUDE.md's Architectural invariants section; `docs/decisions/2026-07-06-keep-200dma-regime-signal.md` is the hold-the-one-rule-incumbent decision) |
 | **SL/TP overlay rejection** | `docs/research/2026-07-20-colleague-repo-audit.md` §2 "Forexbot" + §3 table row 6 (PR #409) | **11 variants tested over 16.5 years, all rejected**; our own survey used state-based no-TP/SL baselines instead (`2026-07-15-forex-4h-survey-verdict.md` §7) |
 | Daily FX **carry** / **regime** (killed on his own gates) | `docs/research/2026-07-20-colleague-repo-audit.md` §2/§3 (PR #409) | Carry: deflated Sharpe **0.664** < his own **≥0.95** promotion gate. Regime (ADX gate → momentum/mean-reversion): full-history Sharpe **−0.25** |
 | 4h **Donchian** breakout (KryptoBot V3) — same shape as our killed T2 | `docs/research/2026-07-20-colleague-repo-audit.md` §3 table row 5 (PR #409) | In-sample/undeflated profit factor **1.355 → 1.282** across fill models, never promoted, EUR 0 capital deployed |
@@ -268,8 +274,12 @@ an a priori preference for futures.
 ### Genuinely untested space
 
 The dead-cell registry above kills every trend/MA-cross, Donchian-breakout, ROC/TSMOM, RSI,
-Bollinger, London-ORB, multi-signal-voting, and SL/TP-overlay shape it covers, **as shapes** —
-independent of the instrument (EUR/USD, BTC) each was originally tested on. Because §2.5 recommends
+Bollinger, London-ORB, multi-signal-voting, and SL/TP-overlay shape it covers **at the
+parameterizations and cadences actually surveyed** — independent of the instrument (EUR/USD, BTC)
+each was originally tested on. Whether a kill extends to unswept parameter regions of the same
+shape is a design-time judgment, not a settled fact: any cell that re-parameterizes a killed shape
+must be justified against this registry explicitly in the survey batch's grid-freezing
+pre-registration (§6). Because §2.5 recommends
 an S&P-500-tracking wrapper (MES), any proposed family for this direction must be checked against
 those killed shapes regardless of the fact that they were killed on a different underlying.
 
@@ -286,8 +296,9 @@ is not a live proposal for the eventual survey unless a future revision of this 
 recommendation changes. On the recommended MES wrapper, the only signal shapes with **any**
 plausible novelty relative to the registry are (a) parameter regions of the killed shapes not yet
 swept — e.g. shorter/longer lookbacks than the 4h EUR/USD grid tested, since the killed grid's
-lookbacks were chosen for a 4h forex bar, not an equity-index futures bar at a different cadence —
-and (b) genuinely different shapes not represented in either kill list, such as volatility-regime
+lookbacks were chosen for a 4h forex bar, not an equity-index futures bar at a different cadence
+(any such re-parameterized cell requires the explicit per-cell registry justification described
+above) — and (b) genuinely different shapes not represented in either kill list, such as volatility-regime
 gating (distinct from the already-killed ADX-gated *direction* families) or cross-sectional/relative
 value between MES and a slower-moving reference. **This document proposes, but does not freeze,
 either direction** — the freeze-granularity split in §6 governs which document eventually pins the
