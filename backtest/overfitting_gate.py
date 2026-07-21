@@ -71,6 +71,22 @@ PBO_THRESHOLD = 0.5
 
 _EULER_MASCHERONI = 0.5772156649015329
 
+# Absolute tolerance below which a computed standard deviation is treated as
+# "zero variance" (a constant/flat return series). A literally-constant,
+# nonzero array (e.g. ``np.full(20, 0.01)``) does NOT produce an exact 0.0
+# from ``ndarray.std(ddof=1)`` -- floating-point rounding in the mean/
+# sum-of-squares accumulation leaves a residual on the order of 1e-18 for
+# per-period-return-scale inputs (~1e-4 to 1e-1 in magnitude), which a strict
+# ``std == 0.0`` / ``std > 0.0`` guard fails to catch, letting a near-zero
+# denominator blow the Sharpe ratio up to ~1e15 instead of the documented
+# 0.0. 1e-12 sits ~1e6x above that rounding floor and ~1e8x below the
+# smallest realistic non-zero return variance, so it absorbs the rounding
+# artifact (and any comparably-sized near-constant column) without masking
+# genuine variation. Applied consistently everywhere a zero-variance/flat-
+# returns guard is needed: ``probabilistic_sharpe_ratio``,
+# ``deflated_sharpe_ratio``'s ``sr_hat``, and ``_column_sharpes``.
+_ZERO_VARIANCE_ATOL = 1e-12
+
 
 # ---------------------------------------------------------------------------
 # Task 1 -- normal-distribution helpers (no scipy)
@@ -207,9 +223,10 @@ def probabilistic_sharpe_ratio(returns: ArrayLike, sr_benchmark: float = 0.0) ->
     observation returns; see the module docstring's "Units / annualization"
     section.
 
-    ``std(returns) == 0`` (flat/constant returns) is a documented
-    convention: PSR is undefined, and this returns ``0.0`` (no evidence of
-    positive skill) rather than raising or emitting a nan.
+    A flat/constant return series (``std(returns) <= _ZERO_VARIANCE_ATOL``,
+    see that constant's docstring for the tolerance rationale) is a
+    documented convention: PSR is undefined, and this returns ``0.0`` (no
+    evidence of positive skill) rather than raising or emitting a nan.
     """
     r = np.asarray(returns, dtype=float)
     n = len(r)
@@ -217,7 +234,7 @@ def probabilistic_sharpe_ratio(returns: ArrayLike, sr_benchmark: float = 0.0) ->
         raise ValueError("probabilistic_sharpe_ratio requires at least 2 observations")
 
     std = r.std(ddof=1)
-    if std == 0.0:
+    if std <= _ZERO_VARIANCE_ATOL:
         return 0.0
 
     sr = r.mean() / std
@@ -248,6 +265,15 @@ def deflated_sharpe_ratio(
     the best one); ``returns_best`` is the raw per-period return series of
     the best trial.
 
+    ``sr_benchmark`` (default ``0.0``) is *additive* to the internally
+    computed expected-max-Sharpe deflation threshold ``sr_star``: the PSR
+    call underneath uses ``sr_star + sr_benchmark`` as its benchmark, so
+    raising ``sr_benchmark`` raises the bar the best trial's Sharpe must
+    clear and DSR is monotonically non-increasing in it. Use this to
+    additionally require the deflated Sharpe to beat some external
+    benchmark (e.g. a buy-and-hold or risk-free non-annualized Sharpe) on
+    top of the multiple-testing deflation, rather than just beating chance.
+
     Raises ``ValueError`` if fewer than 2 trials are supplied -- deflating
     for a single trial is undefined (``_probit(1 - 1/1) = _probit(0)``).
     """
@@ -266,7 +292,7 @@ def deflated_sharpe_ratio(
 
     r_best = np.asarray(returns_best, dtype=float)
     std_best = r_best.std(ddof=1)
-    sr_hat = 0.0 if std_best == 0.0 else float(r_best.mean() / std_best)
+    sr_hat = 0.0 if std_best <= _ZERO_VARIANCE_ATOL else float(r_best.mean() / std_best)
 
     return {
         "dsr": dsr,
@@ -283,11 +309,18 @@ def deflated_sharpe_ratio(
 
 
 def _column_sharpes(data: np.ndarray) -> np.ndarray:
-    """Per-column non-annualized Sharpe ratio; 0.0 for zero-variance columns."""
+    """Per-column non-annualized Sharpe ratio; 0.0 for zero-variance columns.
+
+    A column is "zero-variance" when its ``std(ddof=1) <= _ZERO_VARIANCE_ATOL``
+    (see that constant's docstring for the tolerance rationale) -- not a
+    strict ``> 0.0``, which floating-point rounding can slip past for a
+    literally-constant, nonzero column.
+    """
     means = data.mean(axis=0)
     stds = data.std(axis=0, ddof=1)
-    safe_stds = np.where(stds > 0.0, stds, 1.0)
-    return np.where(stds > 0.0, means / safe_stds, 0.0)
+    is_zero_variance = stds <= _ZERO_VARIANCE_ATOL
+    safe_stds = np.where(is_zero_variance, 1.0, stds)
+    return np.where(is_zero_variance, 0.0, means / safe_stds)
 
 
 def probability_of_backtest_overfitting(

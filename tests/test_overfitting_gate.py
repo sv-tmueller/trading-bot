@@ -189,6 +189,44 @@ def test_psr_returns_zero_for_flat_returns():
     assert og.probabilistic_sharpe_ratio(np.zeros(10)) == 0.0
 
 
+def test_psr_returns_zero_for_near_constant_returns():
+    """A literally-constant, nonzero return series must not slip past the
+    zero-variance guard due to floating-point rounding in std(ddof=1) --
+    same bug class as test_column_sharpes_defines_zero_variance_column_as_zero,
+    but on the single-series PSR path instead of the vectorized CSCV path.
+    """
+    assert og.probabilistic_sharpe_ratio(np.full(20, 0.01)) == 0.0
+
+
+def test_dsr_sr_hat_is_zero_for_near_constant_best_returns():
+    """``deflated_sharpe_ratio``'s own zero-variance guard on ``returns_best``
+    (used for the reported ``sr_hat``) must use the same tolerance as the PSR
+    and CSCV paths, not a strict ``== 0.0`` that floating-point rounding can
+    slip past for a literally-constant, nonzero return series.
+    """
+    trial_sharpes = np.array([0.05, 0.06, 0.055, 0.045, 0.05])
+    result = og.deflated_sharpe_ratio(np.full(20, 0.01), trial_sharpes)
+    assert result["sr_hat"] == 0.0
+    assert result["dsr"] == 0.0
+
+
+def test_dsr_decreases_as_sr_benchmark_increases():
+    """``sr_benchmark`` is additive to the internally computed deflated
+    threshold (``sr_star``): raising it makes the bar harder to clear, so
+    DSR must be monotonically non-increasing in ``sr_benchmark``.
+    """
+    rng = np.random.default_rng(4)
+    returns_best = rng.normal(0.0025, 0.006, 400)
+    trial_sharpes = np.array([0.05, 0.06, 0.055, 0.045, 0.05])
+    benchmarks = [0.0, 0.01, 0.02, 0.05]
+    values = [
+        og.deflated_sharpe_ratio(returns_best, trial_sharpes, sr_benchmark=b)["dsr"]
+        for b in benchmarks
+    ]
+    assert values == sorted(values, reverse=True)
+    assert values[0] > values[-1]  # strictly, not just flat-clipped
+
+
 # ---------------------------------------------------------------------------
 # Task 3 -- PBO via CSCV
 # ---------------------------------------------------------------------------
