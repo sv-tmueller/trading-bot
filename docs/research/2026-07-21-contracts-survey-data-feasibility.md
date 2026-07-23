@@ -34,10 +34,10 @@ statement. This document authorizes nothing live, restating CLAUDE.md's Architec
 
 **TL;DR: recommend SPY daily bars, at daily cadence, via the yfinance daily series
 `backtest/walkforward.py` already fetches (`yf.download(..., auto_adjust=True)`, `walkforward.py:41`)
-— the same source that computed the frozen §4 SPY Calmar bar, with **33 years** of daily history
+— the same source that computed the frozen §4 SPY Calmar bar, with 33 years of daily history
 measured live (probe P6: first bar 1993-01-29). The existing Alpaca `data.alpaca.markets`
 `/v2/stocks/{symbol}/bars` access (`supabase/functions/_shared/marketdata.ts`) is the
-**recency/cross-check leg**, not the survey's primary history source.** The reason for that split is
+recency/cross-check leg, not the survey's primary history source.** The reason for that split is
 measured, not assumed: Alpaca's daily SPY history floors at **2016-01-04** (probe P1) — ≈10 available
 years, n_w≈9 — which is short of the frozen n_w=13 bar by the same margin this note disqualifies the
 5Min-SIP row for (§3). Alpaca's own documentation gives `Historical data timeframe: Since 2016` on
