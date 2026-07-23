@@ -11,7 +11,7 @@ after probe P6 showed Alpaca's daily floor cannot reach the frozen n_w=13 bar; s
 ## §0 Scope, the no-fabrication rule, and what this document does not do
 
 This document does not run a backtest, does not freeze a candidate grid, and does not authorize
-anything live. Every number below is exactly one of three kinds, labeled at the point of use:
+anything live. Every number below is exactly one of four kinds, labeled at the point of use:
 
 1. **A live probe output** — either a `curl` call against `https://data.alpaca.markets` (GET only,
    ≤5-bar or single-page responses per the task's data-download cap), transcribed with the key values
@@ -23,6 +23,12 @@ anything live. Every number below is exactly one of three kinds, labeled at the 
    pages; only availability/cadence/cost/license/methodology text.
 3. **Explicitly marked "pending #415"** — the parallel batch package fact-checking MES's exact
    contract multiplier/margin/per-trip cost. No such figure is invented here.
+4. **An explicitly-labeled convention or planning assumption** — a figure that is neither a probe
+   output nor cited to a page, but a standard convention carried openly as an input and flagged as
+   such where it is used. Two figures below are of this kind, both annotated in §3: the **nominal 78
+   RTH bars/day** (6.5h × 12, distinguished there from P3's measured 82) and the **ES/MES ~23h ×
+   5-day session** used for futures periods/year (unsourced because of the CME fetch-access gap,
+   §1.2).
 
 **This note recommends a data source + cadence for the survey's backtest data, never a different
 instrument.** The frozen `docs/research/2026-07-21-leveraged-contracts-preregistration.md` §2.5
@@ -42,8 +48,9 @@ measured, not assumed: Alpaca's daily SPY history floors at **2016-01-04** (prob
 years, n_w≈9 — which is short of the frozen n_w=13 bar by the same margin this note disqualifies the
 5Min-SIP row for (§3). Alpaca's own documentation gives `Historical data timeframe: Since 2016` on
 **both** the Basic and the Algo Trader Plus tier, so this is a hard provider floor, not a free-tier
-gate a survey could pay past (citation + access date in the Appendix). ES/MES-direct is disqualified
-at every free cadence on data-quality-plus-power grounds (§3/§5); SPY-proxy-intraday is disqualified
+gate a survey could pay past (citation + access date in the Appendix). ES/MES-direct loses at every
+free cadence (§3/§5): on power at MES-native and intraday, on unresolved splice construction at ES
+daily (§5 records the latter as resolvable, not hard). SPY-proxy-intraday is disqualified
 on power grounds (§3); SPY-proxy-daily via yfinance is the only (path × cadence) cell that clears the
 frozen n_w=13 comparability bar for free **with no unresolved data-construction question**, using
 already-existing repo infrastructure, with the systematic proxy errors (§2) reported honestly as
@@ -93,8 +100,10 @@ its page offers "a continuous futures series with prices adjusted for the price 
 contracts," so splicing is *not* left to the consumer there — but **which** convention (Panama vs
 proportional) and which roll trigger it uses is unnamed on the page fetched, so the convention still
 has to be pinned before the series is trusted. Databento's page describes raw/normalized
-market-by-order data with no continuous-contract product stated, so on that source splicing does
-remain the consumer's job. **Stitching-tractability judgment:** building a
+market-by-order data with no continuous-contract product stated, so **on the page fetched** splicing
+does remain the consumer's job there — the same hedge the §1.1 cell carries, since a page not
+stating such a product is not the same as the vendor not offering one.
+**Stitching-tractability judgment:** building a
 correctly back-adjusted continuous ES series from raw vendor data is a real, non-trivial
 methodology choice (which convention, which roll trigger) that this survey would have to pin
 explicitly before any backtest — an extra degree of freedom the SPY-proxy path (§2) does not carry,
@@ -145,8 +154,8 @@ curl -s "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=<TF>&feed=<FEE
 
 No historical request was rejected on the free tier — **SIP is permitted for historical (non-recent)
 data on this Basic account**, contradicting a naive "SIP requires a paid subscription" assumption;
-the actual gate is recency, not history depth (P2). Bisection (`p1b_iex_bisect.txt`, start dates
-2016–2019-06, all identical): the IEX-feed floor of **2020-07-27T12:49:00Z is a hard floor,
+the actual gate is recency, not history depth (P2). Bisection (start dates 2016–2019-06, all
+identical; Appendix P1): the IEX-feed floor of **2020-07-27T12:49:00Z is a hard floor,
 independent of how far back `start` is set** — IEX intraday history simply does not exist before
 that date on this account. SIP's **2016-01-01** floor is the commonly-cited Alpaca SIP-historical
 floor, now confirmed live rather than assumed.
@@ -305,7 +314,7 @@ non-noise per-block Sharpes.
 
 | Path | Cadence | Available years (free) | Periods/year | T | Block (T//16) | PBO verdict |
 |---|---|---|---|---|---|---|
-| B (SPY proxy) | Daily, **yfinance** (`walkforward.py:41`) | **≈33 available (P6: 1993-01-29→2026)**; 14 used (2013–2026, matches frozen bar) | 252 | 3,528 (on the 14 used) | 220 | **passes easily** |
+| B (SPY proxy) | Daily, **yfinance** (`walkforward.py:41`) | **≈33 available (P6: 1993-01-29→2026)**; 14 spanned (2013–2026); the frozen bar's own 13 windows are 2013–2025 | 252 | 3,528 (on the 14 spanned) | 220 | **passes easily** |
 | B (SPY proxy) | Daily, **Alpaca** `/v2/stocks/{symbol}/bars` | ≈10 (P1: 2016-01-04→2026) | 252 | 2,520 | 157 | passes on block size; **but n_w≈9 — fails the comparability bar below** |
 | B (SPY proxy) | 5Min, SIP | ≈10 (2016→2026) | 48,384 (P3: 192 bars/day) | 483,840 | 30,240 | passes trivially on block size |
 | B (SPY proxy) | 5Min, IEX | ≈6 (2020-07→2026) | 19,656 (**nominal** 78 bars/day = 6.5h RTH × 12; *not* a P3 output — P3's IEX day measured 82 bars incl. narrow pre/post) | 117,936 | 7,371 | passes trivially on block size |
@@ -415,11 +424,12 @@ round; probe evidence reverses them:
 2. **ES/MES via free yfinance, intraday cadence:** the cited interval cap (≤60 days intraday) is
    orders of magnitude short of any usable n_w — disqualified on power alone.
 3. **ES/MES via free yfinance, daily cadence (ES-proxy-for-MES):** clears n_w=13 on raw quantity,
-   but carries an **unpriced continuous-contract-quality caveat** (unadjusted front-month splice,
-   no back-adjustment) that a proper survey would have to resolve with an explicit, justified roll
-   methodology (§1.3) before trusting the series — a real but resolvable gap, not a hard
-   disqualifier, but strictly worse than Path B's zero-open-questions daily series for this survey's
-   purposes.
+   but carries an **unpriced continuous-contract-quality caveat** (characterised as an unadjusted
+   front-month splice with no back-adjustment — assumed, not probed, §1.3) that a proper survey
+   would have to resolve with an explicit, justified roll methodology (§1.3) before trusting the
+   series — a real but resolvable gap, not a hard disqualifier, but strictly worse, for this
+   survey's purposes, than Path B's daily series, which carries no continuous-contract construction
+   question.
 4. **ES/MES via paid vendors (Databento, FirstRateData), any cadence:** clears both power and
    continuous-contract quality, but requires spend this package is not authorized to make (non-goal:
    "no data downloads beyond ≤5-bar/one-page probe responses," no committed cost decision here).
