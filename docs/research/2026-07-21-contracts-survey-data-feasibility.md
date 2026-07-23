@@ -25,10 +25,13 @@ anything live. Every number below is exactly one of four kinds, labeled at the p
    contract multiplier/margin/per-trip cost. No such figure is invented here.
 4. **An explicitly-labeled convention or planning assumption** — a figure that is neither a probe
    output nor cited to a page, but a standard convention carried openly as an input and flagged as
-   such where it is used. Two figures below are of this kind, both annotated in §3: the **nominal 78
+   such where it is used. The two that feed the power table are annotated in §3: the **nominal 78
    RTH bars/day** (6.5h × 12, distinguished there from P3's measured 82) and the **ES/MES ~23h ×
    5-day session** used for futures periods/year (unsourced because of the CME fetch-access gap,
-   §1.2).
+   §1.2). Others of this kind are labeled where they occur rather than enumerated here — among them
+   the 252 trading-day annualization constant (§3 flags it as a convention the survey
+   pre-registration must pin), the assumed SR_ann values in the DSR table, and the ≥~30 obs/block
+   PBO judgment.
 
 **This note recommends a data source + cadence for the survey's backtest data, never a different
 instrument.** The frozen `docs/research/2026-07-21-leveraged-contracts-preregistration.md` §2.5
