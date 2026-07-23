@@ -2,19 +2,22 @@
 
 **Issue:** #416 · **Batch:** #413 · **Date:** 2026-07-21
 **Author:** Analyst (research-only; read-only market-data probes against
-`https://data.alpaca.markets` only, `CLAUDE_AGENT_NO_BROKER=1` set for the whole session; no
-trading endpoint touched; no broker account opened beyond the existing paper keys; no
-production/TypeScript code changed)
+`https://data.alpaca.markets` and, in fix round 1, credential-free read-only `yfinance` depth
+queries, `CLAUDE_AGENT_NO_BROKER=1` set for the whole session; no trading endpoint touched; no
+broker account opened beyond the existing paper keys; no production/TypeScript code changed)
+**Revised:** 2026-07-24 (fix round 1 — the recommended source was swapped from Alpaca to yfinance
+after probe P6 showed Alpaca's daily floor cannot reach the frozen n_w=13 bar; see §2.1, §2.1b, §5)
 
 ## §0 Scope, the no-fabrication rule, and what this document does not do
 
 This document does not run a backtest, does not freeze a candidate grid, and does not authorize
 anything live. Every number below is exactly one of three kinds, labeled at the point of use:
 
-1. **A live probe output** — a `curl` call against `https://data.alpaca.markets` (GET only, ≤5-bar
-   or single-page responses per the task's data-download cap), transcribed with the key values
-   redacted (commands below use `$ALPACA_API_KEY`/`$ALPACA_SECRET_KEY` placeholders; the full
-   transcript is quoted in the Appendix).
+1. **A live probe output** — either a `curl` call against `https://data.alpaca.markets` (GET only,
+   ≤5-bar or single-page responses per the task's data-download cap), transcribed with the key values
+   redacted (commands below use `$ALPACA_API_KEY`/`$ALPACA_SECRET_KEY` placeholders), or a
+   credential-free `yfinance` metadata read (P6–P8, added in fix round 1) that reports only a
+   symbol's first/last daily bar and row count. Full transcripts are quoted in the Appendix.
 2. **A cited documentation page** — fetched via WebFetch, cited with URL and access date
    (2026-07-21 for every citation below unless noted). No price data was scraped from any of these
    pages; only availability/cadence/cost/license/methodology text.
@@ -29,13 +32,20 @@ ever promoted) and §4 promotion bar (the #398 gate + SPY median after-tax Calma
 statement. This document authorizes nothing live, restating CLAUDE.md's Architectural invariants
 (no LLM in the trading path; one decision rule) exactly as the frozen pre-registration's §7 does.
 
-**TL;DR: recommend SPY daily bars, at daily cadence, via the existing Alpaca
-`data.alpaca.markets` `/v2/stocks/{symbol}/bars` endpoint (the same access pattern
-`supabase/functions/_shared/marketdata.ts` already uses in production), cross-checked against the
-yfinance daily series `backtest/walkforward.py` already fetches — the same source that computed
-the frozen §4 SPY Calmar bar.** ES/MES-direct is disqualified at every free cadence on data-power
-grounds (§3); SPY-proxy-intraday is disqualified on power grounds too (§3); SPY-proxy-daily is the
-only (path × cadence) cell that clears the frozen n_w=13 comparability bar for free, using
+**TL;DR: recommend SPY daily bars, at daily cadence, via the yfinance daily series
+`backtest/walkforward.py` already fetches (`yf.download(..., auto_adjust=True)`, `walkforward.py:41`)
+— the same source that computed the frozen §4 SPY Calmar bar, with **33 years** of daily history
+measured live (probe P6: first bar 1993-01-29). The existing Alpaca `data.alpaca.markets`
+`/v2/stocks/{symbol}/bars` access (`supabase/functions/_shared/marketdata.ts`) is the
+**recency/cross-check leg**, not the survey's primary history source.** The reason for that split is
+measured, not assumed: Alpaca's daily SPY history floors at **2016-01-04** (probe P1) — ≈10 available
+years, n_w≈9 — which is short of the frozen n_w=13 bar by the same margin this note disqualifies the
+5Min-SIP row for (§3). Alpaca's own documentation gives `Historical data timeframe: Since 2016` on
+**both** the Basic and the Algo Trader Plus tier, so this is a hard provider floor, not a free-tier
+gate a survey could pay past (citation + access date in the Appendix). ES/MES-direct is disqualified
+at every free cadence on data-quality-plus-power grounds (§3/§5); SPY-proxy-intraday is disqualified
+on power grounds (§3); SPY-proxy-daily via yfinance is the only (path × cadence) cell that clears the
+frozen n_w=13 comparability bar for free **with no unresolved data-construction question**, using
 already-existing repo infrastructure, with the systematic proxy errors (§2) reported honestly as
 sensitivity risk, not glossed over.
 
@@ -49,10 +59,10 @@ sensitivity risk, not glossed over.
 |---|---|---|---|---|---|
 | CME (native MES) | any | MES launched **2019** (secondary-sourced below; CME's own site would not load — see caveat) → **≈7 years** of *native* MES history as of 2026-07-21 | N/A (native contract, no splicing needed within its own life) | Exchange-listed; access cost depends on broker/vendor | Optimus Futures blog post, dated 2019-05-15, describing Micro E-mini equity-index futures as "newly launched" — corroborates a May-2019 CME launch (`https://optimusfutures.com/blog/micro-e-mini-futures/`, accessed 2026-07-21); Wikipedia's "E-mini" article states MES's contract multiplier is **$5** vs ES's **$50** (1/10 size), citing CME (`https://en.wikipedia.org/wiki/E-mini`, accessed 2026-07-21) |
 | CME (ES, standard) | any | ES introduced **1997-09-09** per Wikipedia's "E-mini S&P 500" article, which also gives ES's **$50**-multiplier and a Dec-2024 notional figure (`https://en.wikipedia.org/wiki/E-mini_S%26P_500`, accessed 2026-07-21) | N/A within a single contract's life; splicing required to build a continuous series (§1.3) | Exchange-listed | same |
-| Yahoo Finance `ES=F` / `MES=F` (via yfinance, the repo's existing fetch path in `backtest/walkforward.py`) | Daily: effectively full depth (no daily cap observed); Intraday: capped | Daily continuous front-month, **unadjusted** (no roll back-adjustment — a raw front-month splice) | **No roll handling** — Yahoo's continuous futures series is the raw front-month print, roll gaps unhandled, per the sub-plan's own framing (not independently re-verified here beyond the interval-limit citation below) | Free | Interval-limit citation: `https://algotrading101.com/learn/yfinance-guide/` (accessed 2026-07-21) states "1m data is only retrievable for the last 7 days, and anything intraday (interval <1d) only for the last 60 days" — a **more restrictive** figure than the commonly-cited "1m ≈ 30 days / 60m ≈ 730 days" planning assumption; both are noted below as the intraday depth is disqualifying either way (§3) |
+| Yahoo Finance `ES=F` / `MES=F` (via yfinance, the repo's existing fetch path in `backtest/walkforward.py`) | Daily: **probed** — `ES=F` first daily bar **2000-09-18** (6,525 bars to 2026-07-23), `MES=F` first daily bar **2019-05-03** (1,818 bars), probes P7/P8 §2.1; Intraday: capped (citation at right, **not probed**) | Daily continuous front-month, **unadjusted** (no roll back-adjustment — a raw front-month splice); **assumed / not probed** — the probes measured depth only, not splice construction | **No roll handling** — Yahoo's continuous futures series is the raw front-month print, roll gaps unhandled, per the sub-plan's own framing. **Assumed / not probed**, flagged with the same discipline as the Stooq row below: no probe here inspects roll dates or price gaps, and no citation states it | Free | Interval-limit citation: `https://algotrading101.com/learn/yfinance-guide/` (accessed 2026-07-21) states "1m data is only retrievable for the last 7 days, and anything intraday (interval <1d) only for the last 60 days" — a **more restrictive** figure than the commonly-cited "1m ≈ 30 days / 60m ≈ 730 days" planning assumption; both are noted below as the intraday depth is disqualifying either way (§3) |
 | Stooq (`es.f` and similar continuous-futures symbols) | daily | **Not independently verified** — `stooq.com` did not return fetchable page content to WebFetch on repeated attempts (empty/JS-rendered response), so no depth/terms figure is reported. Treated as **unverified**, not as a data point either for or against this path. | unknown | Historically free for retail daily use, per general market knowledge; not independently sourced here | fetch attempts: `https://stooq.com/db/`, `https://stooq.com/db/h/`, `https://stooq.com/help/?id=42` — all returned empty content to WebFetch, 2026-07-21 |
 | Databento (`GLBX.MDP3`, CME Globex market data) | any (tick/MBO up to any downsampled bar cadence) | **"16+ years of available history"** per Databento's pricing page (≈ back to 2010) | Vendor provides raw/normalized market-by-order data; continuous-contract construction is the consumer's responsibility (not stated as a Databento-provided derived product on the page fetched) | **"Pay as you go with usage-based pricing ($/GB)," no subscription required** for the usage-based tier, per the same page | `https://databento.com/pricing`, accessed 2026-07-21 |
-| FirstRate Data (futures bars) | 1-minute, 5-minute, 30-minute, 1-hour, 1-day | **"starting back to 2007"** for "the most active 130 contracts (as of July 2026)," explicitly naming E-mini S&P 500 (ES) as a covered product | Vendor-constructed historical bar series (methodology not detailed on the page fetched) | Paid (no price quoted on the page fetched) | `https://firstratedata.com`, accessed 2026-07-21 |
+| FirstRate Data (futures bars) | 1-minute, 5-minute, 30-minute, 1-hour, 1-day | **"starting back to 2007"** for "the most active 130 contracts (as of July 2026)," explicitly naming E-mini S&P 500 (ES) as a covered product | **Vendor-constructed and roll-adjusted** — the page states it provides "both individual futures contracts as well as a continuous futures series with prices adjusted for the price gaps from rolling contracts (this series is best suited to long timeframe backtesting of futures trading strategies)". The **method** (Panama/difference vs proportional/ratio, §1.3) and the roll-date trigger are not named on the page fetched | Paid (no price quoted on the page fetched) | `https://firstratedata.com`, accessed 2026-07-21, quote re-verified 2026-07-24 |
 | CQG / PortaraCQG | — | not fetched (`https://www.cqg.com/data/data-sources` returned HTTP 404) | — | — | attempted, not sourced |
 
 ### §1.2 CME's own site — a repeated fetch-access limitation
@@ -76,10 +86,15 @@ is used to proportionally adjust the prices of historical contracts" — a ratio
 fixed-days-before-expiry roll-date convention (the article's own default implementation uses
 `rollover_days=5`) rather than a volume-crossover trigger
 (`https://www.quantstart.com/articles/Continuous-Futures-Contracts-for-Backtesting-Purposes/`,
-accessed 2026-07-21). **This is a citable methodology, not a claim that any of the sources in §1.1
-already apply it** — Yahoo's `ES=F`/`MES=F` series is explicitly raw/unadjusted (no back-adjustment
-at all); whether Databento or FirstRateData apply Panama, proportional, or leave splicing to the
-consumer is not stated on the pages fetched. **Stitching-tractability judgment:** building a
+accessed 2026-07-21). **This is a citable methodology, not a claim that every source in §1.1 already
+applies it** — Yahoo's `ES=F`/`MES=F` series is characterised as raw/unadjusted with no
+back-adjustment at all (assumed, not probed — §1.1). **FirstRateData does state it back-adjusts**:
+its page offers "a continuous futures series with prices adjusted for the price gaps from rolling
+contracts," so splicing is *not* left to the consumer there — but **which** convention (Panama vs
+proportional) and which roll trigger it uses is unnamed on the page fetched, so the convention still
+has to be pinned before the series is trusted. Databento's page describes raw/normalized
+market-by-order data with no continuous-contract product stated, so on that source splicing does
+remain the consumer's job. **Stitching-tractability judgment:** building a
 correctly back-adjusted continuous ES series from raw vendor data is a real, non-trivial
 methodology choice (which convention, which roll trigger) that this survey would have to pin
 explicitly before any backtest — an extra degree of freedom the SPY-proxy path (§2) does not carry,
@@ -100,7 +115,7 @@ eventual live/paper candidate — the wrapper choice in §2.5 is unaffected eith
 
 ---
 
-## §2 Path B — SPY proxy via existing Alpaca access
+## §2 Path B — SPY proxy via the repo's existing access (Alpaca + yfinance)
 
 ### §2.1 Alpaca probe matrix (P1–P5)
 
@@ -135,6 +150,16 @@ the actual gate is recency, not history depth (P2). Bisection (`p1b_iex_bisect.t
 independent of how far back `start` is set** — IEX intraday history simply does not exist before
 that date on this account. SIP's **2016-01-01** floor is the commonly-cited Alpaca SIP-historical
 floor, now confirmed live rather than assumed.
+
+**Consequence for the survey — this is the load-bearing P1 finding.** The `1Day | sip` row above
+floors at **2016-01-04**, so Alpaca's *daily* SPY depth is ≈10 available years → **n_w ≈ 9**, three
+to four calendar windows short of the frozen n_w=13 bar — the same shortfall that disqualifies the
+5Min-SIP row in §3. This is a **provider floor, not a tier gate**: Alpaca's own market-data
+documentation lists `Historical data timeframe: Since 2016` for both the Basic and the Algo Trader
+Plus tier (`https://docs.alpaca.markets/docs/about-market-data-api`, accessed 2026-07-24), so no
+amount of spend on Alpaca reaches 2013. **Alpaca therefore cannot be the survey's primary history
+source at any cadence**; §5 recommends it as the recency/cross-check leg instead, over the
+2016→present overlap where it does have data.
 
 **P2 — recency restriction.** `timeframe=1Min&feed=sip`, `start`=now−5min:
 
@@ -187,6 +212,36 @@ priced into the forward curve, a structurally different mechanism (§2.2).
 `start=2020-07-27T00:00:00Z`: **10,000 bars returned** (2020-07-27T12:49 → 2020-09-01T18:13),
 `next_page_token` **present**. Full-depth pulls are mechanically feasible via the documented
 pagination contract; no full-history download was performed (per the task's data cap).
+
+### §2.1b yfinance daily-depth probes (P6–P8)
+
+These probes exist because the earlier revision of this note asserted yfinance's daily depth as
+"full depth observed" with no probe behind it — an assumed number presented as an observation.
+yfinance needs no credentials, so unlike P1–P5 these are reproducible by anyone. Each call is
+`yf.download(<symbol>, period="max", interval="1d", auto_adjust=True)` — the identical fetch shape
+`backtest/walkforward.py:41` already uses, so the measured series *is* the survey's candidate series,
+not a near-relative of it. Accessed **2026-07-24**; full transcript in the Appendix.
+
+| Probe | Symbol | Daily bars returned | First daily bar | Last daily bar | Calendar span |
+|---|---|---|---|---|---|
+| **P6** | `SPY` | **8,427** | **1993-01-29** | 2026-07-23 | **≈33 years** |
+| **P7** | `ES=F` | 6,525 | **2000-09-18** | 2026-07-23 | ≈26 years |
+| **P8** | `MES=F` | 1,818 | **2019-05-03** | 2026-07-23 | ≈7 years |
+
+Readings:
+
+- **P6 settles the primary-source question.** SPY daily via yfinance reaches 1993 — it covers the
+  frozen bar's 2013–2025 windows with two decades to spare, where Alpaca's daily floor (2016, P1)
+  does not reach 2013 at all. Depth in the §3 daily row is attributable to **yfinance**, not to
+  Alpaca; the earlier revision credited one provider's cell with the other's number.
+- **P7** replaces the unprobed "full depth observed" claim for `ES=F` with a measured 2000-09-18
+  start. Depth is confirmed; the **splice quality** of that series is a separate question these
+  probes do **not** answer (§1.1 marks it assumed / not probed).
+- **P8** independently corroborates the secondary-sourced May-2019 MES launch date (§1.1/§1.2) from
+  price data rather than a blog post: the first `MES=F` daily bar is 2019-05-03. Complete
+  calendar years 2020–2025 = 6, so after the never-scored warm-up year the MES-native path yields
+  n_w ≈ 5 — at or just under the "≈6 at best" upper bound §1.4/§3 already state, and either way far
+  short of 13.
 
 ### §2.2 The systematic proxy error, enumerated honestly
 
@@ -250,13 +305,14 @@ non-noise per-block Sharpes.
 
 | Path | Cadence | Available years (free) | Periods/year | T | Block (T//16) | PBO verdict |
 |---|---|---|---|---|---|---|
-| B (SPY proxy) | Daily (existing yfinance/Alpaca) | 14 (2013–2026, matches frozen bar) | 252 | 3,528 | 220 | **passes easily** |
+| B (SPY proxy) | Daily, **yfinance** (`walkforward.py:41`) | **≈33 available (P6: 1993-01-29→2026)**; 14 used (2013–2026, matches frozen bar) | 252 | 3,528 (on the 14 used) | 220 | **passes easily** |
+| B (SPY proxy) | Daily, **Alpaca** `/v2/stocks/{symbol}/bars` | ≈10 (P1: 2016-01-04→2026) | 252 | 2,520 | 157 | passes on block size; **but n_w≈9 — fails the comparability bar below** |
 | B (SPY proxy) | 5Min, SIP | ≈10 (2016→2026) | 48,384 (P3: 192 bars/day) | 483,840 | 30,240 | passes trivially on block size |
-| B (SPY proxy) | 5Min, IEX | ≈6 (2020-07→2026) | 19,656 (P3: 78 bars/day RTH-ish) | 117,936 | 7,371 | passes trivially on block size |
-| A (ES/MES) | Daily, free (yfinance `ES=F`) | full depth observed (no daily cap found; unadjusted roll caveat, §1.1) | 252 | large | large | passes trivially on block size |
+| B (SPY proxy) | 5Min, IEX | ≈6 (2020-07→2026) | 19,656 (**nominal** 78 bars/day = 6.5h RTH × 12; *not* a P3 output — P3's IEX day measured 82 bars incl. narrow pre/post) | 117,936 | 7,371 | passes trivially on block size |
+| A (ES/MES) | Daily, free (yfinance `ES=F`) | **≈26 (P7: 2000-09-18→2026)**; unadjusted-roll caveat, §1.1 | 252 | large | large | passes trivially on block size |
 | A (ES/MES) | Daily/intraday, paid (Databento/FirstRateData) | 16 / since-2007 (≈19) | any | large | large | passes trivially on block size |
 | A (ES/MES) | Intraday, free (yfinance) | ≤60 days (§1.1 citation) | any | tiny | tiny | **fails PBO block-size floor outright** |
-| A (MES-native, any cadence) | any | ≈7 (since 2019) | any | moderate | moderate | PBO block size fine; **n_w≈6 fails the bootstrap comparability bar below** |
+| A (MES-native, any cadence) | any | ≈7 (P8: first `MES=F` daily bar 2019-05-03) | any | moderate | moderate | PBO block size fine; **n_w≈5–6 fails the bootstrap comparability bar below** |
 
 **The binding constraint is not PBO block size (every non-trivially-short source clears it) — it is
 the n_w=13 calendar-window comparability bar and, secondarily, the DSR years-of-history
@@ -264,16 +320,21 @@ requirement.** Verdict by (path × cadence), against n_w=13:
 
 | Path | Cadence | Years of free history | n_w achievable | Clears n_w=13? |
 |---|---|---|---|---|
-| B (SPY proxy) | **Daily** (yfinance/Alpaca) | multi-decade (matches frozen bar's own 2013–2025 span) | **13–14** | **Yes** |
+| B (SPY proxy) | **Daily, yfinance** | **≈33 (P6: 1993→2026)** — spans the frozen bar's own 2013–2025 windows with two decades to spare | **13–14 (32 at most)** | **Yes** |
+| B (SPY proxy) | Daily, Alpaca | ≈10 (P1: 2016-01-04 floor; provider floor on every tier, not a free-tier gate) | ≈9 | **No** (short by ~3–4 windows) — cross-check leg only, §5 |
 | B (SPY proxy) | 5Min, SIP | ≈10 | ≈9 | No (short by ~3–4 windows) |
 | B (SPY proxy) | 5Min, IEX | ≈6 | ≈5 | No (short by ~7–8 windows) |
-| A (ES/MES) | Daily, free (yfinance, unadjusted roll) | multi-decade for ES; roll-splice quality unverified | 13+ (quantity), quality caveat (§1.3) | Quantity yes; **quality flagged, not free of a modeling decision** |
+| A (ES/MES) | Daily, free (yfinance, unadjusted roll) | ≈26 for ES (P7: 2000-09-18); roll-splice quality unprobed | 13+ (quantity), quality caveat (§1.3) | Quantity yes; **quality flagged, not free of a modeling decision** |
 | A (ES/MES) | Daily/intraday, paid vendor | 16 (Databento) / ≈19 (FirstRateData, since 2007) | 13+ | Yes, **at cost** (non-goal: no spend authorized here) |
 | A (ES/MES) | Intraday, free (yfinance) | <1 (60-day cap, §1.1) | ~0 | **No — orders of magnitude short** |
-| A (MES-native, any cadence) | ≈7 | ≈6 | **No** (native-only) |
+| A (MES-native) | any cadence | ≈7 (P8: 2019-05-03) | ≈5–6 | **No** (native-only) |
 
-**Periods/year annotation.** Sourced from P3 (SPY: 78 RTH / 192 extended 5-min bars/day) and cited
-CME session hours (ES/MES ~23h×5-day, per this note's own framing, not independently re-verified
+**Periods/year annotation.** The 192 extended-hours figure is a genuine P3 output (08:00–23:55 UTC
+inclusive = 192 five-minute slots). The 78 RTH figure is **not** — it is the nominal 6.5h × 12
+convention, carried explicitly as an assumption; P3's IEX day actually measured 82 bars (RTH plus a
+narrow pre/post fringe). The power arithmetic above is stated against the nominal 78, and is
+self-consistent on that input (78 × 252 = 19,656; 117,936 // 16 = 7,371). Futures periods/year use
+cited CME session hours (ES/MES ~23h×5-day, per this note's own framing, not independently re-verified
 against a CME session-calendar citation this session — the CME-fetch-access gap, §1.2, applies
 here too). **The exact annualization constant (252 vs a futures-session count) is a convention the
 survey's own pre-registration must pin explicitly**, exactly as the forex precedent pinned √260 vs
@@ -308,19 +369,36 @@ per the sub-plan's instruction.
 
 ## §5 Recommendation
 
-**Recommended (data source, cadence) pair: SPY daily bars via the existing Alpaca
-`data.alpaca.markets` `/v2/stocks/{symbol}/bars` endpoint (matching production `marketdata.ts`),
-at daily cadence, cross-checked against the yfinance daily series `backtest/walkforward.py`
-already fetches.**
+**Recommended (data source, cadence) pair: SPY daily bars from the yfinance daily series
+`backtest/walkforward.py:41` already fetches (`yf.download(..., auto_adjust=True)`), at daily
+cadence.** That is the single (source, cadence) pair the survey runs on.
+
+**The Alpaca `/v2/stocks/{symbol}/bars` access is retained as a secondary cross-check leg, not as
+the survey's history source.** An earlier revision of this note had these two roles the other way
+round; probe evidence reverses them:
+
+- Alpaca's daily SPY history floors at **2016-01-04** (P1), ≈10 years → n_w≈9, and Alpaca's own
+  documentation lists `Historical data timeframe: Since 2016` on **both** the Basic and Algo Trader
+  Plus tiers — a provider floor, not a payable free-tier gate. A source that cannot reach 2013
+  cannot be compared to the frozen §4 bar apples-to-apples, so it cannot be the primary.
+- yfinance daily SPY reaches **1993-01-29** (P6, 8,427 bars) — it covers 2013–2025 with two decades
+  of margin, and it is the **same fetch call** that produced the frozen bar.
+- The cross-check leg still earns its place: production `marketdata.ts` reads SPY daily from Alpaca,
+  so any candidate eventually promoted to live would run on Alpaca's series. Reconciling the two
+  providers over their **2016→present overlap** is the cheap check that the survey's research series
+  and the live series do not silently diverge. It is a consistency check, never the depth source.
 
 **Why this cell and no other:**
 
 - It is the **only (path × cadence) cell in §3 that clears the frozen n_w=13 comparability bar for
-  free**, using infrastructure this repo already has integrated (`marketdata.ts` in production,
-  `walkforward.py` in research) — zero new integration work, zero new spend.
+  free with no unresolved data-construction question** (the ES-daily-free cell also clears it on raw
+  quantity — see disqualifier 3 below — so "only" is scoped to that qualifier, not to raw window
+  count), using infrastructure this repo already has integrated (`walkforward.py` in research,
+  `marketdata.ts` in production for the cross-check leg) — zero new integration work, zero new spend.
 - It **directly reconciles with the frozen §4 bar's own computation** — the SPY median after-tax
-  Calmar 1.3085475049604838 was itself computed on 2013–2025 calendar-year windows from this same
-  data family (the pre-registration's own reproduction note: yfinance reproduced the median to
+  Calmar 1.3085475049604838 was itself computed on 2013–2025 calendar-year windows by
+  `backtest/walkforward.py`, i.e. from this exact fetch call, not merely from the same data family
+  (the pre-registration's own reproduction note: yfinance reproduced the median to
   1.3085323112253744, a ~1.2e-5 relative difference attributed to routine `auto_adjust`
   micro-revisions). Using the same family for the candidate keeps the comparison apples-to-apples,
   the exact rationale §2.5 of the frozen pre-registration already gave for choosing an
@@ -331,8 +409,9 @@ already fetches.**
 
 **The losing paths' disqualifiers, enumerated:**
 
-1. **ES/MES-native-only, any cadence:** ≈7 years of history (since MES's 2019 launch) cannot reach
-   n_w=13 at all (n_w≈6 at best) — disqualified on power alone, independent of cost or access.
+1. **ES/MES-native-only, any cadence:** ≈7 years of history (first `MES=F` daily bar 2019-05-03,
+   probe P8) cannot reach n_w=13 at all (n_w≈5–6 at best) — disqualified on power alone, independent
+   of cost or access.
 2. **ES/MES via free yfinance, intraday cadence:** the cited interval cap (≤60 days intraday) is
    orders of magnitude short of any usable n_w — disqualified on power alone.
 3. **ES/MES via free yfinance, daily cadence (ES-proxy-for-MES):** clears n_w=13 on raw quantity,
@@ -349,6 +428,11 @@ already fetches.**
    (n_w≈5). Both are disqualified against the frozen comparability bar, even though the *path*
    (SPY-proxy) is otherwise the recommended one — it is specifically the **daily** cadence within
    that path that survives.
+6. **SPY-proxy, daily cadence, sourced from Alpaca:** right path, right cadence, wrong provider —
+   the 2016-01-04 floor (P1) caps it at n_w≈9, and Alpaca's documentation shows the floor is
+   identical on the paid Algo Trader Plus tier, so it is not purchasable away. Demoted to the
+   cross-check leg described above rather than dropped, because it is the series production actually
+   trades on.
 
 **This does not revise the frozen §2.5 wrapper or §4 bar.** §2.5 recommends MES-class futures as
 the **live/paper trading instrument**, a question about broker access, leverage regime, and cost
@@ -366,10 +450,11 @@ a caveat on the recommended path, not a finding that kills it.
 
 ## Appendix — probe transcript
 
-All commands below were run with `CLAUDE_AGENT_NO_BROKER=1` set and credentials sourced from
-`.env.backfill` into shell environment variables, never printed. Every response shown is either
-≤5 bars or a single non-paginated page, per the task's data-download cap; option `sort=asc` and
-`adjustment` explicit throughout.
+All commands below were run with `CLAUDE_AGENT_NO_BROKER=1` set. The Alpaca probes (P1–P5) sourced
+credentials from `.env.backfill` into shell environment variables, never printed; every response
+shown is either ≤5 bars or a single non-paginated page, per the task's data-download cap, with
+`sort=asc` and `adjustment` explicit throughout. The yfinance probes (P6–P8) use **no credentials at
+all** and print only depth metadata, so they are re-runnable by any reviewer.
 
 ### P1 — history depth per (timeframe × feed)
 
@@ -438,7 +523,71 @@ curl -s "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=1Min&feed=iex&
 **present** (value not reproduced here — it is an opaque pagination cursor, not a secret, but
 omitted as noise).
 
-### WebFetch citations (documentation only, no price data), all accessed 2026-07-21
+### P6/P7/P8 — yfinance daily depth (added 2026-07-24, fix round 1)
+
+No credentials are involved, so unlike P1–P5 these three are reproducible by anyone with the repo's
+Python dependencies. The script below was run from the session scratchpad (nothing committed) once
+per symbol, with `CLAUDE_AGENT_NO_BROKER=1` set:
+
+```python
+from __future__ import annotations
+import sys
+import yfinance as yf
+
+symbol = sys.argv[1]
+df = yf.download(symbol, period="max", interval="1d", auto_adjust=True, progress=False)
+print("symbol:", symbol)
+print("rows:", len(df))
+print("first:", df.index[0].date(), "last:", df.index[-1].date())
+print(df.head(2).to_string())
+```
+
+`period="max", interval="1d", auto_adjust=True` mirrors `backtest/walkforward.py:41`
+(`yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)`) with the date bounds
+removed so the provider's own floor is what gets measured. Environment: `python3` 3.9, `yfinance`
+1.2.0. Outputs verbatim (Yahoo warning lines stripped):
+
+**P6 — `SPY`:**
+```
+symbol: SPY
+rows: 8427
+first: 1993-01-29 last: 2026-07-23
+Price           Close       High        Low       Open   Volume
+Ticker            SPY        SPY        SPY        SPY      SPY
+Date
+1993-01-29  24.113276  24.130426  24.010374  24.130426  1003200
+1993-02-01  24.284773  24.284773  24.130421  24.130421   480500
+```
+
+**P7 — `ES=F`:**
+```
+symbol: ES=F
+rows: 6525
+first: 2000-09-18 last: 2026-07-23
+Price        Close     High      Low     Open  Volume
+Ticker        ES=F     ES=F     ES=F     ES=F    ES=F
+Date
+2000-09-18  1467.5  1489.75  1462.25  1485.25  104794
+2000-09-19  1478.5  1482.75  1466.75  1467.00  103371
+```
+
+**P8 — `MES=F`:**
+```
+symbol: MES=F
+rows: 1818
+first: 2019-05-03 last: 2026-07-23
+Price        Close    High      Low    Open  Volume
+Ticker       MES=F   MES=F    MES=F   MES=F   MES=F
+Date
+2019-05-03  2947.5  2947.5  2947.50  2947.5  159243
+2019-05-06  2932.5  2947.5  2883.75  2947.5  159243
+```
+
+**Scope of what these probes establish:** availability depth only — the earliest and latest daily bar
+each symbol serves, and the row count between them. They say nothing about how the `ES=F`/`MES=F`
+continuous series is spliced, which remains **assumed / not probed** (§1.1, §1.3).
+
+### WebFetch citations (documentation only, no price data), accessed 2026-07-21 unless noted
 
 - `https://en.wikipedia.org/wiki/E-mini_S%26P_500` — ES launch date (1997-09-09), $50 multiplier.
 - `https://en.wikipedia.org/wiki/E-mini` — MES multiplier ($5, vs ES $50), citing CME.
@@ -453,6 +602,16 @@ omitted as noise).
 - `https://www.quantstart.com/articles/Continuous-Futures-Contracts-for-Backtesting-Purposes/` —
   Panama (difference) vs proportional (ratio) back-adjustment methods; fixed-days-before-expiry
   roll convention (`rollover_days=5` default in the article's own implementation).
+- `https://docs.alpaca.markets/docs/about-market-data-api` — **accessed 2026-07-24** (fix round 1).
+  The tier-comparison table gives `Historical data timeframe: Since 2016` in **two** adjacent cells
+  (Basic and Algo Trader Plus), i.e. the 2016 floor P1 measured is a provider-wide limit, not a
+  free-tier gate. Reproduce with:
+  `curl -sL -A "Mozilla/5.0" https://docs.alpaca.markets/docs/about-market-data-api | tr '<' '\n' | grep -i "Historical data timeframe" -A2`
+- `https://firstratedata.com` — **quote re-verified 2026-07-24** (fix round 1): "We provide both
+  individual futures contracts as well as a continuous futures series with prices adjusted for the
+  price gaps from rolling contracts (this series is best suited to long timeframe backtesting of
+  futures trading strategies)." Reproduce with:
+  `curl -sL -A "Mozilla/5.0" https://firstratedata.com | tr '<' '\n' | grep -i "continuous futures series"`
 
 ### Fetch attempts that did not yield citable content (reported, not silently dropped)
 
