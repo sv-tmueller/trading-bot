@@ -17,7 +17,12 @@ The critical reuse property (so #431's ORB can reuse this with no rework):
 the caller** — it never hardcodes ``entry ± kN`` internally. Turtle passes
 ``entry − 2N`` / ``entry + R·N``; ORB will pass the OR opposite side / a measured move.
 
-Frozen fill / tie-break / gap conventions (long-only v1) — see
+Direction (#434): ``simulate_bracket(..., direction="short")`` mirrors every convention
+onto the short side (stop above entry, target below; adverse gap = gap UP). The long path
+is unchanged from the reviewed #430 engine. This closes the "long-only v1" limitation that
+stopped #431's ORB probe from replicating Zarattini & Aziz's long/short setup.
+
+Frozen fill / tie-break / gap conventions (v1, stated long-side; short mirrors) — see
 docs/research/2026-07-24-turtle-breakout-verdict.md. Exit tests run STRICTLY AFTER the
 entry bar (the entry bar is never tested for an exit):
   1. Open-gap first: ``open ≤ stop`` → STOP filled at ``open`` (adverse gap, no gift);
@@ -43,6 +48,13 @@ import pandas as pd
 
 from backtest.regime import COMMISSION_BPS, SLIPPAGE_BPS, STARTING_CASH
 
+# Trade direction. ``simulate_bracket`` is single-lot and takes ONE direction per call;
+# a long/short strategy runs the engine twice and combines the two ledgers (the arms are
+# independent, so this keeps the single-lot accounting simple and auditable).
+LONG = "long"
+SHORT = "short"
+DIRECTIONS = (LONG, SHORT)
+
 
 def donchian_breakout_signal(
     high: pd.Series, close: pd.Series, window: int = 55
@@ -66,12 +78,37 @@ def _resolve_bar(
     low: float,
     stop: float,
     target: Optional[float],
+    direction: str = LONG,
 ) -> Optional[Tuple[float, str]]:
     """Resolve one post-entry bar to an exit ``(fill_level, reason)`` or ``None`` (carry).
 
     Pure price logic (no costs). ``target`` may be ``None`` (pure-stop bracket). Encodes
     the frozen conventions: open-gap first, then STOP-first intra-bar tie-break.
+
+    ``direction`` selects the geometry. For ``"long"`` the stop sits BELOW the entry and
+    the target ABOVE it; for ``"short"`` the relationship is mirrored (stop above, target
+    below), and so is every comparison. The two frozen conventions are preserved in the
+    mirror: an adverse open gap fills at the OPEN (never a gift), a favorable open gap is
+    CAPPED at the target (D3), and a bar touching both levels resolves STOP-first.
     """
+    if direction == SHORT:
+        # 1. Open-gap first. Adverse for a short is a gap UP through the stop.
+        if open_ >= stop:
+            return (open_, "stop")       # gapped through the stop: fill at open, no gift
+        if target is not None and open_ <= target:
+            return (target, "target")    # gapped below the target: cap at target (D3)
+
+        # 2. Intra-bar: open is inside the bracket. High threatens a short's stop.
+        hit_stop = high >= stop
+        hit_target = target is not None and low <= target
+        if hit_stop and hit_target:
+            return (stop, "stop")        # conservative STOP-first tie-break
+        if hit_stop:
+            return (stop, "stop")
+        if hit_target:
+            return (target, "target")
+        return None                      # neither touched: carry
+
     # 1. Open-gap first (an adverse/favorable gap is resolved at the open).
     if open_ <= stop:
         return (open_, "stop")           # gapped through the stop: fill at open, no gift
@@ -134,8 +171,9 @@ def simulate_bracket(
     commission_bps: int = COMMISSION_BPS,
     eow_close_out: bool = True,
     session_close_out: bool = False,
+    direction: str = LONG,
 ) -> dict:
-    """Long-only single-lot bracket simulation over an OHLC frame.
+    """Single-lot bracket simulation over an OHLC frame (long or short).
 
     Parameters
     ----------
@@ -164,6 +202,14 @@ def simulate_bracket(
         calendar date (``exit_reason="session"``) — the intraday EOD-flat mode #431's ORB
         uses (never hold overnight). Additive and independent of ``eow_close_out``; a
         natural stop/target exit still takes priority on the same bar.
+    direction:
+        ``"long"`` (default, the #430 behavior) or ``"short"``. A short entry SELLS at the
+        trigger bar's open and buys back at the exit; slippage and commission work against
+        the account on both legs. The caller still owns the geometry — for a short, pass a
+        ``stop_prices`` level ABOVE the entry and a ``target_prices`` level BELOW it. Sizing
+        is the same all-in, unlevered notional convention as the long side, so the two arms
+        are directly comparable. Single-lot per call: a long/short strategy runs the engine
+        once per direction and combines the ledgers.
 
     Returns
     -------
@@ -172,6 +218,10 @@ def simulate_bracket(
     ``trades`` (list of dicts with entry_date/exit_date/entry_price/exit_price/qty/
     pnl/return_pct/exit_reason), ``equity_curve`` (pd.Series marked to close).
     """
+    if direction not in DIRECTIONS:
+        raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
+    is_short = direction == SHORT
+
     index = df.index
     n = len(index)
     opens = df["Open"].to_numpy(dtype=float)
@@ -203,12 +253,32 @@ def simulate_bracket(
     trades: list[dict] = []
     equity_curve: list[tuple] = []
 
+    def _mark(cash_: float, qty_: int, close_: float) -> float:
+        """Mark the account to a bar close.
+
+        A long holds ``qty`` shares as an asset (``cash + qty·close``). A short has
+        already been credited the sale proceeds into ``cash`` and OWES ``qty`` shares,
+        so the open position is a liability (``cash − qty·close``). Both reduce to
+        ``cash`` when flat.
+        """
+        return cash_ - qty_ * close_ if is_short else cash_ + qty_ * close_
+
     def _close(fill_level: float, reason: str, ts) -> None:
         nonlocal cash, qty, entry_price, entry_date, cur_stop, cur_target
-        exec_px = fill_level * (1 - slip)
-        proceeds = qty * exec_px * (1 - comm)
-        pnl = proceeds - qty * entry_price * (1 + comm)
-        cash += proceeds
+        if is_short:
+            # Closing a short BUYS the shares back: slippage and commission both work
+            # against us (pay more), the mirror of the long exit below.
+            exec_px = fill_level * (1 + slip)
+            cost = qty * exec_px * (1 + comm)
+            pnl = qty * entry_price * (1 - comm) - cost
+            cash -= cost
+            return_pct = 1.0 - exec_px / entry_price
+        else:
+            exec_px = fill_level * (1 - slip)
+            proceeds = qty * exec_px * (1 - comm)
+            pnl = proceeds - qty * entry_price * (1 + comm)
+            cash += proceeds
+            return_pct = exec_px / entry_price - 1.0
         trades.append({
             "entry_date": entry_date,
             "exit_date": ts,
@@ -216,7 +286,7 @@ def simulate_bracket(
             "exit_price": exec_px,
             "qty": qty,
             "pnl": pnl,
-            "return_pct": exec_px / entry_price - 1.0,
+            "return_pct": return_pct,
             "exit_reason": reason,
         })
         qty = 0
@@ -232,22 +302,28 @@ def simulate_bracket(
             # final bar: there is no subsequent bar to ever exit on, and a same-bar
             # forced close-out would violate exit_date > entry_date.
             if trig[i] and i != n - 1 and not np.isnan(stops[i]):
-                exec_px = opens[i] * (1 + slip)
+                # Opening a short SELLS: slippage works against us (receive less).
+                exec_px = opens[i] * (1 - slip) if is_short else opens[i] * (1 + slip)
                 size = int(cash / exec_px / (1 + comm)) if exec_px > 0 else 0
                 if size > 0:
                     qty = size
-                    cash -= qty * exec_px * (1 + comm)
+                    if is_short:
+                        cash += qty * exec_px * (1 - comm)
+                    else:
+                        cash -= qty * exec_px * (1 + comm)
                     entry_price = exec_px
                     entry_date = ts
                     cur_stop = stops[i]
                     cur_target = (
                         None if targets is None or np.isnan(targets[i]) else targets[i]
                     )
-            equity_curve.append((ts, cash + qty * closes[i]))
+            equity_curve.append((ts, _mark(cash, qty, closes[i])))
             continue
 
         # In a position on a bar strictly after the entry bar.
-        res = _resolve_bar(opens[i], highs[i], lows[i], cur_stop, cur_target)
+        res = _resolve_bar(
+            opens[i], highs[i], lows[i], cur_stop, cur_target, direction
+        )
         if res is not None:
             _close(res[0], res[1], ts)
             equity_curve.append((ts, cash))
@@ -263,7 +339,7 @@ def simulate_bracket(
             equity_curve.append((ts, cash))
             continue
 
-        equity_curve.append((ts, cash + qty * closes[i]))
+        equity_curve.append((ts, _mark(cash, qty, closes[i])))
 
     # Close any lot still open at the final bar's close.
     if qty > 0:

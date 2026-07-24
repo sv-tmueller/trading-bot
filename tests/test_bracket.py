@@ -419,3 +419,203 @@ def test_donchian_strict_inequality_no_equal_breakout():
     close = pd.Series([9.0, 9.0, 10.0], index=idx)  # equals prior high, not >
     sig = br.donchian_breakout_signal(high, close, window=2)
     assert not sig.iloc[-1]
+
+
+# ---------------------------------------------------------------------------
+# SHORT side (#434) — every frozen convention MIRRORED, plus short accounting.
+# For a short the stop sits ABOVE the entry and the target BELOW it; an adverse
+# gap is a gap UP; a bar touching both levels still resolves STOP-first.
+# ---------------------------------------------------------------------------
+
+SHORT = dict(direction="short")
+
+
+def test_resolve_short_stop_only_intra_bar():
+    # open inside bracket, high pierces the (above-entry) stop -> stop
+    assert br._resolve_bar(100.0, 106.0, 96.0, 105.0, 90.0, "short") == (105.0, "stop")
+
+
+def test_resolve_short_target_only_intra_bar():
+    # open inside bracket, low reaches the (below-entry) target -> target
+    assert br._resolve_bar(100.0, 104.0, 89.0, 105.0, 90.0, "short") == (90.0, "target")
+
+
+def test_resolve_short_both_hit_is_stop_first():
+    # high>=stop AND low<=target within one bar -> conservative STOP-first
+    assert br._resolve_bar(100.0, 106.0, 89.0, 105.0, 90.0, "short") == (105.0, "stop")
+
+
+def test_resolve_short_gap_up_fills_at_open_no_gift():
+    # open gaps ABOVE the stop (adverse for a short) -> fill at the OPEN, no gift
+    assert br._resolve_bar(110.0, 112.0, 108.0, 105.0, 90.0, "short") == (110.0, "stop")
+
+
+def test_resolve_short_gap_down_caps_at_target():
+    # open gaps BELOW the target (favorable) -> capped at the target (D3), no windfall
+    assert br._resolve_bar(85.0, 87.0, 84.0, 105.0, 90.0, "short") == (90.0, "target")
+
+
+def test_resolve_short_carry_returns_none():
+    assert br._resolve_bar(100.0, 104.0, 96.0, 105.0, 90.0, "short") is None
+
+
+def test_resolve_short_target_none_never_targets():
+    # target=None -> only the stop can fire; a huge low never exits
+    assert br._resolve_bar(100.0, 104.0, 1.0, 105.0, None, "short") is None
+
+
+def test_resolve_long_and_short_are_independent():
+    """The same bar resolves differently per direction — no shared mutable geometry."""
+    bar = (100.0, 106.0, 94.0)
+    assert br._resolve_bar(*bar, 95.0, 110.0, "long") == (95.0, "stop")
+    assert br._resolve_bar(*bar, 105.0, 90.0, "short") == (105.0, "stop")
+
+
+def test_short_profits_when_price_falls():
+    """A short that hits its below-entry target makes money; pnl and return_pct agree."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  89],        # bar2 low reaches the 90 target
+                c=[100, 100, 91])
+    trig, sp, tp = _levels(df, [False, True, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO, **SHORT)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "target"
+    assert t["exit_price"] == pytest.approx(90.0)
+    assert t["entry_price"] == pytest.approx(100.0)
+    # short return = 1 - exit/entry = 1 - 0.9 = +10%
+    assert t["return_pct"] == pytest.approx(0.10)
+    assert t["pnl"] > 0
+    assert res["ending_equity"] > res["starting_cash"]
+
+
+def test_short_loses_when_price_rises():
+    """A short stopped out above entry loses money."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 106],       # bar2 high pierces the 105 stop
+                l=[99,  99,  99],
+                c=[100, 100, 105])
+    trig, sp, tp = _levels(df, [False, True, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO, **SHORT)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "stop"
+    assert t["return_pct"] == pytest.approx(1.0 - 105.0 / 100.0)
+    assert t["pnl"] < 0
+    assert res["ending_equity"] < res["starting_cash"]
+
+
+def test_short_pnl_arithmetic_is_exact_at_zero_cost():
+    """At zero cost, short pnl == qty*(entry-exit) and equity reconciles exactly."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  89],
+                c=[100, 100, 91])
+    trig, sp, tp = _levels(df, [False, True, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, starting_cash=100_000.0, **ZERO, **SHORT)
+    t = res["trades"][0]
+    expected_qty = int(100_000.0 / 100.0)          # all-in unlevered notional
+    assert t["qty"] == expected_qty
+    assert t["pnl"] == pytest.approx(expected_qty * (100.0 - 90.0))
+    assert res["ending_equity"] == pytest.approx(100_000.0 + t["pnl"])
+
+
+def test_short_flat_equity_marks_to_cash_not_negative():
+    """While flat the short curve equals cash; while open it marks as a liability."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  99],
+                c=[100, 100, 100])
+    trig, sp, tp = _levels(df, [False, True, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, starting_cash=100_000.0, **ZERO, **SHORT)
+    eq = res["equity_curve"]
+    # bar0 flat -> exactly starting cash; bar1 opens the short at an unchanged price,
+    # so marking to a 100 close leaves equity flat too (no phantom gain from the credit).
+    assert eq.iloc[0] == pytest.approx(100_000.0)
+    assert eq.iloc[1] == pytest.approx(100_000.0)
+
+
+def test_short_costs_work_against_both_legs():
+    """With costs on, a short round-trip at an unchanged price must LOSE."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  99],
+                c=[100, 100, 100])
+    trig, sp, tp = _levels(df, [False, True, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, slippage_bps=5, commission_bps=5,
+                              **SHORT)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "end_of_window"
+    assert t["entry_price"] < 100.0      # sold below the open (slippage against)
+    assert t["exit_price"] > 100.0       # bought back above the close (slippage against)
+    assert t["pnl"] < 0
+    assert res["ending_equity"] < res["starting_cash"]
+
+
+def test_short_session_close_out_flattens_intraday():
+    """session_close_out applies to shorts too (never hold overnight)."""
+    idx = pd.DatetimeIndex([
+        "2020-01-06 14:30", "2020-01-06 15:30", "2020-01-06 20:00",
+        "2020-01-07 14:30", "2020-01-07 15:30",
+    ])
+    df = _frame(idx,
+                o=[100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101],
+                l=[99,  99,  99,  99,  99],
+                c=[100, 100, 98,  100, 100])
+    trig, sp, tp = _levels(df, [False, True, False, False, False],
+                           stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, **ZERO, **SHORT)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "session"
+    assert t["exit_date"] == idx[2]      # flattened at the session's last bar
+
+
+def test_short_entry_bar_is_never_tested_for_exit():
+    """The entry-bar exemption holds on the short side too."""
+    dates = pd.bdate_range("2020-01-06", periods=4)
+    df = _frame(dates,
+                o=[100, 100, 100, 100],
+                h=[101, 120, 106, 101],   # b1 high 120 above stop (ignored: entry bar)
+                l=[99,  80,  99,  99],    # b1 low 80 below target (ignored)
+                c=[100, 100, 105, 100])
+    trig, sp, tp = _levels(df, [False, True, False, False], stop=105.0, target=90.0)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO, **SHORT)
+    t = res["trades"][0]
+    assert t["entry_date"] == dates[1]
+    assert t["exit_date"] == dates[2]
+    assert t["exit_reason"] == "stop"
+
+
+def test_long_path_unchanged_by_direction_default():
+    """direction defaults to long: identical result to an explicit long call (#430 parity)."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 111],
+                l=[99,  99,  99],
+                c=[100, 100, 110])
+    trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=110.0)
+    default = br.simulate_bracket(df, trig, sp, tp, **ZERO)
+    explicit = br.simulate_bracket(df, trig, sp, tp, **ZERO, direction="long")
+    assert default["trades"] == explicit["trades"]
+    assert default["ending_equity"] == pytest.approx(explicit["ending_equity"])
+
+
+def test_invalid_direction_raises():
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates, o=[100]*3, h=[101]*3, l=[99]*3, c=[100]*3)
+    trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=110.0)
+    with pytest.raises(ValueError, match="direction must be one of"):
+        br.simulate_bracket(df, trig, sp, tp, direction="sideways")
