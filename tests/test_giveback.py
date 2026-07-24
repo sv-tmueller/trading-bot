@@ -6,6 +6,48 @@ import pandas as pd
 import pytest
 
 from backtest import synthetic
+from backtest.giveback import apply_giveback
+
+
+def _mk(signal_vals, prices):
+    idx = pd.date_range("2020-01-01", periods=len(prices), freq="D")
+    return (
+        pd.Series(signal_vals, index=idx),
+        pd.Series(prices, index=idx, dtype=float),
+    )
+
+
+def test_dormant_below_arm_threshold():
+    # Peak gain never reaches +20% -> giveback never fires; series == signal.
+    sig, px = _mk(["LONG"] * 6, [100, 105, 110, 108, 112, 109])
+    out = apply_giveback(sig, px, arm_pct=0.20, protect_fraction=0.5)
+    assert list(out) == ["LONG"] * 6
+
+
+def test_fires_when_gain_falls_to_half_of_armed_peak():
+    # Peak +20% at 120 (day 2); floor = +10% = 110. Day 3 close 109 -> exit.
+    sig, px = _mk(["LONG"] * 5, [100, 115, 120, 109, 108])
+    out = apply_giveback(sig, px, arm_pct=0.20, protect_fraction=0.5)
+    assert list(out) == ["LONG", "LONG", "LONG", "CASH", "CASH"]
+
+
+def test_reentry_locked_until_regime_resets():
+    # After a giveback exit, a still-LONG signal must NOT re-enter until a CASH day.
+    sig, px = _mk(
+        ["LONG", "LONG", "LONG", "LONG", "CASH", "LONG"],
+        [100, 120, 109, 130, 90, 95],
+    )
+    out = apply_giveback(sig, px, arm_pct=0.20, protect_fraction=0.5)
+    # day2 exit; day3 stays CASH (locked despite LONG signal); day4 CASH clears
+    # the lock; day5 LONG signal re-enters.
+    assert list(out) == ["LONG", "LONG", "CASH", "CASH", "CASH", "LONG"]
+
+
+def test_floor_ratchets_up_with_a_higher_peak():
+    # New peak +40% at 140 -> floor rises to +20% = 120; a dip to 121 does not fire.
+    sig, px = _mk(["LONG"] * 5, [100, 120, 140, 121, 119])
+    out = apply_giveback(sig, px, arm_pct=0.20, protect_fraction=0.5)
+    assert list(out) == ["LONG", "LONG", "LONG", "LONG", "CASH"]
 
 
 @pytest.mark.slow
