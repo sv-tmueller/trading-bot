@@ -125,12 +125,95 @@ and any numbers produced are an explicitly-labelled **plumbing smoke**, never th
 ## Results (filled AFTER the pre-registration commit)
 
 `python3 -m backtest.run_orb_probe` (a strictly later commit than the frozen section above
-— see git history). See the [Verdict](#verdict) for the data situation.
+— see git history).
 
-_Filled in the results commit below._
+### Data situation — the pre-registered read is DATA-BLOCKED
+
+- **Alpaca 2016+ (primary): unreachable in this sandbox.** `.env.backfill` is **absent**
+  (gitignored), and no `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` are set. A direct
+  unauthenticated GET to `https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=5Min…`
+  returns **HTTP 401 Unauthorized**, confirming the data host is key-gated. So the runner's
+  `_fetch_alpaca` returns `None` and falls back.
+- **yfinance (fallback): reachable but far too shallow.** The live run fetched **60
+  sessions / 4,610 bars, span 2026-04-29 → 2026-07-24** — i.e. ~3 calendar months, **zero**
+  complete 12-month windows (n_w = 0), and **60 sessions ≪ the 500-session power floor** and
+  nowhere near the 2016+ (~n_w ≈ 9) basis the read is pre-registered on.
+
+Therefore the pre-registered directional read **cannot be run on free data available here.**
+
+### Plumbing smoke only (NOT the read — do not interpret)
+
+Produced to prove the machinery runs end-to-end on the shallow fallback sample; every row
+is below the power floor and is explicitly **not** the directional read:
+
+| variant (target) | CalmarUS | CAGR (pretax) | maxDD | #trades | random | always-in | beats both? |
+|---|---|---|---|---|---|---|---|
+| EOD-close (None) | −3.382 | −43.3% | −12.6% | 52 | −3.583 | +2.209 | no |
+| R = 5  | −3.382 | −43.3% | −12.6% | 52 | −3.568 | +2.209 | no |
+| R = 10 | −3.382 | −43.3% | −12.6% | 52 | −3.554 | +2.209 | no |
+
+(The three target variants coincide because on this brief up-drifting sample no 5R/10R
+target is ever reached intraday, so all three exit at the session close — expected on 60
+sessions; meaningless as a verdict.)
 
 ---
 
 ## Verdict
 
-_Filled in the results commit below._
+**DATA-BLOCKED — the pre-registered directional read is not answerable on the free data
+reachable here.** The Alpaca 2016+ read-only path needs the paper/data keys (`.env.backfill`,
+absent here; unauthenticated = HTTP 401), and the yfinance fallback reaches only ~60
+sessions (3 months, n_w = 0), far short of the pre-registered 2016+ / 500-session floor. No
+ORB edge is claimed and none is fabricated; the shallow-sample numbers above are a labelled
+plumbing smoke, not the read.
+
+### On "is full-power intraday data worth paying for?" — recommendation: **No, not on this evidence.**
+
+The deliverable question is answered as a recommendation (the read itself being blocked):
+
+1. **It would re-test a class already ruled NO-GO.** #422's short-horizon feasibility gate
+   (`2026-07-24-famous-traders-strategies-survey.md` §2.2; `…entry-feasibility-gate.md`)
+   ruled the whole intraday/minute rule-based-**entry** class NO-GO. ORB is squarely inside
+   it. #422 is the named revisit trigger for the *indicator-family* question, not a
+   reopening of that settled result — a positive ORB read would be a reason to *revisit*,
+   not a standing reason to spend.
+2. **The nearest real-world evidence is a kill.** The colleague's own **London**-ORB
+   variants **all lost** ("Intraday-Frage endgültig geschlossen",
+   `2026-07-20-colleague-repo-audit.md` §2). This probe is a **US-market** ORB — a genuinely
+   *different* setup (different session, liquidity, open dynamics), which is exactly why it
+   was worth naming and probing rather than dismissing by analogy — but the only adjacent
+   empirical result points the same way as #422.
+3. **The one positive citation is narrow.** Zarattini & Aziz (2023) is **instrument- and
+   era-specific** (QQQ/TQQQ, a strong 2016–2023 tech-momentum window) and **long/short**;
+   this engine can only test the **1× long arm**, and even the promotion bar (n_w = 13) is
+   unreachable on free data — so buying data would still leave a single-regime, single-
+   instrument, long-only test that cannot clear the repo's comparability bar.
+
+Net: paying for Databento/FirstRate-class intraday data to chase ORB is **not justified by
+this probe**. The defensible next step is to leave ORB filed as DATA-BLOCKED and revisit
+only if the operator independently decides to fund a full-power intraday dataset for a
+broader intraday program (a #422-scoped budget decision this package is not authorized to
+make).
+
+### Reconciliation (required)
+
+- **Colleague's London-ORB kill:** a *different* market/session; this US ORB is not the same
+  setup, so its kill does not by itself settle the US case — but it is the closest empirical
+  read and it is negative. Noted, not over-read.
+- **#422 revisit trigger:** this probe is the named ORB revisit, not a reopening of the
+  settled intraday-entry-class NO-GO; a DATA-BLOCKED result leaves that settlement intact.
+
+### What would change the verdict
+
+Re-running `python3 -m backtest.run_orb_probe` with `ALPACA_API_KEY_ID` /
+`ALPACA_API_SECRET_KEY` set (or a paid 5-min source wired into `_fetch`) would fetch the
+2016+ history, cross the `PROBE_MIN_SESSIONS` floor, and produce the actual directional
+read (`beats both?` per variant). Only then is the "worth paying for full-power data"
+question answered from data rather than from prior-class reasoning.
+
+### Engine note
+
+The reusable `backtest/bracket.py` engine gained one additive, default-off
+`session_close_out` mode (intraday EOD-flat) for this probe; all 28 bracket tests stay
+green. The DATA-BLOCKED result is on **data access**, not the harness — which is ready to
+deliver the read the moment 2016+ intraday bars are available.
