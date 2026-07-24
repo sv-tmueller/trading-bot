@@ -75,19 +75,76 @@ arms identically and does not bear on the ON-vs-OFF Calmar gate.
 
 ## Task A1 — synthetic-3× vs real UPRO validation
 
-_PENDING — network run required. Numbers recorded here after the A1 slow test is run._
+Run once (`tests/test_giveback.py::test_synthetic_3x_tracks_real_upro`, `-m slow`),
+synthetic-3× built from **SPY auto-adjusted (total-return) closes**:
+
+| quantity | value | bar |
+|---|---|---|
+| overlap | 2009-06-25 → 2025-12-30 (4155 days) | — |
+| daily-return correlation | **0.9982** | > 0.99 ✓ |
+| CAGR gap (synth − real) | **+1.58 pp/yr** | \|gap\| < 5.0 ✓ |
+| synthetic-3× CAGR | 34.08% | — |
+| real UPRO CAGR | 32.50% | — |
+
+The model tracks real UPRO tightly on both daily correlation and CAGR, so the §7
+basis holds and the study results below are trustworthy.
 
 ---
 
 ## Results (filled AFTER the pre-registration commit)
 
-_PENDING — network run required. ON-vs-OFF table (per vehicle): full-window after-tax
-US Calmar, after-tax DE Calmar, CAGR, max drawdown, worst peak-to-exit giveback._
+`python3 -m backtest.run_giveback_study --end 2025-12-31`, arm_pct=0.20,
+protect_fraction=0.50. CAGR / max drawdown are pre-tax; Calmar is after-tax
+(US = gate, DE alongside); worstGB is the largest peak-to-exit giveback.
+
+### Synthetic-3× SPY — 1993-01-29 → 2025-12-30 (8287 trading days)
+
+| arm | after-tax Calmar US | after-tax Calmar DE | CAGR | max DD | worst giveback |
+|---|---|---|---|---|---|
+| giveback-OFF | **0.179** | 0.170 | +16.6% | −59.5% | +169.6% |
+| giveback-ON  | **0.054** | 0.057 | +8.6%  | −67.6% | +73.3%  |
+
+### Real UPRO — 2009-06-25 → 2025-12-30 (4155 trading days)
+
+| arm | after-tax Calmar US | after-tax Calmar DE | CAGR | max DD | worst giveback |
+|---|---|---|---|---|---|
+| giveback-OFF | **0.271** | 0.249 | +21.3% | −58.3% | +88.8% |
+| giveback-ON  | **0.072** | 0.075 | +10.1% | −65.0% | +74.0% |
+
+The giveback does what it is designed to do on the one metric it targets — it
+roughly halves the worst peak-to-exit giveback (169.6%→73.3% synthetic; 88.8%→74.0%
+UPRO). But it pays for that with about half the CAGR and, notably, a **worse** max
+drawdown on both histories: exiting after a pullback and then staying locked out
+until the 200-DMA next turns CASH repeatedly banks a partial gain and then re-enters
+the leveraged vehicle at a higher basis, so subsequent declines bite from a worse
+spot. The gate metric — full-window after-tax US Calmar — falls sharply in both
+cases.
 
 ---
 
 ## Verdict
 
-_PENDING — GO / NO-GO recorded after the study is run. A NO-GO is a valid deliverable:
-Phase B still ships the code default-OFF, but the flag is never enabled and the negative
-is recorded here._
+**NO-GO.** The pre-registered bar — enable live only if after-tax US Calmar (ON) >
+after-tax US Calmar (OFF) on the same history — is **not** cleared on either vehicle:
+
+- Synthetic-3× (1993+): 0.054 (ON) vs 0.179 (OFF) — Calmar **fell**.
+- Real UPRO (2009+): 0.072 (ON) vs 0.271 (OFF) — Calmar **fell**.
+
+The giveback does not clear the bar on any history. Consequences per the plan:
+
+- The feature is **not** enabled live. If Phase B ships the code (Packages 2 & 3),
+  it ships **default-OFF and the flag is never turned on** — with `GIVEBACK_ENABLED=false`
+  live behavior is byte-identical to today, so shipping the dormant code is safe, but
+  there is no evidence-backed reason to enable it, and this negative is the record of
+  that. Given the strength of the negative (Calmar roughly a third of OFF, CAGR
+  halved, drawdown worse), the human may reasonably decide not to build Phase B at all.
+- This is a valid, recorded outcome of the pre-registration: the numbers were examined
+  only after the bar was frozen and committed (see git history — the pre-registration
+  commit precedes this results commit), and the bar was not edited afterward.
+
+### Scope note repeated for the reader
+
+The −25% catastrophic stop is out of scope here (neither arm models it), and the
+model uses close-based detection + next-open fill on daily bars, not the spec §7
+intraday-low language — see the Modeling caveat above. Both approximations apply
+equally to both arms, so they do not explain the ON-vs-OFF gap.
