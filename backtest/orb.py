@@ -86,9 +86,17 @@ def entry_trigger(
     """ORB entry trigger aligned to ``df.index`` (True = enter at THIS bar's open).
 
     The break is detected on a bar's CLOSE and filled at the NEXT bar's open, so the
-    signal is shifted by one bar. Only the session's FIRST break trades; a trigger that
-    would land on an OR bar (i.e. the break was the session's last bar) is dropped, which
-    also prevents an entry leaking across a session boundary.
+    signal is shifted by one bar. Only the session's FIRST break trades.
+
+    Two triggers are dropped, both because the resulting lot could not be managed inside
+    its own session:
+
+    - one landing on an **OR bar**, which would mean entering on the next session's
+      opening range (an entry leaking across a session boundary); and
+    - one landing on a session's **last bar**. The engine never tests the entry bar for
+      an exit, so its EOD close-out cannot fire on that bar and the lot would ride
+      overnight — precisely what an EOD-flat strategy must not do. This mirrors the
+      engine's own refusal to enter on the final bar of the whole series.
     """
     if direction not in DIRECTIONS:
         raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
@@ -98,7 +106,10 @@ def entry_trigger(
     else:
         breaks = (df["Close"] > or_high) & (~is_or_bar)
     first_break = breaks & (breaks.groupby(sess).cumsum() == 1)
-    return first_break.shift(1, fill_value=False) & (~is_or_bar)
+    is_session_last = ~sess.eq(sess.shift(-1))          # True on each session's last bar
+    return (
+        first_break.shift(1, fill_value=False) & (~is_or_bar) & (~is_session_last)
+    )
 
 
 def orb_levels(

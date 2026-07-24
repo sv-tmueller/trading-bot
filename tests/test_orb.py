@@ -312,3 +312,30 @@ def test_431_frozen_defaults_are_preserved():
                                            stop_mode="or_opposite", r=None)
     assert list(d_trig) == list(e_trig)
     assert d_stop.iloc[2] == pytest.approx(e_stop.iloc[2]) == pytest.approx(95.0)
+
+
+def test_no_entry_on_a_sessions_last_bar():
+    """Regression (#434): a trigger on the session's LAST bar would open a lot the
+    engine's EOD close-out can never fire on (the entry bar is never tested for an
+    exit), so the position would ride overnight — the one thing an EOD-flat ORB must
+    never do. Such triggers are dropped."""
+    # The break lands on bar2, so the fill would land on bar3 — the session's last bar.
+    a = _session("2020-01-06", 4, o=[100]*4, h=[105]*4, l=[95]*4,
+                 c=[100, 100, 106, 100])
+    b = _session("2020-01-07", 4, o=[100]*4, h=[105]*4, l=[99]*4,
+                 c=[100, 100, 100, 100])
+    df = _two_sessions(a, b)
+    trig = orb.entry_trigger(df, or_bars=1, direction="long")
+    assert not trig.iloc[3]        # would be day 1's last bar
+    assert not trig.any()
+
+
+def test_entry_on_the_second_to_last_bar_is_still_allowed():
+    """The guard must not over-fire: an entry with one bar left to exit on is fine."""
+    a = _session("2020-01-06", 4, o=[100]*4, h=[105]*4, l=[95]*4,
+                 c=[100, 106, 100, 100])
+    b = _session("2020-01-07", 4, o=[100]*4, h=[105]*4, l=[99]*4,
+                 c=[100, 100, 100, 100])
+    df = _two_sessions(a, b)
+    trig = orb.entry_trigger(df, or_bars=1, direction="long")
+    assert trig.iloc[2]            # fills on bar2, exits by bar3's session close
