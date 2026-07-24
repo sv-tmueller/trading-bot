@@ -112,8 +112,9 @@ protect_fraction=0.50. CAGR / max drawdown are pre-tax; Calmar is after-tax
 | giveback-ON  | **0.072** | 0.075 | +10.1% | −65.0% | +74.0% |
 
 The giveback does what it is designed to do on the one metric it targets — it
-roughly halves the worst peak-to-exit giveback (169.6%→73.3% synthetic; 88.8%→74.0%
-UPRO). But it pays for that with about half the CAGR and, notably, a **worse** max
+cuts the worst peak-to-exit giveback (roughly halved on the synthetic, 169.6%→73.3%;
+a smaller ~17% reduction on UPRO, 88.8%→74.0%). But it pays for that with about half
+the CAGR and, notably, a **worse** max
 drawdown on both histories: exiting after a pullback and then staying locked out
 until the 200-DMA next turns CASH repeatedly banks a partial gain and then re-enters
 the leveraged vehicle at a higher basis, so subsequent declines bite from a worse
