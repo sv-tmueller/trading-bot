@@ -272,6 +272,133 @@ def test_no_pyramiding_second_signal_ignored_while_in_position():
 
 
 # ---------------------------------------------------------------------------
+# session_close_out — intraday EOD flatten (additive, default OFF). #431 ORB reuse.
+# ---------------------------------------------------------------------------
+
+# Intraday timestamps: two US sessions of a few 5-min bars each (UTC, as Alpaca/yf
+# serve them). The session boundary is the calendar-date change.
+_D1 = ["2020-01-06 14:30", "2020-01-06 14:35", "2020-01-06 15:55"]  # 3 bars, Mon
+_D2 = ["2020-01-07 14:30", "2020-01-07 14:35"]                       # 2 bars, Tue
+
+
+def test_session_close_out_flattens_at_day_end():
+    """A lot open at the last bar of its session flattens there (exit_reason='session')."""
+    idx = pd.DatetimeIndex(_D1 + _D2)
+    df = _frame(idx,
+                o=[100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101],   # never reaches target 110
+                l=[99,  99,  99,  99,  99],     # never pierces stop 95
+                c=[100, 100, 103, 100, 100])    # day-1 last close 103
+    trig, sp, tp = _levels(df, [False, True, False, False, False], stop=95.0, target=110.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, **ZERO)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "session"
+    assert t["exit_date"] == pd.Timestamp("2020-01-06 15:55")   # last bar of day 1
+    assert t["exit_price"] == pytest.approx(103.0)
+
+
+def test_session_close_out_default_off_carries_across_day():
+    """Default (session_close_out=False) does NOT flatten at the day end — backward-compat."""
+    idx = pd.DatetimeIndex(_D1 + _D2)
+    df = _frame(idx,
+                o=[100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101],
+                l=[99,  99,  99,  99,  99],
+                c=[100, 100, 103, 100, 104])
+    trig, sp, tp = _levels(df, [False, True, False, False, False], stop=95.0, target=110.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, **ZERO)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "end_of_window"      # carried across the day boundary
+    assert t["exit_date"] == idx[-1]
+
+
+def test_session_close_out_final_bar_is_end_of_window():
+    """The final series bar flattens as end_of_window even when it is also a session end."""
+    idx = pd.DatetimeIndex(["2020-01-06 14:30", "2020-01-06 15:55",
+                            "2020-01-07 14:30", "2020-01-07 15:55"])
+    df = _frame(idx,
+                o=[100, 100, 100, 100],
+                h=[101, 101, 101, 101],
+                l=[99,  99,  99,  99],
+                c=[100, 100, 100, 104])
+    trig, sp, tp = _levels(df, [False, False, True, False], stop=95.0, target=110.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "end_of_window"       # not "session" — it is the last bar
+    assert t["exit_date"] == idx[-1]
+
+
+def test_stop_hit_on_session_end_bar_exits_as_stop_not_session():
+    """A stop breach on the day-end bar resolves as a stop; session close-out is not reached."""
+    idx = pd.DatetimeIndex(["2020-01-06 14:30", "2020-01-06 15:55", "2020-01-07 14:30"])
+    df = _frame(idx,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  90,  99],       # bar1 (last of day 1) pierces the 95 stop
+                c=[100, 96,  100])
+    trig, sp, tp = _levels(df, [True, False, False], stop=95.0, target=110.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "stop"
+    assert t["exit_price"] == pytest.approx(95.0)
+
+
+def test_session_close_out_with_stop_only_target():
+    """session_close_out + target_prices=None: an untouched-stop lot flattens at session end."""
+    idx = pd.DatetimeIndex(_D1 + _D2)
+    df = _frame(idx,
+                o=[100, 100, 100, 100, 100],
+                h=[200, 200, 200, 200, 200],   # huge highs, but no target to hit
+                l=[99,  99,  99,  99,  99],     # never pierces stop 95
+                c=[100, 100, 103, 100, 100])
+    trig, sp, tp = _levels(df, [False, True, False, False, False], stop=95.0, target=None)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "session"
+    assert t["exit_price"] == pytest.approx(103.0)
+
+
+# ---------------------------------------------------------------------------
+# stop-only (target_prices=None) end-to-end — #430 reviewer should-fix backfill.
+# ---------------------------------------------------------------------------
+
+def test_stop_only_bracket_end_to_end_stop_fires():
+    """target_prices=None: the whole simulation runs and the stop is the only exit."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  90],       # bar2 pierces the 95 stop
+                c=[100, 100, 96])
+    trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=None)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "stop"
+    assert t["exit_price"] == pytest.approx(95.0)
+
+
+def test_stop_only_bracket_carries_to_close_when_untouched():
+    """target_prices=None with the stop never hit -> the lot rides to end_of_window."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[200, 200, 200],      # no target exists, so a huge high never exits
+                l=[99,  99,  99],
+                c=[100, 100, 104])
+    trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=None)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "end_of_window"
+
+
+# ---------------------------------------------------------------------------
 # donchian_breakout_signal — no look-ahead 55-breakout (parametrised window).
 # ---------------------------------------------------------------------------
 

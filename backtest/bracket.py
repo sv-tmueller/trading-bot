@@ -26,7 +26,10 @@ entry bar (the entry bar is never tested for an exit):
      else stop-hit → stop; target-hit → target; else carry (mark to close).
   3. EOW close-out: a position still open at the last bar of an ISO week (and not the
      final bar of the series) is flattened at that bar's close (``exit_reason="eow"``);
-     the final bar flattens at its close (``exit_reason="end_of_window"``).
+     the final bar flattens at its close (``exit_reason="end_of_window"``). The additive
+     ``session_close_out`` mode (default off, #431 ORB) does the same at each calendar
+     date's last bar (``exit_reason="session"``) — checked before EOW, after a natural
+     stop/target exit.
   4. No look-ahead; every trade satisfies ``exit_date > entry_date``.
   5. Cost model: entry at ``open·(1+slip)`` with a ``(1+comm)`` haircut; every exit at
      ``fill_level·(1−slip)`` with a ``(1−comm)`` haircut (the ``regime.py`` constants).
@@ -87,6 +90,23 @@ def _resolve_bar(
     return None                          # neither touched: carry
 
 
+def _session_end_flags(index: pd.DatetimeIndex) -> np.ndarray:
+    """True where a bar is the last bar of its calendar date within ``index``.
+
+    The intraday analogue of ``_week_end_flags`` (#431 ORB reuse): a US session lives
+    inside one UTC date (open 13:30/14:30 → close 20:00/21:00 UTC), so grouping by the
+    normalized timestamp is grouping by session. The final bar is also flagged, but the
+    loop handles it separately as ``end_of_window``.
+    """
+    keys = index.normalize().to_numpy()
+    n = len(index)
+    flags = np.zeros(n, dtype=bool)
+    for i in range(n):
+        if i == n - 1 or keys[i] != keys[i + 1]:
+            flags[i] = True
+    return flags
+
+
 def _week_end_flags(index: pd.DatetimeIndex) -> np.ndarray:
     """True where a bar is the last bar of its ISO (year, week) within ``index``.
 
@@ -113,6 +133,7 @@ def simulate_bracket(
     slippage_bps: int = SLIPPAGE_BPS,
     commission_bps: int = COMMISSION_BPS,
     eow_close_out: bool = True,
+    session_close_out: bool = False,
 ) -> dict:
     """Long-only single-lot bracket simulation over an OHLC frame.
 
@@ -138,6 +159,11 @@ def simulate_bracket(
         Cost model (the ``regime.py`` constants by default).
     eow_close_out:
         When True (default), flatten any lot still open at the last bar of an ISO week.
+    session_close_out:
+        When True (default False), flatten any lot still open at the last bar of its
+        calendar date (``exit_reason="session"``) — the intraday EOD-flat mode #431's ORB
+        uses (never hold overnight). Additive and independent of ``eow_close_out``; a
+        natural stop/target exit still takes priority on the same bar.
 
     Returns
     -------
@@ -161,6 +187,9 @@ def simulate_bracket(
         targets = target_prices.reindex(index).to_numpy(dtype=float)
 
     week_end = _week_end_flags(index) if eow_close_out else np.zeros(n, dtype=bool)
+    session_end = (
+        _session_end_flags(index) if session_close_out else np.zeros(n, dtype=bool)
+    )
 
     slip = slippage_bps / 10_000.0
     comm = commission_bps / 10_000.0
@@ -221,6 +250,11 @@ def simulate_bracket(
         res = _resolve_bar(opens[i], highs[i], lows[i], cur_stop, cur_target)
         if res is not None:
             _close(res[0], res[1], ts)
+            equity_curve.append((ts, cash))
+            continue
+
+        if session_end[i] and i != n - 1:
+            _close(closes[i], "session", ts)
             equity_curve.append((ts, cash))
             continue
 
