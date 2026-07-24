@@ -248,7 +248,7 @@ Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () =>
 // must stay shape-identical to the current deployment (hard constraint).
 // ---------------------------------------------------------------------------
 
-Deno.test("default mode (no windowDays): shape-lock - exact current 9 keys (#396 adds `last_runs`), no trades/regime_history, windowed helpers not called", async () => {
+Deno.test("default mode (no windowDays): shape-lock - exact current 10 keys (#396 adds `last_runs`), no trades/regime_history, windowed helpers not called", async () => {
   const { deps, calls } = makeDeps();
   const digest = await runStatus(deps);
   // #384: regime_margin_pct is a new required top-level key (intended,

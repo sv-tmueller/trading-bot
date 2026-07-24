@@ -17,7 +17,7 @@ import {
 } from "../_shared/db.ts";
 import { createOutbox } from "../_shared/outbox.ts";
 
-function buildDeps(): { deps: KillSwitchDeps; flush: () => Promise<void> } {
+function buildDeps(): KillSwitchDeps {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient();
   const outbox = createOutbox(sb);
@@ -40,11 +40,11 @@ function buildDeps(): { deps: KillSwitchDeps; flush: () => Promise<void> } {
     },
     notifications: outbox.notifications,
   };
-  return { deps, flush: outbox.flush };
+  return deps;
 }
 
 function runWithRealDeps(): Promise<string> {
-  return runKillSwitch(buildDeps().deps);
+  return runKillSwitch(buildDeps());
 }
 
 // #397 T5: flush is called after run() completes, never inside logic.ts --
@@ -55,7 +55,7 @@ function runWithRealDeps(): Promise<string> {
 // own try/catch as belt-and-braces even though flushOutbox itself never
 // throws.
 function flushWithRealDeps(): Promise<void> {
-  return buildDeps().flush();
+  return createOutbox(getServiceClient()).flush();
 }
 
 export async function handleKillSwitch(
@@ -69,8 +69,8 @@ export async function handleKillSwitch(
   const outcome = await run();
   try {
     await flush();
-  } catch {
-    console.warn("kill-switch: outbox flush threw unexpectedly");
+  } catch (e) {
+    console.warn(`kill-switch: outbox flush threw unexpectedly: ${String(e).slice(0, 200)}`);
   }
   return new Response(JSON.stringify({ outcome }), {
     headers: { "content-type": "application/json" },

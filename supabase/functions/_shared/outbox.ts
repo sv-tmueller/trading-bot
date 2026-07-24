@@ -10,6 +10,8 @@
 // the webhook but answered non-2xx (or timed out after delivery) may be
 // re-sent by a later flush. Acceptable for alerts (duplicate is harmless;
 // dropped is not).
+// `supabase functions deploy`'s bundler does not resolve the repo-root deno.json import map, so
+// this inline jsr: specifier is load-bearing for deployment.
 // deno-lint-ignore no-import-prefix
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@^2.45.0";
 import { getNotifyWebhookUrl } from "./config.ts";
