@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from backtest import synthetic
-from backtest.giveback import apply_giveback
+from backtest.giveback import apply_giveback, worst_giveback
 
 
 def _mk(signal_vals, prices):
@@ -48,6 +48,14 @@ def test_floor_ratchets_up_with_a_higher_peak():
     sig, px = _mk(["LONG"] * 5, [100, 120, 140, 121, 119])
     out = apply_giveback(sig, px, arm_pct=0.20, protect_fraction=0.5)
     assert list(out) == ["LONG", "LONG", "LONG", "LONG", "CASH"]
+
+
+def test_worst_giveback_measures_peak_minus_exit_gain():
+    idx = pd.date_range("2020-01-01", periods=5, freq="D")
+    # LONG 100 -> peak 150 (+50%) -> exit at 120 (+20%): giveback 0.30.
+    pos = pd.Series(["LONG", "LONG", "LONG", "CASH", "CASH"], index=idx)
+    px = pd.Series([100, 150, 130, 120, 118], index=idx, dtype=float)
+    assert abs(worst_giveback(pos, px) - 0.30) < 1e-9
 
 
 @pytest.mark.slow

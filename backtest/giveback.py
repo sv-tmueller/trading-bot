@@ -66,3 +66,28 @@ def apply_giveback(
             out.append("CASH")
 
     return pd.Series(out, index=signal.index)
+
+
+def worst_giveback(position: pd.Series, vehicle_close: pd.Series) -> float:
+    """Largest peak-to-exit giveback (gain fraction) across all held positions.
+
+    For each held run, ``(peak_price - exit_price) / entry_price``; the maximum
+    over all runs. An open position at the end of the series is settled at the
+    last close. ``0.0`` if never in a position.
+    """
+    close = vehicle_close.reindex(position.index)
+    worst = 0.0
+    entry = peak = 0.0
+    in_pos = False
+    for ts, state in position.items():
+        px = float(close.loc[ts])
+        if state == "LONG":
+            if not in_pos:
+                in_pos, entry, peak = True, px, px
+            else:
+                peak = max(peak, px)
+        if in_pos and (state == "CASH" or ts == position.index[-1]):
+            giveback = (peak - px) / entry
+            worst = max(worst, giveback)
+            in_pos = False
+    return worst
