@@ -1,7 +1,7 @@
 """Reusable intra-bar BRACKET backtest engine (#430, P1 of #429).
 
 Research-only. Lives in backtest/ and is never imported by supabase/functions/.
-No LLM, no broker calls, no Alpaca import.
+No LLM, no broker calls, no broker-client import.
 
 Why a new engine? ``backtest.regime.simulate_from_signal`` has no intra-bar
 High/Low exit (it drops High/Low entirely), and ``run_scalping_cost_wall.py`` has
@@ -199,8 +199,10 @@ def simulate_bracket(
     for i, ts in enumerate(index):
         if qty == 0:
             # Flat: consider entering at THIS bar's open. The entry bar is never
-            # tested for an exit — we mark to close and move on.
-            if trig[i] and not np.isnan(stops[i]):
+            # tested for an exit — we mark to close and move on. Never enter on the
+            # final bar: there is no subsequent bar to ever exit on, and a same-bar
+            # forced close-out would violate exit_date > entry_date.
+            if trig[i] and i != n - 1 and not np.isnan(stops[i]):
                 exec_px = opens[i] * (1 + slip)
                 size = int(cash / exec_px / (1 + comm)) if exec_px > 0 else 0
                 if size > 0:

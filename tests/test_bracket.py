@@ -244,6 +244,20 @@ def test_costs_haircut_entry_and_exit():
     assert t["exit_price"] == pytest.approx(110.0 * (1 - 5 / 10_000))
 
 
+def test_entry_on_final_bar_is_skipped():
+    """A trigger on the very last bar cannot enter (no bar left to exit on)."""
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates,
+                o=[100, 100, 100],
+                h=[101, 101, 101],
+                l=[99,  99,  99],
+                c=[100, 100, 100])
+    trig, sp, tp = _levels(df, [False, False, True], stop=95.0, target=110.0)
+    res = br.simulate_bracket(df, trig, sp, tp, **ZERO)
+    assert res["trade_count"] == 0
+    assert res["ending_equity"] == pytest.approx(res["starting_cash"])
+
+
 def test_no_pyramiding_second_signal_ignored_while_in_position():
     dates = pd.bdate_range("2020-01-06", periods=4)
     df = _frame(dates,
