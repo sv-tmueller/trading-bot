@@ -44,7 +44,7 @@ where each is resolved below:
 | Frozen-doc anchor | Marker content | Group | Resolved in |
 |---|---|---|---|
 | Line 35, §0 | Definitional — declares the "to verify before survey" label category itself. No fact to verify. | — | **Definition, no action** — confirmed by reading §0 of the frozen doc; it is a category label, not a claim. |
-| Lines 94–96, §2.1 | Whether a German resident can hold a self-directed US-domiciled Alpaca account; if not, which EU-retail broker offers comparable index-options access. | Group 3 | §4.1–§4.2 |
+| Lines 94–96, §2.1 | Whether a German resident can hold a self-directed US-domiciled Alpaca account; if not, which EU-retail broker offers comparable index-options access. | Group 3 | §4.1–§4.2 — **both halves still unverified**: whether a German resident can hold a self-directed US Alpaca account is still unverified (§4.1 — the primary was reached but declines to answer), and the comparable-index-options-access half is the exact claim **withdrawn in fix round 1** (§4.2 resolves only the fee-schedule half; the access half remains unverified). |
 | Lines 119–121, §2.1 | The exact EU-retail options-access venue and its per-contract commission/fee schedule. | Group 3 | **Resolved on the fee-schedule half only** — §4.2 (venue named, per-contract commission + OCC fee + Cboe SPX/SPXW exchange fees verified at the entity from §3.1). The access half — that a German retail client of that entity is actually granted US index-option permissions — is **still unverified**, together with the PRIIPs/KID question in §4.3. |
 | Lines 185–188, §2.3 | MES's exact contract multiplier and margin requirement; whether IBKR extends EU-retail futures access on the same terms found for 6E/M6E. | Groups 1 + 2 | §2 (spec/margin), §3 (IBKR access) |
 | Lines 213–216, §2.4 | Per-tier margin precision for the ESMA 20:1/10:1/5:1/2:1 tiers; any national BaFin-level post-2018 tightening. | Group 4 | §5 |
@@ -193,8 +193,7 @@ Source: [interactivebrokers.ie/en/pricing/market-data-pricing.php](https://www.i
 2026-07-24, HTTP 200, 398,890 bytes; the `interactivebrokers.com` page fetched 2026-07-21 carries the
 same three CME rows). The table's own column headers: "Market Data Package | Country | **Non-Pro
 Fees/month** | Pro Fees/month". Extracted row: "CME Real-Time (L1) ... United States USD 1.55 N/A" —
-**USD 1.55/month, non-professional, for top-of-book CME real-time data** (sufficient for a single
-outright like MES).
+**USD 1.55/month, non-professional, for top-of-book CME real-time data**.
 
 **Honest ambiguity, flagged rather than resolved — and it covers two rows, not one (corrected in fix
 round 1).** Of the three CME rows, only "CME Real-Time (L1)" carries **two** cell values in the
@@ -207,7 +206,9 @@ have the same shape and the same uncertainty. **Only the L1 figure of USD 1.55/m
 verified as a Non-Pro figure here; the L2 (USD 12.10) and combined L1,L2 (USD 145.00) figures are
 recorded as values on the page with their column assignment still unverified**, resolvable only
 against the live rendered table rather than the flattened HTML. This does not affect any conclusion:
-a single MES outright needs only L1.
+a single MES outright plausibly needs only the L1 package (an operational inference — the cited "CME
+Real-Time (L1)" row does not enumerate its products), and only that L1 figure is verified here
+regardless.
 
 ### §3.3 Futures trading permissions / EU-specific restrictions for German retail — verified, with a material new fact
 
@@ -263,10 +264,11 @@ same page:
   (Klasse) einheitlich." — same-underlying futures are aggregated into one class for that
   calculation.
 
-Same source-class caveat as above: LYNX, not IBKR Ireland first-party. At the single-contract micro
-size contemplated by the frozen §2.3/§2.5, an MES position is nowhere near the EUR 50,000 threshold,
-so the doubling rule does not bind that base case; the loss of intraday margin relief and the
-free-cash-only funding condition do apply at any size. Both belong to the §6 capital-efficiency flag.
+Same source-class caveat as above: LYNX, not IBKR Ireland first-party. Whether the EUR 50,000
+doubling rule binds at single-contract size cannot be checked here, because the MES margin
+requirement is still unverified (§2.1–§2.2); it is unlikely to bind at micro size, but that is an
+inference, not a verified fact. The loss of intraday margin relief and the free-cash-only funding
+condition apply at any size. All belong to the §6 capital-efficiency flag.
 
 **This applies to all exchange-traded futures uniformly (not MES-specifically), so it does not change
 the *relative* standing of MES vs. 6E/M6E** — the same free-cash-only, Nachschusspflicht-excluded
@@ -285,9 +287,14 @@ organic result links in the fetched markup (JS-rendered results). No claim in th
 these later, unsuccessful discovery attempts.
 
 **Verdict — "does IBKR extend EU-retail futures access on the same terms found for 6E/M6E?":
-verified, qualified yes.** Same entity, same commission-schedule shape, same API; the newly-verified
-condition (cash-only funding, Nachschusspflicht exclusion, since 2023-01-01) applies uniformly across
-futures products, so it does not differentiate MES from 6E/M6E — but it is a real, previously-unpriced
+verified on the access-terms leg, qualified yes.** Same entity, and the newly-verified condition
+(cash-only funding, Nachschusspflicht exclusion, since 2023-01-01) applies uniformly across futures
+products, so it does not differentiate MES from 6E/M6E. Two of the three legs in the original verdict
+are **not** established by a fetch and are scoped down here: the "same commission-schedule shape" leg
+is **unfetched for 6E/M6E specifically** — the cited `.ie` futures-commission page (§2.2) lists the
+E-micro row `(MES, MNQ, M2K, VOLQ, ...)` and contains no `6E`/`M6E` entry, so per-contract commission
+parity with 6E/M6E is not shown here; and "same API" is a **repo cross-reference** (the forex
+feasibility gate §8), not a fetch. The verified access condition is a real, previously-unpriced
 constraint on capital efficiency for *any* futures candidate under this direction. Flagged in §6.
 
 ---
@@ -311,7 +318,7 @@ Alpaca's 2026-04-21 EU launch (via WealthKernel, "Alpaca Europe") is Broker-API-
 self-directed EU Trading-API surface — that finding stands unchanged. This note adds only the
 US-side eligibility question, which remains open.
 
-### §4.2 One concrete venue with comparable index-options access + fee schedule
+### §4.2 One concrete venue with fee schedule (access half unverified)
 
 Per the frozen doc's own wording ("the exact venue," singular), IBKR is the concrete candidate, using
 the same entity established in §3.1 (Interactive Brokers Ireland Limited).
@@ -337,7 +344,12 @@ and the PRIIPs/KID verdict in §4.3.
   [interactivebrokers.ie/en/accounts/fees/CBOEoptfee.php](https://www.interactivebrokers.ie/en/accounts/fees/CBOEoptfee.php)
   (page title: "CBOE Options Fees | Interactive Brokers Ireland"; reached from the "United States –
   Third Party Fees → Exchange Fees → CBOE" link on the `.ie` options-commissions page above), fetched
-  2026-07-24, HTTP 200, 229,101 bytes. Column headers: "Public Customer | Broker-Dealer | Firm | Away
+  2026-07-24, HTTP 200, 229,101 bytes. The equivalent
+  `interactivebrokers.com/en/accounts/fees/CBOEoptfee.php` page (title "Cboe Options Fees |
+  Interactive Brokers LLC") publishes the identical schedule — this Cboe exchange-fee table is not
+  Ireland-specific; the `.ie` page is cited because §3.1 establishes IBKR Ireland as the contracting
+  entity, not because the fee schedule is entity-scoped product access. Column headers: "Public
+  Customer | Broker-Dealer | Firm | Away
   MM | Joint Back Office | Professional", each split "Remove Liquidity | Add Liquidity". Quoted rows
   under "Index": "SPX, Premium >=$1.00 — USD 0.45 [Public Customer, Remove] / USD 0.45 [Add]" and
   "SPXW, Premium >=$1.00 — USD 0.45 / USD 0.45". **What this does and does not establish:** it
@@ -375,8 +387,7 @@ Attempted:
 
 **Verdict: still unverified.** Whether PRIIPs/KID requirements restrict IBKR-Ireland EU-retail clients
 from US-listed single-name or index options is not resolved by any primary source reached this
-session — this is a real, practically-important open question (PRIIPs KID requirements are widely
-understood in the industry to complicate EU-retail access to US-listed derivatives generally) but it
+session — this is a real, practically-important open question, but it
 is not asserted here without a fetched primary confirmation, per the no-fabrication rule.
 
 ---
@@ -458,8 +469,8 @@ This maps exactly onto the frozen doc's §2.4 table (30:1/3.33%, 20:1/5%, 10:1/1
 confirming the frozen doc's "settled regulatory knowledge" figures are precisely correct, now with a
 directly fetched primary citation rather than only the previously-cited 30:1 FX line.
 
-**Alignment with ESMA, no independent CFD tightening:** the same page states the order "corresponds
-in essence" to ESMA Decision (EU) 2018/796 and its extensions, and exists specifically to make the
+**Alignment with ESMA, no independent CFD tightening:** the same page states the order corresponds
+in essence to ESMA Decision (EU) 2018/796 and its extensions, and exists specifically to make the
 ESMA measure permanent in Germany once the temporary EU-level measure lapsed: "Die vorliegende
 Allgemeinverfügung greift lediglich die bereits seit dem Inkrafttreten des ESMA-Beschlusses (EU)
 2018/796 am 01.08.2018 bestehende Rechtslage auf und hält diese aufrecht." **No CFD-tier deviation
@@ -514,8 +525,11 @@ withdrawn — but it is labeled for what it is.)
     margin requirements for German-retail futures positions opened after 2023-01-01; (d) the reduced
     **intraday** initial margin no longer applies — the overnight requirement is used; and (e) margin
     requirement **above EUR 50,000 is doubled on the excess**, aggregated per underlying class. Items
-    (c)–(e) were omitted from the first pass and are added here from the same cited page (§3.3). At
-    the single-contract micro size the frozen doc contemplates, (e) does not bind; (a)–(d) do, at any
+    (c)–(e) were omitted from the first pass and are added here from the same cited page (§3.3, which
+    is broker-authoritative — LYNX, an IBKR-network broker — one tier below a direct IBKR-Ireland
+    citation). Whether (e) binds at the single-contract micro size the frozen doc contemplates cannot
+    be verified here, because the MES margin requirement is still unverified (§2.1–§2.2); the flag
+    carries it as an open item rather than as a condition shown not to apply. (a)–(d) apply at any
     size.
 
   Per the sub-plan's instruction to flag a verified EU-retail futures access finding whenever found,
@@ -551,7 +565,7 @@ are from the 2026-07-21 pass.
 | interactivebrokers.ie — pricing/commissions-options.php **[fix-1]** | **Verified** (US options commission + OCC fee, entity-correct) |
 | interactivebrokers.ie — accounts/fees/CBOEoptfee.php **[fix-1]** | **Verified** (Cboe "Index" fee rows: SPX, SPXW, VIX) |
 | interactivebrokers.ie — pricing/market-data-pricing.php **[fix-1]** | **Verified** (CME L1 non-pro data fee, entity-correct; L2 / L1+L2 column assignment unverified) |
-| interactivebrokers.com — commissions-futures.php, accounts/fees/CME.php, commissions-options.php, market-data-pricing.php | Same figures as the `.ie` pages above; superseded as citations by the entity-correct `.ie` sources |
+| interactivebrokers.com — commissions-futures.php, accounts/fees/CME.php, commissions-options.php, market-data-pricing.php, accounts/fees/CBOEoptfee.php | Same figures/schedule as the `.ie` pages above; superseded as citations by the entity-correct `.ie` sources |
 | interactivebrokers.com — index.php?f=marginnew&p=fut | JS shell, no static figure |
 | interactivebrokers.com — index.php?f=2222&exch=cme... | JS shell, no static figure |
 | interactivebrokers.com — trading/products-futures.php | JS shell, no static figure |
@@ -563,7 +577,7 @@ are from the 2026-07-21 pass.
 | interactivebrokers.ie — PRIIPs pages (×3 URL guesses) | 404 / soft-404 |
 | bafin.de — vf_190801_allgvfg_Differenzgeschaefte | Verified (CFD tier table) |
 | bafin.de — vf_20220930_Allgemeinverfuegung...Futures | Verified (2022 futures measure) |
-| lynxbroker.de — futureshandel-kleinanleger **[re-fetched fix-1]** | Verified (broker-authoritative for IBKR's mechanism; the margin-increase / EUR 50k doubling block added to §3.3 in fix round 1) |
+| lynxbroker.de — futureshandel-kleinanleger **[re-fetched fix-1]** | Verified — broker-authoritative for IBKR's mechanism, one tier below a direct IBKR-Ireland citation (the margin-increase / EUR 50k doubling block added to §3.3 in fix round 1) |
 | alpaca.markets/support/countries-alpaca-is-available | Reached; page itself states no policy |
 | spglobal.com/spdji — S&P 500 index page **[fix-1]** | HTTP 403 (2,011-byte block body) — bounded attempt to source the index level from a primary |
 | tradingeconomics.com/united-states/stock-market | **Not a verification** — aggregator, outside the §0 primary whitelist; recorded as a *secondary indication* for the SPX level (relabeled in fix round 1, §2.3) |
