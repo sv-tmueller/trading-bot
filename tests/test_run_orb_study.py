@@ -158,3 +158,47 @@ def test_local_csv_round_trip_loads_and_runs(tmp_path):
     rows = study.run_grid(df)
     assert len(rows) == study.N_CELLS
     assert any(r["trades"] > 0 for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Negative control — the pure-noise-must-fail property (#398's convention).
+# ---------------------------------------------------------------------------
+
+def _noise_sessions(n_days, bars=78, seed=11, start="2014-01-02"):
+    """Driftless random-walk intraday bars: NO edge exists by construction."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for day in pd.bdate_range(start, periods=n_days):
+        idx = pd.date_range(f"{day:%Y-%m-%d} 14:30", periods=bars, freq="5min",
+                            tz="UTC")
+        close = 100.0 + rng.normal(0, 0.08, bars).cumsum()
+        op = np.concatenate([[close[0]], close[:-1]])
+        hi = np.maximum(op, close) + rng.uniform(0.01, 0.09, bars)
+        lo = np.minimum(op, close) - rng.uniform(0.01, 0.09, bars)
+        frames.append(pd.DataFrame(
+            {"Open": op, "High": hi, "Low": lo, "Close": close}, index=idx))
+    return pd.concat(frames)
+
+
+@pytest.mark.slow
+def test_pure_noise_clears_no_cell_and_matches_its_random_twin():
+    """On data with no edge BY CONSTRUCTION, the harness must find none.
+
+    Two properties, both load-bearing for trusting a real run:
+      1. no cell clears the SPY bar — the harness cannot manufacture edge from noise;
+      2. every cell sits close to its own seeded random-entry twin — the ORB's *timing*
+         adds nothing when there is nothing to time, which is exactly the tell that
+         killed #430's Turtle breakout.
+
+    Mirrors the pure-noise-must-fail self-test in tests/test_overfitting_gate.py.
+    Marked slow: 760 sessions x 18 cells is a real grid run, not a unit test.
+    """
+    rows = study.run_grid(_noise_sessions(760))
+    assert len(rows) == study.N_CELLS
+    assert not any(r["beats_bar"] for r in rows), "noise cleared the bar"
+    for r in rows:
+        assert r["calmar_us"] < 0, f"noise cell {r} produced a positive Calmar"
+        # The real cell must not look meaningfully better than shuffled entries.
+        assert r["calmar_us"] - r["random_calmar_us"] < 0.25, (
+            f"cell {r} beat its random twin by an implausible margin on pure noise"
+        )
