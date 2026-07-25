@@ -283,6 +283,70 @@ def test_registry_is_complete_and_directions_are_valid():
     assert len(bulls) == len(bears) == 6
 
 
+def test_context_none_admits_every_bar():
+    df = _frame([FILLER] * 20)
+    for direction in (cs.BULLISH, cs.BEARISH):
+        mask = cs.context_mask(df, direction, cs.CONTEXT_NONE)
+        assert mask.all()
+        assert len(mask) == len(df)
+
+
+def test_context_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="mode must be one of"):
+        cs.context_mask(_frame([FILLER] * 5), cs.BULLISH, "sideways")
+
+
+def test_context_warmup_bars_are_masked_out_not_admitted():
+    """No established trend context ⇒ excluded. Admitting it would silently equal NONE."""
+    df = _frame([FILLER] * 40)
+    for mode in (cs.CONTEXT_REVERSAL, cs.CONTEXT_CONTINUATION):
+        mask = cs.context_mask(df, cs.BULLISH, mode, window=200)
+        assert not mask.any(), f"{mode} admitted warm-up bars with no SMA yet"
+
+
+def test_reversal_and_continuation_are_exact_complements_after_warmup():
+    """Post-warm-up every bar sits in exactly one of the two context modes."""
+    n = 300
+    rng = np.random.default_rng(4)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    df = _frame([(float(c), float(c) + 1, float(c) - 1, float(c)) for c in close])
+
+    for direction in (cs.BULLISH, cs.BEARISH):
+        rev = cs.context_mask(df, direction, cs.CONTEXT_REVERSAL, window=50)
+        con = cs.context_mask(df, direction, cs.CONTEXT_CONTINUATION, window=50)
+        post = slice(50, None)
+        # exactly one of the two holds on each post-warm-up bar
+        assert (rev[post] ^ con[post]).all()
+
+
+def test_reversal_context_puts_bullish_below_the_sma_and_bearish_above():
+    """The textbook reading: bullish patterns are reversal signals, so they need a downtrend."""
+    n = 120
+    # a clean falling series: every post-warm-up close sits below its own rising-lag SMA
+    df = _frame([(100.0 - i, 101.0 - i, 99.0 - i, 100.0 - i) for i in range(n)])
+    w = 20
+    bull_rev = cs.context_mask(df, cs.BULLISH, cs.CONTEXT_REVERSAL, window=w)
+    bear_rev = cs.context_mask(df, cs.BEARISH, cs.CONTEXT_REVERSAL, window=w)
+    # in a downtrend: bullish reversal admitted, bearish reversal not
+    assert bull_rev.iloc[w:].all()
+    assert not bear_rev.iloc[w:].any()
+
+
+def test_context_mask_reuses_sma_signal_rather_than_a_second_trend_definition():
+    """Guards against a parallel trend definition drifting from the incumbent filter."""
+    from backtest.regime_signals import sma_signal
+
+    n = 200
+    rng = np.random.default_rng(9)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.012, n)))
+    df = _frame([(float(c), float(c) + 1, float(c) - 1, float(c)) for c in close])
+
+    raw = sma_signal(df["Close"].astype(float), window=50)
+    expected_below = raw.astype("object").eq(False).to_numpy(dtype=bool)
+    got = cs.context_mask(df, cs.BULLISH, cs.CONTEXT_REVERSAL, window=50).to_numpy()
+    np.testing.assert_array_equal(got, expected_below)
+
+
 def _random_walk_frame(n: int = 800, seed: int = 5) -> pd.DataFrame:
     """Synthetic daily OHLC with opens NOT pinned to the prior close."""
     rng = np.random.default_rng(seed)

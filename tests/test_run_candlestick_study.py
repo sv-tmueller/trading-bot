@@ -169,6 +169,48 @@ def test_build_cell_returns_a_ledger_and_respects_direction():
         assert t["exit_date"] > t["entry_date"]
 
 
+def test_v1_grid_is_unchanged_by_the_context_parameter_default():
+    """The frozen v1 grid must be byte-identical with the default context.
+
+    v1's 28-cell result is on record in the pre-registration. Adding the context factor
+    must not perturb it, or the published v1 numbers would silently stop reproducing.
+    """
+    df = _synth_daily(900)
+    for arm in (("hammer", "hammer", LONG), ("shooting_star", "shooting_star", SHORT)):
+        for r in rcs.R_GRID:
+            default = rcs.build_cell(df, arm, r)
+            explicit = rcs.build_cell(df, arm, r, context=cs.CONTEXT_NONE)
+            assert default["trade_count"] == explicit["trade_count"]
+            assert default["ending_equity"] == pytest.approx(explicit["ending_equity"])
+            assert default["max_drawdown"] == pytest.approx(explicit["max_drawdown"])
+
+
+def test_context_filter_reduces_or_equals_the_unfiltered_trade_count():
+    """A filter can only remove entries, never add them."""
+    df = _synth_daily(1200)
+    arm = ("hammer", "hammer", LONG)
+    base = rcs.build_cell(df, arm, 2.0)["trade_count"]
+    for mode in (cs.CONTEXT_REVERSAL, cs.CONTEXT_CONTINUATION):
+        filtered = rcs.build_cell(df, arm, 2.0, context=mode)["trade_count"]
+        assert filtered <= base, f"{mode} produced MORE trades than unfiltered"
+
+
+def test_random_twin_draws_only_from_context_admitted_bars():
+    """The control must differ from the real cell in entry timing ONLY, not in regime too."""
+    df = _synth_daily(1200)
+    arm = ("hammer", "hammer", LONG)
+    mode = cs.CONTEXT_REVERSAL
+    mask = cs.context_mask(df, LONG, mode)
+    rand = rcs.build_random_cell(df, arm, 2.0, context=mode)
+    # every entry date the twin used must sit on a context-admitted bar
+    for t in rand["trades"]:
+        # entry executes the bar AFTER the (masked) signal bar
+        signal_pos = df.index.get_loc(t["entry_date"]) - 1
+        assert bool(mask.iloc[signal_pos]), (
+            f"twin entered off a bar the {mode} context excludes"
+        )
+
+
 def test_random_cell_matches_the_real_cell_trade_count_closely():
     """The control must trade a comparable amount or it is not a control."""
     df = _synth_daily(800)

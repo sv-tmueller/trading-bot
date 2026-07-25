@@ -156,11 +156,22 @@ def bracket_levels(
     return stop.where(entry_trigger), target.where(entry_trigger)
 
 
-def build_cell(df: pd.DataFrame, arm: Tuple[str, str, str], r: float) -> dict:
-    """One candlestick cell: detect the pattern, shift to next-open, simulate the bracket."""
+def build_cell(
+    df: pd.DataFrame,
+    arm: Tuple[str, str, str],
+    r: float,
+    context: str = cs.CONTEXT_NONE,
+) -> dict:
+    """One candlestick cell: detect the pattern, shift to next-open, simulate the bracket.
+
+    ``context`` defaults to ``CONTEXT_NONE``, which reproduces the frozen v1 grid exactly
+    (pinned by a test). The v2 context-filtered grid passes ``reversal`` / ``continuation``;
+    the mask is applied at the SIGNAL bar, before the next-open shift, because the trend
+    context is part of the decision taken on that bar.
+    """
     _, pattern, direction = arm
     span = PATTERN_SPAN[pattern]
-    signal = cs.detect(pattern, df)
+    signal = cs.detect(pattern, df) & cs.context_mask(df, direction, context)
     entry_trigger = signal.shift(1, fill_value=False)
     stop, target = bracket_levels(df, entry_trigger, direction, span, r)
     return simulate_bracket(
@@ -173,21 +184,34 @@ def build_cell(df: pd.DataFrame, arm: Tuple[str, str, str], r: float) -> dict:
 
 
 def build_random_cell(
-    df: pd.DataFrame, arm: Tuple[str, str, str], r: float, seed: int = RANDOM_SEED
+    df: pd.DataFrame,
+    arm: Tuple[str, str, str],
+    r: float,
+    seed: int = RANDOM_SEED,
+    context: str = cs.CONTEXT_NONE,
 ) -> dict:
     """Random-entry twin: identical geometry and entry COUNT, entry dates shuffled.
 
     The control that separates "this pattern has edge" from "any bracket with this geometry
     on this vehicle would have done that". Same trade count, same stop/target construction,
     entries placed at random eligible bars.
+
+    Under a context filter the twin draws only from bars the SAME context admits. Drawing
+    from all bars instead would make the control differ from the real cell in two ways at
+    once (entry timing *and* trend regime), so a gap between them could no longer be
+    attributed to the pattern — which is the only thing the control exists to isolate.
     """
     _, pattern, direction = arm
     span = PATTERN_SPAN[pattern]
-    signal = cs.detect(pattern, df)
+    mask = cs.context_mask(df, direction, context)
+    signal = cs.detect(pattern, df) & mask
     n_signals = int(signal.sum())
 
     rng = np.random.default_rng(seed)
-    eligible = np.arange(span, len(df) - 1)
+    admissible = mask.to_numpy(dtype=bool)
+    eligible = np.array([
+        i for i in range(span, len(df) - 1) if admissible[i]
+    ], dtype=int)
     shuffled = pd.Series(False, index=df.index)
     if n_signals > 0 and len(eligible) > 0:
         picks = rng.choice(eligible, size=min(n_signals, len(eligible)), replace=False)
@@ -195,6 +219,7 @@ def build_random_cell(
 
     entry_trigger = shuffled.shift(1, fill_value=False)
     stop, target = bracket_levels(df, entry_trigger, direction, span, r)
+
     return simulate_bracket(
         df, entry_trigger, stop, target,
         starting_cash=STARTING_CASH,

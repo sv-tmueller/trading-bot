@@ -311,6 +311,61 @@ PATTERNS: Dict[str, Tuple[Callable[[pd.DataFrame], pd.Series], str]] = {
 }
 
 
+# --- Trend context ------------------------------------------------------------------
+# Classic candlestick doctrine is explicit that these patterns are CONTEXT-dependent: a
+# hammer means something at the end of a downtrend and nothing mid-range. The v1 grid tests
+# every pattern context-free, i.e. in its weakest possible form.
+#
+# Two readings are canonical and neither can be preferred after seeing results:
+#   REVERSAL     — the textbook reading. Bullish patterns are reversal signals, so they only
+#                  count in a DOWNtrend (close < SMA); bearish only in an UPtrend.
+#   CONTINUATION — the with-trend reading. Bullish patterns only count in an UPtrend.
+# Both are therefore frozen as a disclosed 2-level factor and both are counted as trials.
+CONTEXT_NONE = "none"
+CONTEXT_REVERSAL = "reversal"
+CONTEXT_CONTINUATION = "continuation"
+CONTEXT_MODES = (CONTEXT_NONE, CONTEXT_REVERSAL, CONTEXT_CONTINUATION)
+
+CONTEXT_SMA_WINDOW = 200   # the incumbent 200-DMA, reused rather than re-tuned
+
+
+def context_mask(
+    df: pd.DataFrame,
+    direction: str,
+    mode: str = CONTEXT_NONE,
+    window: int = CONTEXT_SMA_WINDOW,
+) -> pd.Series:
+    """Boolean mask of bars whose trend context admits a ``direction`` entry.
+
+    Reuses ``backtest.regime_signals.sma_signal`` — the incumbent 200-DMA filter — rather
+    than introducing a second trend definition. Evaluated at the SIGNAL bar; the caller
+    applies the close-t -> open-t+1 shift afterwards, exactly as for the pattern itself.
+
+    ``sma_signal`` is NaN through the ``window``-bar warm-up. A bar with **no established
+    context is masked OUT**, not admitted: during warm-up the context is unknown, and
+    admitting an unknown context would silently make the first ``window`` bars behave like
+    ``CONTEXT_NONE`` and quietly contaminate the arm.
+    """
+    if mode not in CONTEXT_MODES:
+        raise ValueError(f"mode must be one of {CONTEXT_MODES}, got {mode!r}")
+    if mode == CONTEXT_NONE:
+        return pd.Series(True, index=df.index)
+
+    from backtest.regime_signals import sma_signal
+
+    raw = sma_signal(df["Close"].astype(float), window=window)
+    # Split into three states explicitly; NaN must land in NEITHER above nor below.
+    above = raw.astype("object").eq(True).to_numpy(dtype=bool)
+    below = raw.astype("object").eq(False).to_numpy(dtype=bool)
+
+    bullish = direction in (BULLISH, "long")
+    if mode == CONTEXT_REVERSAL:
+        keep = below if bullish else above
+    else:                                    # CONTEXT_CONTINUATION
+        keep = above if bullish else below
+    return pd.Series(keep, index=df.index)
+
+
 #: Firing-rate bounds a detector must sit inside on real bars to be considered calibrated.
 #: A pattern firing on a quarter of all bars is not a "pattern" — it is a description of
 #: ordinary price action, and any strategy built on it is really just churn. One that almost
