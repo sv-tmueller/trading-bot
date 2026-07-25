@@ -108,6 +108,34 @@ def test_bullish_engulfing_rejects_non_engulfing_body():
     assert not bool(cs.bullish_engulfing(df).iloc[2])
 
 
+def test_engulfing_fires_when_open_equals_prior_close_no_gap():
+    """Regression: containment is INCLUSIVE, so a gapless open still engulfs.
+
+    On SPY/ES the open frequently sits exactly at the prior close. Under a strict ``<``
+    test these patterns could only fire on gap days, making the gap — not the engulfing
+    geometry — the actual signal. Caught on a synthetic no-gap frame where every
+    engulfing arm produced structurally zero trades.
+    """
+    # prev bearish 105->100; current opens EXACTLY at 100 and closes above the prior open
+    df = _frame([FILLER, (105.0, 105.5, 99.5, 100.0), (100.0, 106.5, 99.5, 106.0)])
+    assert bool(cs.bullish_engulfing(df).iloc[2])
+    # and the bearish mirror at an exactly-equal open
+    df2 = _frame([FILLER, (100.0, 105.5, 99.5, 105.0), (105.0, 105.5, 98.5, 99.0)])
+    assert bool(cs.bearish_engulfing(df2).iloc[2])
+
+
+def test_harami_and_engulfing_are_separated_by_the_prior_bar_direction():
+    """The two carry identical body inequalities; only the prior bar's direction differs."""
+    # bearish prior + body between prior open/close -> harami, never engulfing
+    bear_prior = _frame([FILLER, (110.0, 110.5, 99.5, 100.0), (102.0, 108.5, 101.5, 108.0)])
+    assert bool(cs.bullish_harami(bear_prior).iloc[2])
+    assert not bool(cs.bearish_engulfing(bear_prior).iloc[2])
+    # bullish prior + body outside prior open/close -> engulfing, never harami
+    bull_prior = _frame([FILLER, (100.0, 110.5, 99.5, 110.0), (111.0, 111.5, 98.5, 99.0)])
+    assert bool(cs.bearish_engulfing(bull_prior).iloc[2])
+    assert not bool(cs.bullish_harami(bull_prior).iloc[2])
+
+
 def test_bullish_engulfing_requires_prior_bar_bearish():
     # prior bar is bullish -> not the pattern even though bodies engulf
     df = _frame([FILLER, (100.0, 105.5, 99.5, 105.0), (99.0, 106.5, 98.5, 106.0)])

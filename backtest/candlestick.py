@@ -178,37 +178,50 @@ def bearish_marubozu(
 # ---------------------------------------------------------------------------
 
 def bullish_engulfing(df: pd.DataFrame) -> pd.Series:
-    """Prior bar bearish, current bar bullish and its body strictly engulfs the prior's.
+    """Prior bar bearish, current bar bullish and its body engulfs the prior's.
 
-    ``open_t < close_{t-1}`` and ``close_t > open_{t-1}``.
+    ``open_t <= close_{t-1}`` and ``close_t >= open_{t-1}``.
+
+    Containment is **inclusive** at both ends, deliberately. On a continuously-traded
+    instrument (SPY, ES) the open frequently sits exactly at or very near the prior close,
+    so a strict ``<`` test would make this pattern fire only on GAP days — the gap, not the
+    engulfing geometry, would be carrying the signal. Inclusive is also the standard reading
+    of "the body wraps the prior body". Frozen before any real-data result existed: the
+    strict form was caught producing structurally-zero trades on a synthetic no-gap frame.
     """
     p = _parts(df)
     prev_bear = p["bear"].shift(1)
-    engulf = (p["open"] < p["close"].shift(1)) & (p["close"] > p["open"].shift(1))
+    engulf = (p["open"] <= p["close"].shift(1)) & (p["close"] >= p["open"].shift(1))
     return _clean(prev_bear.astype("boolean") & p["bull"] & engulf, df.index)
 
 
 def bearish_engulfing(df: pd.DataFrame) -> pd.Series:
-    """Prior bar bullish, current bar bearish and its body strictly engulfs the prior's."""
+    """Prior bar bullish, current bar bearish and its body engulfs the prior's (inclusive)."""
     p = _parts(df)
     prev_bull = p["bull"].shift(1)
-    engulf = (p["open"] > p["close"].shift(1)) & (p["close"] < p["open"].shift(1))
+    engulf = (p["open"] >= p["close"].shift(1)) & (p["close"] <= p["open"].shift(1))
     return _clean(prev_bull.astype("boolean") & p["bear"] & engulf, df.index)
 
 
 def bullish_harami(df: pd.DataFrame) -> pd.Series:
-    """Inverse of engulfing: prior bar bearish, current bullish body INSIDE the prior's."""
+    """Inverse of engulfing: prior bar bearish, current bullish body INSIDE the prior's.
+
+    Shares the inclusive-bound rationale above. The ``prev_bear``/``bull`` guard is what
+    separates this from ``bearish_engulfing``, which carries the same body inequalities:
+    with a bearish prior bar these bounds put the body *between* the prior open and close
+    (harami); with a bullish prior bar they put it *outside* (engulfing).
+    """
     p = _parts(df)
     prev_bear = p["bear"].shift(1)
-    inside = (p["open"] > p["close"].shift(1)) & (p["close"] < p["open"].shift(1))
+    inside = (p["open"] >= p["close"].shift(1)) & (p["close"] <= p["open"].shift(1))
     return _clean(prev_bear.astype("boolean") & p["bull"] & inside, df.index)
 
 
 def bearish_harami(df: pd.DataFrame) -> pd.Series:
-    """Prior bar bullish, current bearish body INSIDE the prior's."""
+    """Prior bar bullish, current bearish body INSIDE the prior's (inclusive bounds)."""
     p = _parts(df)
     prev_bull = p["bull"].shift(1)
-    inside = (p["open"] < p["close"].shift(1)) & (p["close"] > p["open"].shift(1))
+    inside = (p["open"] <= p["close"].shift(1)) & (p["close"] >= p["open"].shift(1))
     return _clean(prev_bull.astype("boolean") & p["bear"] & inside, df.index)
 
 
