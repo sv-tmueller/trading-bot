@@ -283,6 +283,50 @@ def test_main_runs_the_full_grid_on_a_powered_frame(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# Firing-rate calibration mode
+# ---------------------------------------------------------------------------
+
+def test_firing_rates_mode_prints_a_table_and_no_performance_numbers(tmp_path, capsys):
+    """The calibration table must carry no Calmar/equity number that could read as a result."""
+    df = _synth_daily(900)
+    path = tmp_path / "bars.csv"
+    df.reset_index(names="timestamp").to_csv(path, index=False)
+
+    rc = rcs.main(["--data", str(path), "--firing-rates"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "firing-rate calibration" in out
+    for name in cs.PATTERNS:
+        assert name in out
+    # a calibration run is not a performance run
+    assert "CalmarUS" not in out
+    assert "clearing the" not in out
+
+
+def test_firing_rates_mode_is_exempt_from_the_power_gate(tmp_path, capsys):
+    """A shallow frame still answers the calibration question — it makes no perf claim.
+
+    The power gate exists to stop underpowered PERFORMANCE numbers escaping. Firing rates
+    are a property of the detectors, so gating them would withhold a safe diagnostic.
+    """
+    df = _synth_daily(120)              # far below the 500-session floor
+    path = tmp_path / "shallow.csv"
+    df.reset_index(names="timestamp").to_csv(path, index=False)
+
+    rc = rcs.main(["--data", str(path), "--firing-rates"])
+    out = capsys.readouterr().out
+    assert rc == 0                       # NOT 2 — the perf gate does not apply
+    assert "firing-rate calibration" in out
+    assert "CalmarUS" not in out
+
+
+def test_firing_rates_mode_still_exits_2_when_data_is_missing(tmp_path, capsys):
+    rc = rcs.main(["--data", str(tmp_path / "nope.csv"), "--firing-rates"])
+    assert rc == 2
+    assert "DATA-BLOCKED" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
 # Negative control
 # ---------------------------------------------------------------------------
 

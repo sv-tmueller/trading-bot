@@ -311,6 +311,53 @@ PATTERNS: Dict[str, Tuple[Callable[[pd.DataFrame], pd.Series], str]] = {
 }
 
 
+#: Firing-rate bounds a detector must sit inside on real bars to be considered calibrated.
+#: A pattern firing on a quarter of all bars is not a "pattern" — it is a description of
+#: ordinary price action, and any strategy built on it is really just churn. One that almost
+#: never fires cannot carry a study either: too few trades to say anything.
+#: These are DIAGNOSTIC bounds, not tradeable parameters — they gate nothing in the grid.
+FIRING_RATE_MAX = 0.25
+FIRING_RATE_MIN = 0.005
+
+
+def firing_rates(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-pattern firing count and rate over ``df``, with a calibration verdict.
+
+    Why this exists: a synthetic random-walk frame **cannot** reveal a miscalibrated
+    threshold. Real markets gap, trend, and cluster their volatility, so a body/wick ratio
+    that looks discriminating on Gaussian noise can fire on a quarter of real bars (or on
+    none). Unit tests over synthetic OHLC therefore verify the detector's *logic* while
+    leaving its *calibration* completely unchecked — this closes that gap.
+
+    Returns a frame indexed by pattern name with columns ``count``, ``rate``, ``direction``
+    and ``verdict`` (``ok`` / ``TOO_COMMON`` / ``TOO_RARE``), sorted by descending rate.
+
+    This is a diagnostic only. It gates nothing and changes no result; a `TOO_COMMON` or
+    `TOO_RARE` verdict is a finding to disclose, and — because the thresholds are frozen in
+    a pre-registration — never a licence to retune in place.
+    """
+    n = len(df)
+    rows = []
+    for name in PATTERNS:
+        count = int(detect(name, df).sum())
+        rate = (count / n) if n else 0.0
+        if rate > FIRING_RATE_MAX:
+            verdict = "TOO_COMMON"
+        elif rate < FIRING_RATE_MIN:
+            verdict = "TOO_RARE"
+        else:
+            verdict = "ok"
+        rows.append({
+            "pattern": name,
+            "count": count,
+            "rate": rate,
+            "direction": PATTERNS[name][1],
+            "verdict": verdict,
+        })
+    out = pd.DataFrame(rows).set_index("pattern")
+    return out.sort_values("rate", ascending=False)
+
+
 def detect(name: str, df: pd.DataFrame, **kwargs) -> pd.Series:
     """Run one registered detector by name. Raises ``KeyError`` on an unknown name."""
     if name not in PATTERNS:

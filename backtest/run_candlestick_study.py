@@ -340,6 +340,8 @@ def main(argv: Optional[list] = None) -> int:
                     help="local CSV/Parquet of daily bars (no network)")
     ap.add_argument("--vehicle", default="SPY", help="ticker for the network path")
     ap.add_argument("--end", default=None, help="last date (YYYY-MM-DD; default today)")
+    ap.add_argument("--firing-rates", action="store_true",
+                    help="print the per-pattern firing-rate calibration table and exit")
     args = ap.parse_args(argv)
 
     end = date.fromisoformat(args.end) if args.end else None
@@ -369,6 +371,33 @@ def main(argv: Optional[list] = None) -> int:
         return 2
 
     power = idata.describe_power(df)
+
+    # Calibration diagnostic. Deliberately runs BEFORE the power gate and is exempt from it:
+    # firing rates are a property of the detectors, not a performance claim, so a shallow
+    # frame can still answer "does this threshold fire at a sane rate?" without any risk of
+    # being misread as a result. Prints no Calmar, no cell, no equity number.
+    if args.firing_rates:
+        rates = cs.firing_rates(df)
+        print(f"Detector firing-rate calibration — source: {source}")
+        print(f"bars: {power.n_bars}  span: {power.first} -> {power.last}")
+        print(f"bounds: min {cs.FIRING_RATE_MIN:.1%}  max {cs.FIRING_RATE_MAX:.0%}")
+        print()
+        print(f"{'pattern':<20} {'dir':<8} {'count':>7} {'rate':>8}  verdict")
+        for name, row in rates.iterrows():
+            print(
+                f"{name:<20} {row['direction']:<8} {int(row['count']):>7} "
+                f"{row['rate']:>7.2%}  {row['verdict']}"
+            )
+        bad = rates[rates["verdict"] != "ok"]
+        print()
+        print(f"miscalibrated: {len(bad)} / {len(rates)}")
+        if len(bad):
+            print(
+                "NOTE: a flagged detector is a finding to DISCLOSE. The thresholds are "
+                "frozen in the pre-registration — do not retune them in place; freeze any "
+                "change as a separate pre-registration."
+            )
+        return 0
 
     # Mechanical honesty gate: on an underpowered frame print NO per-cell table at all.
     # A table gets quoted out of context; a refusal cannot be. Same gate as the ORB runner.

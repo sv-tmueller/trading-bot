@@ -239,6 +239,60 @@ worse than #431's key-gated case.
 The grid runs unchanged the moment either exists. §7 will then be filled in a **strictly
 later commit** than the one freezing §2-§6.
 
+### §7.0 Real-data harness validation — GOOG, DIRECTIONAL — **NOT the pre-registered read**
+
+> **This is not §7's answer and must never be quoted as one.** The pre-registered read is
+> **SPY daily, `PROMOTABLE`**. What follows is a different instrument (GOOG), a different era
+> (2004-2013), and `DIRECTIONAL` power (n_w=8 < 13). It exists to validate the harness on real
+> candles, and §7 above stays empty until the pre-registered read runs.
+
+**Source.** Real GOOG daily OHLC, 2,148 sessions, 2004-08-19 → 2013-03-01, shipped inside the
+`backtesting` PyPI wheel (`backtesting.test.GOOG`) — reachable because `pypi.org` is allowlisted
+while every market-data host is not.
+
+**Why bother.** A synthetic random-walk frame **cannot** reveal a miscalibrated threshold. Real
+markets gap, trend, and cluster their volatility, so a body/wick ratio that discriminates on
+Gaussian noise can fire on a quarter of real bars — or on none. The 71 detector unit tests verify
+the detectors' *logic* while leaving their *calibration* entirely unchecked. This closes that gap.
+
+**Result 1 — calibration: PASS, 0/14 miscalibrated.** All 14 detectors fire inside the
+diagnostic bounds (0.5% ≤ rate ≤ 25%) on real bars:
+
+| pattern | dir | count | rate | | pattern | dir | count | rate |
+|---|---|---|---|---|---|---|---|---|
+| `inside_bar` | neutral | 284 | 13.22% | | `bullish_engulfing` | long | 68 | 3.17% |
+| `doji` | neutral | 256 | 11.92% | | `hammer` | long | 57 | 2.65% |
+| `bullish_pin_bar` | long | 125 | 5.82% | | `evening_star` | short | 51 | 2.37% |
+| `bearish_pin_bar` | short | 106 | 4.93% | | `shooting_star` | short | 44 | 2.05% |
+| `bearish_engulfing` | short | 97 | 4.52% | | `bullish_marubozu` | long | 37 | 1.72% |
+| `bearish_harami` | short | 96 | 4.47% | | `bearish_marubozu` | short | 37 | 1.72% |
+| `bullish_harami` | long | 93 | 4.33% | | | | | |
+| `morning_star` | long | 70 | 3.26% | | | | | |
+
+**No v2 threshold pre-registration is needed** — §3.1's frozen constants survive contact with
+real candles. The real-vs-synthetic differences are also directionally sensible: pin bars fire
+~2× more often on real bars (4.9%/5.8% vs 2.9%/2.8%) because real markets genuinely reject
+levels, and `doji` fires 11.9% vs 5.2% because real markets have more small-body indecision days.
+The detectors respond to real structure, not to noise.
+
+**Result 2 — the 28-cell grid on GOOG: 0/28 clear, 3/28 `RUINED`, 0 never traded.** Three
+caveats make this *weaker* than it looks, all of which must travel with the number:
+
+1. The **1.3085 bar is SPY-specific**; judging GOOG cells against it is apples-to-oranges.
+2. GOOG went ~100 → ~800 over this window (always-in after-tax CalmarUS **+0.3827**), so *every
+   short arm losing* is a **vehicle artifact**, not a finding about bearish patterns.
+3. `n_w=8` — not gate-eligible, so the #398 gate was not run.
+
+**The one lead worth carrying forward.** `hammer`/R3 posted **+0.2792** against a random-entry
+twin at **−0.1654** — the largest real-vs-control gap in the grid, on 45 trades. It is *not* a
+survivor: still below always-in (+0.3827), far below the SPY bar, and at N=28 one or two cells
+beating their twins is what noise produces — `morning_star`/R2 was *beaten* by its own twin
+(+0.0152 vs +0.1626). Recorded as **a cell to look at first** when the SPY read runs, not as
+evidence of edge.
+
+Reproduce: `python3 -m backtest.run_candlestick_study --data data/GOOG_daily.csv` and
+`… --firing-rates`.
+
 ### §7.1 What has been verified without real data
 
 - **89 tests**, all offline: 66 pattern-detector tests (including a truncation-invariance

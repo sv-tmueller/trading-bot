@@ -283,6 +283,67 @@ def test_registry_is_complete_and_directions_are_valid():
     assert len(bulls) == len(bears) == 6
 
 
+def _random_walk_frame(n: int = 800, seed: int = 5) -> pd.DataFrame:
+    """Synthetic daily OHLC with opens NOT pinned to the prior close."""
+    rng = np.random.default_rng(seed)
+    close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.011, n)))
+    bars = []
+    for i in range(n):
+        base = close[i - 1] if i else 100.0
+        o = base * (1 + rng.normal(0, 0.002))
+        c = float(close[i])
+        hi = max(o, c) * (1 + abs(rng.normal(0, 0.004)))
+        lo = min(o, c) * (1 - abs(rng.normal(0, 0.004)))
+        bars.append((o, hi, lo, c))
+    return _frame(bars)
+
+
+def test_firing_rates_covers_every_pattern_with_a_verdict():
+    out = cs.firing_rates(_random_walk_frame())
+    assert set(out.index) == set(cs.PATTERNS)
+    assert list(out.columns) == ["count", "rate", "direction", "verdict"]
+    assert out["verdict"].isin(["ok", "TOO_COMMON", "TOO_RARE"]).all()
+    # sorted by descending rate
+    assert out["rate"].is_monotonic_decreasing
+
+
+def test_firing_rates_are_consistent_with_detect():
+    df = _random_walk_frame(400, seed=11)
+    out = cs.firing_rates(df)
+    for name in cs.PATTERNS:
+        assert out.loc[name, "count"] == int(cs.detect(name, df).sum())
+        assert out.loc[name, "rate"] == pytest.approx(
+            out.loc[name, "count"] / len(df)
+        )
+
+
+def test_firing_rates_flags_a_pathologically_common_pattern():
+    """A frame engineered so `inside_bar` fires on nearly every bar must be flagged.
+
+    Guards the diagnostic itself: if it cannot detect an over-firing detector on a frame
+    built to over-fire, it would silently pass a miscalibrated threshold on real data.
+    """
+    # A huge first bar, then tiny bars entirely inside it -> inside_bar fires constantly
+    bars = [(100.0, 200.0, 10.0, 150.0)]
+    bars += [(100.0, 101.0, 99.0, 100.5)] * 60
+    out = cs.firing_rates(_frame(bars))
+    assert out.loc["inside_bar", "verdict"] == "TOO_COMMON"
+    assert out.loc["inside_bar", "rate"] > cs.FIRING_RATE_MAX
+
+
+def test_firing_rates_flags_a_never_firing_pattern():
+    # featureless identical bars: no directional pattern can fire
+    out = cs.firing_rates(_frame([(100.0, 101.0, 99.0, 100.0)] * 50))
+    assert out.loc["morning_star", "verdict"] == "TOO_RARE"
+    assert out.loc["morning_star", "count"] == 0
+
+
+def test_firing_rates_handles_an_empty_frame_without_raising():
+    out = cs.firing_rates(_frame([]))
+    assert (out["count"] == 0).all()
+    assert (out["rate"] == 0.0).all()
+
+
 def test_detect_and_direction_of_reject_unknown_names():
     df = _frame([FILLER, FILLER])
     with pytest.raises(KeyError, match="unknown pattern"):
