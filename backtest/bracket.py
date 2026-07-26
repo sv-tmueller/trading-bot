@@ -172,6 +172,7 @@ def simulate_bracket(
     eow_close_out: bool = True,
     session_close_out: bool = False,
     direction: str = LONG,
+    max_bars: Optional[int] = None,
 ) -> dict:
     """Single-lot bracket simulation over an OHLC frame (long or short).
 
@@ -210,6 +211,19 @@ def simulate_bracket(
         is the same all-in, unlevered notional convention as the long side, so the two arms
         are directly comparable. Single-lot per call: a long/short strategy runs the engine
         once per direction and combines the ledgers.
+    max_bars:
+        Time stop (#448 PR A), keyword-only. ``None`` (default) is a no-op — the engine is
+        byte-identical to the pre-#448 behavior for every existing caller. When set, a lot
+        still open ``max_bars`` bars after its entry is flattened at that bar's CLOSE with
+        ``exit_reason="time_stop"`` (``bars_held = i - entry_i``, so the entry bar itself is
+        ``bars_held == 0``; the fire condition is ``bars_held >= max_bars``). Uses the same
+        exit cost convention as every other exit (``fill_level·(1−slip)``/``(1+comm)``
+        haircut, mirrored for shorts). ``max_bars < 1`` raises ``ValueError`` at call time —
+        an exit on the entry bar would violate the ``exit_date > entry_date`` assertion.
+        Precedence inside a bar: natural stop/target resolution (``_resolve_bar``) first,
+        then the time stop, then ``session_close_out``, then ``eow_close_out``. The final
+        bar of the series always stays ``end_of_window`` even if ``bars_held`` would have
+        reached ``max_bars`` there (same convention as the other two close-out modes).
 
     Returns
     -------
@@ -220,6 +234,8 @@ def simulate_bracket(
     """
     if direction not in DIRECTIONS:
         raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
+    if max_bars is not None and max_bars < 1:
+        raise ValueError(f"max_bars must be >= 1 (or None to disable), got {max_bars!r}")
     is_short = direction == SHORT
 
     index = df.index
@@ -248,6 +264,7 @@ def simulate_bracket(
     qty = 0
     entry_price = 0.0
     entry_date = None
+    entry_i = 0
     cur_stop = 0.0
     cur_target: Optional[float] = None
     trades: list[dict] = []
@@ -264,7 +281,7 @@ def simulate_bracket(
         return cash_ - qty_ * close_ if is_short else cash_ + qty_ * close_
 
     def _close(fill_level: float, reason: str, ts) -> None:
-        nonlocal cash, qty, entry_price, entry_date, cur_stop, cur_target
+        nonlocal cash, qty, entry_price, entry_date, entry_i, cur_stop, cur_target
         if is_short:
             # Closing a short BUYS the shares back: slippage and commission both work
             # against us (pay more), the mirror of the long exit below.
@@ -292,6 +309,7 @@ def simulate_bracket(
         qty = 0
         entry_price = 0.0
         entry_date = None
+        entry_i = 0
         cur_stop = 0.0
         cur_target = None
 
@@ -313,6 +331,7 @@ def simulate_bracket(
                         cash -= qty * exec_px * (1 + comm)
                     entry_price = exec_px
                     entry_date = ts
+                    entry_i = i
                     cur_stop = stops[i]
                     cur_target = (
                         None if targets is None or np.isnan(targets[i]) else targets[i]
@@ -326,6 +345,11 @@ def simulate_bracket(
         )
         if res is not None:
             _close(res[0], res[1], ts)
+            equity_curve.append((ts, cash))
+            continue
+
+        if max_bars is not None and i != n - 1 and (i - entry_i) >= max_bars:
+            _close(closes[i], "time_stop", ts)
             equity_curve.append((ts, cash))
             continue
 
