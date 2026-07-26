@@ -99,7 +99,7 @@ Three to five literal prompts the user can paste into a fresh Claude Code sessio
 
 - Stands alone — a fresh session has no context.
 - Names the branch / issue / PR / file the work attaches to.
-- Is something a Team-Leader-orchestrated workflow can act on (`Triage open issues` / `Work on issue #N` / `Run QA` / `Update docs` / etc., per `TEAM.md`).
+- Is something the current operating model can act on (`/tm-advisor <description>` to start a change, `/tm-kickoff #N` to implement a sized issue, `Run QA`, `Update docs`, etc., per the [Team](../../CLAUDE.md#team) section of `CLAUDE.md`).
 
 Order them by priority — the first prompt is the one the user should paste first if they only have time for one thing.
 
@@ -107,12 +107,12 @@ Order them by priority — the first prompt is the one the user should paste fir
 
 - Path: `docs/handover/YYYY-MM-DD-<slug>.md`.
 - Date: today's UTC date. If `currentDate` is provided in session context, use that.
-- Slug: kebab-case, ≤30 chars, captures the dominant topic of the session (e.g. `exposure-cap-tuning`, `bracket-order-bugfix`, `v2-shorts-spike`).
+- Slug: kebab-case, ≤30 chars, captures the dominant topic of the session (e.g. `mvp2-migration-execution`, `candlestick-search-egress-blocked`, `contracts-survey-prep`).
 - Multiple handovers per day are allowed if the slug is more specific. If two handovers would collide, append a session number to the slug (e.g. `bugfix-session-2`).
 
 ## Producing a handover
 
-Use the `handover` skill: `/handover [<slug>]`. The skill captures live git / PR / issue state, reads `CLAUDE.md` and `TEAM.md` for invariants and role boundaries, writes the document against this contract, commits it on a dedicated `handover/<slug>-<date>` branch, opens a draft PR, and posts a short session-tally wrap-up in chat (PRs merged, what is now live, branches still open, bot code touched / untouched). The wrap-up is for the current user; the doc is for the next session.
+Use the `handover` skill: `/handover [<slug>]`. The skill captures live git / PR / issue state, reads `CLAUDE.md`'s [Architectural invariants](../../CLAUDE.md#architectural-invariants) section (for the §7 material) and [Team](../../CLAUDE.md#team) section (for role boundaries), writes the document against this contract, commits it on a dedicated `handover/<slug>-<date>` branch, opens a draft PR, and posts a short session-tally wrap-up in chat (PRs merged, what is now live, branches still open, bot code touched / untouched). The wrap-up is for the current user; the doc is for the next session.
 
 Skill location: [`.claude/skills/handover/SKILL.md`](../../.claude/skills/handover/SKILL.md).
 
