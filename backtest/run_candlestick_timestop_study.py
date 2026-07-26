@@ -60,7 +60,6 @@ from backtest.run_candlestick_study import (
     ARMS,
     N_CELLS as V1_N_CELLS,
     R_GRID,
-    RANDOM_SEED,
     SPY_BAR,
     _fetch_daily,
     always_in,

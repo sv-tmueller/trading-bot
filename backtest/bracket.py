@@ -217,7 +217,7 @@ def simulate_bracket(
         still open ``max_bars`` bars after its entry is flattened at that bar's CLOSE with
         ``exit_reason="time_stop"`` (``bars_held = i - entry_i``, so the entry bar itself is
         ``bars_held == 0``; the fire condition is ``bars_held >= max_bars``). Uses the same
-        exit cost convention as every other exit (``fill_level·(1−slip)``/``(1+comm)``
+        exit cost convention as every other exit (``fill_level·(1−slip)``/``(1−comm)``
         haircut, mirrored for shorts). ``max_bars < 1`` raises ``ValueError`` at call time —
         an exit on the entry bar would violate the ``exit_date > entry_date`` assertion.
         Precedence inside a bar: natural stop/target resolution (``_resolve_bar``) first,

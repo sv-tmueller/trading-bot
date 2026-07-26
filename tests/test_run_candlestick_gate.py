@@ -54,7 +54,8 @@ def test_build_all_cells_keys_are_unique_and_cover_all_three_grids():
 
 
 def test_the_v1_v2_subset_is_unchanged_by_the_v3_extension():
-    """All 84 prior (v1+v2) keys are still present, with byte-identical sims.
+    """All 84 prior (v1+v2) keys are still present, unchanged (pinned on trade_count and
+    ending equity).
 
     The recorded N=84 read must stay reproducible — the v3 extension pools additional
     cells, it must never perturb the ones the earlier reads already reported.

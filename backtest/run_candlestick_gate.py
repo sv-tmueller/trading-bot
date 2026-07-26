@@ -76,8 +76,8 @@ def build_all_cells(df: pd.DataFrame) -> "dict[CellKey, dict]":
     Rebuilds only the REAL cell for each arm/R/context/time-stop — the gate needs each
     cell's own equity curve, not its random-entry twin (the twin comparison is each
     runner's own primary read, already reported there). The v1+v2 subset (the first 84
-    keys built here) is byte-identical to the pre-#448 gate — this function only ADDS the
-    84 v3 keys, it never perturbs the earlier ones.
+    keys built here) is unchanged from the pre-#448 gate (pinned on trade_count and ending
+    equity) — this function only ADDS the 84 v3 keys, it never perturbs the earlier ones.
     """
     cells: "dict[CellKey, dict]" = {}
     for arm in ARMS:

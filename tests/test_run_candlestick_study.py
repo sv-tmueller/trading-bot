@@ -214,7 +214,7 @@ def test_build_cell_honours_max_bars():
     for t in bounded["trades"]:
         held = date_to_pos[t["exit_date"]] - date_to_pos[t["entry_date"]]
         assert held <= 3, f"trade held {held} bars, max_bars=3"
-    # bounding the hold must never fabricate trades relative to the unbounded run
+    # a tighter hold can only free capacity, never lose entries (bounded >= unbounded)
     assert bounded["trade_count"] >= unbounded["trade_count"]
 
 
