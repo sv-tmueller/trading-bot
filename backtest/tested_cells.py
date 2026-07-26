@@ -196,15 +196,20 @@ LEDGER: Tuple[TestedCell, ...] = (
         note="0/56 clear, 4 RUINED; context did not rescue the class. Pooled #398 gate at N=84 "
              "(same run as v1): DSR 0.0122 FAIL, PBO 0.4036 PASS, bootstrap ci_low -0.000529 FAIL.",
     ),
-    # --- Candlestick patterns v3, time-stop (#448 PR A) — frozen, awaiting the SPY read --
+    # --- Candlestick patterns v3, time-stop (#448 PR B) — SPY read, closed -----------------
     TestedCell(
         family="candlestick_pattern_timestop", cadence="daily", vehicle="SPY",
         exit_style="bracket_patternextreme_RxRisk_timestop", n_cells=84,
-        verdict=PENDING, power="NONE",
+        verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-07-26-candlestick-timestop-preregistration.md",
         date="2026-07-26",
-        note="14 arms x R{2,3} x time-stop{3,5,10} bars, CONTEXT_NONE. Frozen, awaiting the "
-             "SPY read.",
+        note="0/84 clear (14 arms x R{2,3} x time-stop{3,5,10}, CONTEXT_NONE), 29 RUINED. "
+             "Pooled #398 gate at cumulative N=168: DSR 0.0032 FAIL, PBO 0.3041 PASS, "
+             "bootstrap ci_low -0.000529 FAIL -> combined FAIL. Per the pre-registration's "
+             "§9 stopping rule, all three widening conditions fail (no cell clears the bar, "
+             "gate fails, no cell exists to beat its twin/always-in) -> the candlestick "
+             "widening programme (v1 context-free, v2 trend-context, v3 time-stop) is "
+             "closed; no round 4 (vehicle-robustness) is frozen.",
     ),
 )
 

@@ -22,6 +22,12 @@ data — see the status line below).
 > first; PR B (the SPY read, §7) branches from `main` only afterward. **No SPY number
 > exists anywhere in this document or in the commits behind it.**
 
+> **Addendum (2026-07-26, PR #455 — dated, not an in-place rewrite):** §7 has since been
+> filled, in the strictly later commit `cc4fcb9` (PR #455, PR B of #448's two-PR delivery).
+> The banner above describes the freeze state at `fee483d` and remains accurate as a
+> description of that commit — it is not rewritten. Verdict: **NO_GO at cumulative N=168**
+> (see §7).
+
 ---
 
 ## §0 Invariant framing (governs everything below)
@@ -240,20 +246,211 @@ The pooled #398 gate keeps its own noise control
 
 ## §7 Results
 
-**EMPTY — not yet run. This document is the freeze (PR A of #448); see the status line at
-the top.**
+**Verdict: NO_GO. 0/84 v3 cells clear the frozen 1.3085 SPY bar. The pooled #398 gate at
+cumulative N=168 also FAILS. Per §9, the candlestick widening programme is closed.**
 
-No numbers appear here because none exist. When PR B runs the SPY read, this section is
-filled in a **strictly later commit** on a **strictly later PR**, provable from git
-history, and §0–§6/§8/§9 above are not edited afterward (the same discipline #446 used:
-freeze in `8d424f7`, results in the strictly later `82af278`).
+This section is filled in this strictly later commit, on this strictly later PR (PR B of
+#448), after PR A (the freeze, `fee483d`) merged to `main`. §0–§6/§8/§9 above are unedited
+from the freeze — the diff between the freeze commit and this one is confined to §7 plus
+the dated addendum in the front matter above (the same discipline #446 used: freeze
+`8d424f7`, results `82af278`).
 
-Reproduce (once PR A has merged and the frame is available):
+### §7.0 Provenance (read before quoting any number below)
 
-```bash
-python3 -m backtest.run_candlestick_timestop_study --data data/SPY_daily.csv
-python3 -m backtest.run_candlestick_gate --data data/SPY_daily.csv
+Fetched via the frozen helper, unmodified:
+
+```python
+from datetime import date
+from backtest.run_candlestick_study import _fetch_daily
+df = _fetch_daily("SPY", date(2026, 7, 24))
 ```
+
+- **Fetch date:** 2026-07-26 (this PR's session). Yahoo did **not** throttle this run — no
+  429s, no retry needed, despite the 429 observed at plan time (§8 of the sub-plan).
+- **Bar count / span:** **8,427 bars, 1993-01-29 -> 2026-07-23** — matches the recorded N=84
+  (v1+v2) read exactly. No deviation to disclose.
+- **Power:** `describe_power` -> `PROMOTABLE` (`n_w=33 >= 13`, 8427 sessions) — matches the
+  expectation asserted before the grid ran.
+- **NaN handling:** none needed. The trailing-NaN-close workaround is the `end=date(2026, 7,
+  24)` argument (exclusive), exactly as documented in the v1/v2 §7s; `_fetch_daily` itself
+  was not modified.
+- **Local cache:** written to `data/SPY_daily.csv` (`reset_index(names="timestamp")` shape,
+  gitignored — never committed; round-tripped through `idata.load_local` and reconciled to
+  the live fetch within float64 CSV-text precision, max abs diff 5.68e-14).
+- **Reproduce:**
+  ```bash
+  python3 -m backtest.run_candlestick_timestop_study --data data/SPY_daily.csv
+  python3 -m backtest.run_candlestick_gate --data data/SPY_daily.csv
+  ```
+- **Process deviation (disclosed):** the first fetch/grid/gate run of this session was
+  mistakenly performed in the shared main checkout instead of the dispatched worktree; it
+  was discarded, and the entire sequence was redone in the worktree, producing
+  byte-identical stdout — the numbers reported in this section are from that worktree run.
+  PR B was dispatched only after `fee483d` merged (timing lead-confirmed on this PR and on
+  batch #447), so the discarded run strictly post-dates the freeze and had no pre-freeze
+  data contact, which is why this is a plain disclosure rather than a v2-§0-style downgrade.
+
+### §7.1 The full 84/84 v3 grid (verbatim, no truncation)
+
+```
+Daily candlestick study v3 — TIME-STOP grid (84 cells)
+source: local:data/SPY_daily.csv
+power: PROMOTABLE — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power floors
+bars: 8427  span: 1993-01-29 00:00:00+00:00 -> 2026-07-23 00:00:00+00:00
+frozen SPY bar (median-window after-tax Calmar): 1.3085
+always-in after-tax CalmarUS: +0.1445
+
+arm                  dir      R  stop   CalmarUS  >bar?     CAGR    maxDD   #tr    random     status
+bullish_marubozu     long     3     3    -0.0383     no  -0.48% -33.57%   210   -0.0427         ok
+bullish_marubozu     long     3     5    -0.0384     no  +0.01% -26.51%   199   -0.0447         ok
+bullish_marubozu     long     2     5    -0.0386     no  -0.03% -26.60%   202   -0.0474         ok
+bullish_marubozu     long     2     3    -0.0387     no  -0.51% -34.04%   211   -0.0439         ok
+shooting_star        short    3     3    -0.0394     no  -0.74% -30.17%   120   -0.0411         ok
+shooting_star        short    2     3    -0.0396     no  -0.82% -28.50%   120   -0.0422         ok
+shooting_star        short    3     5    -0.0416     no  -0.90% -30.54%   119   -0.0441         ok
+shooting_star        short    2     5    -0.0421     no  -1.17% -33.39%   119   -0.0440         ok
+shooting_star        short    2    10    -0.0429     no  -1.24% -37.63%   117   -0.0421         ok
+shooting_star        short    3    10    -0.0435     no  -1.12% -36.08%   117   -0.0428         ok
+bullish_marubozu     long     3    10    -0.0440     no  -0.61% -32.65%   192   -0.0416         ok
+morning_star         long     3     5    -0.0441     no  -0.24% -40.61%   212   -0.0488         ok
+bullish_marubozu     long     2    10    -0.0454     no  -0.83% -37.90%   196   -0.0446         ok
+morning_star         long     2     5    -0.0456     no  -0.44% -41.07%   212   -0.0496         ok
+morning_star         long     2    10    -0.0460     no  -0.09% -50.70%   199   -0.0478         ok
+morning_star         long     3     3    -0.0497     no  -1.41% -46.15%   217   -0.0444         ok
+morning_star         long     3    10    -0.0499     no  -0.02% -49.90%   198   -0.0457         ok
+bullish_harami       long     3     3    -0.0500     no  +0.44% -22.11%   345   -0.0711         ok
+bearish_marubozu     short    3     3    -0.0502     no  -1.69% -45.94%   163   -0.0447         ok
+morning_star         long     2     3    -0.0504     no  -1.53% -46.54%   217   -0.0455         ok
+bearish_marubozu     short    2     3    -0.0510     no  -1.89% -49.03%   163   -0.0432         ok
+bearish_marubozu     short    3     5    -0.0522     no  -1.58% -43.29%   158   -0.0494         ok
+bullish_harami       long     2     3    -0.0526     no  +0.20% -19.57%   345   -0.0699         ok
+bearish_harami       short    2     3    -0.0531     no  -1.09% -33.84%   288   -0.0670         ok
+bearish_marubozu     short    2     5    -0.0531     no  -1.79% -46.62%   160   -0.0470         ok
+bullish_harami       long     3     5    -0.0535     no  +0.40% -32.17%   332   -0.0651         ok
+bearish_marubozu     short    3    10    -0.0539     no  -1.00% -32.63%   152   -0.0551         ok
+bearish_marubozu     short    2    10    -0.0544     no  -1.28% -37.68%   155   -0.0512         ok
+hammer               long     2     3    -0.0553     no  -0.87% -40.79%   284   -0.0604         ok
+bearish_harami       short    3     3    -0.0565     no  -0.92% -29.12%   287   -0.0672         ok
+hammer               long     3     3    -0.0579     no  -0.99% -43.93%   284   -0.0593         ok
+bullish_harami       long     2     5    -0.0604     no  +0.08% -29.96%   337   -0.0677         ok
+evening_star         short    3     3    -0.0648     no  -1.82% -49.35%   216   -0.0513         ok
+bearish_harami       short    2     5    -0.0654     no  -1.83% -47.61%   285   -0.0967         ok
+evening_star         short    2     3    -0.0669     no  -1.88% -51.15%   216   -0.0509         ok
+bearish_pin_bar      short    3     3    -0.0690     no  -2.51% -59.22%   265   -0.0732         ok
+bearish_pin_bar      short    2     3    -0.0691     no  -2.29% -55.41%   265   -0.0713         ok
+bullish_engulfing    long     2     3    -0.0697     no  -2.26% -57.35%   268   -0.0509         ok
+bullish_engulfing    long     3     3    -0.0709     no  -2.21% -56.67%   268   -0.0492         ok
+hammer               long     2     5    -0.0714     no  -1.38% -46.68%   276   -0.0711         ok
+bullish_harami       long     3    10    -0.0734     no  +0.48% -39.55%   310   -0.0796         ok
+bearish_harami       short    3     5    -0.0756     no  -1.78% -46.47%   282   -0.0880         ok
+bearish_pin_bar      short    2     5    -0.0774     no  -2.52% -59.30%   260   -0.0813         ok
+bullish_harami       long     2    10    -0.0804     no  +0.50% -36.09%   319   -0.0755         ok
+hammer               long     3     5    -0.0806     no  -1.47% -52.67%   274   -0.0713         ok
+bearish_harami       short    2    10    -0.0810     no  -2.26% -54.70%   279         —         ok
+evening_star         short    3     5    -0.0812     no  -2.64% -62.13%   212   -0.0572         ok
+hammer               long     2    10    -0.0838     no  -1.49% -48.14%   266   -0.0734         ok
+bearish_pin_bar      short    3     5    -0.0888     no  -2.75% -62.75%   260   -0.0951         ok
+bearish_pin_bar      short    2    10    -0.0899     no  -2.70% -61.75%   255   -0.1004         ok
+evening_star         short    2     5    -0.0934     no  -2.77% -63.33%   212   -0.0576         ok
+bullish_engulfing    long     2     5    -0.0988     no  -2.06% -58.56%   261   -0.0540         ok
+bullish_engulfing    long     3     5    -0.1035     no  -1.93% -57.72%   261   -0.0519         ok
+hammer               long     3    10    -0.1142     no  -1.64% -55.41%   258   -0.0739         ok
+bearish_harami       short    3    10    -0.1154     no  -2.61% -59.58%   276         —         ok
+bullish_engulfing    long     2    10          —     no  -1.89% -58.80%   239   -0.0561     RUINED
+bullish_engulfing    long     3    10          —     no  -1.90% -60.05%   236   -0.0539     RUINED
+bearish_engulfing    short    2     3          —     no  -5.67% -86.01%   336   -0.0675     RUINED
+bearish_engulfing    short    2     5          —     no  -5.71% -86.39%   323   -0.0771     RUINED
+bearish_engulfing    short    2    10          —     no  -5.87% -87.40%   306         —     RUINED
+bearish_engulfing    short    3     3          —     no  -5.80% -86.49%   335   -0.0666     RUINED
+bearish_engulfing    short    3     5          —     no  -5.71% -86.23%   321   -0.0716     RUINED
+bearish_engulfing    short    3    10          —     no  -6.70% -90.50%   300         —     RUINED
+bullish_pin_bar      long     2     3          —     no  -2.09% -60.84%   492         —     RUINED
+bullish_pin_bar      long     2     5          —     no  -2.56% -62.31%   468         —     RUINED
+bullish_pin_bar      long     2    10          —     no  -2.60% -63.04%   444         —     RUINED
+bullish_pin_bar      long     3     3          —     no  -1.88% -60.41%   489         —     RUINED
+bullish_pin_bar      long     3     5          —     no  -2.32% -63.81%   463         —     RUINED
+bullish_pin_bar      long     3    10          —     no  -2.09% -61.17%   427         —     RUINED
+bearish_pin_bar      short    3    10          —     no  -2.99% -66.01%   253         —     RUINED
+evening_star         short    2    10          —     no  -4.26% -78.38%   209   -0.0568     RUINED
+evening_star         short    3    10          —     no  -4.05% -77.14%   207   -0.0565     RUINED
+inside_bar_long      long     2     3          —     no  -4.30% -77.40%   773         —     RUINED
+inside_bar_long      long     2     5          —     no  -4.09% -75.48%   727         —     RUINED
+inside_bar_long      long     2    10          —     no  -3.69% -76.91%   667         —     RUINED
+inside_bar_long      long     3     3          —     no  -3.72% -72.44%   762         —     RUINED
+inside_bar_long      long     3     5          —     no  -3.51% -71.70%   704         —     RUINED
+inside_bar_long      long     3    10          —     no  -2.58% -70.89%   625         —     RUINED
+inside_bar_short     short    2     3          —     no  -6.40% -89.77%   772         —     RUINED
+inside_bar_short     short    2     5          —     no  -6.91% -91.09%   742         —     RUINED
+inside_bar_short     short    2    10          —     no  -7.66% -93.30%   714         —     RUINED
+inside_bar_short     short    3     3          —     no  -6.28% -89.17%   758         —     RUINED
+inside_bar_short     short    3     5          —     no  -7.35% -92.49%   719         —     RUINED
+inside_bar_short     short    3    10          —     no  -7.99% -94.06%   675         —     RUINED
+
+cells clearing the 1.3085 bar: 0 / 84
+cells with a RUINED after-tax curve: 29 / 84
+cells that never traded: 0 / 84
+
+DSR multiplicity — THIS grid: N = 84
+DSR multiplicity — CUMULATIVE family (v1 28 + v2 56 + v3 84): N = 168
+The cumulative N is the one the deflated-Sharpe bar must use. Widening the search raises that bar; it never lowers it.
+NOTE: this round's own N (84) numerically equals the PREVIOUS round's cumulative N (84) — a coincidence of grid sizes, not a re-run of those same trials.
+```
+
+**THIS grid N = 84: 0/84 cells clear the bar.** Every cleared-vs-not row above reads `no`;
+29/84 cells are `RUINED` (traded and the after-tax curve was destroyed), the remaining 55
+simply sit below 1.3085 without being ruined; 0/84 never traded.
+
+### §7.2 The pooled #398 gate at cumulative N=168 (verbatim)
+
+```
+Pooled #398 overfitting gate — candlestick family, cumulative N=168
+source: local:data/SPY_daily.csv
+power: PROMOTABLE: 8427 bars / 8427 sessions / n_w=33 (1993-01-29 -> 2026-07-23) — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power floors
+n_trials: 168
+best cell: ('bullish_marubozu', 3.0, 'continuation') over 8427 common days
+DSR 0.0032 (threshold >= 0.95) -> FAIL
+PBO 0.3041 (threshold < 0.5) -> PASS
+bootstrap ci_low -0.000529 (threshold > 0) -> FAIL
+combined verdict -> FAIL
+reasons: dsr 0.0032 < threshold 0.95; bootstrap ci_low -0.000529 <= 0
+```
+
+**CUMULATIVE family N = 168: pooled gate combined verdict = FAIL** (DSR 0.0032, well below
+the 0.95 deflation threshold; PBO 0.3041 passes; bootstrap ci_low -0.000529 fails). The best
+cell across all 168 pooled trials is a v1/v2 cell (`bullish_marubozu`/R3/`continuation`), not
+a v3 time-stop cell — consistent with 0/84 v3 cells clearing the bar at all.
+
+### §7.3 Verdict, per the §8 pre-committed mapping
+
+**0/84 v3 cells clear the frozen 1.3085 SPY bar** -> per §8's pre-committed mapping ("0/84
+clear"), **the v3/daily/SPY row is recorded as `NO_GO`**, consistent with the sibling v1/v2
+SPY rows. The time stop does not rescue the candlestick class.
+
+### §7.4 §9 stopping-rule invocation
+
+Per §9's three conditions, evaluated on this SPY `PROMOTABLE` read:
+
+1. **"at least one v3 cell's full-window after-tax US Calmar exceeds 1.3085475049604838"**
+   — **FAILED.** 0/84 cells clear the bar (§7.1).
+2. **"the pooled #398 gate at cumulative N=168 returns a combined PASS"** — **FAILED.**
+   Combined verdict is `FAIL` (§7.2).
+3. **"that cell's after-tax Calmar exceeds both its random-entry twin and the always-in
+   benchmark"** — **N/A**, no cell exists to test (condition 1 already failed).
+
+**Conditions 1 and 2 fail; condition 3 is vacuously unsatisfiable (no cell cleared the
+bar).** Per §9's
+binding text, "if any of the three fails, the candlestick direction is closed." **The
+candlestick widening programme is closed.** No round 4 (the disclosed vehicle-robustness
+arm) is frozen; multi-pattern confluence is not attempted. The closure is recorded in
+`backtest/tested_cells.py` (§7.5) and in the weekly review (`docs/research/reviews/2026-W30.md`).
+
+### §7.5 Ledger flip
+
+`backtest/tested_cells.py`'s `candlestick_pattern_timestop`/`daily`/`SPY` record flips from
+`PENDING`/`power="NONE"` to `verdict=NO_GO`/`power="PROMOTABLE"`, with the gate figures and
+the §9 invocation carried in the record's `note`. `cumulative_trials("candlestick_pattern_timestop")`
+goes from `0` (PR A) to `84` (this PR) — this round's 84 SPY trials now count against future
+multiplicity in this family.
 
 ---
 
