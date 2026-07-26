@@ -788,3 +788,54 @@ def test_time_stop_frees_the_lot_for_a_later_trigger():
     with_stop = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=2,
                                     **ZERO)
     assert with_stop["trade_count"] == 2   # freed at b3, b4's trigger is taken
+
+
+# ---------------------------------------------------------------------------
+# time_stop / session_close_out same-bar precedence (#459). No committed caller
+# passes both max_bars and session_close_out today, so this precedence
+# (docstring lines 223-226: stop/target -> time_stop -> session -> eow) was
+# verified only by scratchpad probes. Pinned here.
+# ---------------------------------------------------------------------------
+
+def test_time_stop_on_a_session_end_bar_exits_as_time_stop_not_session():
+    """A collision bar (time-stop AND session-end both true) resolves time_stop first."""
+    idx = pd.DatetimeIndex([
+        "2020-01-06 14:30", "2020-01-06 14:35", "2020-01-06 14:40", "2020-01-06 15:55",  # day 1: 4 bars
+        "2020-01-07 14:30", "2020-01-07 14:35",                                          # day 2: 2 bars
+    ])
+    df = _frame(idx, o=[100]*6, h=[101]*6, l=[99]*6, c=[100, 100, 101, 103, 100, 100])
+    trig, sp, tp = _levels(df, [False, True, False, False, False, False], stop=50.0, target=200.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, max_bars=2, **ZERO)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "time_stop"                       # the discriminating assertion
+    assert t["exit_date"] == pd.Timestamp("2020-01-06 15:55")
+    assert t["exit_price"] == pytest.approx(103.0)                # collision-bar close, ZERO cost
+
+    # Control run: same frame, max_bars=None (branch skipped entirely). Proves the
+    # collision bar genuinely IS the session close-out bar — without this, a frame
+    # bug (session end not actually on the time-stop bar) would let the test above
+    # stay green under a precedence swap.
+    control = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                                  session_close_out=True, max_bars=None, **ZERO)
+    ct = control["trades"][0]
+    assert ct["exit_reason"] == "session"
+    assert ct["exit_date"] == pd.Timestamp("2020-01-06 15:55")
+    assert ct["exit_price"] == pytest.approx(103.0)
+
+
+def test_session_close_out_still_fires_when_max_bars_is_armed_but_unreached():
+    """max_bars armed but not yet due on the collision bar: session close-out still fires."""
+    idx = pd.DatetimeIndex([
+        "2020-01-06 14:30", "2020-01-06 14:35", "2020-01-06 14:40", "2020-01-06 15:55",
+        "2020-01-07 14:30", "2020-01-07 14:35",
+    ])
+    df = _frame(idx, o=[100]*6, h=[101]*6, l=[99]*6, c=[100, 100, 101, 103, 100, 100])
+    trig, sp, tp = _levels(df, [False, True, False, False, False, False], stop=50.0, target=200.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False,
+                              session_close_out=True, max_bars=10, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "session"
+    assert t["exit_date"] == pd.Timestamp("2020-01-06 15:55")
+    assert t["exit_price"] == pytest.approx(103.0)
