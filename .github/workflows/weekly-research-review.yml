@@ -1,0 +1,130 @@
+# Weekly research review: renders the state of the strategy-search programme from the
+# tested-cell ledger, commits it to docs/research/reviews/YYYY-Www.md, and opens one issue
+# per week carrying the mechanically-derived next-round proposal.
+#
+# This is the self-improvement loop's scheduled half. The generator
+# (backtest/weekly_review.py) is DETERMINISTIC and fully offline — no LLM, no network, no
+# secrets — so this workflow needs no configuration and cannot fail on a missing credential.
+# That is deliberate: a review that only runs when a secret is set is a review that silently
+# stops running.
+#
+# Why Saturday 06:00 UTC: after the US trading week has fully closed (Friday 21:00 UTC),
+# so the ISO week the review is labelled with is complete. Deliberately NOT Sunday — the
+# db-dump backup already holds Sunday 06:00 and staggering avoids two committing workflows
+# racing for the same ref.
+#
+# Idempotence / dedup:
+#   - The doc write is idempotent: re-running in the same ISO week regenerates the same file
+#     (the generator is deterministic), and the commit step no-ops when nothing changed.
+#   - The issue is deduped by title. One issue per ISO week; a re-run finds the existing one
+#     and does nothing rather than opening a duplicate.
+#
+# Judgement deliberately lives OUTSIDE this workflow. The generator does the accounting and
+# applies a documented priority rule; deciding whether to act on the proposal is a human (or
+# agent) call made on the issue this opens.
+
+name: weekly-research-review
+
+on:
+  schedule:
+    - cron: "0 6 * * 6" # weekly, Saturday 06:00 UTC (after the US week closes)
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "Date inside the target ISO week (YYYY-MM-DD). Defaults to today."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  # Never let two runs commit to the same ref simultaneously.
+  group: weekly-research-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      # The generator imports only the stdlib and backtest.tested_cells (a Python literal),
+      # so requirements.txt is deliberately NOT installed — nothing here needs pandas.
+
+      - name: Resolve target ISO week
+        id: week
+        run: |
+          AS_OF="${{ inputs.as_of }}"
+          if [ -z "$AS_OF" ]; then AS_OF="$(date -u +%F)"; fi
+          LABEL="$(python -c "
+          import datetime, sys
+          d = datetime.date.fromisoformat(sys.argv[1])
+          y, w, _ = d.isocalendar()
+          print(f'{y}-W{w:02d}')
+          " "$AS_OF")"
+          echo "as_of=$AS_OF" >> "$GITHUB_OUTPUT"
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+          echo "Target: $LABEL (as of $AS_OF)"
+
+      - name: Render the review
+        run: |
+          python -m backtest.weekly_review \
+            --as-of "${{ steps.week.outputs.as_of }}" \
+            --out "docs/research/reviews/${{ steps.week.outputs.label }}.md"
+
+      - name: Commit the review (no-op when unchanged)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "docs/research/reviews/${{ steps.week.outputs.label }}.md"
+          if git diff --cached --quiet; then
+            echo "No change — the ledger has not moved since the last render. Nothing to commit."
+            exit 0
+          fi
+          git commit -m "docs: research review ${{ steps.week.outputs.label }}"
+          git push
+
+      - name: Open the weekly proposal issue (deduped by title)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABEL: ${{ steps.week.outputs.label }}
+        run: |
+          TITLE="Research review $LABEL — next-round proposal"
+
+          # Dedup: one issue per ISO week. A re-run must not open a second.
+          EXISTING="$(gh issue list --search "$TITLE in:title" --state all \
+                        --json number,title \
+                        --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already exists for $LABEL — no-op."
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          {
+            echo "Automated weekly research review for **$LABEL**."
+            echo
+            echo "Rendered from the tested-cell ledger by \`backtest/weekly_review.py\`."
+            echo "Full review: \`docs/research/reviews/$LABEL.md\`"
+            echo
+            echo "---"
+            echo
+            sed -n '/^## Proposed next round/,/^## Standing reminders/p' \
+              "docs/research/reviews/$LABEL.md" | sed '$d'
+            echo
+            echo "---"
+            echo
+            echo "The proposal above is **mechanical** — it applies a documented priority rule to"
+            echo "the ledger. Whether to act on it is a judgement call, and that judgement belongs"
+            echo "in this thread, not in the generator."
+            echo
+            echo "_Generated by [Claude Code](https://claude.ai/code)_"
+          } > "$BODY_FILE"
+
+          gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label enhancement
