@@ -6,7 +6,9 @@
 queries, `CLAUDE_AGENT_NO_BROKER=1` set for the whole session; no trading endpoint touched; no
 broker account opened beyond the existing paper keys; no production/TypeScript code changed)
 **Revised:** 2026-07-24 (fix round 1 — the recommended source was swapped from Alpaca to yfinance
-after probe P6 showed Alpaca's daily floor cannot reach the frozen n_w=13 bar; see §2.1, §2.1b, §5)
+after probe P6 showed Alpaca's daily floor cannot reach the frozen n_w=13 bar; see §2.1, §2.1b, §5);
+2026-07-26 (round 2, issue #449 — §4 reconciliation: MES multiplier/tick verified, bp cost computed,
+Wikipedia fallback superseded and relabeled; see §4's addendum)
 
 ## §0 Scope, the no-fabrication rule, and what this document does not do
 
@@ -376,6 +378,34 @@ already in production use in this repo's research code.
 
 This section does not block on #415 — it brackets and labels what is known, pending, or borrowed,
 per the sub-plan's instruction.
+
+### §4 reconciliation addendum (2026-07-26, round 2 — issue #449)
+
+**The "pending #415" bracket above is now closed on the multiplier/tick/bp legs.**
+`docs/research/2026-07-26-mes-contract-spec-verification.md` (issue #449) verifies MES's contract
+multiplier and tick value as **Verified (two-source reconciled)** — AMP Futures and Discount Trading,
+two independently-owned, commercially-accountable futures brokers, both fetched 2026-07-26, both
+giving the identical **$5 multiplier / 0.25 tick size / $1.25 tick value** — and computes the
+per-trip bp cost across an index-level bracket: **base ≈0.61–0.70 bp, pessimistic ≈0.92–1.06 bp**
+round trip (cheaper than both the M6E bracket, 1.23–2.10 bp, and the XTB CFD bracket, 0.79–1.75 bp,
+already cited above). Exchange margin remains **not** fully reconciled — two broker-authoritative
+sources disagree, so it is reported there as an observed bracket (≈$2,267–$2,754/contract), not a
+single verified figure.
+
+**Wikipedia's multiplier figure — superseded, and its grade corrected.** The sentence above ("A
+structural fact, not a cost figure... Wikipedia's 'E-mini' article gives MES's multiplier as **$5**")
+is more confident than the evidence available at the time it was written: Wikipedia is not a primary
+or a reconciling secondary source under this repo's evidence-grading convention (it is explicitly the
+claim under test, never a corroborating source, per
+`2026-07-26-mes-contract-spec-verification.md` §0). **Relabeled here, without altering the original
+sentence:** the Wikipedia figure was, at the time, a **secondary indication — not verification**; it
+is now **superseded** by the two-source-reconciled broker verification above, which happens to confirm
+the same $5 value rather than contradict it. The correction is about evidentiary grade, not about the
+number changing.
+
+This addendum does not rewrite any sentence above it — it is appended after the fact it reconciles,
+per the pattern already used for round-1 fixes in this note's sibling
+(`2026-07-21-contracts-facts-verification.md`).
 
 ---
 

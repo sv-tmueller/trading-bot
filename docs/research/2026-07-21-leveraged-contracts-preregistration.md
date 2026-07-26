@@ -16,6 +16,11 @@ opened, no production/TypeScript code touched)
 > `docs/research/2026-07-13-forex-4h-strategy-preregistration.md` →
 > `docs/research/2026-07-15-forex-4h-survey-verdict.md`).
 
+> **REVISED 2026-07-26 — Revision 1 (§8):** the direction is un-parked (operator decision, batch
+> #447) and the BaFin/IBKR funding-mechanics flag raised in
+> `2026-07-21-contracts-facts-verification.md` §6 is accepted and disclosed. §2.5's recommendation
+> and §4's bar are **unchanged**; §§0–7 are untouched.
+
 ---
 
 ## §0 Scope and the no-fabrication rule
@@ -465,3 +470,109 @@ bounds... on the decision-logic axis, not merely on the cost/venue axis." No can
 proposed anywhere in this document, present or future, may cross that line without a fresh brainstorm
 and design spec, per CLAUDE.md's Architectural invariants section, which remains the single
 authoritative home of this repo's safety contract.
+
+---
+
+## §8 Revision log
+
+| Rev | Date | Authority | What changed | Frozen items affected |
+|---|---|---|---|---|
+| 1 | 2026-07-26 | Operator decision recorded on batch issue #447; executed under #449 | Un-park + accepted-and-disclosed funding-mechanics flag; §2.5 cost-leg marker resolved/carried | §2.5 rationale legs restated; **recommendation itself unchanged**. §4 untouched. |
+
+### Revision 1 (2026-07-26) — un-park + accepted-and-disclosed funding-mechanics flag
+
+**Clause invoked.** This document's own §7 states: "Any later change to either requires a revision of
+this document, committed with rationale, before results computed under the changed configuration are
+examined. Results already computed under a superseded revision must still be reported alongside the
+revised results, not discarded." This revision is made under that clause. §§0–7 above are unedited —
+the diff of this document against merge SHA `e807046` is pure insertion (this §8 section, plus the
+one additive banner blockquote immediately below the front-matter status banner); no existing sentence
+in §§0–7 is altered or deleted.
+
+**Authority.** Operator decision of 2026-07-26, recorded on batch issue #447 ("Contracts direction
+un-parked fully: §6 flag resolution + MES spec verification now; the survey itself queued for the
+next batch"). Executed as package #449.
+
+**R1.1 — What triggered this revision.** The §6 flag in
+`docs/research/2026-07-21-contracts-facts-verification.md` (merge `3161157`), whose own disposition
+was: "flag as requiring a committed revision per the frozen document's own §7 revision clause, if and
+when this direction is carried forward to a survey batch." The direction is now carried forward, so
+the condition is met.
+
+**R1.2 — What is NOT changed.** §4's promotion bar (the #398 gate + SPY median after-tax Calmar
+**1.3085475049604838**) — unchanged. §2.5's instrument-class recommendation (MES-class micro index
+futures) — unchanged. §3/§6's non-frozen cell sketch — still not frozen; the survey batch's own
+pre-registration freezes the grid.
+
+**R1.3 — What IS revised: the capital-and-funding assumptions behind §2.3/§2.5's access leg.** Carried
+from the facts-verification note (§3.3, §6), source-class labels preserved rather than upgraded:
+
+- **BaFin Allgemeinverfügung 2022-09-30**, effective 2023-01-01 (bafin.de, primary) — restricts
+  marketing/distribution/sale of exchange-traded futures to German retail clients, subject to the
+  Nachschusspflicht-exclusion exception.
+- **The Nachschusspflicht-exclusion exception IBKR relies on** — verified via lynxbroker.de, an
+  IBKR-network German-facing broker describing IBKR's own mechanism by name; labeled
+  broker-authoritative, one tier below an IBKR-Ireland first-party citation. That label is carried
+  forward here unchanged, not upgraded.
+- **Five conditions, all from the same lynxbroker.de citation:** (a) futures margin must be funded
+  with free cash only — no margin loan; (b) a separate futures Handelsfreigabe (trading permission)
+  must be requested, independent of the BaFin mechanism; (c) IBKR raised margin requirements for
+  German-retail futures positions opened after 2023-01-01; (d) the reduced intraday initial margin no
+  longer applies — the overnight requirement is used for the calculation; (e) margin requirement above
+  EUR 50,000 is doubled on the excess, aggregated per underlying class (same-underlying futures — e.g.
+  all S&P 500-tracking futures — are grouped into one class for this calculation).
+
+**R1.4 — Disposition: accepted and disclosed.** This is **not** an access denial and does **not**
+change MES's standing relative to 6E/M6E — the regime binds all exchange-traded futures uniformly at
+IBKR, per the facts-verification note's own finding (§3.3). §2.5's "real, automatable, EU-reachable
+API" leg stands unchanged. The operator accepts the regime described in R1.3 as a known capital
+condition of the MES wrapper, rather than treating it as a reason to reconsider the recommendation.
+Binding consequences, carried forward as standing requirements for any future work on this direction:
+
+1. Any survey batch's pre-registration must carry the R1.3 conditions into its capital/margin
+   assumptions explicitly — not as a footnote, as an input to position-sizing feasibility.
+2. The margin figure must be re-verified at first-party IBKR-Ireland source before any paper or live
+   step — the figure available as of this revision (R1.5 below) is a **bracket** from two
+   broker-authoritative sources that do not agree exactly, not an IBKR-Ireland first-party figure.
+3. The Handelsfreigabe and the free-cash-only funding condition (R1.3 (a)–(b)) are **operational
+   prerequisites**, not modelling parameters — they gate whether the account can trade futures at
+   all, not how a backtest should be parameterized.
+
+**R1.5 — The §2.5 cost-competitiveness leg — Branch A (multiplier verified).** The per-trip bp figure
+is now computed: `docs/research/2026-07-26-mes-contract-spec-verification.md` (issue #449) verifies
+MES's contract multiplier ($5) and tick value ($1.25) as **Verified (two-source reconciled)** — two
+independently-owned, commercially-accountable brokers (AMP Futures, Discount Trading), fetched
+2026-07-26, giving identical figures that also pass the arithmetic consistency filter
+(`tick_value == multiplier × tick_size`; `MES == ES/10`). Combined with the already-verified USD
+$1.20/contract round-trip commission+fee figure (facts-verification note §2.2), the per-trip cost
+across an index-level bracket is **base ≈0.61–0.70 bp, pessimistic ≈0.92–1.06 bp round trip** — cheaper
+than both the 0.79–1.75 bp XTB CFD base/pessimistic bracket and the 1.23–2.10 bp M6E bracket already
+on record in `2026-07-13-forex-short-horizon-feasibility-gate.md` §4.2–§4.3. Line 242's marker ("MES's
+own per-trip cost is unpriced in this repo — to verify before survey," §2.5 above) is now resolved by
+this figure, and by the new verification note cited above. Exchange margin, by contrast, is **not**
+fully resolved — two broker-authoritative sources disagree, so it is carried as an observed bracket
+(≈$2,267–$2,754/contract as of 2026-07-26), not a single reconciled figure; R1.4's binding consequence
+2 above applies to it. **This does not restate §2.5 as stronger than the sourced facts support**:
+§2.5 above already states "At micro size the cost leg alone therefore does not decide the class — the
+three structural legs above do," and that framing is unchanged — the new bp figure is a favorable data
+point on one of four legs, not a new headline claim.
+
+**R1.6 — Ordering compliance.** No result of any kind exists for this direction: no survey has been
+run, no cell has been evaluated, no backtest touched `backtest/` in this package (#449 is
+research-only, `docs/research/` and one tracking issue). The §7 clause's "before results computed
+under the changed configuration are examined" condition is therefore satisfied provably by git
+history (`git log e807046..HEAD -- docs/research/2026-07-21-leveraged-contracts-preregistration.md`
+shows exactly one commit, this revision's own), and its second sentence (superseded results reported
+alongside the revised ones) is **N/A** because the set of computed results is empty — there is nothing
+to report alongside. The survey itself remains deferred to a later batch, per #447's own "Deferred"
+section.
+
+**R1.7 — Invariant reaffirmation (unchanged from §7).** Nothing here is live; one decision rule; no
+LLM in the trading path; a survivor is evidence for a fresh ADR, never an automatic swap. This
+revision authorizes nothing beyond what §7 above already authorizes — it restates and discloses, it
+does not expand scope.
+
+**Cross-links.** Tracking issue for the contracts direction: **#453**. Batch: **#447**. Sibling notes:
+`docs/research/2026-07-21-contracts-facts-verification.md` (merge `3161157`, §6, now §9-addended),
+`docs/research/2026-07-21-contracts-survey-data-feasibility.md` (merge `8048ffc`, §4, now
+reconciled), `docs/research/2026-07-26-mes-contract-spec-verification.md` (new, this package).

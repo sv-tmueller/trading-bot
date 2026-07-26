@@ -134,6 +134,11 @@ correction, not a value correction.
 
 ### §2.3 Per-trip cost in bp — cannot be computed; inputs shown individually
 
+> **Cross-reference (2026-07-26):** the multiplier and tick value marked still-unverified below are
+> now verified, and the bp figure this section could not compute is now computed, in §9's addendum
+> and in `docs/research/2026-07-26-mes-contract-spec-verification.md` §1/§4 (issue #449). Nothing
+> below this blockquote is altered by that later work.
+
 Formula per the sub-plan: `bp = (2 × commission_and_fees + spread_$) / notional × 10000`, with
 `notional = multiplier × index level`.
 
@@ -490,6 +495,12 @@ condition-based restriction effective 2023-01-01.**
 
 ## §6 Closing flag
 
+> **Cross-reference (2026-07-26):** the disposition named at the end of this section — "requiring a
+> committed revision per the frozen document's own §7 revision clause, if and when this direction is
+> carried forward to a survey batch" — has now occurred. See §9's addendum below and
+> **Revision 1 (§8)** of `docs/research/2026-07-21-leveraged-contracts-preregistration.md`, both
+> filed under issue #449 (batch #447). Nothing below this blockquote is altered by that later work.
+
 **Does any verified fact challenge the frozen §2.5 MES recommendation?**
 
 **Yes — one flag, raised on the access axis but proportionate to what the evidence shows: a
@@ -590,3 +601,61 @@ are from the 2026-07-21 pass.
 No account numbers, API keys, or personal data appear anywhere in this note. The operator is referred
 to only as "a German retail resident" throughout, consistent with the frozen document. All cited URLs
 are public marketing/regulatory pages; no login-walled content was fetched or referenced.
+
+---
+
+## §9 Addendum (2026-07-26) — MES spec verification round 2
+
+> **Cross-reference (2026-07-26):** the multiplier/tick/margin markers this section left unresolved
+> are now closed (multiplier and tick) or bracketed (margin) in
+> `docs/research/2026-07-26-mes-contract-spec-verification.md`, filed under issue #449. See that
+> note's §1–§4 for the sourcing and §6 for what it changes in the frozen pre-registration.
+
+This addendum does not rewrite any sentence above — it records the new status of each row in the
+§2.3 input table and the disposition of the §6 flag, from a fresh verification session run under a
+different access environment (per issue #449's own access-constraint note: `cmegroup.com` remained
+blocked via both local `curl` and server-side `WebFetch` today, exactly as it was on 2026-07-21/24).
+
+**§2.3 input table — new status:**
+
+| Input | Status as of this addendum | Value |
+|---|---|---|
+| Round-trip commission + exchange fee | Verified (unchanged) | USD 1.20/contract (§2.2, still current) |
+| Contract multiplier | **Now Verified (two-source reconciled)** | **$5** — AMP Futures + Discount Trading, both fetched 2026-07-26; see the new note §1.4 |
+| Tick value | **Now Verified (two-source reconciled)** | **$1.25** — same two sources; passes `tick_value == multiplier × tick_size` and `MES == ES/10` |
+| 1-tick spread floor | Now computable, per the new note's convention (inherited from 6E/M6E, not observed) | see new note §4 |
+| Notional | Now computable | `5 × index_level` |
+| S&P 500 / SPX index level, dated | Unchanged status — probe output, not primary | new probe: `^GSPC` close 7408.30 (2026-07-23), `MES=F` close 7447.50 (2026-07-24), via `yfinance`, credential-free — see new note §3 |
+
+**Composite bp figure:** this note's own §2.3 stated the composite could not be computed "this
+session" for lack of a verified multiplier. With the multiplier and tick value now verified, the new
+note's §4 computes it across an index-level bracket: **base ≈0.61–0.70 bp, pessimistic ≈0.92–1.06 bp
+round trip** — cheaper than both the M6E bracket (1.23–2.10 bp) and the XTB CFD bracket (0.79–1.75 bp)
+this repo already had on record. Line 242 of the frozen pre-registration ("MES's own per-trip cost is
+unpriced... to verify before survey") is resolved by this figure.
+
+**Exchange margin: still not a single reconciled figure, now an observed bracket instead of a total
+blank.** Two broker-authoritative sources (AMP Futures, Discount Trading; §2.2 of the new note) do not
+agree exactly, so this addendum does not upgrade margin past "still unverified" under this note's own
+§0 grading rule — it is now bracketed at **≈$2,267–$2,754/contract as of 2026-07-26**, rather than
+carrying no figure at all.
+
+> **Cross-reference (2026-07-26), placed here per the new note's §2.3:** the EUR 50,000 doubling
+> question left open at §3.3 above — "it is unlikely to bind at micro size, but that is an inference,
+> not a verified fact" — is now closed arithmetically using the margin bracket above: the threshold
+> binds only around 21–25 contracts of the same underlying class, not at 1 contract or at any
+> plausible micro-size survey position. See `2026-07-26-mes-contract-spec-verification.md` §2.3 for
+> the derivation.
+
+**Disposition of the §6 flag.** §6 below flagged the funding-mechanics/capital-efficiency package
+(free-cash-only funding, Nachschusspflicht exclusion, post-2023 margin increase, loss of intraday
+relief, EUR 50,000 doubling) as "requiring a committed revision per the frozen document's own §7
+revision clause, if and when this direction is carried forward to a survey batch." The direction has
+now been carried forward (operator decision, batch #447, 2026-07-26) and that committed revision now
+exists: **Revision 1, §8, of
+`docs/research/2026-07-21-leveraged-contracts-preregistration.md`**, filed under this same package
+(#449). The flag's disposition condition is met; nothing in §6 below is edited — this addendum only
+records that the condition it named has now occurred.
+
+No sentence above this addendum is rewritten. Sanitization: unchanged from §8 above — no account
+numbers, keys, or personal data are introduced by this addendum.
