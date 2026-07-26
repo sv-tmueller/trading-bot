@@ -94,7 +94,13 @@ def test_is_tested_true_for_a_closed_cell():
 
 def test_is_tested_false_for_a_pending_cell():
     """A frozen-but-unrun grid is not evidence and must not close the question."""
-    assert not tc.is_tested("candlestick_pattern", "daily", "SPY")
+    assert not tc.is_tested("opening_range_breakout", "5m", "SPY")
+
+
+def test_is_tested_true_for_the_closed_candlestick_spy_cell():
+    """#443: the SPY read closed both candlestick families with a real NO_GO verdict."""
+    assert tc.is_tested("candlestick_pattern", "daily", "SPY")
+    assert tc.is_tested("candlestick_pattern_context", "daily", "SPY")
 
 
 def test_is_tested_false_for_a_data_blocked_cell():
@@ -133,7 +139,11 @@ def test_check_novel_separates_weak_from_closed_from_open():
     assert weak["novel"] is False
     assert weak["weak"] and not weak["closed"]
 
-    open_ = tc.check_novel("candlestick_pattern", "daily", "SPY")
+    # #443: the SPY read closed the cell (was PENDING/open before the gate ran).
+    closed = tc.check_novel("candlestick_pattern", "daily", "SPY")
+    assert closed["closed"] and not closed["open"]
+
+    open_ = tc.check_novel("opening_range_breakout", "5m", "SPY")
     assert open_["open"] and not open_["closed"]
 
 
@@ -156,9 +166,10 @@ def test_cumulative_trials_excludes_grids_that_never_ran():
     """An unrun grid consumed no multiplicity; counting it would inflate the DSR bar."""
     # ORB has a DATA_BLOCKED(3) and a PENDING(18) record and has never run
     assert tc.cumulative_trials("opening_range_breakout") == 0
-    # candlestick v1 ran 28 on GOOG and has 28 PENDING on SPY -> only the run 28 count
-    assert tc.cumulative_trials("candlestick_pattern") == 28
-    assert tc.cumulative_trials("candlestick_pattern_context") == 56
+    # #443: candlestick v1 ran 28 on GOOG + 28 on SPY (the former-PENDING record, now NO_GO)
+    assert tc.cumulative_trials("candlestick_pattern") == 56
+    # #443: candlestick v2 ran 56 on GOOG + 56 on SPY (the former-PENDING record, now NO_GO)
+    assert tc.cumulative_trials("candlestick_pattern_context") == 112
 
 
 def test_cumulative_trials_sums_multiple_run_records():
