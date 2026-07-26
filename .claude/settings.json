@@ -5,7 +5,16 @@
       "Bash(sqlite3 *)"
     ]
   },
+  "extraKnownMarketplaces": {
+    "orchestrai": {
+      "source": {
+        "source": "github",
+        "repo": "sv-tmueller/orchestrai"
+      }
+    }
+  },
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true
+    "superpowers@claude-plugins-official": true,
+    "orchestrai@orchestrai": true
   }
 }
