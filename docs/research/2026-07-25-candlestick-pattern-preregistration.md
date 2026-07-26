@@ -214,30 +214,151 @@ by construction there is none.
 
 ---
 
-## §7 Results
+## §7 Results (SPY, `PROMOTABLE`) — the pre-registered read
 
-**EMPTY — DATA-BLOCKED. No numbers exist yet, and none are invented here.**
+**Data provenance.** Fetched via the frozen `backtest.run_candlestick_study._fetch_daily`
+(yfinance, `auto_adjust=False`, unadjusted OHLC — the transport the frozen geometry assumes),
+run 2026-07-26. The unrestricted pull (`_fetch_daily("SPY", None)`) returned 8,428 rows
+spanning 1993-01-29 → 2026-07-24, but the trailing row (2026-07-24, a Friday — not an
+in-progress bar, since today, 2026-07-26, is a Sunday) carried a `NaN` Close/Adj Close in the
+Yahoo feed while Open/High/Low/Volume were present; `idata.validate_ohlc` correctly rejected it
+as a data-quality gap in the free feed rather than let a NaN close through. Re-fetching
+reproduced the identical gap, so the fetch was re-run as `_fetch_daily("SPY", date(2026, 7,
+24))` (`end` is exclusive in yfinance), which drops exactly that one incomplete row and nothing
+else. **No `_fetch_daily` code was modified** — this used the function's existing `end`
+parameter. Result: **8,427 bars, 1993-01-29 → 2026-07-23**, written to the gitignored
+`data/SPY_daily.csv` and re-validated by `idata.load_local`.
 
-Every market-data host is **403-denied by this environment's egress policy**. Probed and
-recorded:
+**Power:** `PROMOTABLE — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power
+floors` (`describe_power` summary, verbatim). n_w=33 well above the n_w=13 promotion bar.
 
-| Blocked (403 CONNECT) | Reachable |
-|---|---|
-| `query1.finance.yahoo.com`, `fc.yahoo.com`, `data.alpaca.markets`, `stooq.com`, `www.stooq.com`, `api.nasdaq.com`, `api.tiingo.com`, `www.alphavantage.co`, `finnhub.io`, `api.polygon.io`, `databento.com`, `jsr.io` | `github.com`, `registry.npmjs.org`, `pypi.org` |
+**always-in (buy-and-hold) after-tax CalmarUS over the full 1993-2026 window: +0.1445** — a
+different construction from the frozen 1.3085 bar (median of 13 non-overlapping 12-month
+windows, 2013-2025); reported here as the always-in baseline every cell is also compared
+against per §2.
 
-**Supplying Alpaca keys would not help** — the host itself is denied, which is strictly
-worse than #431's key-gated case.
+### §7.2 Full grid (verbatim, 28/28 cells, no truncation)
 
-**Unblock paths, either is sufficient:**
+```
+arm                  dir       R   CalmarUS  >bar?     CAGR    maxDD   #tr    random     status
+bullish_marubozu     long      3    -0.0232     no  +1.18% -42.17%   162   -0.0468         ok
+bullish_marubozu     long      2    -0.0385     no  +0.17% -41.60%   178   -0.0478         ok
+shooting_star        short     2    -0.0441     no  -1.36% -38.38%   117   -0.0428         ok
+shooting_star        short     3    -0.0459     no  -1.36% -38.00%   116   -0.0468         ok
+bearish_marubozu     short     2    -0.0603     no  -0.84% -37.90%   148   -0.0513         ok
+hammer               long      3    -0.0637     no  +0.59% -36.13%   220   -0.0788         ok
+morning_star         long      2    -0.0696     no  +0.11% -52.45%   177   -0.0424         ok
+bullish_engulfing    long      3    -0.0714     no  -0.47% -53.20%   180   -0.0327         ok
+hammer               long      2    -0.0715     no  -0.30% -32.70%   254   -0.0960         ok
+bearish_marubozu     short     3    -0.0744     no  -1.37% -43.11%   135   -0.0552         ok
+morning_star         long      3    -0.0811     no  -0.43% -66.65%   158   -0.0249         ok
+bearish_harami       short     2    -0.0903     no  -2.57% -59.27%   273         —         ok
+bullish_harami       long      2    -0.0995     no  +0.31% -41.95%   294   -0.0575         ok
+bearish_pin_bar      short     2    -0.1057     no  -2.95% -64.93%   252   -0.0958         ok
+bullish_harami       long      3    -0.1428     no  -0.06% -48.03%   252   -0.0360         ok
+bullish_engulfing    long      2          —     no  -0.47% -53.97%   206   -0.0536     RUINED
+bearish_engulfing    short     2          —     no  -5.61% -86.17%   289         —     RUINED
+bearish_engulfing    short     3          —     no  -6.52% -90.32%   264         —     RUINED
+bullish_pin_bar      long      2          —     no  -1.68% -51.55%   401         —     RUINED
+bullish_pin_bar      long      3          —     no  -0.39% -45.85%   343         —     RUINED
+bearish_pin_bar      short     3          —     no  -3.46% -71.16%   248   -0.1427     RUINED
+bearish_harami       short     3          —     no  -3.01% -64.82%   269         —     RUINED
+evening_star         short     2          —     no  -4.25% -78.07%   201   -0.0618     RUINED
+evening_star         short     3          —     no  -4.79% -82.17%   194   -0.0726     RUINED
+inside_bar_long      long      2          —     no  -3.03% -78.06%   569         —     RUINED
+inside_bar_long      long      3          —     no  -1.00% -70.59%   456         —     RUINED
+inside_bar_short     short     2          —     no  -7.51% -93.04%   697         —     RUINED
+inside_bar_short     short     3          —     no  -7.16% -92.13%   637         —     RUINED
 
-1. **Local file (recommended, no network):** drop daily OHLC bars as CSV/Parquet and run
-   `python3 -m backtest.run_candlestick_study --data <file>`. Steps in
-   `docs/runbooks/orb-data-drop.md`.
-2. **Egress allowlist:** permit `data.alpaca.markets` (or Yahoo) in the environment's
-   network egress settings, then run without `--data`.
+cells clearing the 1.3085 bar: 0 / 28
+cells with a RUINED after-tax curve: 13 / 28
+cells that never traded: 0 / 28
+DSR multiplicity (trial count): N = 28
+```
 
-The grid runs unchanged the moment either exists. §7 will then be filled in a **strictly
-later commit** than the one freezing §2-§6.
+Every single one of the 28 cells is **negative** — not merely below the 1.3085 bar. Thirteen
+(46%) are `RUINED` (after-tax curve destroyed by the no-loss-credit US tax treatment on gross
+winners); the remaining fifteen are all finite and negative. Zero cells never traded.
+
+### §7.3 `hammer`, first — the one lead carried over from GOOG (§7.0)
+
+Per the frozen convention (open with `hammer`, not with whichever cell happens to look best):
+`hammer`/R3 is **-0.0637** (random twin **-0.0788**) and `hammer`/R2 is **-0.0715** (random
+twin **-0.0960**) — the real cell sits *above* its random twin in both R values, echoing the
+GOOG lead's shape, but both are **negative** in absolute terms and both are **far** below both
+the always-in baseline (+0.1445) and the 1.3085 bar. The margin over the random twin (~0.015 -
+0.025) is an order of magnitude smaller than the gap that would be needed to reach the bar.
+
+The v2 context-split (companion doc's §7) sharpens this: `hammer`/`reversal` — the **textbook**
+reading, the one classic doctrine actually predicts — sits *below* its random twin at both R
+(R3: -0.0307 vs random -0.0086; R2: -0.0331 vs random -0.0128), while `hammer`/`continuation` —
+the *non-textbook* with-trend reading — sits marginally above its twin (R3: -0.0338 vs random
+-0.0478; R2: -0.0402 vs random -0.0457). If `hammer` carried genuine reversal edge, the textbook
+context should be the one that outperforms; instead it is the one that underperforms. That is
+the tell that the v1 context-free lead is a beta/regime artifact, not a pattern edge, consistent
+with the same conclusion the GOOG read already drew.
+
+### §7.4 Firing-rate calibration (verbatim, live SPY data)
+
+```
+pattern              dir        count     rate  verdict
+inside_bar           neutral      964  11.44%  ok
+doji                 neutral      847  10.05%  ok
+bullish_pin_bar      long         589   6.99%  ok
+bullish_harami       long         373   4.43%  ok
+bearish_engulfing    short        353   4.19%  ok
+hammer               long         314   3.73%  ok
+bearish_harami       short        305   3.62%  ok
+bearish_pin_bar      short        296   3.51%  ok
+bullish_engulfing    long         286   3.39%  ok
+bullish_marubozu     long         224   2.66%  ok
+morning_star         long         224   2.66%  ok
+evening_star         short        222   2.63%  ok
+bearish_marubozu     short        173   2.05%  ok
+shooting_star        short        135   1.60%  ok
+
+miscalibrated: 0 / 14
+```
+
+All 14 detectors fire inside the diagnostic bounds on the pre-registered instrument itself —
+the §7.0 GOOG calibration read is confirmed on SPY, not just on a different vehicle.
+
+### §7.5 Pooled #398 gate at cumulative N=84 (verbatim; this run also feeds the v2 doc's §7)
+
+```
+Pooled #398 overfitting gate — candlestick family, cumulative N=84
+source: local:data/SPY_daily.csv
+power: PROMOTABLE: 8427 bars / 8427 sessions / n_w=33 (1993-01-29 -> 2026-07-23) — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power floors
+n_trials: 84
+best cell: ('bullish_marubozu', 3.0, 'continuation') over 8427 common days
+DSR 0.0122 (threshold >= 0.95) -> FAIL
+PBO 0.4036 (threshold < 0.5) -> PASS
+bootstrap ci_low -0.000529 (threshold > 0) -> FAIL
+combined verdict -> FAIL
+reasons: dsr 0.0122 < threshold 0.95; bootstrap ci_low -0.000529 <= 0
+```
+
+This is **one pooled run across all 84 cells of the cumulative family** (v1's 28 + v2's 56) —
+not a per-grid N=28 read. The best cell by non-annualized per-day Sharpe over the whole run is
+`bullish_marubozu`/R3/`continuation` (a v2 cell), which is also the single least-negative
+full-window Calmar cell of all 84 (-0.0056, per the companion doc's §7 table). Even the
+best-of-84 cell fails the gate on two of three sub-checks (DSR and the bootstrap uplift CI; PBO
+alone passes at 0.40 < 0.5).
+
+### §7.6 Verdict
+
+**0/28 clear the bar in this grid; 0/84 clear across the pooled family (see the v2 doc's §7 for
+the other 56); the pooled N=84 gate FAILS (DSR 0.0122, well below the 0.95 deflation
+threshold).** Per §8's mapping, "0 clear ⇒ the class is closed on daily bars." No cell needed
+the gate to be disqualified — none cleared the primary bar at all — but the gate result is
+recorded anyway because it was pre-committed in step 1, before any SPY number existed, and
+because it quantifies just how far even the best-of-84 cell is from a defensible signal: a DSR
+of 0.0122 says the best trial's Sharpe is fully explained by having tried 84 configurations,
+with essentially none left over as evidence of edge.
+
+**Candlestick patterns, on daily SPY bars, with a bracket exit anchored to the pattern's own
+extreme, are a closed direction.** This closes the `candlestick_pattern`/daily/SPY cell in the
+tested-cell ledger (§ below in this repo's `backtest/tested_cells.py`) with `NO_GO`.
 
 ### §7.0 Real-data harness validation — GOOG, DIRECTIONAL — **NOT the pre-registered read**
 
@@ -325,6 +446,9 @@ comparison is part of the primary read, not a footnote.
 |---|---|
 | `backtest/candlestick.py` | 14 pattern detectors + registry (the frozen multiplicity source) |
 | `backtest/run_candlestick_study.py` | Frozen 28-cell grid runner, power gate, report |
+| `backtest/run_candlestick_gate.py` | Pooled #398 gate over the cumulative N=84 family (#443) |
 | `tests/test_candlestick.py` | 66 detector tests |
 | `tests/test_run_candlestick_study.py` | 23 runner tests incl. the negative control |
+| `tests/test_run_candlestick_gate.py` | Gate-application tests: N=84 accounting, noise-must-fail, seed reproducibility, power refusal |
 | `docs/runbooks/orb-data-drop.md` | How to supply bars locally |
+| `data/SPY_daily.csv` | Gitignored — SPY daily bars used for §7, reproducible via `_fetch_daily("SPY", date(2026, 7, 24))` |
