@@ -185,6 +185,51 @@ def test_v1_grid_is_unchanged_by_the_context_parameter_default():
             assert default["max_drawdown"] == pytest.approx(explicit["max_drawdown"])
 
 
+def test_v1_grid_is_unchanged_by_the_max_bars_parameter_default():
+    """The frozen v1 grid must be byte-identical with the default max_bars (#448 A2).
+
+    v1's 28-cell result is on record in the pre-registration. Adding the time-stop
+    passthrough must not perturb it, or the published v1 numbers would silently stop
+    reproducing.
+    """
+    df = _synth_daily(900)
+    for arm in (("hammer", "hammer", LONG), ("shooting_star", "shooting_star", SHORT)):
+        for r in rcs.R_GRID:
+            default = rcs.build_cell(df, arm, r)
+            explicit = rcs.build_cell(df, arm, r, max_bars=None)
+            assert default["trade_count"] == explicit["trade_count"]
+            assert default["ending_equity"] == pytest.approx(explicit["ending_equity"])
+            assert default["max_drawdown"] == pytest.approx(explicit["max_drawdown"])
+
+
+def test_build_cell_honours_max_bars():
+    """A tight max_bars must not increase the holding period of any trade."""
+    df = _synth_daily(1200)
+    arm = ("hammer", "hammer", LONG)
+    r = 2.0
+    unbounded = rcs.build_cell(df, arm, r)
+    bounded = rcs.build_cell(df, arm, r, max_bars=3)
+    assert bounded["trade_count"] > 0
+    date_to_pos = {d: i for i, d in enumerate(df.index)}
+    for t in bounded["trades"]:
+        held = date_to_pos[t["exit_date"]] - date_to_pos[t["entry_date"]]
+        assert held <= 3, f"trade held {held} bars, max_bars=3"
+    # bounding the hold must never fabricate trades relative to the unbounded run
+    assert bounded["trade_count"] >= unbounded["trade_count"]
+
+
+def test_random_twin_honours_max_bars():
+    """The random-entry control shares the geometry, including the time stop."""
+    df = _synth_daily(1200)
+    arm = ("hammer", "hammer", LONG)
+    rand = rcs.build_random_cell(df, arm, 2.0, max_bars=3)
+    assert rand["trade_count"] > 0
+    date_to_pos = {d: i for i, d in enumerate(df.index)}
+    for t in rand["trades"]:
+        held = date_to_pos[t["exit_date"]] - date_to_pos[t["entry_date"]]
+        assert held <= 3, f"twin trade held {held} bars, max_bars=3"
+
+
 def test_context_filter_reduces_or_equals_the_unfiltered_trade_count():
     """A filter can only remove entries, never add them."""
     df = _synth_daily(1200)
