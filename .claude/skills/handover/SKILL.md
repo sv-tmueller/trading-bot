@@ -11,7 +11,7 @@ The format contract for the artifact lives in [`docs/handover/README.md`](../../
 
 ## Inputs
 
-- `<slug>` (optional, kebab-case) — short subject of the handover. Defaults to a slug derived from the dominant topic of the session (e.g. `exposure-cap-tuning`, `bracket-order-bugfix`, `v2-shorts-spike`). Used in the filename `YYYY-MM-DD-<slug>.md`.
+- `<slug>` (optional, kebab-case) — short subject of the handover. Defaults to a slug derived from the dominant topic of the session (e.g. `mvp2-migration-execution`, `candlestick-search-egress-blocked`, `contracts-survey-prep`). Used in the filename `YYYY-MM-DD-<slug>.md`.
 
 The date prefix is today's UTC date. Multiple handovers per day are allowed — disambiguate with a more specific slug.
 
@@ -19,9 +19,9 @@ The date prefix is today's UTC date. Multiple handovers per day are allowed — 
 
 Do all of these before writing.
 
-1. **Read `CLAUDE.md` in full.** The handover must surface the architectural invariants — *"The LLM must never control risk parameters directly"*, the deterministic-risk layer, the kill switch, the pre-market scan timing, the IEX/SIP feed gate. These are non-obvious to a cold reader and easy to violate without reminder.
+1. **Read `CLAUDE.md` in full**, closely against its [Architectural invariants](../../../CLAUDE.md#architectural-invariants) section — the handover must surface those to a cold reader, and they are non-obvious and easy to violate without reminder. Where any reminder list in this skill or in `docs/handover/README.md` §7 drifts from that section, `CLAUDE.md` wins; this is the only place that drift note lives, so do not repeat it elsewhere in this skill.
 2. **Read `docs/handover/README.md`** for the section-by-section contract.
-3. **Keep role boundaries straight** (architect / developer / reviewer / tester / qa / analyst / docs) so they are reflected accurately in any "next steps" the handover proposes.
+3. **Keep role boundaries straight**, per the [Team](../../../CLAUDE.md#team) section of `CLAUDE.md`, so they are reflected accurately in any "next steps" the handover proposes.
 4. **Capture live state** — run these in parallel:
    - `git status` and `git branch --show-current` — uncommitted changes, current branch.
    - `git log --oneline -20` — recent commit context.
@@ -38,7 +38,7 @@ Single pass, written by the main session — no subagent dispatch. The document 
 - Follow every section in the format contract (`docs/handover/README.md`). Skipping a section is not allowed; if a section has nothing to report, write `_None._` explicitly so the reader knows it was considered.
 - Quote real artefacts: branch names, PR numbers, issue numbers, file paths with line numbers, commit SHAs. **No paraphrasing where a link or reference exists.**
 - Make every "next step" actionable as a literal prompt the user can paste back. Vague aspirations like "continue working on shorts" are forbidden — write the exact issue number, the exact branch, the exact file to open first.
-- Surface invariants the next session is most likely to forget — the deterministic-risk rule, `TRADING_PAUSED`, the pre-market cron window, the bracket-order anchoring to fresh quotes. Pull these forward into the **Don't forget** section even if they were not touched this session.
+- Surface invariants the next session is most likely to forget. Carry forward `docs/handover/README.md` §7's standing list verbatim where it applies to anything in **Next steps**, into this document's own **Don't forget** section, even if the underlying material was not touched this session — then stack any session-specific gotchas on top.
 - Be honest about open questions and dead ends. If a hypothesis was tried and failed, name it so the next session does not repeat the work.
 - Stay under ~400 lines. A handover that nobody re-reads is worse than a shorter one that is actually loaded.
 
@@ -48,7 +48,7 @@ Single pass, written by the main session — no subagent dispatch. The document 
 
 ## Branch and PR
 
-1. Create or check out a dedicated branch for the handover commit. Naming: `handover/<slug>-<date>` (e.g. `handover/exposure-cap-tuning-2026-05-01`). Do **not** reuse a feature branch — handovers should not piggy-back on in-flight work, because the handover may be merged before the feature is ready.
+1. Create or check out a dedicated branch for the handover commit. Naming: `handover/<slug>-<date>` (e.g. `handover/candlestick-search-egress-blocked-2026-07-25`). Do **not** reuse a feature branch — handovers should not piggy-back on in-flight work, because the handover may be merged before the feature is ready.
 2. Commit the new file only. Commit message: `docs: handover — <slug> (<date>)`.
 3. Push the branch with `git push -u origin <branch>`; retry on network errors with exponential backoff (2s / 4s / 8s / 16s).
 4. Open a **draft PR** with title `Handover: <slug> (<date>)`. Body lists the key next-step prompts so a reviewer can sanity-check the actionability.
@@ -86,7 +86,7 @@ If the session ran long enough to merge multiple PRs, the wrap-up may grow to ~8
 
 - Every link resolves. Every PR number, issue number, branch name, and file path is real.
 - Every "next step" is a literal prompt, not a paraphrase.
-- The deterministic-risk invariant is restated where any next step touches risk, sizing, stops, or order placement.
+- Any next step touching the trading path (`supabase/functions/`, order placement, or broker calls in tests) cites the applicable [Architectural invariants](../../../CLAUDE.md#architectural-invariants) entry by link — never restated in this document.
 - A reader who has never seen this session before can act on the document with no follow-up questions.
 
 ## Non-goals
