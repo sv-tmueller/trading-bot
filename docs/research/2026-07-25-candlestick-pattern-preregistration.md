@@ -9,10 +9,12 @@ bracket exit anchored to the pattern's own extreme, clear the frozen SPY buy-and
 production/TypeScript code, no `supabase/`, no `strategy/`, no settings, no broker
 integration touched; no order placed).
 
-> **Status: PRE-REGISTRATION ONLY. §7 (Results) is deliberately EMPTY.**
-> This document is committed **before** any real-data result exists, in a strictly earlier
-> commit than any results will be, per the discipline used by #425, #430 and #431 (provable
-> from git history). §2-§6 are frozen and are **not edited after numbers are seen**.
+> **Status: COMPLETE — §7 (Results) is now filled.** This document was committed **before**
+> any real-data result existed (freeze: `8d424f7`), in a strictly earlier commit than the
+> results (§7 fill: `1e19a5f`, PR #446), per the discipline used by #425, #430 and #431
+> (provable from git history). §2-§6 are frozen and were **not edited after numbers were
+> seen**; this banner was reworded past-tense at merge time under operator authorization
+> (2026-07-26, batch #439 decision D9).
 
 ---
 

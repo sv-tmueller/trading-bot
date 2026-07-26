@@ -28,6 +28,12 @@ GOOG numbers were seen.** The GOOG figures in §6 are therefore reported as a *d
 harness read*, exactly as v1's §7.0 was, and they are **not** this study's answer. §7 — the
 SPY read — remains genuinely unseen, and that is the verdict slot.
 
+> **Addendum (2026-07-26, batch #439 decision D9 — dated, not an in-place rewrite):** the
+> SPY `PROMOTABLE` read has since been run. The freeze above (`8d424f7`) held: §7 was filled
+> in the strictly later commit `1e19a5f` (PR #446), so the SPY row of the table above moved
+> from "not yet run — unseen" to **run, clean** — the read was unseen at freeze time, which
+> is what the ✅ certified. Verdict: **NO_GO at cumulative N=84** (see §7).
+
 Why `continuation` was added during implementation: the plan named only the `reversal` reading.
 Freezing **both** canonical readings removes my ability to pick the flattering one after seeing
 results. That is a tightening of the discipline, not a loosening, and it was decided before any
