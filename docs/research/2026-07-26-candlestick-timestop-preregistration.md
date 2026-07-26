@@ -22,6 +22,12 @@ data — see the status line below).
 > first; PR B (the SPY read, §7) branches from `main` only afterward. **No SPY number
 > exists anywhere in this document or in the commits behind it.**
 
+> **Addendum (2026-07-26, PR #455 — dated, not an in-place rewrite):** §7 has since been
+> filled, in the strictly later commit `cc4fcb9` (PR #455, PR B of #448's two-PR delivery).
+> The banner above describes the freeze state at `fee483d` and remains accurate as a
+> description of that commit — it is not rewritten. Verdict: **NO_GO at cumulative N=168**
+> (see §7).
+
 ---
 
 ## §0 Invariant framing (governs everything below)
@@ -245,8 +251,9 @@ cumulative N=168 also FAILS. Per §9, the candlestick widening programme is clos
 
 This section is filled in this strictly later commit, on this strictly later PR (PR B of
 #448), after PR A (the freeze, `fee483d`) merged to `main`. §0–§6/§8/§9 above are unedited
-from the freeze — the diff between the freeze commit and this one is confined to this
-section (the same discipline #446 used: freeze `8d424f7`, results `82af278`).
+from the freeze — the diff between the freeze commit and this one is confined to §7 plus
+the dated addendum in the front matter above (the same discipline #446 used: freeze
+`8d424f7`, results `82af278`).
 
 ### §7.0 Provenance (read before quoting any number below)
 
@@ -275,6 +282,13 @@ df = _fetch_daily("SPY", date(2026, 7, 24))
   python3 -m backtest.run_candlestick_timestop_study --data data/SPY_daily.csv
   python3 -m backtest.run_candlestick_gate --data data/SPY_daily.csv
   ```
+- **Process deviation (disclosed):** the first fetch/grid/gate run of this session was
+  mistakenly performed in the shared main checkout instead of the dispatched worktree; it
+  was discarded, and the entire sequence was redone in the worktree, producing
+  byte-identical stdout — the numbers reported in this section are from that worktree run.
+  PR B was dispatched only after `fee483d` merged (timing lead-confirmed on this PR and on
+  batch #447), so the discarded run strictly post-dates the freeze and had no pre-freeze
+  data contact, which is why this is a plain disclosure rather than a v2-§0-style downgrade.
 
 ### §7.1 The full 84/84 v3 grid (verbatim, no truncation)
 
@@ -423,7 +437,8 @@ Per §9's three conditions, evaluated on this SPY `PROMOTABLE` read:
 3. **"that cell's after-tax Calmar exceeds both its random-entry twin and the always-in
    benchmark"** — **N/A**, no cell exists to test (condition 1 already failed).
 
-**All three conditions fail (in fact, no cell reaches condition 3 at all).** Per §9's
+**Conditions 1 and 2 fail; condition 3 is vacuously unsatisfiable (no cell cleared the
+bar).** Per §9's
 binding text, "if any of the three fails, the candlestick direction is closed." **The
 candlestick widening programme is closed.** No round 4 (the disclosed vehicle-robustness
 arm) is frozen; multi-pattern confluence is not attempted. The closure is recorded in

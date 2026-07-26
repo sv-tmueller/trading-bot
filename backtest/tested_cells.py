@@ -205,8 +205,8 @@ LEDGER: Tuple[TestedCell, ...] = (
         date="2026-07-26",
         note="0/84 clear (14 arms x R{2,3} x time-stop{3,5,10}, CONTEXT_NONE), 29 RUINED. "
              "Pooled #398 gate at cumulative N=168: DSR 0.0032 FAIL, PBO 0.3041 PASS, "
-             "bootstrap ci_low -0.000529 FAIL -> combined FAIL. Per the #448 sub-plan's §9 "
-             "stopping rule, all three widening conditions fail (no cell clears the bar, "
+             "bootstrap ci_low -0.000529 FAIL -> combined FAIL. Per the pre-registration's "
+             "§9 stopping rule, all three widening conditions fail (no cell clears the bar, "
              "gate fails, no cell exists to beat its twin/always-in) -> the candlestick "
              "widening programme (v1 context-free, v2 trend-context, v3 time-stop) is "
              "closed; no round 4 (vehicle-robustness) is frozen.",
