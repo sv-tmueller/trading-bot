@@ -171,10 +171,12 @@ LEDGER: Tuple[TestedCell, ...] = (
     ),
     TestedCell(
         family="candlestick_pattern", cadence="daily", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk", n_cells=28, verdict=PENDING,
-        power="NONE",
+        exit_style="bracket_patternextreme_RxRisk", n_cells=28, verdict=NO_GO,
+        power="PROMOTABLE",
         source="docs/research/2026-07-25-candlestick-pattern-preregistration.md",
-        date="2026-07-25", note="14 arms x R{2,3}. Frozen; §7 empty pending egress allowlist.",
+        date="2026-07-26",
+        note="0/28 clear, 13 RUINED; pooled #398 gate at N=84: DSR 0.0122 FAIL, PBO 0.4036 PASS, "
+             "bootstrap ci_low -0.000529 FAIL.",
     ),
     # --- Candlestick patterns v2, trend context (#435) -------------------------------
     TestedCell(
@@ -187,11 +189,12 @@ LEDGER: Tuple[TestedCell, ...] = (
     ),
     TestedCell(
         family="candlestick_pattern_context", cadence="daily", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk", n_cells=56, verdict=PENDING,
-        power="NONE",
+        exit_style="bracket_patternextreme_RxRisk", n_cells=56, verdict=NO_GO,
+        power="PROMOTABLE",
         source="docs/research/2026-07-25-candlestick-context-preregistration.md",
-        date="2026-07-25",
-        note="14 arms x R{2,3} x context{reversal,continuation}. Cumulative family N=84 with v1.",
+        date="2026-07-26",
+        note="0/56 clear, 4 RUINED; context did not rescue the class. Pooled #398 gate at N=84 "
+             "(same run as v1): DSR 0.0122 FAIL, PBO 0.4036 PASS, bootstrap ci_low -0.000529 FAIL.",
     ),
 )
 
