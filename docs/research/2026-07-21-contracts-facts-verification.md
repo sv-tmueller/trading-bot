@@ -641,10 +641,11 @@ agree exactly, so this addendum does not upgrade margin past "still unverified" 
 carrying no figure at all.
 
 > **Cross-reference (2026-07-26), placed here per the new note's §2.3:** the EUR 50,000 doubling
-> question left open at §6(e) below — "unlikely, but that is an inference, not a verified fact" — is
-> now closed arithmetically using the margin bracket above: the threshold binds only around 21–25
-> contracts of the same underlying class, not at 1 contract or at any plausible micro-size survey
-> position. See `2026-07-26-mes-contract-spec-verification.md` §2.3 for the derivation.
+> question left open at §3.3 above — "it is unlikely to bind at micro size, but that is an inference,
+> not a verified fact" — is now closed arithmetically using the margin bracket above: the threshold
+> binds only around 21–25 contracts of the same underlying class, not at 1 contract or at any
+> plausible micro-size survey position. See `2026-07-26-mes-contract-spec-verification.md` §2.3 for
+> the derivation.
 
 **Disposition of the §6 flag.** §6 below flagged the funding-mechanics/capital-efficiency package
 (free-cash-only funding, Nachschusspflicht exclusion, post-2023 margin increase, loss of intraday

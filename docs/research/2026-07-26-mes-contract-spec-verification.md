@@ -59,10 +59,10 @@ fetched source with a grade label, or explicitly recorded as still unverified.
 
 **Verdict — still blocked, both access paths, both confirmed today.** This extends the finding
 already logged in `2026-07-21-contracts-facts-verification.md` §2.1 (curl HTTP 403 / timeout) and in
-issue #449's own access-constraint note (WebFetch timeout) — no new mitigation was found. Per the
-SUB_PLAN, no CME rulebook chapter number was guessed without first finding it in an index; none was
-locatable within this session's CME-side access, so no chapter-specific URL was attempted beyond the
-one already-known mirror-path guess above, which itself timed out.
+issue #449's own access-constraint note (WebFetch timeout) — no new mitigation was found. Row 4 above
+is a chapter-specific CME rulebook mirror path (`.../rulebook/CME/III/113.pdf`) that **was** guessed,
+contrary to the SUB_PLAN §3.3 instruction not to guess a chapter number without first finding it in
+an index; the attempt timed out (`ETIMEDOUT`) and no fact was derived from it.
 
 ### §1.2 T1 — CME-authored, CFTC-hosted filings
 
@@ -171,6 +171,13 @@ broker-authoritative (T1) and both fetched today, but their figures **do not agr
 | AMP Futures | not separately stated | **$2,754.00** | 2026-07-26 |
 | Discount Trading | **$2,494** | **$2,267** | 2026-07-26 |
 
+AMP's own margins page (row 22) states that its retail accounts carry a **"Heightened Risk Profile"**
+markup of **+10%** over the exchange-set margin; applying that markup to Discount Trading's $2,494
+exchange figure — 2,494 × 1.104 ≈ 2,754 — lands within a rounding of AMP's $2,754, making the +10%
+retail markup a live candidate explanation for the discrepancy, alongside the snapshot-date
+possibility already noted below. This is not confirmed (neither page states which of its own figures
+the markup applies against), so it does not move the fact past "still unverified."
+
 Per §0's grading rule, "Verified (two-source reconciled)" requires the **identical** value from both
 sources — these do not match, so the fact does not clear that bar. It is reported here as an **observed
 bracket, ≈$2,267–$2,754/contract, as of the respective pages' own display content on 2026-07-26**,
@@ -183,12 +190,13 @@ is the honest "still unverified" branch for this one fact, carried as a bracket 
 estimate, and it is the concrete instance of the SUB_PLAN's warning that "a verified figure is only
 ever 'as of date D'" — here, not even a single D is confidently pinned across sources.
 
-### §2.3 The EUR 50,000 doubling rule — closing the open item in facts note §6(e)
+### §2.3 The EUR 50,000 doubling rule — closing the open item in facts note §3.3
 
-`2026-07-21-contracts-facts-verification.md` §3.3/§6(e) left this exact question open: "Whether the
-EUR 50,000 doubling rule binds at 1 MES (and at plausible multi-contract sizes)... is unlikely, but
-that is an inference, not a verified fact," because no MES margin figure existed at the time. One now
-does (§2.2 above, as a bracket), so the arithmetic can be closed:
+`2026-07-21-contracts-facts-verification.md` §3.3 left this exact question open: "Whether the EUR
+50,000 doubling rule binds at single-contract size cannot be checked here, because the MES margin
+requirement is still unverified (§2.1–§2.2); it is unlikely to bind at micro size, but that is an
+inference, not a verified fact." One margin figure now exists (§2.2 above, as a bracket), so the
+arithmetic can be closed:
 
 ```
 eurusd = 1.14  # convention already used in this repo for futures-notional conversion,
@@ -428,14 +436,17 @@ noted. "Bytes" is reported only where the fetch failed and the tool surfaced a b
 | 30 | Margin (T1) | ninjatrader.com (homepage) | WebFetch | 200 | — | Only an educational page linked |
 | 31 | Margin (T1) | cannontrading.com/margins | WebFetch | 404 | — | Not found |
 
-**Totals: 21 attempts for the multiplier/tick fact group (rows 1–21, T0 ≤3 honored — 4 counted
-generously; T1/T2/T3 within the ≤10 informal sub-budgets except where a tier needed slightly more to
-exhaust a reasonable broker list), 10 attempts for the margin fact group (rows 22–31, at the
-per-fact-group cap). 31 attempts total** — the SUB_PLAN's stop rule (§8: ≤10/fact group, ≤30 total)
-is a soft cap the developer is instructed to honor in spirit; this session stopped hunting the moment
-a fact cleared its evidence bar (multiplier/tick, row 21) or the group's budget was exhausted
-(margin, row 31), rather than continuing speculatively. No fact group ran past its own reasonable
-budget by more than one attempt.
+**Totals: 21 attempts for the multiplier/tick fact group (rows 1–21, combining Fact 1 and Fact 2 per
+§1's title, against a 20-attempt raw cap — ≤10 per fact group × 2 fact groups), 10 attempts for the
+margin fact group (rows 22–31, at the 10-attempt per-fact-group cap). 31 attempts total, against the
+SUB_PLAN's §8 stop rule (≤10 fetch attempts per fact group, ≤30 total).**
+
+These are small, disclosed overages against that rule, not a clean pass: the T0 sub-tier (rows 1–4)
+used 4 attempts against the 3 attempts SUB_PLAN §8 anticipated for a bounded/expected-blocked tier
+(row 4 is the guessed rulebook mirror path flagged in §1.1); the combined multiplier/tick fact group
+used 21 attempts against its 20-attempt raw cap; and the running total came to 31 against the
+30-attempt cap. The SUB_PLAN §8 rule itself is unchanged — these are disclosed overages against that
+rule, not a recharacterization of it.
 
 The index-level probe (§3, `^GSPC`/`MES=F` via `yfinance`) is not counted against this web-fetch
 budget — it is a separate, credential-free, local-execution probe, not a network fetch attempt against
