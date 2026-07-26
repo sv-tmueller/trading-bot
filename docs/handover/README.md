@@ -59,7 +59,7 @@ Bullet list of decisions that are not obviously visible in the diff. Each bullet
 
 - **Decision** — one line.
 - **Rationale** — one line, including any rejected alternatives.
-- **Consequence** — what changes for the next session as a result (e.g. "do not retry approach X", "the stop-loss math now lives in `tools/risk.py:atr_stop`").
+- **Consequence** — what changes for the next session as a result (e.g. "do not retry approach X", "the regime math now lives in `supabase/functions/_shared/regime.ts:computeTargetState`").
 
 These are the bullets a future session would otherwise have to re-derive by reading PR review threads. Capture them here.
 
@@ -83,12 +83,13 @@ Bias toward the files this session actually edited or relied on. Do not list eve
 
 Repo-specific invariants and gotchas that the next session is most likely to violate. Always include the items below verbatim if they apply to anything in **Next steps**, and add session-specific items on top:
 
-- The LLM must never control risk parameters directly. Stops and targets come from `tools/risk.py`; the position monitor is rule-based; only `TeamLeaderAgent` places orders, and only with pre-approved values.
-- Stops and take-profits execute server-side via Alpaca **bracket orders**. The position monitor is defence-in-depth, not the primary exit mechanism.
-- Morning scan must run **pre-market** (cron `25 13 * * 1-5` UTC). Running after 13:30 UTC produces ~zero `volume_ratio` and kills every entry.
-- `TRADING_PAUSED=true` halts new entries but does not affect the position monitor.
-- Free Alpaca paper accounts require `DataFeed.IEX`; live SIP requires a paid account. Controlled via `DATA_FEED` env var.
-- Every Python file starts with `from __future__ import annotations` (Python 3.9 runtime).
+- **No LLM in the trading path.** The `daily-check`, `kill-switch`, and `panic` Edge Functions import no model SDK and instantiate no agent. Enforced mechanically by `supabase/functions/_shared/invariants.test.ts`.
+- **One decision rule.** SPY close vs SPY 200-DMA, modulated by the kill-switch flag, computed by the pure function `computeTargetState` in `supabase/functions/_shared/regime.ts`. Never add a second decision rule without a fresh brainstorm and design spec.
+- **`bot_config.paused=true` is the operational kill switch.** It halts new entries (`daily-check` exits `skipped:trading_paused`); the kill-switch function is unaffected and keeps protecting an open position. Set and cleared via the `panic` Edge Function (`action=pause` / `action=resume`).
+- **Never execute against the live broker from an agent context.** With `CLAUDE_AGENT_NO_BROKER` set, the mutating helpers on `supabase/functions/_shared/alpaca.ts` (`placeMarketOrder`, `liquidate`, `cancelAllOrders`) raise `BrokerCallBlockedError`. Mock all Alpaca calls in tests — each function's `logic.ts` takes an injected `deps` object.
+- Every Python file starts with `from __future__ import annotations` (Python 3.9 runtime; Python is research-only — the production bot is TypeScript on Deno).
+
+The authoritative statement of the safety contract is the [Architectural invariants](../../CLAUDE.md#architectural-invariants) section of `CLAUDE.md` — the bullets above are reminders drawn from it, not a restatement; where they drift, `CLAUDE.md` wins.
 
 Add session-specific gotchas above the standing list (e.g. "branch X has uncommitted ATR experiments stashed under stash@{0}").
 
