@@ -1,30 +1,35 @@
-"""Pooled #398 overfitting gate over the cumulative candlestick family (#443, N=84).
+"""Pooled #398 overfitting gate over the cumulative candlestick family (#443/#448, N=168).
 
 Research-only. Lives in ``backtest/`` and is never imported by ``supabase/functions/``.
 No LLM, no broker calls — the only network is the read-only historical-bars pull already
 wired into ``run_candlestick_study._fetch_daily``; this module's ``--data`` path uses none.
 
-Neither ``run_candlestick_study.py`` (28 cells) nor ``run_candlestick_context_study.py``
-(56 cells) invokes the #398 gate — each only screens its own cells' after-tax Calmar
-against the frozen SPY bar. This module applies the gate **across the pooled cumulative
-family** (v1's 28 + v2's 56 = 84), mirroring ``run_turtle_breakout.evaluate_daily_gate``
-in its conventions verbatim: non-annualized per-day trial Sharpes (required by
-``overfitting_gate``'s units contract — see its module docstring), best-cell selection by
-``argmax`` Sharpe, a ``(T, 84)`` per-day performance matrix for PBO/CSCV, and best-cell-minus-
-SPY-buy-and-hold per-day uplifts for the block bootstrap, seeded with the same
-``RANDOM_SEED`` (42) the two frozen runners already use.
+None of the three frozen runners — ``run_candlestick_study.py`` (28 cells),
+``run_candlestick_context_study.py`` (56 cells), ``run_candlestick_timestop_study.py``
+(84 cells) — invokes the #398 gate itself; each only screens its own cells' after-tax
+Calmar against the frozen SPY bar. This module applies the gate **across the pooled
+cumulative family** (v1's 28 + v2's 56 + v3's 84 = 168), mirroring
+``run_turtle_breakout.evaluate_daily_gate`` in its conventions verbatim: non-annualized
+per-day trial Sharpes (required by ``overfitting_gate``'s units contract — see its module
+docstring), best-cell selection by ``argmax`` Sharpe, a ``(T, 168)`` per-day performance
+matrix for PBO/CSCV, and best-cell-minus-SPY-buy-and-hold per-day uplifts for the block
+bootstrap, seeded with the same ``RANDOM_SEED`` (42) the frozen runners already use.
 
-It introduces **no new free parameter**: every cell definition, R, context and seed is
-imported unchanged from the two frozen runners (``ARMS``, ``R_GRID``, ``build_cell``,
-``always_in``, ``RANDOM_SEED`` from ``run_candlestick_study``; ``CONTEXT_GRID`` from
-``run_candlestick_context_study``). This module never modifies either runner.
+It introduces **no new free parameter**: every cell definition, R, context, time-stop
+level and seed is imported unchanged from the three frozen runners (``ARMS``, ``R_GRID``,
+``build_cell``, ``always_in``, ``RANDOM_SEED`` from ``run_candlestick_study``;
+``CONTEXT_GRID`` from ``run_candlestick_context_study``; ``TIME_STOP_GRID`` from
+``run_candlestick_timestop_study``). This module never modifies any of the three.
 
-This module was committed BEFORE any real SPY number was seen (#443 step 1) — the
-cell-selection rule inside the gate is frozen before results exist, so applying it is not
-a post-hoc choice.
+The v3 extension (#448) was committed BEFORE any real SPY number was seen for it — the
+cell-selection rule inside the gate stays frozen before results exist, so pooling the new
+84 cells in is not a post-hoc choice, exactly as v1/v2's own pooling (#443 step 1) was not.
+The v1+v2 subset of 84 cells is untouched by this extension: same keys, same sims,
+pinned by ``tests/test_run_candlestick_gate.py::test_the_v1_v2_subset_is_unchanged_by_the_v3_extension``
+— the recorded N=84 read has to stay reproducible.
 
 The gate is only defined at full statistical power: ``main`` refuses to run below
-``PROMOTABLE`` (``intraday_data.describe_power``), the same floor the two frozen runners
+``PROMOTABLE`` (``intraday_data.describe_power``), the same floor the frozen runners
 already enforce for their own per-cell tables.
 
 Run: ``python3 -m backtest.run_candlestick_gate --data FILE``
@@ -50,22 +55,29 @@ from backtest.run_candlestick_study import (
     always_in,
     build_cell,
 )
+from backtest.run_candlestick_timestop_study import TIME_STOP_GRID
 from backtest.candlestick import CONTEXT_NONE
 
-#: Cell key: (arm_name, R, context). Mirrors the two frozen runners' cell identity.
+#: Cell key: (arm_name, R, "context" for v1/v2 or "timestopN" for v3). Mirrors the frozen
+#: runners' own cell identity; the third element's string space is disjoint between the
+#: context labels ("none"/"reversal"/"continuation") and the "timestopN" labels, so keys
+#: never collide across grids.
 CellKey = Tuple[str, float, str]
 
 N_V1_CELLS = len(ARMS) * len(R_GRID)                       # 28
 N_V2_CELLS = len(ARMS) * len(R_GRID) * len(CONTEXT_GRID)   # 56
-N_CELLS = N_V1_CELLS + N_V2_CELLS                           # 84 — the pooled trial count
+N_V3_CELLS = len(ARMS) * len(R_GRID) * len(TIME_STOP_GRID)  # 84
+N_CELLS = N_V1_CELLS + N_V2_CELLS + N_V3_CELLS              # 168 — the pooled trial count
 
 
 def build_all_cells(df: pd.DataFrame) -> "dict[CellKey, dict]":
-    """Every frozen cell of the cumulative family (v1's 28 + v2's 56) over ``df``.
+    """Every frozen cell of the cumulative family (v1's 28 + v2's 56 + v3's 84) over ``df``.
 
-    Rebuilds only the REAL cell for each arm/R/context — the gate needs each cell's own
-    equity curve, not its random-entry twin (the twin comparison is v1/v2's own primary
-    read, already reported there).
+    Rebuilds only the REAL cell for each arm/R/context/time-stop — the gate needs each
+    cell's own equity curve, not its random-entry twin (the twin comparison is each
+    runner's own primary read, already reported there). The v1+v2 subset (the first 84
+    keys built here) is unchanged from the pre-#448 gate (pinned on trade_count and ending
+    equity) — this function only ADDS the 84 v3 keys, it never perturbs the earlier ones.
     """
     cells: "dict[CellKey, dict]" = {}
     for arm in ARMS:
@@ -75,6 +87,12 @@ def build_all_cells(df: pd.DataFrame) -> "dict[CellKey, dict]":
         for r in R_GRID:
             for context in CONTEXT_GRID:
                 cells[(arm[0], r, context)] = build_cell(df, arm, r, context=context)
+    for arm in ARMS:
+        for r in R_GRID:
+            for time_stop in TIME_STOP_GRID:
+                cells[(arm[0], r, f"timestop{time_stop}")] = build_cell(
+                    df, arm, r, max_bars=time_stop
+                )
     return cells
 
 
@@ -139,7 +157,7 @@ def evaluate_candlestick_gate(cells: "dict[CellKey, dict]", spy_daily_eq: pd.Ser
 
 
 def _print_report(power: "idata.PowerReport", source: str, result: dict) -> None:
-    print("Pooled #398 overfitting gate — candlestick family, cumulative N=84")
+    print(f"Pooled #398 overfitting gate — candlestick family, cumulative N={N_CELLS}")
     print(f"source: {source}")
     print(f"power: {power.summary()}")
     print(f"n_trials: {result['n_trials']}")

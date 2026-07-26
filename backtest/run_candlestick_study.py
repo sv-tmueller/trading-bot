@@ -161,6 +161,7 @@ def build_cell(
     arm: Tuple[str, str, str],
     r: float,
     context: str = cs.CONTEXT_NONE,
+    max_bars: Optional[int] = None,
 ) -> dict:
     """One candlestick cell: detect the pattern, shift to next-open, simulate the bracket.
 
@@ -168,6 +169,11 @@ def build_cell(
     (pinned by a test). The v2 context-filtered grid passes ``reversal`` / ``continuation``;
     the mask is applied at the SIGNAL bar, before the next-open shift, because the trend
     context is part of the decision taken on that bar.
+
+    ``max_bars`` defaults to ``None`` (off), which reproduces the frozen v1 grid exactly
+    (also pinned by a test) — it is a straight passthrough to
+    ``backtest.bracket.simulate_bracket``'s time stop (#448 PR A). The v3 time-stop grid
+    passes an integer from ``TIME_STOP_GRID``.
     """
     _, pattern, direction = arm
     span = PATTERN_SPAN[pattern]
@@ -179,7 +185,7 @@ def build_cell(
         starting_cash=STARTING_CASH,
         slippage_bps=SLIPPAGE_BPS, commission_bps=COMMISSION_BPS,
         eow_close_out=False, session_close_out=False,
-        direction=direction,
+        direction=direction, max_bars=max_bars,
     )
 
 
@@ -189,6 +195,7 @@ def build_random_cell(
     r: float,
     seed: int = RANDOM_SEED,
     context: str = cs.CONTEXT_NONE,
+    max_bars: Optional[int] = None,
 ) -> dict:
     """Random-entry twin: identical geometry and entry COUNT, entry dates shuffled.
 
@@ -200,6 +207,9 @@ def build_random_cell(
     from all bars instead would make the control differ from the real cell in two ways at
     once (entry timing *and* trend regime), so a gap between them could no longer be
     attributed to the pattern — which is the only thing the control exists to isolate.
+
+    ``max_bars`` (#448 PR A) is a straight passthrough, same default-off convention as
+    ``build_cell`` — the twin shares the real cell's time stop too.
     """
     _, pattern, direction = arm
     span = PATTERN_SPAN[pattern]
@@ -225,7 +235,7 @@ def build_random_cell(
         starting_cash=STARTING_CASH,
         slippage_bps=SLIPPAGE_BPS, commission_bps=COMMISSION_BPS,
         eow_close_out=False, session_close_out=False,
-        direction=direction,
+        direction=direction, max_bars=max_bars,
     )
 
 

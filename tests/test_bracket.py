@@ -619,3 +619,172 @@ def test_invalid_direction_raises():
     trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=110.0)
     with pytest.raises(ValueError, match="direction must be one of"):
         br.simulate_bracket(df, trig, sp, tp, direction="sideways")
+
+
+# ---------------------------------------------------------------------------
+# max_bars — the time-stop extension (#448 PR A). Additive, default OFF.
+# Frozen semantics: bars_held = i - entry_i; fires at the CLOSE of the bar where
+# bars_held >= max_bars, reason "time_stop", existing exit cost convention. Precedence
+# inside a bar: stop/target resolution first, then time stop, then session_close_out,
+# then eow_close_out. The final bar always stays end_of_window.
+# ---------------------------------------------------------------------------
+
+def test_max_bars_default_none_is_a_no_op():
+    """Identical trade ledger and equity curve with and without the parameter.
+
+    This is the guard for every existing caller (turtle, ORB, giveback, candlestick
+    v1/v2) — none of them pass max_bars, and none of their published numbers may move.
+    """
+    dates = pd.bdate_range("2020-01-06", periods=6)
+    df = _frame(dates,
+                o=[100, 100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101, 101],
+                l=[99,  99,  99,  99,  99,  99],
+                c=[100, 100, 101, 102, 103, 104])
+    trig, sp, tp = _levels(df, [False, True, False, False, False, False],
+                           stop=50.0, target=200.0)
+    without = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, **ZERO)
+    default = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=None,
+                                  **ZERO)
+    assert without["trades"] == default["trades"]
+    assert without["ending_equity"] == pytest.approx(default["ending_equity"])
+    assert (without["equity_curve"] == default["equity_curve"]).all()
+
+
+def test_time_stop_exits_at_the_close_of_the_nth_bar_after_entry():
+    """Neither stop nor target reachable; exactly one trade fires the time stop."""
+    dates = pd.bdate_range("2020-01-06", periods=5)   # Mon..Fri
+    df = _frame(dates,
+                o=[100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101],   # never reaches target 200
+                l=[99,  99,  99,  99,  99],    # never pierces stop 50
+                c=[100, 100, 102, 103, 104])
+    trig, sp, tp = _levels(df, [False, True, False, False, False],
+                           stop=50.0, target=200.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=2, **ZERO)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "time_stop"
+    entry_i = 1
+    assert t["exit_date"] == dates[entry_i + 2]
+    assert t["exit_price"] == pytest.approx(103.0)   # close of dates[3], zero cost
+
+
+def test_no_trade_is_held_longer_than_max_bars():
+    """Every trade's positional bar count is <= max_bars on a busy synthetic frame."""
+    dates = pd.bdate_range("2020-01-06", periods=40)
+    rng = np.random.default_rng(0)
+    o = 100 + np.cumsum(rng.normal(0, 0.5, 40))
+    h = o + np.abs(rng.normal(0.3, 0.2, 40))
+    l = o - np.abs(rng.normal(0.3, 0.2, 40))
+    c = o + rng.normal(0, 0.1, 40)
+    df = _frame(dates, o=o, h=h, l=l, c=c)
+    entries = [i % 5 == 1 for i in range(40)]
+    trig, sp, tp = _levels(df, entries, stop=o.min() - 10, target=o.max() + 10)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=3, **ZERO)
+    assert res["trade_count"] > 0
+    date_to_pos = {d: i for i, d in enumerate(dates)}
+    for t in res["trades"]:
+        held = date_to_pos[t["exit_date"]] - date_to_pos[t["entry_date"]]
+        assert held <= 3, f"trade held {held} bars, max_bars=3"
+
+
+def test_a_stop_or_target_hit_on_the_time_stop_bar_takes_priority():
+    """A stop or target hit on the same bar as the time stop resolves stop/target."""
+    dates = pd.bdate_range("2020-01-06", periods=5)
+    # stop case: bar index 3 (bars_held=2 with entry at 1, max_bars=2) pierces the stop.
+    df_stop = _frame(dates,
+                      o=[100, 100, 100, 100, 100],
+                      h=[101, 101, 101, 101, 101],
+                      l=[99,  99,  99,  90,  99],   # bar3 pierces the 95 stop
+                      c=[100, 100, 100, 96,  100])
+    trig, sp, tp = _levels(df_stop, [False, True, False, False, False],
+                           stop=95.0, target=200.0)
+    res = br.simulate_bracket(df_stop, trig, sp, tp, eow_close_out=False, max_bars=2,
+                              **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "stop"
+
+    # target case: bar index 3 reaches the target.
+    df_target = _frame(dates,
+                        o=[100, 100, 100, 100, 100],
+                        h=[101, 101, 101, 110, 101],   # bar3 reaches the 110 target
+                        l=[99,  99,  99,  99,  99],
+                        c=[100, 100, 100, 108, 100])
+    trig, sp, tp = _levels(df_target, [False, True, False, False, False],
+                           stop=50.0, target=110.0)
+    res = br.simulate_bracket(df_target, trig, sp, tp, eow_close_out=False, max_bars=2,
+                              **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "target"
+
+
+def test_time_stop_does_not_fire_on_the_final_bar_it_is_end_of_window():
+    """bars_held reaching max_bars exactly at the final bar stays end_of_window."""
+    dates = pd.bdate_range("2020-01-06", periods=4)   # Mon..Thu
+    df = _frame(dates,
+                o=[100, 100, 100, 100],
+                h=[101, 101, 101, 101],
+                l=[99,  99,  99,  99],
+                c=[100, 100, 101, 102])
+    # entry at b1 (index 1); max_bars=2 -> bars_held reaches 2 exactly at the final bar (3).
+    trig, sp, tp = _levels(df, [False, True, False, False], stop=50.0, target=200.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=2, **ZERO)
+    t = res["trades"][0]
+    assert t["exit_reason"] == "end_of_window"
+    assert t["exit_date"] == dates[-1]
+
+
+def test_max_bars_below_one_raises():
+    dates = pd.bdate_range("2020-01-06", periods=3)
+    df = _frame(dates, o=[100]*3, h=[101]*3, l=[99]*3, c=[100]*3)
+    trig, sp, tp = _levels(df, [False, True, False], stop=95.0, target=110.0)
+    with pytest.raises(ValueError, match="max_bars"):
+        br.simulate_bracket(df, trig, sp, tp, max_bars=0)
+    with pytest.raises(ValueError, match="max_bars"):
+        br.simulate_bracket(df, trig, sp, tp, max_bars=-1)
+
+
+def test_time_stop_mirrors_onto_the_short_side():
+    """A short lot that hits neither stop nor target exits time_stop with sign-correct pnl."""
+    dates = pd.bdate_range("2020-01-06", periods=5)
+    df = _frame(dates,
+                o=[100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101],   # never pierces the (above) stop 200
+                l=[99,  99,  99,  99,  99],    # never reaches the (below) target 10
+                c=[100, 100, 99,  98,  97])
+    trig, sp, tp = _levels(df, [False, True, False, False, False],
+                           stop=200.0, target=10.0)
+    res = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=2,
+                              **ZERO, **SHORT)
+    assert res["trade_count"] == 1
+    t = res["trades"][0]
+    assert t["exit_reason"] == "time_stop"
+    assert t["exit_date"] == dates[1 + 2]
+    assert t["exit_price"] == pytest.approx(98.0)
+    assert t["pnl"] > 0        # short, price fell -> profit
+    assert res["ending_equity"] > res["starting_cash"]
+
+
+def test_time_stop_frees_the_lot_for_a_later_trigger():
+    """A second trade appears that the un-time-stopped run misses (no pyramiding).
+
+    Entry at b1; a second trigger at b4. With ``max_bars=2`` the first lot time-stops
+    at b3 (``i - entry_i == 2``), so by b4 the engine is flat again and takes the second
+    trigger. Without a time stop the first lot never exits (it rides to end_of_window),
+    so b4's trigger is ignored while in position — the standard no-pyramiding rule.
+    """
+    dates = pd.bdate_range("2020-01-06", periods=6)
+    df = _frame(dates,
+                o=[100, 100, 100, 100, 100, 100],
+                h=[101, 101, 101, 101, 101, 101],
+                l=[99,  99,  99,  99,  99,  99],
+                c=[100, 100, 101, 102, 103, 104])
+    trig, sp, tp = _levels(df, [False, True, False, False, True, False],
+                           stop=50.0, target=200.0)
+    without = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, **ZERO)
+    assert without["trade_count"] == 1     # b4's trigger ignored: still in the first lot
+
+    with_stop = br.simulate_bracket(df, trig, sp, tp, eow_close_out=False, max_bars=2,
+                                    **ZERO)
+    assert with_stop["trade_count"] == 2   # freed at b3, b4's trigger is taken

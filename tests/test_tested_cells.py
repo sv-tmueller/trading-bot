@@ -170,6 +170,9 @@ def test_cumulative_trials_excludes_grids_that_never_ran():
     assert tc.cumulative_trials("candlestick_pattern") == 56
     # #443: candlestick v2 ran 56 on GOOG + 56 on SPY (the former-PENDING record, now NO_GO)
     assert tc.cumulative_trials("candlestick_pattern_context") == 112
+    # #448 PR A: the v3 time-stop grid is frozen but PENDING — the freeze itself must not
+    # consume any multiplicity. This flips to 84 only in PR B, once the SPY read is in.
+    assert tc.cumulative_trials("candlestick_pattern_timestop") == 0
 
 
 def test_cumulative_trials_sums_multiple_run_records():
