@@ -173,7 +173,9 @@ def test_main_returns_zero_and_writes_both_files(tmp_path):
 def test_sma_guard_band_holds_on_the_committed_spy_fixture():
     """No committed SPY bar sits within the guard band of its own 200-window SMA --
     an ULP-level rolling-mean difference between pandas and a naive TS sum could never
-    flip a golden boolean."""
+    flip a golden boolean. The guard band applies to the SPY case only -- the shapes
+    fixture's deliberate tie case (below) is exempt by design (see
+    test_shapes_fixture_has_a_deliberate_context_tie_case)."""
     fixture = _load(SPY_PATH)
     for case in fixture["cases"]:
         if "sma" not in case:
@@ -181,3 +183,32 @@ def test_sma_guard_band_holds_on_the_committed_spy_fixture():
         min_margin = case["sma"]["min_margin"]
         assert min_margin is not None
         assert min_margin >= exporter.SMA_GUARD_MIN_MARGIN
+
+
+def test_shapes_fixture_has_a_deliberate_context_tie_case():
+    """Fix round 1 (tester finding 1): the shapes fixture carries a constant-close
+    case whose context masks pin Python's `below = NOT above` tie semantics
+    (candlestick.py:358-359) -- a bar with close === sma is admitted into "below".
+
+    This case is deliberately exempt from the SMA guard band that
+    test_sma_guard_band_holds_on_the_committed_spy_fixture enforces on the SPY case:
+    an exact tie (both languages evaluate `10.0 == 10.0` bit-identically) is the
+    point of this case, not a floating-point hazard to avoid, so the exporter never
+    computes an "sma" block for it (only "context") and the guard-band check -- which
+    only iterates cases carrying an "sma" key -- never sees it.
+    """
+    fixture = _load(SHAPES_PATH)
+    case = next(
+        (c for c in fixture["cases"] if c["name"] == exporter.CONTEXT_TIE_CASE_NAME), None
+    )
+    assert case is not None, "shapes fixture is missing the deliberate context-tie case"
+    assert "sma" not in case, "the tie case must stay exempt from the SMA guard band"
+    assert "context" in case and case["context"], "the tie case must carry a context block"
+
+    # 5 bars, close=10.0 throughout, window=3: sma is NaN for indices 0,1 and an exact
+    # tie (10.0) for indices 2,3,4 -- ties are admitted into "below", not excluded.
+    by_key = {(c["mode"], c["direction"], c["window"]): c["admitted"] for c in case["context"]}
+    assert by_key[("reversal", "long", 3)] == [2, 3, 4]
+    assert by_key[("continuation", "long", 3)] == []
+    assert by_key[("reversal", "short", 3)] == []
+    assert by_key[("continuation", "short", 3)] == [2, 3, 4]

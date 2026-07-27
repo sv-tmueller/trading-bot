@@ -47,7 +47,7 @@ import {
   shootingStar,
   STAR_BODY_MAX,
 } from "./candlestick.ts";
-import type { Bar } from "./candlestick.ts";
+import type { Bar, CandleScan, PatternName } from "./candlestick.ts";
 import { DataError } from "./num.ts";
 
 // A neutral filler bar: small body, symmetric, matches no directional pattern.
@@ -485,6 +485,32 @@ Deno.test("T-20: reversal context puts bullish below the SMA and bearish above (
 });
 
 // ---------------------------------------------------------------------------
+// Fix round 1 (tester finding 1) -- contextMask tie semantics. Python computes
+// `below = NOT above` (candlestick.py:358-359): a bar with close === sma is
+// admitted into "below", not excluded from both partitions. A constant-close
+// frame makes every post-warm-up bar an exact tie, so it pins this directly.
+// ---------------------------------------------------------------------------
+
+Deno.test("T-20 (fix 1): a constant-close frame admits ties into 'below', matching Python NOT-above semantics", () => {
+  // 5 bars, close=10 throughout, window=3 -- sma is NaN for indices 0,1 and
+  // exactly 10.0 (an exact tie with every close) for indices 2,3,4.
+  const bars: Bar[] = Array.from({ length: 5 }, () => bar(10.0, 10.0, 10.0, 10.0));
+  const mask = contextMask(bars, BULLISH, CONTEXT_REVERSAL, 3);
+  assertEquals(mask, [false, false, true, true, true]);
+});
+
+Deno.test("T-20 (fix 1): reversal/continuation stay exact complements on a constant-close (tie) frame", () => {
+  const bars: Bar[] = Array.from({ length: 5 }, () => bar(10.0, 10.0, 10.0, 10.0));
+  for (const direction of [BULLISH, BEARISH] as const) {
+    const rev = contextMask(bars, direction, CONTEXT_REVERSAL, 3);
+    const con = contextMask(bars, direction, CONTEXT_CONTINUATION, 3);
+    for (let i = 3; i < bars.length; i++) {
+      assertEquals(rev[i] !== con[i], true, `bar ${i} not an exact complement under ties`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Phase 5 -- scanCandles / firingRates (T-22, T-23)
 // ---------------------------------------------------------------------------
 
@@ -642,4 +668,161 @@ Deno.test("T-25: candlestick.ts's only import is ./num.ts, and it contains no I/
       `candlestick.ts contains forbidden I/O token outside comments: ${forbidden}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7 -- boundary test pairs (fix round 1, tester finding 2). Every frame is
+// constructed with exact arithmetic (range=1.0, so `body/range === body` and
+// `wick/range === wick` bit-exactly) so the "exactly at threshold" case pins the
+// clause's inclusivity/exclusivity and the "epsilon outside" case cannot land on
+// the threshold value itself by floating-point accident.
+// ---------------------------------------------------------------------------
+
+const EPS = Number.EPSILON;
+
+Deno.test("boundary: doji fires when body/range is exactly DOJI_BODY_MAX (<=)", () => {
+  // o=0, c=DOJI_BODY_MAX, h=1, l=0 -> body=DOJI_BODY_MAX, range=1, ratio=DOJI_BODY_MAX exactly.
+  const bars = [bar(0, 1, 0, DOJI_BODY_MAX)];
+  assertEquals(doji(bars)[0], true);
+});
+
+Deno.test("boundary: doji rejects a body an epsilon above DOJI_BODY_MAX", () => {
+  const body = DOJI_BODY_MAX + EPS;
+  const bars = [bar(0, 1, 0, body)];
+  assertEquals(doji(bars)[0], false);
+});
+
+Deno.test("boundary: hammer fires when the opposing (upper) wick ratio is exactly HAMMER_OPP_WICK_MAX (<=)", () => {
+  // body=0 (o=c=0) isolates the opposing-wick clause: longLower/valid/lower>0 all
+  // hold trivially regardless of the exact wick split. o=c=0 keeps h/l as direct
+  // literal assignments (not "0.5 + upper", which loses precision to rounding on
+  // the intermediate add/subtract) so upperWick/rng === HAMMER_OPP_WICK_MAX bit-exactly.
+  const upper = HAMMER_OPP_WICK_MAX;
+  const lower = 1 - upper;
+  const bars = [bar(0, upper, -lower, 0)];
+  assertEquals(hammer(bars)[0], true);
+});
+
+Deno.test("boundary: hammer rejects an opposing (upper) wick ratio an epsilon above HAMMER_OPP_WICK_MAX", () => {
+  const upper = HAMMER_OPP_WICK_MAX + EPS;
+  const lower = 1 - upper;
+  const bars = [bar(0, upper, -lower, 0)];
+  assertEquals(hammer(bars)[0], false);
+});
+
+Deno.test("boundary: shootingStar fires when the opposing (lower) wick ratio is exactly HAMMER_OPP_WICK_MAX (<=)", () => {
+  const lower = HAMMER_OPP_WICK_MAX;
+  const upper = 1 - lower;
+  const bars = [bar(0, upper, -lower, 0)];
+  assertEquals(shootingStar(bars)[0], true);
+});
+
+Deno.test("boundary: shootingStar rejects an opposing (lower) wick ratio an epsilon above HAMMER_OPP_WICK_MAX", () => {
+  const lower = HAMMER_OPP_WICK_MAX + EPS;
+  const upper = 1 - lower;
+  const bars = [bar(0, upper, -lower, 0)];
+  assertEquals(shootingStar(bars)[0], false);
+});
+
+Deno.test("boundary: bullishMarubozu fires when body/range is exactly MARUBOZU_BODY_MIN (>=)", () => {
+  // o=0, c=MARUBOZU_BODY_MIN (bullish), h=c, l=o-(1-body) -> range=1 always (see
+  // derivation in the fix-round notes), body/range === MARUBOZU_BODY_MIN exactly.
+  const body = MARUBOZU_BODY_MIN;
+  const bars = [bar(0, body, 0 - (1 - body), body)];
+  assertEquals(bullishMarubozu(bars)[0], true);
+});
+
+Deno.test("boundary: bullishMarubozu rejects a body an epsilon below MARUBOZU_BODY_MIN", () => {
+  const body = MARUBOZU_BODY_MIN - EPS;
+  const bars = [bar(0, body, 0 - (1 - body), body)];
+  assertEquals(bullishMarubozu(bars)[0], false);
+});
+
+Deno.test("boundary: bearishMarubozu fires when body/range is exactly MARUBOZU_BODY_MIN (>=)", () => {
+  // o=0, c=-MARUBOZU_BODY_MIN (bearish), h=o, l=c-(1-body) -> range=1 always.
+  const body = MARUBOZU_BODY_MIN;
+  const bars = [bar(0, 0, -body - (1 - body), -body)];
+  assertEquals(bearishMarubozu(bars)[0], true);
+});
+
+Deno.test("boundary: bearishMarubozu rejects a body an epsilon below MARUBOZU_BODY_MIN", () => {
+  const body = MARUBOZU_BODY_MIN - EPS;
+  const bars = [bar(0, 0, -body - (1 - body), -body)];
+  assertEquals(bearishMarubozu(bars)[0], false);
+});
+
+// morningStar/eveningStar middle-body boundary frames: bar0 is a big directional
+// bar establishing mid2, bar2 recovers past mid2 with comfortable margin, and the
+// star (bar1) is built around open=0 (NOT some large base like 98) specifically so
+// an epsilon-sized body difference survives: adding STAR_BODY_MAX +/- epsilon to a
+// large base (e.g. 98) rounds the epsilon away (98's ULP is ~1.4e-14, far coarser
+// than Number.EPSILON at the 0.3 magnitude), silently collapsing the two cases to
+// the same bar. Building the star at base 0 keeps body === starBody bit-exactly.
+
+Deno.test("boundary: morningStar fires when the star's body/range is exactly STAR_BODY_MAX (<=)", () => {
+  const starBody = STAR_BODY_MAX;
+  const bars = [
+    bar(20.0, 20.5, -0.5, 0.0), // bear, mid2=10
+    bar(0.0, starBody, starBody - 1, starBody), // star (base 0), top=starBody << mid2=10
+    bar(5.0, 15.0, 4.0, 12.0), // bull, close=12 > mid2=10
+  ];
+  assertEquals(morningStar(bars)[2], true);
+});
+
+Deno.test("boundary: morningStar rejects a star body/range an epsilon above STAR_BODY_MAX", () => {
+  const starBody = STAR_BODY_MAX + EPS;
+  const bars = [
+    bar(20.0, 20.5, -0.5, 0.0),
+    bar(0.0, starBody, starBody - 1, starBody),
+    bar(5.0, 15.0, 4.0, 12.0),
+  ];
+  assertEquals(morningStar(bars)[2], false);
+});
+
+Deno.test("boundary: eveningStar fires when the star's body/range is exactly STAR_BODY_MAX (<=)", () => {
+  const starBody = STAR_BODY_MAX;
+  const bars = [
+    bar(-20.0, 0.5, -20.5, 0.0), // bull, mid2=-10
+    bar(0.0, 0.0, -1, -starBody), // star (base 0), bottom=-starBody >> mid2=-10
+    bar(-5.0, -4.0, -15.0, -12.0), // bear, close=-12 < mid2=-10
+  ];
+  assertEquals(eveningStar(bars)[2], true);
+});
+
+Deno.test("boundary: eveningStar rejects a star body/range an epsilon above STAR_BODY_MAX", () => {
+  const starBody = STAR_BODY_MAX + EPS;
+  const bars = [
+    bar(-20.0, 0.5, -20.5, 0.0),
+    bar(0.0, 0.0, -1, -starBody),
+    bar(-5.0, -4.0, -15.0, -12.0),
+  ];
+  assertEquals(eveningStar(bars)[2], false);
+});
+
+// ---------------------------------------------------------------------------
+// Phase 8 -- firingRates verdicts (fix round 1, minor finding): TOO_COMMON was
+// uncovered. Hand-constructed CandleScan (no need to run real detectors) so the
+// rate is pinned exactly above FIRING_RATE_MAX.
+// ---------------------------------------------------------------------------
+
+Deno.test("firingRates: TOO_COMMON verdict when a detector's rate exceeds FIRING_RATE_MAX", () => {
+  const n = 10;
+  const allFalse = new Array<boolean>(n).fill(false);
+  const patterns = Object.fromEntries(
+    PATTERN_NAMES.map((name) => [name, [...allFalse]]),
+  ) as Record<PatternName, boolean[]>;
+  // doji fires on every bar -> rate 1.0, well above FIRING_RATE_MAX (0.25).
+  patterns.doji = new Array<boolean>(n).fill(true);
+  const scan: CandleScan = {
+    bars: n,
+    patterns,
+    context: { long: [...allFalse], short: [...allFalse] },
+    latest: null,
+  };
+  const rates = firingRates(scan);
+  assertEquals(rates.doji.count, n);
+  assertEquals(rates.doji.rate, 1.0);
+  assertEquals(rates.doji.verdict, "TOO_COMMON");
+  // sanity: an all-false pattern stays TOO_RARE, not accidentally TOO_COMMON.
+  assertEquals(rates.hammer.verdict, "TOO_RARE");
 });

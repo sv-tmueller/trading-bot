@@ -60,8 +60,22 @@ CONTEXT_DIRECTIONS: Tuple[str, ...] = (cs.BULLISH, cs.BEARISH)
 SMA_GUARD_WINDOW = 200
 #: No fixture bar may sit closer than this (relative to price) to its own rolling SMA --
 #: see the module docstring's "fixture guard band" trap. If this ever fires, move the
-#: slice/reseed; never loosen the bound.
+#: slice/reseed; never loosen the bound. This guard applies to the SPY case ONLY --
+#: it exists to keep an ULP-level rolling-mean difference from ever flipping a golden
+#: boolean on a REAL (non-deliberate) close/SMA relationship. It is deliberately not
+#: applied to CONTEXT_TIE_CASE_NAME below: an exact tie there is the point of the case
+#: (both languages evaluate `10.0 == 10.0` bit-identically, so it is immune to the ULP
+#: hazard by construction), and the case never carries an "sma" block, so the guard-band
+#: check -- which only iterates cases with an "sma" key -- naturally never sees it.
 SMA_GUARD_MIN_MARGIN = 1e-9
+
+#: Fix round 1 (tester finding 1): a deliberate exact-tie case pinning Python's
+#: `below = NOT above` context-mask semantics (candlestick.py:358-359) -- a bar with
+#: close === sma is admitted into "below", not excluded from both partitions.
+CONTEXT_TIE_CASE_NAME = "context_tie_constant_close"
+CONTEXT_TIE_WINDOW = 3
+CONTEXT_TIE_BARS = 5
+CONTEXT_TIE_CLOSE = 10.0
 
 THRESHOLDS: Dict[str, float] = {
     "DOJI_BODY_MAX": cs.DOJI_BODY_MAX,
@@ -315,12 +329,44 @@ def _build_case(name: str, df: pd.DataFrame, *, with_diagnostics: bool) -> Dict[
     return case
 
 
+def _build_context_tie_case() -> Dict[str, Any]:
+    """A deliberate exact-tie context case: `CONTEXT_TIE_BARS` bars, constant close
+    (`CONTEXT_TIE_CLOSE`), window `CONTEXT_TIE_WINDOW`. SMA is NaN for the first
+    `window - 1` bars and an EXACT tie with every close thereafter -- both languages
+    evaluate `10.0 == 10.0` bit-identically, so this is immune to the ULP hazard the
+    SMA guard band exists for (see SMA_GUARD_MIN_MARGIN's docstring); no "sma" block
+    is emitted for this case, only "context".
+
+    Pins Python's `below = NOT above` semantics (candlestick.py:358-359): a tie is
+    admitted into "below", not excluded from both partitions.
+    """
+    bar = (CONTEXT_TIE_CLOSE, CONTEXT_TIE_CLOSE, CONTEXT_TIE_CLOSE, CONTEXT_TIE_CLOSE)
+    df = _frame([bar] * CONTEXT_TIE_BARS)
+    case = _build_case(CONTEXT_TIE_CASE_NAME, df, with_diagnostics=False)
+    context: List[Dict[str, Any]] = []
+    for mode in CONTEXT_MODES:
+        for direction in CONTEXT_DIRECTIONS:
+            mask = cs.context_mask(df, direction, mode, window=CONTEXT_TIE_WINDOW)
+            admitted = [int(i) for i in np.flatnonzero(mask.to_numpy(dtype=bool))]
+            context.append(
+                {
+                    "mode": mode,
+                    "direction": direction,
+                    "window": CONTEXT_TIE_WINDOW,
+                    "admitted": admitted,
+                }
+            )
+    case["context"] = context
+    return case
+
+
 def build_shapes_fixture() -> Dict[str, Any]:
     cases = [
         _build_case(name, _frame(bars), with_diagnostics=False)
         for name, bars in _shapes_bar_lists()
     ]
     cases.append(_build_case("empty", _frame([]), with_diagnostics=False))
+    cases.append(_build_context_tie_case())
     return {
         "schema": SCHEMA,
         "source": "backtest/run_candlestick_fixture_export.py",

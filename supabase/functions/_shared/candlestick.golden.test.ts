@@ -135,11 +135,13 @@ Deno.test("golden: spy fixture -- element-wise parity for all 14 detectors", asy
 });
 
 // ---------------------------------------------------------------------------
-// Context masks (spy fixture -- the shapes fixture carries no context block)
+// Context masks -- spy fixture carries the 8 realistic-series masks (mode x
+// direction x window); the shapes fixture carries one deliberate exact-tie case
+// (fix round 1, tester finding 1) pinning Python's `below = NOT above` semantics.
 // ---------------------------------------------------------------------------
 
-Deno.test("golden: every recorded context mask matches contextMask() exactly", async () => {
-  const fixture = await loadFixture(SPY_FILE);
+async function runContextParity(fileName: string) {
+  const fixture = await loadFixture(fileName);
   for (const c of fixture.cases) {
     const bars = toBars(c.bars);
     for (const ctx of c.context ?? []) {
@@ -148,10 +150,18 @@ Deno.test("golden: every recorded context mask matches contextMask() exactly", a
       assertEquals(
         got,
         expected,
-        `${c.name}:context(mode=${ctx.mode},dir=${ctx.direction},window=${ctx.window}) mismatch`,
+        `${fileName}:${c.name}:context(mode=${ctx.mode},dir=${ctx.direction},window=${ctx.window}) mismatch`,
       );
     }
   }
+}
+
+Deno.test("golden: every recorded context mask matches contextMask() exactly (spy fixture)", async () => {
+  await runContextParity(SPY_FILE);
+});
+
+Deno.test("golden: every recorded context mask matches contextMask() exactly (shapes fixture, incl. the deliberate tie case)", async () => {
+  await runContextParity(SHAPES_FILE);
 });
 
 // ---------------------------------------------------------------------------

@@ -1655,6 +1655,107 @@
         "doji": 0,
         "inside_bar": 0
       }
+    },
+    {
+      "name": "context_tie_constant_close",
+      "bars": [
+        {
+          "o": 10.0,
+          "h": 10.0,
+          "l": 10.0,
+          "c": 10.0
+        },
+        {
+          "o": 10.0,
+          "h": 10.0,
+          "l": 10.0,
+          "c": 10.0
+        },
+        {
+          "o": 10.0,
+          "h": 10.0,
+          "l": 10.0,
+          "c": 10.0
+        },
+        {
+          "o": 10.0,
+          "h": 10.0,
+          "l": 10.0,
+          "c": 10.0
+        },
+        {
+          "o": 10.0,
+          "h": 10.0,
+          "l": 10.0,
+          "c": 10.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 0,
+        "inside_bar": 0
+      },
+      "context": [
+        {
+          "mode": "reversal",
+          "direction": "long",
+          "window": 3,
+          "admitted": [
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "mode": "reversal",
+          "direction": "short",
+          "window": 3,
+          "admitted": []
+        },
+        {
+          "mode": "continuation",
+          "direction": "long",
+          "window": 3,
+          "admitted": []
+        },
+        {
+          "mode": "continuation",
+          "direction": "short",
+          "window": 3,
+          "admitted": [
+            2,
+            3,
+            4
+          ]
+        }
+      ]
     }
   ]
 }

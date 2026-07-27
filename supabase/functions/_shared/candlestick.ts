@@ -554,10 +554,15 @@ export function contextMask(
       out[i] = false;
       continue;
     }
-    // Explicit positive-comparison split (never a negation over a possibly-NaN
-    // value) so "above" and "below" can never both be true nor both be false.
+    // `isAbove` is a positive comparison (never a negation over a possibly-NaN
+    // value): NaN is filtered out by the `Number.isNaN(s)` guard above, so once
+    // we reach here `s` is a valid number and `isBelow = !isAbove` is exactly
+    // Python's `below = NOT above` (candlestick.py:358-359) -- an exact tie
+    // (`close === s`) is admitted into "below", not excluded from both. This is
+    // NOT a partition of "above" and "below" in the strict-inequality sense;
+    // it is Python's two-valued (above / not-above) split once NaN is removed.
     const isAbove = closes[i] > s;
-    const isBelow = closes[i] < s;
+    const isBelow = !isAbove;
     if (mode === CONTEXT_REVERSAL) {
       out[i] = bullish ? isBelow : isAbove;
     } else {
