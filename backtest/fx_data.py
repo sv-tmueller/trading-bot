@@ -293,19 +293,49 @@ def check_weekend_bars(df: pd.DataFrame) -> dict:
     }
 
 
-def drop_in_progress_bar(bars_4h: pd.DataFrame) -> pd.DataFrame:
-    """Drop the final resampled 4h bar — the no-look-ahead convention
-    (SUB_PLAN #371): the last bucket in any pull may still be in progress
-    (not yet closed) relative to "now". This is the designated LOAD-TIME
-    helper for that drop, living in ``fx_data.py`` per the SUB_PLAN ("at
-    load") rather than reimplemented ad hoc downstream — but it is not
-    called automatically by anything else in this module; the caller
-    (currently ``run_fx_plumbing_check.py``, immediately after
-    ``resample_to_4h``) is responsible for invoking it. A no-op on an
-    already-empty frame."""
-    if len(bars_4h) == 0:
-        return bars_4h
-    return bars_4h.iloc[:-1]
+def drop_in_progress_bar(bars: pd.DataFrame) -> pd.DataFrame:
+    """Drop the final resampled bar — the no-look-ahead convention (SUB_PLAN
+    #371): the last bucket in any pull may still be in progress (not yet
+    closed) relative to "now". This is the designated LOAD-TIME helper for
+    that drop, living in ``fx_data.py`` per the SUB_PLAN ("at load") rather
+    than reimplemented ad hoc downstream — but it is not called
+    automatically by anything else in this module; the caller (e.g.
+    ``run_fx_plumbing_check.py``, immediately after ``resample_to_4h``, or
+    the H1 (#468) load path immediately after ``drop_saturday_bars``) is
+    responsible for invoking it. Cadence-agnostic: the body is a plain
+    ``iloc[:-1]`` and works identically on 4h or H1 frames — do not assume
+    "4h" from the name. A no-op on an already-empty frame."""
+    if len(bars) == 0:
+        return bars
+    return bars.iloc[:-1]
+
+
+def to_ohlc_frame(df: pd.DataFrame, *, side: str = "Mid") -> pd.DataFrame:
+    """Adapter: ``<side>Open/High/Low/Close`` -> canonical ``Open/High/Low/
+    Close`` (#468). Returns ONLY the four canonical columns, index
+    preserved verbatim.
+
+    Exists here, not as a widened ``intraday_data._COLUMN_ALIASES`` entry,
+    because that module is shared with the ORB/candlestick studies and a
+    ``mid*`` alias there would be a silent behaviour change for them —
+    ``fx_data.py`` owns the FXCM schema, so the adapter lives with it.
+    Default ``side="Mid"`` matches ``fx_signals.py``'s convention (signals
+    are computed on mid closes throughout); ``side="Bid"``/``"Ask"`` are
+    also valid for callers that need a one-sided view.
+
+    Raises ``ValueError`` if any of the four ``<side><Field>`` columns is
+    missing.
+    """
+    fields = ("Open", "High", "Low", "Close")
+    src_cols = [f"{side}{field}" for field in fields]
+    missing = [c for c in src_cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"missing column(s) {missing} for side={side!r}; got columns {list(df.columns)}"
+        )
+    out = df[src_cols].copy()
+    out.columns = list(fields)
+    return out
 
 
 def drop_saturday_bars(df: pd.DataFrame) -> tuple:
