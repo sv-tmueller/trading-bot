@@ -58,6 +58,25 @@ writing. This ADR will not be edited after merge (immutability rule, `docs/decis
 if the liquidation later fails or partially fills, that is tracked as new incident work, not a
 retroactive edit here.
 
+The two curls handed to the operator (recorded here verbatim so the record survives the issue
+thread — run in this order, pause first):
+
+```bash
+# 1. Pause (any time; DB-only, no broker call). Expect HTTP 200 {"result":"paused"}
+curl -i -X POST "https://qdaxxsuicyiscdvsdowc.supabase.co/functions/v1/panic?action=pause" \
+  -H "x-panic-token: $PANIC_TOKEN"
+
+# 2. Flatten — ONLY during US regular trading hours (13:30-20:00 UTC in EDT, Mon-Fri).
+#    Also sets bot_config.paused=true on success (pauseOnLiquidate defaults true).
+#    Expect HTTP 200 {"result":"liquidated 7511 UPRO @ <price>; trading paused"}
+curl -i -X POST "https://qdaxxsuicyiscdvsdowc.supabase.co/functions/v1/panic?action=liquidate" \
+  -H "x-panic-token: $PANIC_TOKEN"
+```
+
+**The 200-vs-500 contract (verbatim from `supabase/functions/panic/handler.ts`): HTTP 200 = success,
+HTTP 500 = the action failed.** The JSON body carries the raw `result` string and never an `error:`
+prefix — the status code is the only success signal. A 500 must never be reported as done.
+
 ## Consequences
 
 ### Positive
@@ -66,7 +85,11 @@ retroactive edit here.
   direction, without waiting on a defect to justify the change.
 - `panic`, `kill-switch`, and `status` keep operating unchanged, so the account stays monitored and
   protected (an open position would still be defended by the kill-switch; a flat position needs no
-  defense).
+  defense). More fully: all `pg_cron` jobs stay scheduled unchanged; `kill-switch` keeps running
+  every 5 minutes and, once the position is flat, logs `success:no_position` with no
+  `state_desync` alert storm (`kill-switch/logic.ts:103` returns before the desync branch is
+  reached); the `heartbeat`, `soak-digest`, and `backup-db` GitHub Actions workflows keep running;
+  and Discord notifications stay wired.
 - The decision log stays internally consistent: the 2026-07-06 ADR that decided to *keep* this bot
   is marked superseded rather than left `accepted` alongside a contradicting decision.
 - Clears the account for the #466 successor to soak without two decision rules running in parallel
