@@ -37,12 +37,15 @@ Cost model (D4): two co-primary presets, ``commission_bps`` = round-trip/2, ``sl
 "clears" only at BOTH presets.
 
 Scoring (D3): per-cell primary statistic is the MEDIAN of the per-window (calendar-year
-12-month windows, 2013-2025 primary set, n_w=13 when the frame spans it) after-tax Calmar
-under the German ``annual_netting`` tax mode — the cell clears only if that median exceeds
-``MES_SURVEY_BAR`` AND the WORST scored window stays positive. Secondary, reported but never
-verdict-bearing: full-window ``calmar_us``/``calmar_de`` (deduct-at-exit, cross-family
-comparability with turtle/candlestick) and an all-available-window (1994-> whenever the
-frame reaches back that far) median/worst as an era-sensitivity read.
+12-month windows, 2013-2025 primary set capped at the frozen ``PRIMARY_WINDOW_END``
+(2025-12-31) so a trailing partial year is never scored, n_w=13 when the frame spans it)
+after-tax Calmar under the German ``annual_netting`` tax mode — the cell clears only if that
+median exceeds ``MES_SURVEY_BAR`` AND the WORST scored window stays positive. Secondary,
+reported but never verdict-bearing: full-window ``calmar_us``/``calmar_de`` (deduct-at-exit,
+cross-family comparability with turtle/candlestick) and an all-available-window (1994->
+whenever the frame reaches back that far, uncapped by ``PRIMARY_WINDOW_END``) median/worst as
+an era-sensitivity read. Both secondary reads and the primary statistic are also computed for
+the ``always_in`` benchmark and printed alongside every cell (stopping-rule condition 3).
 
 Run: ``python3 -m backtest.run_mes_swing_study [--data FILE] [--vehicle SPY] [--end ...]``
 Exit codes: ``0`` the grid ran; ``2`` data unavailable or underpowered (no table printed).

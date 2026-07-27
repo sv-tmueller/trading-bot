@@ -107,9 +107,13 @@ unchanged.
 
 The 4h EUR/USD `CLASS_KILL` (`ma_cross`/`momentum_roc`/`mean_reversion_rsi_bollinger`,
 `docs/research/2026-07-15-forex-4h-survey-verdict.md`) covered these SAME three families **at
-4h on EURUSD with fixed-bp exits**. That doc's own §3 names "lookbacks chosen for a 4h forex
-bar" as the unswept region and requires per-cell justification for any re-parameterization.
-Three concrete differences separate every arm here from its killed forex sibling: **daily
+4h on EURUSD with fixed-bp exits**. The 2026-07-21 leveraged-contracts pre-registration's own
+§3 ("Genuinely untested space") is the anchor for the requirement this table satisfies: it
+names re-parameterizing a killed shape into unswept parameter regions as a design-time
+judgment, not a settled fact, and requires any such cell to be "justified against this
+registry explicitly in the survey batch's grid-freezing pre-registration" — exactly the
+per-arm table below. Three concrete differences separate every arm here from its killed forex
+sibling: **daily
 cadence** (roughly 6x the forex study's horizon), **equity-index vehicle** (SPY, not a
 currency pair), and **ATR-bracket exits** (not the forex study's symmetric fixed-bp TP/SL
 grid).
@@ -120,15 +124,18 @@ grid).
 | T2 (SMA20/100) | `ma_cross` (4h, same set) | cadence, vehicle, exit; disjoint SMA pair | Strong |
 | M1 (ROC 63) | `momentum_roc` (4h, ROC 12/24/48) | cadence, vehicle, exit; disjoint lookback | Strong |
 | M2 (ROC 126) | `momentum_roc` (4h, same set) | cadence, vehicle, exit; disjoint lookback | Strong |
-| V1 (RSI-2, 10/90) | `mean_reversion_rsi_bollinger` (4h, RSI-2 10/90 among others) | cadence, vehicle, exit — **same indicator parameters** | Moderate |
+| **V1 (RSI-2, 10/90)** | `mean_reversion_rsi_bollinger` (4h, RSI-2 10/90 among others) | cadence, vehicle, exit — **same indicator parameters** | **Weakest — stated plainly, not buried** |
 | **V2 (RSI-14, 30/70)** | `mean_reversion_rsi_bollinger` (4h, RSI-14 30/70) | cadence, vehicle, exit — **identical indicator parameters, nothing else new** | **Weakest — stated plainly, not buried** |
 
-**V2 (RSI-14 30/70) is the weakest-novelty pair in this grid.** Its only difference from the
-already-`CLASS_KILL`ed forex cell is cadence/vehicle/exit — exactly the axis the frozen forex
-doc itself flagged as unswept, and exactly the axis a genuine re-parameterization is allowed
-to change, but it is the arm with the least room to surprise. It is kept in the grid (dropping
-it would shrink N without changing the stopping rule) but flagged here so a reviewer weighs a
-V2 survivor accordingly.
+**V1 (RSI-2 10/90) and V2 (RSI-14 30/70) are BOTH weakest-novelty pairs in this grid** —
+graded identically on purpose, not asymmetrically: both share their killed forex sibling's
+indicator parameters exactly (V1's 2/10/90 and V2's 14/30/70 are both drawn unchanged from
+`mean_reversion_rsi_bollinger`'s own frozen set), and both differ from it only on
+cadence/vehicle/exit — exactly the axis the leveraged-contracts pre-registration's §3 flags
+as unswept, and exactly the axis a genuine re-parameterization is allowed to change, but the
+axis with the least room to surprise. Both arms are kept in the grid (dropping either would
+shrink N without changing the stopping rule) but flagged here so a reviewer weighs a V1 or V2
+survivor accordingly.
 
 **Nothing here collides with a ledger-`CLOSED` (family, cadence, vehicle).**
 `donchian_breakout/daily/SPY`, `candlestick_pattern/daily/SPY`,
@@ -221,9 +228,10 @@ drift-proof without importing a closed programme's module as a semantic dependen
 
 **Decision D3 — per-cell primary statistic: median-window after-tax Calmar under German
 `annual_netting` (`tax.apply_annual_netting_tax`), computed on the bar's own window set
-(calendar-year 12-month windows, 2013-2025, n_w=13 when the frame spans it, warm-up never
-scored), and the cell clears only if median > 1.3085475049604838 AND worst scored window > 0
-— at BOTH co-primary cost presets (§4).**
+(calendar-year 12-month windows, 2013-2025 — frozen `PRIMARY_WINDOW_END = 2025-12-31` caps
+the primary set to FULL windows only, so a trailing partial year is never scored; n_w=13
+when the frame spans it, warm-up never scored), and the cell clears only if median >
+1.3085475049604838 AND worst scored window > 0 — at BOTH co-primary cost presets (§4).**
 
 This deliberately deviates from the candlestick precedent (full-window `calmar_us`, US
 deduct-at-exit). The reviewer should check this consciously:
@@ -245,11 +253,20 @@ deduct-at-exit). The reviewer should check this consciously:
 
 **Secondary columns, reported but never verdict-bearing:** full-window `calmar_us`/`calmar_de`
 (deduct-at-exit — cross-family comparability with the turtle/candlestick studies) and an
-all-available-window (from the frame's own start) median/worst as an era-sensitivity read.
-Window conventions: NaN/no-trade windows are dropped from scoring (`n_windows`/`n_positive`
-reported, the same convention `run_candidate_survey`/turtle already use — rejected
-alternative "score 0.0" for consistency with those cited helpers); annualization constant
-pinned at 252 (inherited from `run_candidate_survey._curve_metrics`).
+all-available-window (from the frame's own start, uncapped by `PRIMARY_WINDOW_END`) median/
+worst as an era-sensitivity read — both printed for every cell AND for the `always_in`
+benchmark row (§6 stopping-rule condition 3 needs the benchmark on the same basis as every
+cell). Window conventions: NaN/no-trade windows are dropped from scoring (`n_windows`/
+`n_positive` reported, the same convention `run_candidate_survey`/turtle already use —
+rejected alternative "score 0.0" for consistency with those cited helpers).
+
+**Day-count convention, pinned:** all Calmar figures (per-window and full-window) inherit
+`run_candidate_survey._curve_metrics` unchanged — CAGR annualized on the calendar-day span
+(days/365.25); no trading-day constant enters any verdict-bearing statistic. The pooled #398
+gate consumes non-annualized per-day Sharpes (its units contract); the only 252 in the
+pipeline is `overfitting_gate.py`'s reported-only `sr_hat_annualized` (sqrt(252) display
+figure, never verdict-bearing). This pins the data-feasibility note §3's
+annualization-convention requirement.
 
 ---
 
@@ -367,7 +384,7 @@ paper/live step regardless of verdict.
 
 | Outcome | Authorizes |
 |---|---|
-| 0/24 clear at either preset | The class does not clear the bar. Record `mes_swing/daily/SPY` as `NO_GO`. |
+| No cell clears at both co-primary presets (including cells clearing at only one) | The class does not clear the bar. Record `mes_swing/daily/SPY` as `NO_GO`. |
 | 1+ clear at both presets, pooled gate fails | **Nothing.** The textbook overfit signature — the same read that closed the Turtle and the candlestick programme. |
 | 1+ clear at both presets, gate passes, cell sits on/below its random twin or the always-in benchmark | **Nothing** — capturing session volatility/beta, not a timing edge (the tell that closed Turtle #430). |
 | 1+ clear at both presets, gate passes, beats twin AND always-in | A **design spec** and a fresh ADR — not a deployment (§0). Also does not by itself authorize the vehicle-robustness round; §6's three conditions govern that separately. |
