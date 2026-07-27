@@ -8,7 +8,8 @@ research venv and lookahead-prone by construction: they scan the whole array).
 This module reverses a recorded ``skip`` verdict against a specific, cited object:
 ``docs/research/swing-trading/roadmap.md:585`` and ``strategies.md:415`` record Elliott
 Wave as ``skip`` because wave-counting is "non-deterministic by construction" — but that
-verdict was against an **LLM-authored** count. ``strategies.md:378`` itself asks for the
+verdict was against an **LLM-authored** count. ``strategies.md:378`` (on §15 Voigt-
+Markttechnik, a related mechanizable pattern, not Elliott Wave itself) itself asks for the
 deterministic envelope this module builds ("codify pivot detection deterministically …
 treat the LLM only as a confirmation layer, not the count author"). This module builds
 that envelope with **no LLM at all**: a causal ZigZag pivot state machine (§1), a wave
@@ -329,10 +330,28 @@ def label_waves(df: pd.DataFrame, theta: float = DEFAULT_THETA) -> pd.DataFrame:
     property, pinned by a dedicated test) -- a stronger, structure-level version of the
     pivot-level ``confirmed_idx > pivot_idx`` guarantee.
 
-    ``signal_ts`` (the emission time) is the **confirmed_ts of the structure's last
-    pivot** -- never the pivot's own timestamp. That is the bar at which the structure's
-    completion genuinely becomes knowable, and it is the no-lookahead contract at the
-    structure level.
+    ``signal_ts`` (the emission time) is **decision-knowable stamping**: the timestamp
+    at which the emitted verdict was actually knowable, given every hypothesis this
+    matcher inspected to reach it -- not merely the emitted structure's own last pivot.
+    This matters for a **fall-through** structure specifically:
+
+      - **Impulse accepted** -- the verdict is a pure function of the same 6 pivots
+        whose confirmation was required to reach it; ``signal_ts = confirmed_ts[i+5]``
+        already reflects the latest of those.
+      - **Impulse rejected (pattern mismatch, a hard rule R1-R3, or a soft Fibonacci band
+        F1-F4) then a zigzag matches** -- rejecting the impulse required inspecting
+        ``kinds[i:i+6]`` / the 6-pivot price tuple, i.e. pivot ``i+5`` was ALREADY
+        confirmed by the time that rejection became knowable, even though the emitted
+        zigzag itself only spans pivots ``i..i+3``. Stamping ``confirmed_ts[i+3]`` alone
+        would **backdate** the label to before the higher-priority hypothesis was
+        actually resolved -- exactly the round-1 regression fixed here. The correct
+        stamp is ``max(confirmed_ts[i+3], confirmed_ts[i+5])`` (the pivot indices are
+        monotonically increasing in confirmation time, so this is always
+        ``confirmed_ts[i+5]`` in practice, but the ``max`` is kept explicit as the
+        general rule: "own last pivot" vs "the pivot that resolved the higher-priority
+        hypothesis").
+      - **Nothing matches at position i** -- no label is emitted, so no stamping
+        question arises; ``i`` simply advances by 1.
 
     Explicit v1 non-goals (see module docstring): no nested/fractal counting, no
     diagonals, no flats/triangles, no alternation guideline, no multi-timeframe
@@ -380,19 +399,28 @@ def label_waves(df: pd.DataFrame, theta: float = DEFAULT_THETA) -> pd.DataFrame:
         # Priority 2: zigzag correction (4-pivot window) -- the impulse window's own
         # first 4 pivots are already known NOT to complete an impulse at this point
         # (checked immediately above, over the same immutable 6 pivots), so this
-        # decision is equally permanent.
+        # decision is equally permanent. IMPORTANT: reaching this fall-through branch
+        # at all required inspecting ``kinds[i:i+6]`` above (a 6-element window, whether
+        # the impulse pattern mismatched, or a hard rule (R1-R3), or a soft Fibonacci
+        # band (F1-F4) rejected it) -- i.e. pivot i+5 was ALREADY confirmed by the time
+        # this rejection became knowable. A zigzag emitted here is therefore only
+        # genuinely knowable at ``max(confirmed_ts[i+3], confirmed_ts[i+5])`` -- never at
+        # its own last pivot's confirmed_ts alone, which would backdate the label to
+        # before the higher-priority impulse hypothesis was actually resolved (round-1
+        # regression: ``test_label_waves_r2_fallthrough_zigzag_signal_ts_backdated_regression``).
         if not matched:
             window_kinds4 = tuple(kinds[i:i + 4])
             if window_kinds4 in (_BULLISH_ZIGZAG, _BEARISH_ZIGZAG):
                 bullish = window_kinds4 == _BULLISH_ZIGZAG
                 ok, ratios = _check_zigzag(tuple(prices[i:i + 4]), bullish)
                 if ok:
+                    signal_ts = max(confirmed_ts_arr[i + 3], confirmed_ts_arr[i + 5])
                     rows.append({
                         "kind": "zigzag",
                         "direction": "up" if bullish else "down",
                         "start_idx": int(pivot_idx_arr[i]),
                         "end_idx": int(pivot_idx_arr[i + 3]),
-                        "signal_ts": confirmed_ts_arr[i + 3],
+                        "signal_ts": signal_ts,
                         "w2_w1": np.nan, "w3_w1": np.nan, "w4_w3": np.nan, "w5_w1": np.nan,
                         "wb_wa": ratios["wb_wa"], "wc_wa": ratios["wc_wa"],
                     })

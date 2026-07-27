@@ -34,7 +34,10 @@ def _path(knots: list) -> pd.DataFrame:
     ys = [k[1] for k in knots]
     n = xs[-1] + 1
     close = np.interp(np.arange(n), xs, ys)
-    idx = pd.date_range("2020-01-01", periods=n, freq="h")
+    # tz-aware UTC index, matching the real FXCM H1 convention (fx_data.py) and the
+    # dtype ``_empty_labels()``/``_empty_pivots()`` declare for a zero-row result -- a
+    # tz-naive index would spuriously disagree with those on an empty truncation.
+    idx = pd.date_range("2020-01-01", periods=n, freq="h", tz="UTC")
     open_ = np.concatenate([[close[0]], close[:-1]])
     high = np.maximum(open_, close)
     low = np.minimum(open_, close)
@@ -418,13 +421,55 @@ def _random_walk_frame(n: int = 400, seed: int = 3) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     steps = rng.normal(0, 0.004, n)
     close = 100.0 * np.cumprod(1.0 + steps)
-    idx = pd.date_range("2020-01-01", periods=n, freq="h")
+    # tz-aware UTC index, matching the real FXCM H1 convention (fx_data.py) and the
+    # dtype ``_empty_labels()``/``_empty_pivots()`` declare for a zero-row result --
+    # a tz-naive index would spuriously disagree with those on an empty truncation.
+    idx = pd.date_range("2020-01-01", periods=n, freq="h", tz="UTC")
     open_ = np.concatenate([[close[0]], close[:-1]])
     return pd.DataFrame(
         {"Open": open_, "High": np.maximum(open_, close), "Low": np.minimum(open_, close),
          "Close": close},
         index=idx,
     )
+
+
+def test_label_waves_r2_fallthrough_zigzag_signal_ts_backdated_regression():
+    """Regression for the round-1 tester MUST-FIX: a structure that only resolves after
+    a higher-priority impulse hypothesis fails must not claim a signal_ts earlier than
+    the bar at which that failure was actually knowable.
+
+    Built from this PR's own R2-rejection fixture (W3 shortest -> impulse rejected ->
+    falls through to a zigzag over the SAME starting pivot's first four legs). Rejecting
+    the impulse requires pivots P0..P5 -- i.e. the zigzag's own last pivot (P3) PLUS the
+    two further pivots (P4, P5) that resolve the higher-priority impulse hypothesis. A
+    fall-through label's signal_ts must therefore be
+    ``max(confirmed_ts of its own last pivot, confirmed_ts of the pivot that resolved the
+    higher-priority hypothesis)`` -- here, confirmed_ts of P5, not of P3.
+
+    Truncating the series right after P3's own confirmation (the backdated claim) must
+    NOT yet contain this label -- this is the no-lookahead truncation-invariance property
+    applied directly to this fixture, and it fails on the pre-fix code (truncated=0 rows,
+    but the buggy signal_ts=confirmed_ts[P3] <= cutoff, so the naive "filtered full" set
+    wrongly contains 1 row)."""
+    prices = [100.0, 110.0, 103.82, 111.82, 110.32, 122.32]
+    df = _confirmed_path(prices)
+    pivots = ew.find_pivots(df, theta=_THETA)
+    full = ew.label_waves(df, theta=_THETA)
+    assert len(full) == 1 and full.iloc[0]["kind"] == "zigzag"  # sanity: still the R2 fixture
+
+    # Cut right after the zigzag's OWN last pivot (P3, pivot list index 3) confirms --
+    # the backdated claim under the pre-fix code.
+    p3_confirmed_idx = int(pivots.iloc[3]["confirmed_idx"])
+    cut = p3_confirmed_idx + 1
+    truncated = ew.label_waves(df.iloc[:cut], theta=_THETA)
+    cutoff_ts = df.index[cut - 1]
+    expected = full[full["signal_ts"] <= cutoff_ts].reset_index(drop=True)
+    pd.testing.assert_frame_equal(
+        truncated.reset_index(drop=True), expected, obj=f"truncated at P3 confirmation (cut={cut})",
+    )
+    # And the label's true signal_ts must be knowable no earlier than P5's confirmation.
+    p5_confirmed_ts = pivots.iloc[5]["confirmed_ts"]
+    assert full.iloc[0]["signal_ts"] >= p5_confirmed_ts
 
 
 def test_label_waves_no_lookahead_truncation_invariance():
@@ -438,6 +483,37 @@ def test_label_waves_no_lookahead_truncation_invariance():
         expected = full[full["signal_ts"] <= cutoff_ts].reset_index(drop=True)
         pd.testing.assert_frame_equal(
             truncated.reset_index(drop=True), expected, obj=f"truncated at {cut}",
+        )
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_label_waves_no_lookahead_truncation_invariance_every_cut_point(seed):
+    """Strengthened property test (round-1 tester finding): the shipped version only
+    checked 3 arbitrary cut points on one seed and missed the backdated-fall-through bug
+    (round-1 repro: seed=1, k=38). Sweep EVERY cut point over the full frame, on multiple
+    seeds, so a fall-through backdating regression can't hide between sparse cut points."""
+    df = _random_walk_frame(n=300, seed=seed)
+    full = ew.label_waves(df, theta=0.003)
+    for cut in range(2, len(df) + 1):
+        truncated = ew.label_waves(df.iloc[:cut], theta=0.003)
+        cutoff_ts = df.index[cut - 1]
+        expected = full[full["signal_ts"] <= cutoff_ts].reset_index(drop=True)
+        pd.testing.assert_frame_equal(
+            truncated.reset_index(drop=True), expected, obj=f"seed={seed} cut={cut}",
+        )
+
+
+@pytest.mark.slow
+def test_label_waves_no_lookahead_truncation_invariance_every_cut_point_2000_bars():
+    """Same sweep as above, at 2,000 bars -- slow, run separately (see round-1 finding)."""
+    df = _random_walk_frame(n=2000, seed=7)
+    full = ew.label_waves(df, theta=0.003)
+    for cut in range(2, len(df) + 1):
+        truncated = ew.label_waves(df.iloc[:cut], theta=0.003)
+        cutoff_ts = df.index[cut - 1]
+        expected = full[full["signal_ts"] <= cutoff_ts].reset_index(drop=True)
+        pd.testing.assert_frame_equal(
+            truncated.reset_index(drop=True), expected, obj=f"cut={cut}",
         )
 
 
