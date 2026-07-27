@@ -107,28 +107,29 @@ def test_is_tested_false_for_a_data_blocked_cell():
     assert not tc.is_tested("opening_range_breakout", "5m", "SPY")
 
 
-def test_is_tested_false_for_the_mes_swing_pending_cell():
-    """#457 PR A: the frozen-but-unrun mes_swing grid is not evidence either."""
-    assert not tc.is_tested("mes_swing", "daily", "SPY")
+def test_is_tested_true_for_the_mes_swing_no_go_cell():
+    """#457 PR B: the SPY read closed the frozen mes_swing grid with a real NO_GO verdict."""
+    assert tc.is_tested("mes_swing", "daily", "SPY")
 
 
-def test_mes_swing_pending_row_is_on_the_ledger_with_24_cells():
-    """#457 PR A: the freeze commits a PENDING row before any SPY number exists."""
+def test_mes_swing_row_is_on_the_ledger_as_no_go_with_24_cells():
+    """#457 PR B: the SPY read flips the PENDING freeze row to a real verdict."""
     rows = tc.find(family="mes_swing", cadence="daily", vehicle="SPY")
     assert len(rows) == 1
     row = rows[0]
-    assert row.verdict == tc.PENDING
-    assert row.power == "NONE"
+    assert row.verdict == tc.NO_GO
+    assert row.power == "PROMOTABLE"
     assert row.n_cells == 24
     assert row.exit_style == "bracket_2ATR_RxATR"
 
 
-def test_check_novel_reports_mes_swing_as_open_once_the_pending_row_lands():
+def test_check_novel_reports_mes_swing_as_closed_once_the_no_go_row_lands():
     """A fresh family string is trivially NOVEL before its own row lands (#448-style D-C
-    disclosure) — but once frozen, it must show up as OPEN, not silently invisible."""
+    disclosure) — but once the SPY read closes it with NO_GO, it must show up as CLOSED, not
+    OPEN (that would let a settled question look re-testable)."""
     res = tc.check_novel("mes_swing", "daily", "SPY")
     assert res["novel"] is False
-    assert res["open"] and not res["closed"] and not res["weak"]
+    assert res["closed"] and not res["open"] and not res["weak"]
 
 
 def test_is_tested_false_for_a_directional_only_cell():
@@ -197,6 +198,9 @@ def test_cumulative_trials_excludes_grids_that_never_ran():
     # #448 PR B: the v3 time-stop grid ran (0/84 clear, NO_GO) — the 84 SPY trials now
     # count against future multiplicity in this family.
     assert tc.cumulative_trials("candlestick_pattern_timestop") == 84
+    # #457 PR B: the mes_swing grid ran (0/24 clear both presets, NO_GO) — the 24 SPY
+    # trials now count against future multiplicity in this family.
+    assert tc.cumulative_trials("mes_swing") == 24
 
 
 def test_cumulative_trials_sums_multiple_run_records():
