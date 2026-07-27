@@ -64,6 +64,30 @@ def test_gate_introduces_no_new_free_parameter():
     assert gate.RANDOM_SEED is study.RANDOM_SEED
 
 
+def test_cumulative_n_is_imported_from_the_study_module():
+    import backtest.run_mes_swing_study as study
+    assert gate.CUMULATIVE_N is study.CUMULATIVE_N
+
+
+# ---------------------------------------------------------------------------
+# The printed "cumulative N=" line reports CUMULATIVE_N, not N_CELLS (round-1 review
+# finding 9) -- equal today by D2, but the round-2 inheritance argument rests on the
+# distinction, so the report must read the right name.
+# ---------------------------------------------------------------------------
+
+def test_report_prints_cumulative_n_not_n_cells(monkeypatch, capsys):
+    monkeypatch.setattr(gate, "CUMULATIVE_N", 999)
+    power = gate.idata.describe_power(_synth_daily(3600, seed=1))
+    result = {
+        "best_cell": ("T1L", 2.0), "n_trials": 24, "n_common_days": 100,
+        "trial_sharpes": {}, "gate": None, "error": "boom",
+    }
+    gate._print_report(power, "test", result)
+    out = capsys.readouterr().out
+    assert "cumulative N=999" in out
+    assert "cumulative N=24" not in out
+
+
 # ---------------------------------------------------------------------------
 # (b) pure-noise frame must not pass the gate
 # ---------------------------------------------------------------------------

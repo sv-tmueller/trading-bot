@@ -44,6 +44,7 @@ from backtest.overfitting_gate import DSR_THRESHOLD, PBO_THRESHOLD, evaluate_gat
 from backtest.run_mes_swing_study import (
     ARMS,
     COST_PRESETS,
+    CUMULATIVE_N,
     N_CELLS,
     R_GRID,
     RANDOM_SEED,
@@ -128,7 +129,7 @@ def evaluate_mes_gate(cells: "dict[CellKey, dict]", spy_daily_eq: pd.Series) -> 
 
 
 def _print_report(power: "idata.PowerReport", source: str, result: dict) -> None:
-    print(f"Pooled #398 overfitting gate — mes_swing family, cumulative N={N_CELLS}")
+    print(f"Pooled #398 overfitting gate — mes_swing family, cumulative N={CUMULATIVE_N}")
     print(f"source: {source}")
     print(f"power: {power.summary()}")
     print(f"n_trials: {result['n_trials']}")
