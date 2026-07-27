@@ -20,7 +20,7 @@ This project uses the [`superpowers`](https://github.com/obra/superpowers) plugi
 | Brainstorming a change (every change — HARD-GATE) | `superpowers:brainstorming` | `/tm-advisor` (main session) |
 | Writing an implementation plan | `superpowers:writing-plans` | `/tm-advisor`. Plans live in `docs/plans/<date>-<slug>-plan.md`. |
 | Executing a plan task-by-task | `superpowers:subagent-driven-development` | `/tm-kickoff` pipeline (architect → developer → tester → reviewer). |
-| Implementing a single task | _(developer prompt)_ | `developer` subagent ([`.claude/agents/developer.md`](.claude/agents/developer.md)) |
+| Implementing a single task | _(developer prompt)_ | `developer` subagent (see [Team](#team)) |
 | Test-driven discipline | `superpowers:test-driven-development` (see also `testing-anti-patterns.md` inside that skill's directory — sibling reference, not a standalone skill) | developer |
 | Root-cause-first debugging | `superpowers:systematic-debugging` | qa (failed-test triage); developer (general debugging) |
 | Verifying claims before completion | `superpowers:verification-before-completion` | tester + reviewer / architect |

@@ -74,6 +74,10 @@ If a candidate already exists in the codebase, the roadmap does not re-propose i
 
 The verdicts are non-negotiable consequences of the invariant. They are not subjective. If a strategy or candidate cannot be cleanly tagged, the bundle author must dig deeper until it can.
 
+## Dated research memos
+
+Not every research artefact is a full bundle. Dated `YYYY-MM-DD-<slug>.md` memos sit alongside the bundles in this directory for narrower reads (e.g. [`2026-07-26-candlestick-timestop-preregistration.md`](2026-07-26-candlestick-timestop-preregistration.md)). Pre-registered studies use the two-PR freeze/results discipline, with the freeze merged strictly before any result: PR B of a freeze/results pair adds a dated addendum under the freeze banner.
+
 ## Producing a bundle
 
 Use the `research-bundle` skill: `/research-bundle <topic>` (and optionally `<sources=en|de|en+de>`, `<repos=N>`). The skill orchestrates four parallel research agents (keywords, GitHub survey, EN strategies, DE strategies), a merge agent (consolidated top-15), and a roadmap agent (synthesis against the live codebase), then opens a draft PR.

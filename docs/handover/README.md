@@ -51,7 +51,7 @@ Bullet list of GitHub issues this session engaged with, including ones that were
 
 - **`#N` — <title>** — labels (especially `status:*` and `priority:*`).
 - **What we learned** — one line. Includes ruled-out approaches.
-- **Next move** — pick up, hand to another role (Lead / Engineer / QA / Analyst / Docs), or close as won't-fix.
+- **Next move** — pick up, route through the current operating model (`/tm-advisor` / `/tm-kickoff`, or a direct QA / Docs ask, per the [Team](../../CLAUDE.md#team) section of `CLAUDE.md`), or close as won't-fix.
 
 ### 4. Decisions made this session
 
@@ -75,7 +75,7 @@ Things requiring user input or further research before progress can continue. Fo
 
 Top 5–10 files the next session should load to be useful in this area, in priority order. Each entry:
 
-- `path/to/file.py:line` — one-line reason.
+- `path/to/file.ts:line` — one-line reason.
 
 Bias toward the files this session actually edited or relied on. Do not list every file in the repo.
 
@@ -107,7 +107,7 @@ Order them by priority — the first prompt is the one the user should paste fir
 
 - Path: `docs/handover/YYYY-MM-DD-<slug>.md`.
 - Date: today's UTC date. If `currentDate` is provided in session context, use that.
-- Slug: kebab-case, ≤30 chars, captures the dominant topic of the session (e.g. `mvp2-migration-execution`, `candlestick-search-egress-blocked`, `contracts-survey-prep`).
+- Slug: kebab-case, concise — a few words capturing the dominant topic of the session (e.g. `mvp2-migration-execution`, `candlestick-search-egress-blocked`, `contracts-survey-prep`).
 - Multiple handovers per day are allowed if the slug is more specific. If two handovers would collide, append a session number to the slug (e.g. `bugfix-session-2`).
 
 ## Producing a handover
@@ -118,4 +118,4 @@ Skill location: [`.claude/skills/handover/SKILL.md`](../../.claude/skills/handov
 
 ## Existing handovers
 
-_None yet — this contract goes live with the skill that produced it._
+The dated `YYYY-MM-DD-<slug>.md` files in this directory are the existing handovers, newest by date prefix — see [`2026-07-25-contracts-survey-prep.md`](2026-07-25-contracts-survey-prep.md) for a format-current reference example.
