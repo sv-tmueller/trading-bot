@@ -1,7 +1,7 @@
 # Keep the 200-DMA regime signal; hold the 3x UPRO bot as an absolute-return bet
 
 **Date:** 2026-07-06
-**Status:** superseded by 2026-07-27-deprecate-upro-regime-bot.md
+**Status:** superseded by 2026-07-27-deprecate-upro-regime-bot.md (bot deprecation) and 2026-07-27-hourly-candlestick-signal.md (signal replacement)
 
 ---
 
