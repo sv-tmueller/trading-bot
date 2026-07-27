@@ -234,7 +234,12 @@ def _spy_like_frame(n: int = SPY_FIXTURE_BARS, seed: int = SPY_FIXTURE_SEED) -> 
         c = float(close[i])
         hi = max(o, c) * (1 + abs(rng.normal(0, 0.004)))
         lo = min(o, c) * (1 - abs(rng.normal(0, 0.004)))
-        bars.append((float(o), float(hi), float(lo), float(c)))
+        # Quantize to cents: libm/SIMD `exp` differs by 1 ULP between platforms
+        # (macOS arm64 vs Linux x86_64), which otherwise leaks into the committed
+        # bytes and breaks byte-identical regeneration on CI. A 1-ULP wobble
+        # (~1e-14 at price ~100) cannot move a value across a cent boundary, and
+        # rounding is monotone so h >= max(o, c) and l <= min(o, c) still hold.
+        bars.append((round(o, 2), round(float(hi), 2), round(float(lo), 2), round(c, 2)))
     return _frame(bars)
 
 
