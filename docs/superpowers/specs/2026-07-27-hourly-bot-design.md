@@ -147,11 +147,22 @@ code (`supabase/migrations/0002_schedule.sql:40-54` is the pattern; the gate is
 
 - Cron: `hourly-check` job, `pg_cron` expression covering `13-21 UTC, Mon-Fri` (same window
   as the kill-switch's `*/5 13-21 * * 1-5`, but firing once per hour, not every 5 minutes).
-- **Minute pin: not divisible by 5**, so the run never lands on the same tick as the
-  kill-switch's `*/5` grid — exactly why `daily-check` sits at `:37`
-  (`supabase/migrations/0006_daily_check_open_schedule.sql:1-8`, header comment). Batch 2
-  picks a specific minute (e.g. `:17`) at implementation time; any value not divisible by 5
-  satisfies the requirement.
+- **Minute pin is a hard constraint, not merely "not divisible by 5" (must-fix round 1
+  finding 1).** Alpaca's `1Hour` bars are wall-clock-hour aligned and end on the hour
+  (`:00`), so a scan firing `MM` minutes past the hour sees a newest-completed bar that is
+  already `MM` minutes old **by construction**, before any feed latency is even counted.
+  This couples the cron minute directly to `HOURLY_STALENESS_TOLERANCE_MIN` (default `10`,
+  §10): **`cronMinuteOffset + expectedFeedLatencyMin < HOURLY_STALENESS_TOLERANCE_MIN`** is
+  a hard requirement, not a coincidence to discover at deploy time. The sub-plan's own
+  illustrative minute, `:17`, **violates this constraint** (17 > 10 exceeds the default
+  tolerance outright — every run would exit `skipped:stale_data`) and must not be used; this
+  spec corrects that example. A minute such as **`:07`** satisfies both this inequality (7
+  minutes + a small assumed feed-latency budget stays under the 10-minute default) and the
+  original collision-avoidance requirement (not divisible by 5, so it never lands on the
+  kill-switch's `*/5` grid). Batch 2 must re-verify this inequality against whatever minute
+  and tolerance it actually deploys — raising `HOURLY_STALENESS_TOLERANCE_MIN` to paper over
+  a badly-chosen minute, instead of choosing a minute that satisfies the inequality at the
+  default tolerance, is explicitly the wrong fix.
 - The function's own `getClock()` gate is authoritative for open/closed and holidays; the
   cron predicate fires unconditionally within the window (the codebase map's documented
   pattern — cron fires regardless of market state, gating lives entirely in the Edge
@@ -166,6 +177,23 @@ code (`supabase/migrations/0002_schedule.sql:40-54` is the pattern; the gate is
    calendar endpoint is date-granular), so the hourly guard is: `now − barEndTime ≤
    HOURLY_STALENESS_TOLERANCE_MIN` (config, §10) **and** the `getClock()` gate above. A bar
    older than the tolerance, with the market open, is `skipped:stale_data`.
+
+**Guard precedence — deterministic order (must-fix round 1 finding 1).** The gates below run
+in a fixed order every scan, so a given run always resolves to exactly one outcome rather
+than depending on which check happens to be coded first:
+
+1. `getClock()` — market closed ⇒ `skipped:market_closed`.
+2. Filter to strictly completed bars, then **exclude partial session-edge bars** (below). If
+   the newest bar that would otherwise be the signal bar is excluded as partial, the scan is
+   `skipped:partial_bar` — **this check runs before the staleness guard.**
+3. Only if step 2 leaves an eligible, non-partial, completed bar: apply the staleness guard
+   (`now − barEndTime ≤ HOURLY_STALENESS_TOLERANCE_MIN`). A bar that fails this check is
+   `skipped:stale_data`.
+
+This ordering exists specifically so the **first scan of a trading session** — where the
+newest wall-clock-hour bar is a truncated session-open stub (below) — always resolves to
+`skipped:partial_bar`, never `skipped:stale_data`. The two skip reasons are selected by this
+fixed precedence, not by incidental code order.
 
 **Partial session-edge bars are excluded from the signal.** Alpaca's `1Hour` timeframe bars
 are **wall-clock-hour aligned, not session aligned** — the first bar of the RTH session
@@ -290,6 +318,41 @@ per symbol per day** — generous against the ~0.22 trades/day modeled in #422 �
 capping worst-case intraday cost drag. Both numbers are frozen for v1 and reviewable at the
 4-week/30-trade checkpoint (§11, N5).
 
+**Post-kill-switch-fire semantics — decided (must-fix round 1 finding 2), adapted from
+`regime.ts`'s `killSwitchActive` precedent.** The incumbent encodes the flag as an input to
+`computeTargetState` (`_shared/regime.ts`): bearish preserves it, bullish clears it — because
+the incumbent is long-only, "bullish" *is* "the direction opposite the forced-CASH state."
+This bot is long/short-symmetric, so the precedent generalizes to: **the flag clears exactly
+when the next decision opposes the side that was stopped out**, not on any decision at all.
+
+- **Flag storage.** Not `regime_state` (§9 keeps that table unextended, scoped to the
+  retired bot). The retrofit package (§8.1) writes three `bot_config` keys on a kill-switch
+  fire for this bot — the same key/value store that already holds `paused`, so no new
+  migration is needed: `hourly_kill_switch_active` (boolean), `hourly_kill_switch_side`
+  (`'LONG'|'SHORT'` — the side of the position that was stopped out), and
+  `hourly_kill_switch_fired_at` (timestamptz, for the audit trail).
+- **Re-entry rule.** While `hourly_kill_switch_active = true`, `hourly-check` runs an early
+  deterministic gate — the same shape as the `bot_config.paused` gate (§8.3) — **before**
+  the position-open check: if the current scan's `decideHourly` output is `SKIP`, or is the
+  **same** side as `hourly_kill_switch_side`, no entry is placed and the scan is
+  `skipped:kill_switch_active` (§9). Only a decision on the **opposite** side from
+  `hourly_kill_switch_side` is allowed through — mirroring "bullish clears the flag" for a
+  bot where either side can be the one that got stopped out.
+- **Clearing condition.** The first scan whose decision opposes `hourly_kill_switch_side`
+  both clears the flag (sets `hourly_kill_switch_active = false`,
+  `hourly_kill_switch_side = null`) **and** is the entry that is allowed through — clearing
+  and re-entry happen atomically at the same decision point, exactly as in `regime.ts`
+  (bullish both clears the flag and sets the LONG target in the same call). This is
+  deliberately **not** time-based (no "wait N hours/days") — the incumbent's rule was never
+  time-based either; it is signal-based, and this is the direction-aware generalization of
+  that same rule.
+- **Both directions blocked, not just the stopped-out one, until cleared.** Unlike the
+  incumbent (where a bearish signal simply reproduces the existing forced-CASH state, so the
+  flag is inert while bearish), this bot's cooldown/cap rules would otherwise permit a
+  same-side re-entry as soon as one hour later. The gate above exists precisely to override
+  that — a kill-switch fire is a drawdown safety event, not a normal exit, and must not be
+  treated as merely starting the standard next-bar cooldown.
+
 ---
 
 ## §6 Sizing
@@ -315,6 +378,20 @@ shares)"*. No fractional shares, in either direction.
 `logic.ts:210`), while the **signal** and the bracket geometry (`stopPrice`, `targetPrice`)
 come from the completed bar that triggered the decision. Every JSON→number boundary goes
 through `requireNumber` (`_shared/num.ts`).
+
+**Geometry-invalid guard — should-fix round 1 finding 12, added.** Because `entryRef` is
+read fresh at order time while `stopPrice` was fixed from the completed signal bar, price can
+move between them. Two failure modes are otherwise unguarded: (a) **inverted geometry** —
+`entryRef` has moved to the wrong side of the stop (long: `entryRef ≤ stopPrice`; short:
+`entryRef ≥ stopPrice`), which would produce a broker rejection at best and a nonsensical
+bracket at worst; (b) **degenerate `stopDistance`** — a near-zero distance inflates
+`qtyRisk` arbitrarily, leaving the notional cap as the only effective sizer, silently
+defeating the risk-based leg of §6's `min()`. **Guard, evaluated before `qtyRisk`/`qtyCap`:**
+if `entryRef` is not on the correct side of `stopPrice` by at least `HOURLY_MIN_STOP_DISTANCE`
+(new config, §10; default `$0.05`), the scan is `skipped:geometry_invalid` (§9) and no order
+is placed — this check runs whether the failure is the inversion case or the
+too-close/degenerate case, since both are "the geometry is not usable," and both are cheaper
+and safer to skip than to size around.
 
 **`qty ≤ 0` → `skipped:size_too_small`, a normal skip with a journal row** —
 deliberately unlike `daily-check`'s `error:insufficient_funds`
@@ -372,10 +449,19 @@ detector fired on. The target is `entry ± R × stopDistance` with **R = 2** fro
 conservative end of the house `R_GRID` (`(2.0, 3.0)` in `backtest/run_candlestick_study.py:93`).
 No evidence ranks either value (§2); R=2 minimizes target distance and time-in-trade,
 consistent with the operator's "short-lived contracts" framing (lead's D2 rationale on
-#464). The buffer size (a small fraction of the bar's range, to avoid a stop that sits
-exactly on the bar extreme and gets grazed by the next bar's noise) is a Batch 2 detail;
-this spec fixes the *geometry contract* (pattern extreme + buffer, R=2 target), not the
-buffer's exact magnitude.
+#464).
+
+**Buffer — frozen (must-fix round 1 finding 7).** Left as "a Batch 2 detail" in the prior
+draft; that is a free parameter that directly sets `stopDistance` and therefore `qty` (§6),
+exactly the class N2's own rationale requires be frozen in the spec. Frozen formula:
+**`buffer = HOURLY_STOP_BUFFER_PCT × barRange`**, where `barRange = barHigh − barLow` for the
+signal bar and `HOURLY_STOP_BUFFER_PCT` defaults to **`0.05`** (5% of the bar's own range) —
+added to §10's settings table. Long: `stopPrice = barLow − buffer`; short: `stopPrice =
+barHigh + buffer`. No evidence ranks this value either (§2's caveat applies here exactly as
+it does to R=2); 5% is chosen only to keep the stop off the literal bar extreme (avoiding a
+stop that gets grazed by the next bar's noise) without materially widening `stopDistance`.
+Changing it in-flight is forbidden by the same rule as R=2 and every other frozen v1
+parameter (§11) — a change requires a spec revision.
 
 **Both directions.** A `LONG` decision buys with a stop below and a target above; a `SHORT`
 decision sells short with a stop above and a target below. `[to verify]` — Batch 2 must
@@ -392,11 +478,23 @@ whether a bracket entry must be `time_in_force: "day"` or also accepts `"gtc"`).
 default to `"day"`, matching every existing order in this repo (`alpaca.ts:146`), until
 verified otherwise.
 
-**Shortability check at deploy time, fail-closed.** Before the first live scan, Batch 3 (or
-an early Batch 2 smoke step) must check `GET /v2/assets/SPY` for `shortable` /
-`easy_to_borrow`. If SPY is not shortable on the paper account at that time, every `SHORT`
-decision is `skipped:not_shortable` rather than attempting an order that would reject —
-fail-closed, not fail-and-retry.
+**Shortability check at deploy time, fail-closed. `[to verify]`** (must-fix round 1 finding
+6 — this was the one Alpaca API assertion in this spec shipping unlabelled; corrected here).
+Before the first live scan, Batch 3 (or an early Batch 2 smoke step) must check `GET
+/v2/assets/SPY`, whose response is asserted here to carry `shortable` / `easy_to_borrow`
+boolean fields — **like the other four `[to verify]` items in this spec (bar alignment,
+bracket-on-short, bracket entry `type`/`time_in_force`, the paper-account marker), this is a
+claim about Alpaca's live API surface, not a repo fact, and is not confirmed against a real
+response.** Required verification step: capture a real `/v2/assets/SPY` response on the
+paper account and confirm both field names and their boolean semantics before relying on
+them. If SPY is not shortable per the confirmed fields, every `SHORT` decision is
+`skipped:not_shortable` rather than attempting an order that would reject — fail-closed, not
+fail-and-retry. **Fallback if the fields cannot be confirmed at all** (endpoint missing,
+fields renamed, or response ambiguous): the failure mode must not be silent — a config flag,
+`HOURLY_SHORTS_ENABLED` (default `true`, §10), must be flipped to `false` and the reason
+disclosed in the deploy notes/runbook; with shorting disabled this way, every otherwise-
+`SHORT`-eligible bar still journals `skipped:shorts_disabled` (§9), so the gap is visible in
+the data itself, not only in a runbook note that could go stale or unread.
 
 **Entry-leg semantics reuse the existing poll/error contract; exit legs are
 broker-resident.** The entry leg uses the same poll-until-filled logic, `OrderTimeoutError`,
@@ -410,16 +508,66 @@ newly-closed exit leg to `trades` (§9) — a fill discovered this way is record
 **before** deciding whether a new entry is permitted (so the position-flat check in §5 sees
 the post-fill broker truth, not a stale in-memory view).
 
+**Position-without-legs rule (must-fix round 1 finding 3) — fail-toward-protection, chosen
+and stated.** The reconciliation step above must also detect the state the OCO-fallback race
+window (above) and an entry-poll timeout can both produce: an **open broker position with no
+resting stop/target (or OCO) legs at all** — the exit-leg placement failed after the entry
+filled, or timed out before confirmation. This state has no specified behavior elsewhere in
+this spec; it is specified here:
+
+1. Look up the bracket geometry (`stop_price`, `target_price`) from the `hourly_scans` row
+   (§9) that produced the open position's entry, keyed on the entry's `bar_ts`.
+2. **Re-place the missing legs once**, using that recorded geometry. On success, journal
+   `success:legs_replaced` (§9) and continue the scan normally — the position now
+   participates in the ordinary position-open check (§5) with legs resting as usual.
+3. **If re-placement fails, or no matching `hourly_scans` row can be found** (an
+   unrecoverable-provenance case — geometry to re-place against is unknown), **fail toward
+   protection**: cancel any partial/rejected leg remnants and verify the cancel (the same
+   verified-cancel pattern used for the orphan-leg hazard below), then market-close the
+   position immediately. Journal `error:naked_position_flattened` (§9) and send a
+   notification (extending `notifications.ts`'s existing pattern — reusing `notifyBrokerError`
+   or adding a dedicated helper is Batch 2's call).
+4. This check runs **before** §5's position-open / new-entry check on every scan, so a
+   naked position is always re-legged or flattened before any new-entry decision is
+   considered — the same "reconcile before deciding" ordering the contract above already
+   establishes for ordinary exit-leg fills.
+
 **Session-close exit rule — decided (lead's D2 on N3): flatten at session end.** No
 overnight holding for v1. Rationale (lead's D2): the operator's own framing is "short-living
 contracts"; intraday-only (a) maximizes kill-switch coverage, since its cron window is
 13-21 UTC and does not run overnight, (b) eliminates gap risk, and (c) eliminates overnight
-short-borrow cost/availability risk entirely. Mechanics: on the scan nearest session close
-(the last completed-bar scan before `getClock()` reports the session ending, or a dedicated
-near-close check within the existing hourly cadence — Batch 2's detail, this spec fixes the
-requirement: **any open position must be flat before the session ends**), cancel the
-resting bracket/OCO legs first, verify the cancel, then market-close the position. This
-makes **every trade a day trade** (see §2's PDT caveat).
+short-borrow cost/availability risk entirely.
+
+**Mechanic — decided (must-fix round 1 finding 4): the last in-session scan flattens; no
+dedicated near-close check.** A separate near-close check would be a second cron job or a
+second in-function schedule, contradicting §4's single-cron design (one `getClock()`-gated
+scan per firing) — that alternative is rejected outright, not left open. Instead, every scan
+already calls `getClock()` (§4's market-open gate); the same response's `next_close` field is
+reused: if **`next_close − now ≤ 1 hour`** (the scan cadence itself — i.e., no further
+`hourly-check` scan will run before the session ends), this scan **is** the flatten scan.
+**Implementation note:** today's shared `getClock()` helper discards this field
+(`_shared/alpaca.ts:93-95` returns only `{ isOpen }` from Alpaca's `/v2/clock` response,
+which also carries `timestamp`/`next_open`/`next_close`) — this bot's client needs an
+additive extension (a new `nextClose` field alongside the existing `isOpen`) rather than a
+new endpoint call; existing callers (`daily-check`, `kill-switch`) are unaffected since they
+only destructure `isOpen`. Using the broker's own clock rather than a hardcoded UTC time
+means no DST branching is needed in code — the same principle §4 already applies to the
+market-open gate. **Both DST
+close times are confirmed to fall inside the `13-21 UTC` cron window:** US market close is
+16:00 ET year-round; in EDT (UTC−4) that is **20:00 UTC**, and in EST (UTC−5) that is **21:00
+UTC** — both within `13-21 UTC`.
+
+**The flatten scan does not open new entries — flatten-only.** `decideHourly` still runs and
+the bar is still journaled (§9's "one row per scan including skips") so no diagnostic data is
+lost, but any `LONG`/`SHORT` action this scan produces is downgraded to
+`skipped:session_close_flatten_only` (§9) rather than placed. Rationale: a fresh entry with
+effectively no time remaining before the forced close cannot develop, and opening one would
+immediately re-trigger the same cancel-legs-then-close sequence this rule exists to run
+exactly once. Order of operations on the flatten scan: (1) run the reconciliation contract as
+normal, including the position-without-legs rule above; (2) if a position remains open,
+cancel the resting bracket/OCO legs and verify the cancel, then market-close the position;
+(3) journal the closure as `hourly_session_close_exit` (§9); (4) do not evaluate a new entry
+this scan, regardless of what `decideHourly` returned.
 
 **Orphan-leg hazard — must be designed for, not just noted.** Closing a bracketed position
 outside its own bracket (a session-close flatten, a kill-switch fire, or a panic action)
@@ -447,6 +595,15 @@ requirements for the Batch 2 short-side safety-stack retrofit package (N7) — b
 paper-only guard, because these are the two places the *existing* live-trading-path code is
 already wrong for a bot that can hold a short.**
 
+**Hard sequencing requirement (must-fix round 1 finding 5).** The short-side safety-stack
+retrofit package **MUST be merged and deployed before `hourly-check` can place any trade —
+at minimum, before any `SHORT` entry is possible.** §14's "two packages, reviewed
+separately" is not merely a review-organization note: without this ordering enforced as a
+hard precondition, the feature package could deploy while the retrofit is unmerged, and the
+bot would trade into exactly the unprotected-short window §8.1 documents (kill-switch exits
+`success:no_position` on a short; `liquidate`/`panic` cannot cover it). Batch 3's rollout
+(§14) may not turn the `hourly-check` cron on until the retrofit package has already shipped.
+
 ### 8.1 Finding: the kill-switch is structurally blind to shorts today
 
 - `getPosition` returns Alpaca's qty via `Math.trunc` (`supabase/functions/_shared/alpaca.ts:122`)
@@ -470,6 +627,12 @@ already wrong for a bot that can hold a short.**
   short executes at the **ask**, so a short's adverse breach must be confirmed against the
   ask, not the bid. The existing fail-toward-protection behavior on a quote outage (fire on
   trade price alone rather than disarm) is preserved for both sides.
+- **On a fire, this retrofit writes the `bot_config` flag `hourly-check` reads.** Per §5's
+  "Post-kill-switch-fire semantics," a fire for this bot's position sets
+  `hourly_kill_switch_active = true`, `hourly_kill_switch_side` to the side that was
+  stopped out, and `hourly_kill_switch_fired_at` — `hourly-check` (the feature package) owns
+  reading, gating on, and clearing these keys; the retrofit package owns only writing them
+  on a fire. Same one-writer/one-reader split as `bar_claims` (§8.4, §9, §14).
 
 ### 8.2 Finding: `panic`'s "unchanged" framing is factually wrong as written; corrected here
 
@@ -518,7 +681,7 @@ against is a broken invariant, not a missing feature.
 ### 8.4 Claim-key hazard
 
 The existing `trade_claims` primary key is `(script_name, trade_date)` — a `date` column
-(`supabase/migrations/0008_trade_claims.sql`). `kill-switch/logic.ts:241-244`'s own comment
+(`supabase/migrations/0008_trade_claims.sql`). `kill-switch/logic.ts:240-244`'s own comment
 already flags "fail-toward-no-protection" for **one fire per trading day** on the incumbent
 bot; with this bot placing up to 3 entries/day (§5, N4) plus session-close flattens, that
 date-granularity claim is materially worse, and an hourly entry claim **cannot be expressed
@@ -527,6 +690,12 @@ on the same claim key). **Requirement:** a new **bar-level claim table** (e.g.
 `bar_claims(script_name, bar_ts)`, same first-INSERT-wins / 23505-conflict-backs-off
 pattern) rather than altering the existing `trade_claims` PK — the incumbent bot (while its
 cron remains active per P1's non-goals) keeps using the existing date-keyed claim unchanged.
+**Ownership (must-fix round 1 finding 9, resolved):** the `bar_claims` table and its
+migration belong to the short-side safety-stack retrofit package, per N7's own scoping —
+`hourly-check` (feature package) is a consumer only (it inserts a claim row per bar and reads
+back `skipped:duplicate_run` on conflict) and does not own the schema. §14 states this
+explicitly as part of the hard sequencing requirement (finding 5): `hourly-check` cannot
+correctly claim a bar until the retrofit's migration exists.
 
 ---
 
@@ -545,10 +714,10 @@ cron remains active per P1's non-goals) keeps using the existing date-keyed clai
 | `skip_reason` | `text` | null unless `decision = 'SKIP'` |
 | `detectors_fired` | `jsonb` | array of detector names that fired this bar |
 | `context_mode` | `text` | the config value active at scan time |
-| `entry_ref_price` | `numeric(14,4)` | null on SKIP |
-| `stop_price` | `numeric(14,4)` | null on SKIP |
-| `target_price` | `numeric(14,4)` | null on SKIP |
-| `risk_per_share` | `numeric(14,4)` | `|entry_ref_price − stop_price|`, null on SKIP |
+| `entry_ref_price` | `numeric(14,4)` | null unless computed |
+| `stop_price` | `numeric(14,4)` | null unless computed |
+| `target_price` | `numeric(14,4)` | null unless computed |
+| `risk_per_share` | `numeric(14,4)` | `|entry_ref_price − stop_price|`, null unless computed |
 | `equity_usd` | `numeric(14,4)` | account equity read this scan |
 | `qty` | `integer` | 0 on SKIP/size-too-small |
 | `entry_order_id` | `text` | broker order id, null on SKIP |
@@ -559,6 +728,14 @@ Primary key `(symbol, bar_ts)` — a re-run on the same bar upserts idempotently
 are `numeric`, per `0005_numeric_money.sql`'s decimal-fidelity precedent, read back through a
 `coerce*Row`-style helper — PostgREST returns numerics as strings
 (`supabase/functions/_shared/db.ts`'s `coerceRegimeRow`/`coerceTradeRow` precedent).
+
+**"Null unless computed," not "null on SKIP" (should-fix round 1 finding 14).** The prior
+draft's "null on SKIP" was wrong: `skipped:size_too_small` and `skipped:geometry_invalid`
+(§6) both compute `entry_ref_price`/`stop_price`/`target_price`/`risk_per_share` before
+deciding to skip, and those sizing inputs are exactly the values worth keeping for the
+weekly review (§11) to explain *why* a bar was skipped. The four sizing columns are null
+only for decisions where no geometry was ever computed at all (e.g. `skipped:signal_conflict`,
+`skipped:market_closed`) — "null unless computed" is the accurate rule.
 
 RLS enabled, no policies — the standing deny-all pattern
 (`0001_init.sql:61-66`, `0009_equity_snapshots.sql`, `0010_notification_outbox.sql`).
@@ -585,17 +762,31 @@ following the existing `success` / `success:*` / `skipped:*` / `error:*` vocabul
 - `success` — a decision was made and (if LONG/SHORT) an order placed and journaled.
 - `success:no_action` — decision was SKIP for a reason other than a hard skip (e.g. no
   detector fired at all).
+- `success:legs_replaced` — the position-without-legs rule (§7, finding 3) re-placed a
+  missing bracket/OCO pair successfully.
+- `success:auto_paused` — the −15% equity floor (§11, finding 11) fired and set
+  `bot_config.paused = true` this scan.
 - `skipped:market_closed`, `skipped:trading_paused` (mirrors `daily-check`'s existing gates).
-- `skipped:stale_data`, `skipped:partial_bar`.
+- `skipped:stale_data`, `skipped:partial_bar` (§4; precedence between the two is fixed,
+  finding 1).
 - `skipped:signal_conflict` (§5).
 - `skipped:size_too_small` (§6).
+- `skipped:geometry_invalid` (§6, finding 12).
 - `skipped:not_shortable` (§7).
+- `skipped:shorts_disabled` (§7, finding 6 — the shortability fields were unconfirmable and
+  `HOURLY_SHORTS_ENABLED` was flipped off, distinct from `skipped:not_shortable`'s
+  confirmed-not-shortable case).
 - `skipped:position_open` (§5's at-most-one-position rule blocked a new entry).
 - `skipped:max_entries_reached` (§5, N4's 3/day cap).
+- `skipped:kill_switch_active` (§5, §8.1, finding 2 — the post-fire flag blocked this
+  scan's entry).
+- `skipped:session_close_flatten_only` (§7, finding 4 — the flatten scan downgraded what
+  would otherwise have been a LONG/SHORT entry).
 - `skipped:duplicate_run` (the new bar-level claim, §8.4, conflicted).
 - `error:AlpacaError`, `error:OrderTimeoutError`, `error:OrderRejectedError`,
-  `error:BrokerCallBlockedError`, `error:PaperGuardFailed` (§8.3's new named error) — the
-  existing `error:${err.name}` pattern.
+  `error:BrokerCallBlockedError`, `error:PaperGuardFailed` (§8.3's new named error),
+  `error:naked_position_flattened` (§7, finding 3 — the position-without-legs rule could not
+  re-place legs and flattened instead) — the existing `error:${err.name}` pattern.
 
 ### New claim table — `bar_claims`
 
@@ -632,9 +823,12 @@ risk-relevant, an opt-in/default-OFF-style safe default (per the skill's rule 7)
 | `SIZING_RISK_PCT` | `0.01` | `(0, 0.05]` | risk budget per trade as a fraction of equity |
 | `SIZING_NOTIONAL_CAP_PCT` | `0.10` | `(0, 1.0]` | notional cap per position as a fraction of equity |
 | `HOURLY_BRACKET_R_MULTIPLE` | `2` | fixed at `2` for v1 (validated `=== 2`; a change requires a spec revision, §7) | |
+| `HOURLY_STOP_BUFFER_PCT` | `0.05` | `(0, 0.5]` | frozen stop-buffer fraction of the signal bar's range, §7 (must-fix round 1 finding 7) |
+| `HOURLY_MIN_STOP_DISTANCE` | `0.05` (USD) | `> 0` | minimum `|entryRef − stopPrice|`; below this or on the wrong side ⇒ `skipped:geometry_invalid`, §6 (should-fix round 1 finding 12) |
 | `HOURLY_MAX_ENTRIES_PER_DAY` | `3` | `[1, 10]` | N4 cap |
-| `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | `[1, 60]` | minutes past a completed bar's end before the scan treats it as stale |
+| `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | `[1, 60]` | minutes past a completed bar's end before the scan treats it as stale; coupled to the cron minute pin (§4, finding 1 — `cronMinuteOffset + expectedFeedLatencyMin` must stay under this value) |
 | `HOURLY_CONTEXT_MODE` | `none` | `{"none","reversal","continuation"}` | §5; masked warm-up applies in all three |
+| `HOURLY_SHORTS_ENABLED` | `true` | boolean | fail-closed override, §7 finding 6 — flipped to `false` (with the reason disclosed) if the `/v2/assets/SPY` shortability fields cannot be confirmed |
 | `HOURLY_BOT_PAPER_ONLY` | `true` | must be `true`; throws if unset or `false` for this bot's client (§8.3 Layer A) | the mechanical paper-only gate — not a normal tunable, listed here so it is not missed |
 
 `.env.example` gains a new commented block mirroring the existing `--- Bot strategy
@@ -691,6 +885,19 @@ operator-amendable at the spec's own merge:**
 > end-to-end, but the operator owns the final numbers when merging this spec's PR — this
 > paragraph exists specifically so that decision is visible and easy to change in one place,
 > rather than buried in a config default a reviewer might not notice.
+
+**Enforcing component, named (should-fix round 1 finding 11).** "Auto-pause" above names an
+outcome, not a mechanism — a weekly document cannot enforce anything intra-week. The
+enforcing component is **`hourly-check`'s own pipeline**, not the weekly review script: on
+every scan, after reading equity (§6), `hourly-check` compares it to a stored experiment
+baseline — a new `bot_config` key, `hourly_experiment_start_equity` (numeric, set once at
+Batch 3 deploy time when the paper experiment begins, read-only thereafter for v1). If
+current equity has fallen ≥15% below that baseline, the scan itself sets
+`bot_config.paused = true` (the same key `panic action=pause` sets) **before** evaluating any
+new entry, and journals the trigger (`error:equity_floor_breached` or a dedicated
+`success:auto_paused` outcome — Batch 2's call on the exact name, added to §9's vocabulary).
+The weekly review script (§14, Batch 3) reports this after the fact; it does not itself
+enforce the floor.
 
 ---
 
@@ -777,6 +984,20 @@ mechanically invariant-scanned the same way `regime.ts` is — it satisfies the 
 the same argument that qualified `computeTargetState`, extended to a larger but still
 single, frozen, deterministic function.
 
+**Reproducibility clause is narrowed, stated explicitly (should-fix round 1 finding 13).**
+The original invariant text also says every decision is "reproducible from the SPY history
+alone." For this bot that clause narrows and must not be allowed to silently vanish: the
+**pure signal** (`decideHourly(bars, cfg)`) remains fully bar-reproducible — same bars and
+config in, same `{action, reason, detectorsFired}` out, with no hidden state. But whether a
+signal **becomes an entry** now additionally depends on state outside the bar history: the
+broker-sourced open position (§5), the journal-derived cooldown/day-cap (§5), the
+post-kill-switch-fire flag and side (§5, §8.1), and the bar-level claim (§8.4). None of that
+state is itself non-deterministic or hidden — it is all recorded in `hourly_scans` /
+`bot_config` / `bar_claims` and could in principle be replayed — but it is not *purely*
+"the SPY history," and pretending otherwise would misstate what this invariant now
+guarantees. The correct restatement: the **signal** is bar-reproducible; **entry gating**
+is state-dependent and audit-log-reproducible, not SPY-history-reproducible alone.
+
 **No LLM in the trading path (invariant #2).** No model SDK is imported by any module this
 spec describes; `decideHourly`, `scanCandles`, the sizing math, and the bracket order
 placement are all deterministic TypeScript. Unaffected.
@@ -811,25 +1032,56 @@ every code-touching work package carry it.
    guarding until flat). P2 (this spec + its ADR). P3 (#467) ports the 14 detectors + context
    logic to `_shared/candlestick.ts` with golden parity. P4 (#468) runs the forex research
    leg in parallel (signal v2 track, not this bot).
-2. **Batch 2 — build, against this spec.** Two packages, reviewed separately per N7:
+2. **Batch 2 — build, against this spec.** Two packages, reviewed separately per N7, **and
+   sequenced (must-fix round 1 finding 5): the retrofit package MUST be merged and deployed
+   before `hourly-check` can place any trade — at minimum, before any `SHORT` entry is
+   possible.** The feature package may be developed and reviewed in parallel, but its cron
+   is not turned on (Batch 3) until the retrofit has shipped.
    - **The feature build:** `hourly-check/{logic,handler,index}.ts`, `_shared/hourly_signal.ts`
      (or equivalent module name; consumes P3's `scanCandles`), `_shared/alpaca.ts` additions
      (`placeBracketOrder`, `checkPaperOnly`, short-side position/close helpers per §8.1),
-     `_shared/config.ts` additions (§10), `0011_hourly_scans_and_claims.sql` (or split into
-     `0011_hourly_scans.sql` + `0012_bar_claims.sql` — Batch 2's call), a new cron migration
-     for the `hourly-check` job (§4). The CLAUDE.md amendment (§12) lands with this package's
-     PR, not before.
+     `_shared/config.ts` additions (§10), `0011_hourly_scans.sql` (the `hourly_scans` table
+     and the `trades.reason` check extension only — **not** `bar_claims`, see below), a new
+     cron migration for the `hourly-check` job (§4). The CLAUDE.md amendment (§12) lands with
+     this package's PR, not before.
    - **The short-side safety-stack retrofit (own package, per N7):** short-aware
      `getPosition`/close in `_shared/alpaca.ts`, the short-aware `kill-switch/logic.ts`
-     drawdown mirror (§8.1), `panic/logic.ts`'s side-aware + symbol-aware fix (§8.2), the new
-     `bar_claims` migration. Reviewed as a safety change to *existing* live-path code, not
-     buried inside the feature build's review.
-3. **Batch 3 — deploy + first paper trades.** Deploy to the dev/paper Supabase project, turn
-   the `hourly-check` cron on, confirm the §4 bar-alignment `[to verify]` item on a live RTH
-   session before the first scan that could place an order, run the weekly review loop
-   (§11) starting from week 1.
+     drawdown mirror (§8.1, including writing the `hourly_kill_switch_active` /
+     `hourly_kill_switch_side` / `hourly_kill_switch_fired_at` `bot_config` keys per §5's
+     post-fire semantics), `panic/logic.ts`'s side-aware + symbol-aware fix (§8.2), **and the
+     `bar_claims` migration (must-fix round 1 finding 9 — one owner, resolved: the retrofit
+     package owns the `bar_claims` table and its migration, since it is the safety-relevant
+     claim key the sub-plan's N7 already scoped to this package; `hourly-check` in the
+     feature package consumes it (writes claim rows, reads for `skipped:duplicate_run`) but
+     does not own its schema**. This is the same reconciliation the hard-sequencing
+     requirement above already implies: `hourly-check` cannot correctly claim a bar, or gate
+     on the kill-switch flag, until the retrofit's migration and `bot_config` keys exist —
+     one more reason the ordering in finding 5 is load-bearing, not just a review-hygiene
+     preference. Reviewed as a safety change to *existing* live-path code, not buried inside
+     the feature build's review.
+3. **Batch 3 — deploy + first paper trades.** Deploy the retrofit package first (per finding
+   5); only then deploy the feature package and turn the `hourly-check` cron on. Confirm the
+   §4 bar-alignment `[to verify]` item on a live RTH session before the first scan that could
+   place an order. Run the weekly review loop (§11) starting from week 1 via a new,
+   dedicated aggregator script (must-fix round 1 finding 10 — assigned here, to Batch 3, not
+   left unowned): a read-only script over `hourly_scans` + `trades` rendering to
+   `docs/trading-journal/YYYY-Www.md` (§11), run manually by the operator each week — **not**
+   a cron'd Edge Function (no auth surface is needed for a read-only, operator-triggered
+   report) and **not** a reuse of `backtest/weekly_review.py` (that script's target directory
+   and inputs are research-artefact-scoped, §11). Language/location (a `scripts/*.ts` run via
+   `deno run`, matching `scripts/status.sh`'s standalone-tool precedent, or a Python script
+   alongside `backtest/`) is Batch 3's call. The exact `PROPOSAL_RULE` trigger statistics
+   (e.g. the target-hit-rate floor) and the trial-counter's storage location are **deferred
+   to Batch 3's implementation, with the operator as owner at that time** — same
+   operator-amendable-default pattern already used for N5's stopping rule (§11) — subject to
+   the two constraints §11 already fixes: at most one proposal/week, and a stated minimum
+   sample before any proposal may fire. The trial counter is stored as a `bot_config` key
+   (e.g. `hourly_param_trial_count`), incremented on every accepted version bump, reusing the
+   existing key/value store rather than a new migration.
 4. **Stopping rule (§11, N5).** The 4-week/30-trade checkpoint, or the −15%-equity hard
    floor, whichever comes first, triggers a mandatory human review before any further entry.
+   The floor is enforced mechanically, not just documented in the weekly review — see §11's
+   enforcing-component note (must-fix round 1 finding 11).
 
 **Batch 2 file-set self-test (per the sub-plan's §D verification step (e)) — an architect
 should be able to sub-plan Batch 2 from this spec alone.** The implied file set:
@@ -840,11 +1092,16 @@ should be able to sub-plan Batch 2 from this spec alone.** The implied file set:
 - `supabase/functions/_shared/config.ts` — extended per §10.
 - `supabase/functions/hourly-check/{logic.ts,handler.ts,index.ts}` — new function, following
   the `daily-check`/`kill-switch` three-file shape.
-- `supabase/migrations/0011_*.sql` (hourly_scans + reason-check extension),
-  `0012_*.sql` (bar_claims + hourly-check cron) — exact split and numbering at Batch 2's
-  discretion, next-free-number confirmed at implementation time.
+- `supabase/migrations/0011_hourly_scans.sql` (feature package: `hourly_scans` +
+  `trades.reason` extension + the `hourly-check` cron), `0012_bar_claims.sql` (retrofit
+  package: `bar_claims` only) — exact numbering confirmed against the live migrations
+  directory at implementation time; the retrofit's migration must exist before the feature
+  package's cron is turned on (finding 5, finding 9).
 - `supabase/functions/kill-switch/logic.ts` — short-aware retrofit (safety package).
 - `supabase/functions/panic/logic.ts` — side-aware + symbol-aware fix (safety package).
+- A new weekly-review aggregator script (Batch 3, per finding 10 above) — not part of
+  Batch 2, listed here so its absence from Batch 2's file set is not mistaken for an
+  oversight.
 - Each of the above has enough detail above (§4-§9) to build without inventing a new
   decision the spec should have made.
 
