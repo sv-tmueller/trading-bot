@@ -1,7 +1,7 @@
 """Firing-rate calibration for the deterministic Elliott Wave labeler (#468).
 
 Research-only. Lives in ``backtest/`` and is never imported by ``supabase/functions/``.
-No LLM, no broker calls, no order endpoint. Modelled on
+No LLM, no trading/order-placement calls, no order endpoint. Modelled on
 ``run_candlestick_study.py --firing-rates`` and ``run_fx_plumbing_check.py``.
 
 *** This is a CALIBRATION REPORT, not a strategy result. *** It measures how often the

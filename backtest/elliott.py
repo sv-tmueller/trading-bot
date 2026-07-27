@@ -1,7 +1,7 @@
 """Deterministic Elliott Wave labeler (#468) — no LLM anywhere in this module.
 
 Research-only. Lives in ``backtest/`` and is never imported by ``supabase/functions/``.
-No LLM, no broker calls, no network, no I/O. Pure ``pandas``/``numpy`` arithmetic only
+No LLM, no trading/order-placement calls, no network, no I/O. Pure ``pandas``/``numpy`` arithmetic only
 (no ``scipy`` — ``argrelextrema`` and friends are both unavailable in this repo's
 research venv and lookahead-prone by construction: they scan the whole array).
 
