@@ -10,8 +10,8 @@
  * mechanically enforced by the "not yet wired" test in candlestick.test.ts (removed
  * in Batch 2 when the module is actually wired up).
  *
- * Purity: the only import is `./num.ts`. No fetch, no Deno.*, no broker/DB/notify
- * imports -- this module does no I/O of any kind.
+ * Purity: the only import is `./num.ts`. No network calls, no runtime filesystem/serve
+ * APIs, no broker/DB/notify imports -- this module does no I/O of any kind.
  *
  * Intentional deviation from the Python source (D1(b), batch #464 lead decision)
  * -----------------------------------------------------------------------------
