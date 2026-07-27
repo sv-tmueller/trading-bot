@@ -465,6 +465,45 @@ def test_drop_saturday_bars_no_saturdays_is_a_no_op():
     assert len(result) == 2
 
 
+# ---------------------------------------------------------------------------
+# to_ohlc_frame — Mid* -> canonical OHLC adapter (#468), owned here (not
+# intraday_data._COLUMN_ALIASES — that module is shared with ORB/candlestick
+# and a 'mid*' alias there would be a silent behaviour change for them).
+# ---------------------------------------------------------------------------
+
+def test_to_ohlc_frame_renames_mid_columns_to_canonical_ohlc():
+    df = _h1_frame(n=4)
+    out = fx_data.to_ohlc_frame(df)
+    assert list(out.columns) == ["Open", "High", "Low", "Close"]
+    pd.testing.assert_series_equal(
+        out["Open"], df["MidOpen"], check_names=False,
+    )
+    pd.testing.assert_series_equal(
+        out["Close"], df["MidClose"], check_names=False,
+    )
+
+
+def test_to_ohlc_frame_preserves_index():
+    df = _h1_frame(n=4)
+    out = fx_data.to_ohlc_frame(df)
+    pd.testing.assert_index_equal(out.index, df.index)
+
+
+def test_to_ohlc_frame_bid_side_renames_bid_columns():
+    df = _h1_frame(n=4)
+    out = fx_data.to_ohlc_frame(df, side="Bid")
+    assert list(out.columns) == ["Open", "High", "Low", "Close"]
+    pd.testing.assert_series_equal(
+        out["Close"], df["BidClose"], check_names=False,
+    )
+
+
+def test_to_ohlc_frame_raises_on_missing_side_columns():
+    df = _h1_frame(n=4).drop(columns=["MidOpen"])
+    with pytest.raises(ValueError):
+        fx_data.to_ohlc_frame(df)
+
+
 def test_drop_saturday_bars_check_weekend_bars_zero_afterward():
     idx = pd.DatetimeIndex(
         [
