@@ -272,24 +272,30 @@ def test_per_window_scores_drops_nan_windows_and_reports_counts():
     assert np.isnan(scores["worst_calmar"])
 
 
-def test_per_window_scores_uses_annual_netting_not_deduct_at_exit():
-    """The primary statistic must differ, in general, from the US deduct-at-exit model —
-    otherwise D3's tax-mode deviation from the candlestick precedent would be a no-op."""
-    df = _trending_daily(900, drift=0.004)
-    arm = next(a for a in rms.ARMS if a[0] == "T2L")
-
-    def cell_fn(d):
-        return rms.build_cell(d, arm, 2.0, commission_bps=0.35)
-
-    sim = cell_fn(df)
-    from backtest.run_candidate_survey import _curve_metrics
+def test_annual_netting_and_deduct_at_exit_diverge_on_a_netting_ledger():
+    """Constructed ledger: a loss and a gain closing in the SAME calendar year. Annual
+    netting nets them into one taxable event (net_gain = 400 -> tax on 400); deduct-at-exit
+    taxes the gain trade alone, with the loss clamped to zero and no netting (tax on the
+    full 1000). The two models must produce genuinely different after-tax curves -- pins
+    that D3's tax-mode deviation from the candlestick precedent (`apply_tax_to_ledger`) is
+    not a no-op."""
     from backtest import tax as tax_mod
-    de_annual = tax_mod.apply_annual_netting_tax(sim["trades"], sim["equity_curve"])
-    us_exit = tax_mod.apply_tax_to_ledger(sim["trades"], sim["equity_curve"], jurisdiction="US")
-    # Not asserting inequality of curves in general (could coincide with 0 trades), but the
-    # two tax functions used are genuinely different calls -- this test exists to pin that
-    # run_grid's primary path calls apply_annual_netting_tax, checked structurally below.
-    assert de_annual.index.equals(us_exit.index)
+
+    idx = pd.bdate_range("2020-01-01", "2020-03-31")
+    equity = pd.Series(100_000.0, index=idx)
+    trades = [
+        {"entry_date": idx[0], "exit_date": idx[10], "pnl": 1000.0},
+        {"entry_date": idx[15], "exit_date": idx[25], "pnl": -600.0},
+    ]
+
+    annual = tax_mod.apply_annual_netting_tax(trades, equity)
+    deduct = tax_mod.apply_tax_to_ledger(trades, equity, jurisdiction="DE")
+
+    expected_annual_tax = max(1000.0 - 600.0, 0.0) * tax_mod.DE_FLAT_RATE
+    expected_deduct_tax = 1000.0 * tax_mod.DE_FLAT_RATE
+    assert annual.iloc[-1] == pytest.approx(100_000.0 - expected_annual_tax)
+    assert deduct.iloc[-1] == pytest.approx(100_000.0 - expected_deduct_tax)
+    assert not annual.equals(deduct)
 
 
 def test_run_grid_calls_annual_netting_tax(monkeypatch):
@@ -305,6 +311,49 @@ def test_run_grid_calls_annual_netting_tax(monkeypatch):
     df = _trending_daily(900, drift=0.003)
     rms.run_grid(df)
     assert len(calls) > 0
+
+
+# ---------------------------------------------------------------------------
+# Primary window set is capped at PRIMARY_WINDOW_END (2025-12-31) -- a trailing partial
+# year must never enter the verdict-bearing median/worst (round-1 review finding 2)
+# ---------------------------------------------------------------------------
+
+def test_primary_window_end_is_frozen_at_2025_12_31():
+    assert rms.PRIMARY_WINDOW_END == date(2025, 12, 31)
+
+
+def test_primary_window_set_excludes_a_trailing_partial_year():
+    """A frame spanning ~2011 through mid-2026 must yield exactly the 13 full calendar-year
+    windows (2013-2025) in the primary set, none with te past PRIMARY_WINDOW_END -- the
+    partial 2026 window belongs only to the uncapped era read."""
+    idx = pd.bdate_range("2011-01-01", "2026-06-30")
+    df = _synth_daily(n=len(idx), seed=21, start="2011-01-01")
+
+    windows = rms._primary_windows(df, rms.PRIMARY_WINDOW_START, rms.PRIMARY_WINDOW_END)
+    assert len(windows) == 13
+    cutoff = pd.Timestamp(rms.PRIMARY_WINDOW_END)
+    assert all(te <= cutoff for _, _, te in windows)
+
+    def cell_fn(d):
+        return rms.always_in(d, commission_bps=0.35)
+
+    primary = rms._per_window_scores(df, cell_fn, rms.PRIMARY_WINDOW_START, rms.PRIMARY_WINDOW_END)
+    assert primary["n_windows"] == 13
+
+    era = rms._per_window_scores(df, cell_fn, rms.PRIMARY_WINDOW_START)
+    assert era["n_windows"] > primary["n_windows"]
+
+
+def test_run_grid_primary_scoring_is_capped_on_a_frame_reaching_into_2026():
+    """run_grid's own primary column must reflect the capped window set, not the raw
+    (uncapped) one, on a frame that extends past PRIMARY_WINDOW_END."""
+    idx = pd.bdate_range("2011-01-01", "2026-06-30")
+    df = _synth_daily(n=len(idx), seed=23, drift=0.0003, start="2011-01-01")
+    rows = rms.run_grid(df)
+    for row in rows:
+        for label, _ in rms.COST_PRESETS:
+            p = row["presets"][label]
+            assert p["n_windows"] <= 13
 
 
 # ---------------------------------------------------------------------------

@@ -194,6 +194,11 @@ assert MES_SURVEY_BAR == _CANDLESTICK_SPY_BAR  # drift-proofing, enforced at imp
 
 #: Primary per-window statistic basis (D3): calendar-year 12-month windows, 2013-2025.
 PRIMARY_WINDOW_START = date(2013, 1, 1)
+#: Frozen cap on the primary (verdict-bearing) window set (round-1 review finding 2): the
+#: bar's own survey excludes a trailing partial year, so the primary set must too -- only
+#: FULL calendar-year windows with te <= this date are scored. The era read (all-available
+#: windows) stays un-capped so it keeps reading whatever the frame actually spans.
+PRIMARY_WINDOW_END = date(2025, 12, 31)
 
 
 # --- Cell construction --------------------------------------------------------------------
@@ -269,8 +274,43 @@ _MAX_LOOKBACK_DAYS = 150
 _MIN_WINDOW_BARS = 80
 
 
+def _align_tz(d: date, idx: pd.DatetimeIndex) -> pd.Timestamp:
+    """Tz-normalize a plain ``date`` to match ``df.index`` before it reaches pandas
+    comparison/``_slice_windows`` machinery — the ``--data``/``idata.load_local`` path
+    produces a UTC-aware index, while a plain ``date`` (e.g. the frozen
+    ``PRIMARY_WINDOW_START``/``PRIMARY_WINDOW_END``) constructs a tz-naive ``pd.Timestamp``;
+    comparing the two directly raises inside pandas.
+    """
+    ts = pd.Timestamp(d)
+    if idx.tz is not None and ts.tzinfo is None:
+        ts = ts.tz_localize(idx.tz)
+    elif idx.tz is None and ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts
+
+
+def _primary_windows(
+    df: pd.DataFrame, test_start: date, window_end: Optional[date] = None,
+) -> list:
+    """The calendar-year window set used by ``_per_window_scores``, filtered to FULL
+    windows with ``te <= window_end`` when a cap is given (round-1 review finding 2). With
+    ``window_end=None`` this is the raw (uncapped) era read.
+    """
+    idx = df.index
+    ts_start = _align_tz(test_start, idx)
+    windows = _slice_windows(
+        all_dates=idx, test_start=ts_start,
+        window_months=12, max_lookback_days=_MAX_LOOKBACK_DAYS,
+    )
+    if window_end is not None:
+        ts_end = _align_tz(window_end, idx)
+        windows = [w for w in windows if w[2] <= ts_end]
+    return windows
+
+
 def _per_window_scores(
     df: pd.DataFrame, cell_fn: Callable[[pd.DataFrame], dict], test_start: date,
+    window_end: Optional[date] = None,
 ) -> dict:
     """Median/worst per-window (12mo, calendar-aligned) after-tax DE annual-netting Calmar.
 
@@ -280,21 +320,13 @@ def _per_window_scores(
     scored: each window rebuilds the cell on a pre-rolled sub-frame and measures the TEST
     sub-window only.
 
-    ``test_start`` is tz-normalized to match ``df.index`` before reaching
-    ``_slice_windows`` — the ``--data``/``idata.load_local`` path produces a UTC-aware
-    index, while a plain ``date`` (e.g. the frozen ``PRIMARY_WINDOW_START``) constructs a
-    tz-naive ``pd.Timestamp``; comparing the two directly raises inside pandas.
+    ``window_end``, when given, caps the window set to FULL windows ending at or before it
+    (the frozen ``PRIMARY_WINDOW_END`` for the primary statistic) — a trailing partial year
+    must never enter the verdict-bearing median/worst. ``None`` (the era read) keeps every
+    window the frame's own span produces.
     """
     idx = df.index
-    ts_start = pd.Timestamp(test_start)
-    if idx.tz is not None and ts_start.tzinfo is None:
-        ts_start = ts_start.tz_localize(idx.tz)
-    elif idx.tz is None and ts_start.tzinfo is not None:
-        ts_start = ts_start.tz_localize(None)
-    windows = _slice_windows(
-        all_dates=idx, test_start=ts_start,
-        window_months=12, max_lookback_days=_MAX_LOOKBACK_DAYS,
-    )
+    windows = _primary_windows(df, test_start, window_end)
     calmars: list = []
     for pr_start, ts, te in windows:
         mask = (idx >= pr_start) & (idx <= te)
@@ -363,9 +395,13 @@ def run_grid(df: pd.DataFrame) -> list:
                     return build_random_cell(d, _arm, _r, _c)
 
                 full_sim = cell_fn(df)
-                primary = _per_window_scores(df, cell_fn, PRIMARY_WINDOW_START)
+                primary = _per_window_scores(
+                    df, cell_fn, PRIMARY_WINDOW_START, PRIMARY_WINDOW_END
+                )
                 era = _per_window_scores(df, cell_fn, df.index[0].date())
-                rand_primary = _per_window_scores(df, rand_fn, PRIMARY_WINDOW_START)
+                rand_primary = _per_window_scores(
+                    df, rand_fn, PRIMARY_WINDOW_START, PRIMARY_WINDOW_END
+                )
 
                 after_us = tax.apply_tax_to_ledger(
                     full_sim["trades"], full_sim["equity_curve"], jurisdiction="US"
