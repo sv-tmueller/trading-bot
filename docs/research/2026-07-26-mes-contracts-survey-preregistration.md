@@ -29,6 +29,12 @@ data anywhere in this PR** — every test in `tests/test_run_mes_swing_study.py`
 > from `main` only afterward, and stays human-merged. **No SPY number exists anywhere in this
 > document or in the commits behind it.**
 
+> **Addendum (2026-07-27, PR #463 — dated, not an in-place rewrite):** §7 has since been
+> filled, in the strictly later commit `0d206af` (PR #463, PR B of #457's two-PR delivery).
+> The banner above describes the freeze state at `c9a4408` and remains accurate as a
+> description of that commit — it is not rewritten. Verdict: **NO_GO at cumulative N=24**
+> (see §7).
+
 ---
 
 ## §0 Invariant framing (governs everything below)
