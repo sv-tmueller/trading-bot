@@ -11,6 +11,8 @@ Locks the runner's two frozen discipline rules (SUB_PLAN §4, do-not-de-scope):
 """
 from __future__ import annotations
 
+import subprocess
+
 import numpy as np
 import pandas as pd
 
@@ -133,6 +135,50 @@ def test_calibration_prints_reproducibility_hash_line(tmp_path, capsys):
     assert rc == 0
     assert "sha256(input)" in out
     assert "sha256(label" in out
+
+
+# ---------------------------------------------------------------------------
+# _cache_identity_hash -- round-1 tester finding: must match the documented shell
+# recipe (sort by PATH), not sort the digest lines (which sorts by digest instead).
+# ---------------------------------------------------------------------------
+
+def _shell_recipe_hash(root) -> str:
+    """The documented recipe, executed for real:
+    ``find <root> -type f | sort | xargs shasum -a 256 | shasum -a 256``."""
+    find_proc = subprocess.run(
+        ["find", str(root), "-type", "f"], capture_output=True, text=True, check=True
+    )
+    sorted_paths = "\n".join(sorted(line for line in find_proc.stdout.splitlines() if line))
+    shasum_proc = subprocess.run(
+        ["xargs", "shasum", "-a", "256"],
+        input=sorted_paths + ("\n" if sorted_paths else ""),
+        capture_output=True, text=True, check=True,
+    )
+    final_proc = subprocess.run(
+        ["shasum", "-a", "256"], input=shasum_proc.stdout, capture_output=True, text=True, check=True,
+    )
+    return final_proc.stdout.split()[0]
+
+
+def test_cache_identity_hash_matches_the_documented_shell_recipe(tmp_path):
+    """Pins ``_cache_identity_hash`` against a real run of the shell recipe it claims to
+    reimplement, on a small constructed fixture tree with filenames that sort
+    differently by path than by content digest (so a digest-sort bug would be caught)."""
+    root = tmp_path / "fxcm_cache"
+    (root / "2012").mkdir(parents=True)
+    (root / "2013").mkdir(parents=True)
+    (root / "2012" / "w01.csv").write_text("alpha content\n")
+    (root / "2012" / "w02.csv").write_text("bravo content, a different length\n")
+    (root / "2013" / "w01.csv").write_text("charlie\n")
+
+    expected = _shell_recipe_hash(root)
+    actual = rfc._cache_identity_hash(str(root))
+
+    assert actual == expected
+
+
+def test_cache_identity_hash_returns_none_for_a_missing_root(tmp_path):
+    assert rfc._cache_identity_hash(str(tmp_path / "does_not_exist")) is None
 
 
 def test_calibration_two_runs_produce_identical_reproducibility_hashes(tmp_path, capsys):

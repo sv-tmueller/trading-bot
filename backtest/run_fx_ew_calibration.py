@@ -77,14 +77,19 @@ def _cache_identity_hash(root: str) -> Optional[str]:
     """
     if not os.path.isdir(root):
         return None
-    lines = []
+    paths = []
     for dirpath, _dirs, filenames in os.walk(root):
         for name in filenames:
-            path = os.path.join(dirpath, name)
-            with open(path, "rb") as fh:
-                digest = hashlib.sha256(fh.read()).hexdigest()
-            lines.append(f"{digest}  {path}\n")
-    lines.sort()
+            paths.append(os.path.join(dirpath, name))
+    # Sort by PATH (matches `find ... | sort` in the shell recipe, which sorts before
+    # `xargs shasum` ever runs) -- NOT by the "<digest>  <path>" line, which would sort
+    # by digest first and produce a different hash than the documented recipe.
+    paths.sort()
+    lines = []
+    for path in paths:
+        with open(path, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        lines.append(f"{digest}  {path}\n")
     return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
 
 
