@@ -394,12 +394,266 @@ paper/live step regardless of verdict.
 
 ## §7 Results
 
-**EMPTY BY DESIGN — this is PR A of #457's two-PR delivery (see the status banner at the top
-of this document).** No SPY number exists anywhere in this document or in the commits behind
-it. §7 is filled in a strictly later commit, on a strictly later PR (PR B), branched only
-after this PR merges to `main`. §0-§6/§8/§9 will be unedited from this freeze at that point —
-the diff between the freeze commit and the results commit will be confined to §7 plus a dated
-addendum under this document's front-matter banner (the same discipline #448/#455 used).
+**Verdict: NO_GO. 0/24 cells clear the frozen 1.3085475049604838 SPY bar at either
+co-primary cost preset (0/24 at both). The pooled #398 gate at cumulative N=24 also FAILS.
+Per §6, the `mes_swing` family is closed.**
+
+This section is filled in this strictly later commit, on this strictly later PR (PR B of
+#457), after PR A (the freeze, `c9a4408`) merged to `main`. §0–§6/§8/§9 above are unedited
+from the freeze — the diff between the freeze commit and this one is confined to §7 plus
+the dated addendum in the front matter above (the same discipline #448/#455 used).
+
+### §7.0 Provenance (read before quoting any number below)
+
+Fetched via the frozen helper, unmodified:
+
+```python
+from datetime import date
+from backtest.run_candlestick_study import _fetch_daily
+df = _fetch_daily("SPY", date(2026, 7, 24))
+```
+
+- **Fetch date:** 2026-07-27 (this PR's session, run from the dispatched worktree).
+- **`end` argument used:** `date(2026, 7, 24)` — **not** a later end date, disclosed
+  deviation from the sub-plan's suggestion to consider a later `end`: a direct raw
+  `yfinance.download(..., end="2026-07-27")` probe (run before choosing the frozen-helper
+  call above) showed the `2026-07-24` bar's `Close`/`Adj Close` as `NaN` (an in-progress/
+  lagged print, the same artifact `run_candlestick_study`'s own §7.0 disclosed for the same
+  calendar date in the prior research session) and no trading days fall between 2026-07-24
+  and 2026-07-27 (Sat/Sun), so any `end` from `2026-07-25` through today would still admit
+  that NaN row. `end=date(2026, 7, 24)` (exclusive) is the smallest end date that excludes
+  it, matching the candlestick PR B precedent's own choice for the same reason.
+- **NaN handling:** `idata.validate_ohlc` raised `DataQualityError: OHLC contains NaN
+  values` on the first attempt with `end=date(2026, 7, 27)`; re-run with
+  `end=date(2026, 7, 24)` produced a clean frame (`df.isna().any().any()` is `False`) — no
+  post-hoc row-dropping or imputation, only the `end`-argument exclusion the helper already
+  supports.
+- **Bar count / span:** **8,427 bars, 1993-01-29 -> 2026-07-23** — byte-identical to the
+  candlestick programme's own PR B read (`2026-07-26-candlestick-timestop-preregistration.md`
+  §7.0), which is expected: same underlying SPY history, same session-relative NaN
+  artifact, same `end` argument, one trading day after that read.
+- **Power, asserted before the grid ran:** `idata.describe_power(df)` -> `PROMOTABLE`
+  (`n_w=33 >= 13`, 8427 sessions) — checked interactively before either the study or the
+  gate was invoked, per the pre-registration's own precondition.
+- **Local cache:** written to `data/SPY_daily.csv`, gitignored (`/data/` in `.gitignore`) —
+  never committed; `git ls-files data/` is empty (verified below).
+- **n_w=13 investigation (binding reviewer note on PR #462, round 2):** the printed grid
+  below shows the primary-column `n_w` **varying by cell (9-13)**, not a constant 13 — this
+  was investigated rather than absorbed. `ALWAYS_IN`, the one row structurally immune to
+  the per-window NaN/no-trade drop (§3's documented convention — an always-in position
+  never has a zero-trade window), shows **exactly `n_w=13` at both presets**, confirming
+  `_primary_windows` itself constructs exactly the frozen 13 full calendar-year windows
+  (2013-2025) with no off-by-one or partial-window contamination — the same invariant the
+  round-2 tester verified on synthetic data (`_primary_windows` returns exactly 13 windows,
+  `run_grid` never exceeds `n_w=13` in primary columns). The lower-than-13 `n_w` values on
+  the sparser-firing arms (T2/M2/V2 and their short mirrors, which trade infrequently
+  enough that some calendar years never fire) are exactly the documented `NaN/no-trade
+  windows are dropped from scoring` behaviour of `_per_window_scores` (§3), reported
+  honestly via the `n_w`/`n_pos` columns rather than scored as 0.0 — not a defect. No cell's
+  primary `n_w` ever exceeds 13. This is a plain disclosure, not a silent absorption of the
+  binding note's instruction.
+- **Reproduce:**
+  ```bash
+  python3 -m backtest.run_mes_swing_study --data data/SPY_daily.csv
+  python3 -m backtest.run_mes_swing_gate --data data/SPY_daily.csv
+  ```
+
+### §7.1 The full 24/24 grid, both co-primary presets (verbatim, no truncation)
+
+```
+MES swing-contracts study — frozen 24-cell grid (12 edge-trigger arms x R{2,3})
+source: local:data/SPY_daily.csv
+power: PROMOTABLE — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power floors
+bars: 8427  span: 1993-01-29 00:00:00+00:00 -> 2026-07-23 00:00:00+00:00
+frozen MES survey bar (median-window after-tax DE annual-netting Calmar): 1.3085475049604838
+
+--- cost preset: base (0.70 bp round trip) ---
+arm       dir      R     median      worst  >bar?  n_w   #tr    random             status
+M1L       long     3    +1.5475    -0.8706     no   11   118   +0.4800                 ok
+M1L       long     2    +1.0996    -0.7248     no   11   126   +0.0695                 ok
+T1L       long     2    +1.0574    -0.2580     no   13    98   +0.1330                 ok
+T1L       long     3    +0.7693    -0.4465     no   13    96   +0.4153                 ok
+V2L       long     3    +0.7258    -0.3487     no    9    59   +0.6867                 ok
+V1L       long     3    +0.6079    -0.5179     no   13   323   +0.4697                 ok
+T2L       long     2    +0.4814    -0.9770     no    9    48   -0.7440                 ok
+V2L       long     2    +0.4700    -0.5676     no    9    59   +0.3760                 ok
+V1L       long     2    +0.3157    -0.4500     no   13   378   +0.0321                 ok
+M2L       long     3    +0.2973    -0.7349     no   10    66   +0.3853                 ok
+T2L       long     3    +0.2726    -0.9770     no    9    48   -0.7440                 ok
+T2S       short    3    +0.2149    -1.0061     no    9    48   -0.6461                 ok
+M2L       long     2    +0.1249    -0.7936     no    9    70   +0.0278                 ok
+T2S       short    2    +0.0044    -1.0061     no    9    48   +0.3117                 ok
+V2S       short    3    -0.0644    -0.9596     no   12   118   -0.3604                 ok
+M2S       short    3    -0.2032    -1.0061     no    9    66   -0.5165                 ok
+M2S       short    2    -0.2948    -1.0061     no    9    77   -0.5468                 ok
+V2S       short    2    -0.3070    -0.9093     no   12   120   -0.3176                 ok
+M1S       short    2    -0.3743    -1.0060     no   11   132   -0.4171                 ok
+T1S       short    2    -0.5157    -1.0144     no   13   101   -0.2558                 ok
+T1S       short    3    -0.5542    -1.0144     no   13   100   -0.6096                 ok
+M1S       short    3    -0.6074    -1.0060     no   11   114   -0.1410                 ok
+V1S       short    2    -0.6924    -0.9919     no   13   378   -0.8874                 ok
+V1S       short    3    -0.7597    -1.0136     no   13   337   -0.7075                 ok
+ALWAYS_IN -        -    +1.0661    -0.7948    n/a   13     1       n/a                 ok
+cells clearing at base: 0 / 24
+
+--- cost preset: pessimistic (1.06 bp round trip) ---
+arm       dir      R     median      worst  >bar?  n_w   #tr    random             status
+M1L       long     3    +1.5458    -0.8723     no   11   118   +0.4738                 ok
+M1L       long     2    +1.0931    -0.7272     no   11   126   +0.0646                 ok
+T1L       long     2    +1.0545    -0.2603     no   13    98   +0.1312                 ok
+T1L       long     3    +0.7675    -0.4473     no   13    96   +0.4134                 ok
+V2L       long     3    +0.7224    -0.3491     no    9    59   +0.6853                 ok
+V1L       long     3    +0.6028    -0.5183     no   13   323   +0.4672                 ok
+T2L       long     2    +0.4806    -0.9774     no    9    48   -0.7447                 ok
+V2L       long     2    +0.4675    -0.5674     no    9    59   +0.3743                 ok
+V1L       long     2    +0.3130    -0.4513     no   13   378   +0.0283                 ok
+M2L       long     3    +0.2962    -0.7353     no   10    66   +0.3836                 ok
+T2L       long     3    +0.2711    -0.9774     no    9    48   -0.7447                 ok
+T2S       short    3    +0.2131    -1.0061     no    9    48   -0.6466                 ok
+M2L       long     2    +0.1236    -0.7944     no    9    70   +0.0263                 ok
+T2S       short    2    +0.0028    -1.0061     no    9    48   +0.3106                 ok
+V2S       short    3    -0.0679    -0.9599     no   12   118   -0.3623                 ok
+M2S       short    3    -0.2047    -1.0061     no    9    66   -0.5183                 ok
+M2S       short    2    -0.2958    -1.0061     no    9    77   -0.5488                 ok
+V2S       short    2    -0.3129    -0.9105     no   12   120   -0.3209                 ok
+M1S       short    2    -0.3768    -1.0060     no   11   132   -0.4196                 ok
+T1S       short    2    -0.5177    -1.0144     no   13   101   -0.2581                 ok
+T1S       short    3    -0.5550    -1.0144     no   13   100   -0.6104                 ok
+M1S       short    3    -0.6082    -1.0060     no   11   114   -0.1447                 ok
+V1S       short    2    -0.6968    -0.9920     no   13   378   -0.8885                 ok
+V1S       short    3    -0.7604    -1.0136     no   13   337   -0.7085                 ok
+ALWAYS_IN -        -    +1.0660    -0.7949    n/a   13     1       n/a                 ok
+cells clearing at pessimistic: 0 / 24
+
+--- D3 secondary columns (reported, never verdict-bearing) ---
+
+--- secondary columns: base ---
+arm       dir      R    era_med    era_wst era_nw    full_us    full_de n_pos
+M1L       long     3    +0.5708    -0.8177     32    -0.0108    +0.0039     9
+M1L       long     2    +0.4151    -0.9458     32    -0.0279    -0.0147     9
+T1L       long     2    +0.3961    -0.9999     33    +0.0233    +0.0532    11
+T1L       long     3    +0.5969    -0.9999     34    +0.0206    +0.0418    11
+V2L       long     3    +0.5211    -0.8682     28    -0.0216    -0.0122     7
+V1L       long     3    +0.4437    -0.7590     34          —    -0.0718     8
+T2L       long     2    +0.4801    -1.0110     29    -0.0227    -0.0188     6
+V2L       long     2    +0.1956    -0.9785     28    -0.0321    -0.0268     7
+V1L       long     2    +0.3889    -0.7340     34          —          —     9
+M2L       long     3    +0.3498    -0.9966     27    -0.0212    -0.0131     7
+T2L       long     3    +0.3642    -1.0110     30    -0.0153    -0.0090     5
+T2S       short    3    +0.1468    -1.0114     28    -0.0211    -0.0122     5
+M2L       long     2    +0.0195    -0.9966     25    -0.0328    -0.0283     6
+T2S       short    2    +0.1669    -1.0114     28    -0.0213    -0.0139     5
+V2S       short    3    -0.3700    -1.0115     31    -0.0510    -0.0466     6
+M2S       short    3    +0.0114    -1.0034     26    -0.0398    -0.0360     3
+M2S       short    2    -0.0359    -1.0034     26    -0.0406    -0.0368     3
+V2S       short    2    -0.2703    -1.0117     31    -0.0419    -0.0385     2
+M1S       short    2    -0.2236    -1.0117     31    -0.0543    -0.0440     3
+T1S       short    2    -0.1996    -1.0116     34    -0.0473    -0.0427     4
+T1S       short    3    -0.2866    -1.0116     34    -0.0516    -0.0444     3
+M1S       short    3    -0.1773    -1.0117     32    -0.0578    -0.0463     3
+V1S       short    2    -0.3861    -1.0050     34          —          —     3
+V1S       short    3    -0.4336    -1.0103     34          —          —     3
+ALWAYS_IN -        -    +0.6725    -0.7559     34    +0.1445    +0.1394    10
+
+--- secondary columns: pessimistic ---
+arm       dir      R    era_med    era_wst era_nw    full_us    full_de n_pos
+M1L       long     3    +0.5686    -0.8179     32    -0.0110    +0.0037     9
+M1L       long     2    +0.4129    -0.9461     32    -0.0281    -0.0150     9
+T1L       long     2    +0.3936    -1.0000     33    +0.0228    +0.0526    11
+T1L       long     3    +0.5951    -1.0000     34    +0.0202    +0.0414    11
+V2L       long     3    +0.5188    -0.8684     28    -0.0217    -0.0123     7
+V1L       long     3    +0.4415    -0.7664     34          —    -0.0791     8
+T2L       long     2    +0.4793    -1.0110     29    -0.0228    -0.0189     6
+V2L       long     2    +0.1943    -0.9791     28    -0.0322    -0.0268     7
+V1L       long     2    +0.3833    -0.7345     34          —          —     9
+M2L       long     3    +0.3491    -0.9968     27    -0.0213    -0.0133     7
+T2L       long     3    +0.3625    -1.0110     30    -0.0154    -0.0091     5
+T2S       short    3    +0.1453    -1.0114     28    -0.0213    -0.0123     5
+M2L       long     2    +0.0182    -0.9968     25    -0.0329    -0.0284     6
+T2S       short    2    +0.1655    -1.0114     28    -0.0214    -0.0141     5
+V2S       short    3    -0.3715    -1.0115     31    -0.0511    -0.0467     6
+M2S       short    3    +0.0103    -1.0034     26    -0.0399    -0.0361     3
+M2S       short    2    -0.0375    -1.0034     26    -0.0407    -0.0369     3
+V2S       short    2    -0.2750    -1.0117     31    -0.0421    -0.0386     2
+M1S       short    2    -0.2249    -1.0117     31    -0.0544    -0.0441     3
+T1S       short    2    -0.2007    -1.0116     34    -0.0474    -0.0428     4
+T1S       short    3    -0.2880    -1.0116     34    -0.0518    -0.0445     3
+M1S       short    3    -0.1792    -1.0117     32    -0.0580    -0.0465     3
+V1S       short    2    -0.3881    -1.0064     34          —          —     3
+V1S       short    3    -0.4360    -1.0103     34          —          —     3
+ALWAYS_IN -        -    +0.6724    -0.7559     34    +0.1445    +0.1394    10
+
+cells clearing at BOTH co-primary presets: 0 / 24
+
+this grid N = 24
+cumulative family N = 24
+```
+
+**Closest cell to clearing:** `M1L` R3 exceeds the bar on median alone at both presets
+(+1.5475/+1.5458 > 1.3085475049604838) but fails the co-equal worst-window condition
+(-0.8706/-0.8723, both <= 0) — D3's "median AND worst" rule is exactly what prevents this
+from counting as a clear. No cell clears at either preset; 0/24 clear at both.
+
+### §7.2 The pooled #398 gate at cumulative N=24 (verbatim)
+
+```
+Pooled #398 overfitting gate — mes_swing family, cumulative N=24
+source: local:data/SPY_daily.csv
+power: PROMOTABLE: 8427 bars / 8427 sessions / n_w=33 (1993-01-29 -> 2026-07-23) — n_w=33 >= 13 and 8427 sessions; clears the pre-registered power floors
+n_trials: 24
+best cell: ('T1L', 3.0) over 8427 common days
+DSR 0.4804 (threshold >= 0.95) -> FAIL
+PBO 0.1660 (threshold < 0.5) -> PASS
+bootstrap ci_low -0.000465 (threshold > 0) -> FAIL
+combined verdict -> FAIL
+reasons: dsr 0.4804 < threshold 0.95; bootstrap ci_low -0.000465 <= 0
+```
+
+**CUMULATIVE family N = 24: pooled gate combined verdict = FAIL** (DSR 0.4804, well below
+the 0.95 deflation threshold; PBO 0.1660 passes; bootstrap ci_low -0.000465 fails). The best
+cell across all 24 pooled trials is `T1L`/R3 — a cell that does not clear the D3 bar either
+(§7.1: median +0.7693/+0.7675, below 1.3085475049604838 at both presets).
+
+### §7.3 Verdict, per the §6 pre-committed mapping
+
+**0/24 cells clear the frozen bar at both co-primary presets (in fact 0/24 clear at either
+preset individually)** -> per §6's pre-committed mapping ("No cell clears at both co-primary
+presets (including cells clearing at only one)"), **the `mes_swing`/`daily`/`SPY` row is
+recorded as `NO_GO`**. None of the twelve edge-trigger arms, re-parameterized for a daily
+equity-index bar with a turtle-style ATR bracket, rescue the class under the MES wrapper's
+own verified cost bracket.
+
+### §7.4 §6 stopping-rule invocation
+
+Per §6's three conditions, evaluated on this SPY `PROMOTABLE` read:
+
+1. **"at least one cell clears the frozen bar (median > 1.3085475049604838 AND worst scored
+   window > 0) at both co-primary cost presets"** — **FAILED.** 0/24 cells clear at either
+   preset, let alone both (§7.1); the closest candidate (`M1L` R3) clears on median alone
+   but fails the worst-window co-condition at both presets.
+2. **"the pooled #398 gate at cumulative family N=24 returns a combined PASS"** —
+   **FAILED.** Combined verdict is `FAIL` (§7.2).
+3. **"that cell beats both its random-entry twin and the always-in benchmark, on the same
+   frame and the same basis"** — **N/A**, no cell exists to test (condition 1 already
+   failed; for context, `ALWAYS_IN` itself scores +1.0661/+1.0660, below the bar, and would
+   not itself qualify as a candidate).
+
+**Conditions 1 and 2 fail; condition 3 is vacuously unsatisfiable (no cell cleared the
+bar).** Per §6's binding text, "if any of the three fails, the `mes_swing` family is closed
+NO-GO." **The `mes_swing` family is closed.** No round 2 (the disclosed vol-regime-gating
+axis) is frozen; the vehicle-robustness axis (ES=F) is not attempted. Per §6, the verdict is
+the contracts direction's survey verdict — #453's closing condition is met, though closure
+itself (updating #453) is operator/lead business, not this PR's. The closure is recorded in
+`backtest/tested_cells.py` (§7.5) and in the weekly review
+(`docs/research/reviews/2026-W31.md`).
+
+### §7.5 Ledger flip
+
+`backtest/tested_cells.py`'s `mes_swing`/`daily`/`SPY` record flips from `PENDING`/
+`power="NONE"` to `verdict=NO_GO`/`power="PROMOTABLE"`, with the gate figures and the §6
+invocation carried in the record's `note`. `cumulative_trials("mes_swing")` goes from `0`
+(PR A) to `24` (this PR) — this round's 24 SPY trials now count against future multiplicity
+in this family.
 
 ---
 
