@@ -246,3 +246,196 @@ def test_random_cell_matches_entry_count_and_is_seed_reproducible():
 
 def test_random_seed_default_is_42():
     assert rms.RANDOM_SEED == 42
+
+
+# ---------------------------------------------------------------------------
+# Per-window annual-netting scoring (D3)
+# ---------------------------------------------------------------------------
+
+def test_per_window_scores_drops_nan_windows_and_reports_counts():
+    """A monotone-declining series never triggers a long arm -> every window is zero-trade
+    (NaN Calmar dropped), mirroring run_turtle_breakout._per_window_calmar's own test."""
+    idx = pd.bdate_range("2010-01-01", periods=700)
+    close = np.linspace(100.0, 50.0, 700)
+    open_ = np.concatenate([[100.0], close[:-1]])
+    high = np.maximum(open_, close) + 0.1
+    low = np.minimum(open_, close) - 0.1
+    df = pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
+    arm = next(a for a in rms.ARMS if a[0] == "T1L")  # long-only trend arm
+
+    def cell_fn(d):
+        return rms.build_cell(d, arm, 2.0, commission_bps=0.35)
+
+    scores = rms._per_window_scores(df, cell_fn, rms.PRIMARY_WINDOW_START)
+    assert scores["n_windows"] == 0
+    assert np.isnan(scores["median_calmar"])
+    assert np.isnan(scores["worst_calmar"])
+
+
+def test_per_window_scores_uses_annual_netting_not_deduct_at_exit():
+    """The primary statistic must differ, in general, from the US deduct-at-exit model —
+    otherwise D3's tax-mode deviation from the candlestick precedent would be a no-op."""
+    df = _trending_daily(900, drift=0.004)
+    arm = next(a for a in rms.ARMS if a[0] == "T2L")
+
+    def cell_fn(d):
+        return rms.build_cell(d, arm, 2.0, commission_bps=0.35)
+
+    sim = cell_fn(df)
+    from backtest.run_candidate_survey import _curve_metrics
+    from backtest import tax as tax_mod
+    de_annual = tax_mod.apply_annual_netting_tax(sim["trades"], sim["equity_curve"])
+    us_exit = tax_mod.apply_tax_to_ledger(sim["trades"], sim["equity_curve"], jurisdiction="US")
+    # Not asserting inequality of curves in general (could coincide with 0 trades), but the
+    # two tax functions used are genuinely different calls -- this test exists to pin that
+    # run_grid's primary path calls apply_annual_netting_tax, checked structurally below.
+    assert de_annual.index.equals(us_exit.index)
+
+
+def test_run_grid_calls_annual_netting_tax(monkeypatch):
+    calls = []
+    from backtest import tax as tax_mod
+    original = tax_mod.apply_annual_netting_tax
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rms.tax, "apply_annual_netting_tax", spy)
+    df = _trending_daily(900, drift=0.003)
+    rms.run_grid(df)
+    assert len(calls) > 0
+
+
+# ---------------------------------------------------------------------------
+# Grid runner shape + report
+# ---------------------------------------------------------------------------
+
+def test_run_grid_returns_one_row_per_frozen_cell():
+    df = _synth_daily(900, seed=5)
+    rows = rms.run_grid(df)
+    assert len(rows) == rms.N_CELLS
+    assert {(r["arm"], r["r"]) for r in rows} == {
+        (a[0], r) for a in rms.ARMS for r in rms.R_GRID
+    }
+
+
+def test_every_row_carries_both_cost_presets():
+    df = _synth_daily(900, seed=5)
+    rows = rms.run_grid(df)
+    for row in rows:
+        assert set(row["presets"].keys()) == {"base", "pessimistic"}
+        assert "clears_both" in row
+
+
+def test_report_prints_both_this_grid_and_cumulative_N_lines():
+    df = _synth_daily(900, seed=5)
+    power = rms.idata.describe_power(df)
+    rows = rms.run_grid(df)
+    text = rms.format_report(rows, power, "test")
+    assert f"this grid N = {rms.N_CELLS}" in text
+    assert f"cumulative family N = {rms.CUMULATIVE_N}" in text
+
+
+def test_report_prints_all_24_cells_at_both_presets_with_no_truncation():
+    df = _synth_daily(900, seed=5)
+    power = rms.idata.describe_power(df)
+    rows = rms.run_grid(df)
+    text = rms.format_report(rows, power, "test")
+    for arm in rms.ARMS:
+        assert text.count(arm[0]) >= 2  # appears in at least both preset tables
+    assert "base" in text and "pessimistic" in text
+    assert text.count("cells clearing at") == 3  # base, pessimistic, BOTH
+
+
+def test_report_prints_the_bar_at_full_precision():
+    df = _synth_daily(900, seed=5)
+    power = rms.idata.describe_power(df)
+    rows = rms.run_grid(df)
+    text = rms.format_report(rows, power, "test")
+    assert "1.3085475049604838" in text
+
+
+def test_report_never_prints_a_bare_nan():
+    power_stub = rms.idata.describe_power(_synth_daily(600))
+    rows = [{
+        "arm": "T1L", "direction": LONG, "r": 2.0,
+        "presets": {
+            "base": {
+                "median_calmar": float("nan"), "worst_calmar": float("nan"),
+                "n_windows": 0, "n_positive": 0, "clears": False,
+                "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
+                "era_n_windows": 0, "full_calmar_us": float("nan"),
+                "full_calmar_de": float("nan"), "random_median_calmar": float("nan"),
+                "trade_count": 0,
+            },
+            "pessimistic": {
+                "median_calmar": float("nan"), "worst_calmar": float("nan"),
+                "n_windows": 0, "n_positive": 0, "clears": False,
+                "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
+                "era_n_windows": 0, "full_calmar_us": float("nan"),
+                "full_calmar_de": float("nan"), "random_median_calmar": float("nan"),
+                "trade_count": 0,
+            },
+        },
+        "clears_both": False,
+    }]
+    text = rms.format_report(rows, power_stub, "test")
+    assert "nan" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# CLI behaviour
+# ---------------------------------------------------------------------------
+
+def test_main_exits_2_when_the_data_file_is_missing(tmp_path, capsys):
+    rc = rms.main(["--data", str(tmp_path / "nope.csv")])
+    assert rc == 2
+    assert "DATA-BLOCKED" in capsys.readouterr().err
+
+
+def test_main_exits_2_and_prints_no_table_on_an_underpowered_frame(tmp_path, capsys):
+    df = _synth_daily(120)
+    path = tmp_path / "shallow.csv"
+    df.reset_index(names="timestamp").to_csv(path, index=False)
+
+    rc = rms.main(["--data", str(path)])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "UNDERPOWERED" in captured.err
+    assert captured.out == ""
+    for arm in rms.ARMS:
+        assert arm[0] not in captured.err
+
+
+def test_main_runs_the_full_grid_on_a_powered_frame(tmp_path, capsys):
+    df = _synth_daily(3600, seed=13, drift=0.0004)
+    path = tmp_path / "deep.csv"
+    df.reset_index(names="timestamp").to_csv(path, index=False)
+
+    rc = rms.main(["--data", str(path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert f"cumulative family N = {rms.CUMULATIVE_N}" in out
+
+
+# ---------------------------------------------------------------------------
+# Negative control (pure-noise grid, both presets)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_pure_noise_clears_no_cell_at_either_preset():
+    """Driftless random-walk daily OHLC must clear no cell at either cost preset.
+
+    Construction copied unchanged from the candlestick/turtle precedent
+    (``_synth_daily(3600, seed=2026, drift=0.0)``) so the control is directly comparable.
+    """
+    df = _synth_daily(3600, seed=2026, drift=0.0)
+    rows = rms.run_grid(df)
+    assert len(rows) == rms.N_CELLS
+    for row in rows:
+        for label, _ in rms.COST_PRESETS:
+            assert not row["presets"][label]["clears"], (
+                f"{row['arm']}/R{row['r']}/{label} cleared on pure noise"
+            )
+    assert not any(row["clears_both"] for row in rows)

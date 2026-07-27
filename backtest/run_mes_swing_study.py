@@ -279,10 +279,20 @@ def _per_window_scores(
     deduct-at-exit model (D3 — the instrument's actual tax regime). Warm-up bars are never
     scored: each window rebuilds the cell on a pre-rolled sub-frame and measures the TEST
     sub-window only.
+
+    ``test_start`` is tz-normalized to match ``df.index`` before reaching
+    ``_slice_windows`` — the ``--data``/``idata.load_local`` path produces a UTC-aware
+    index, while a plain ``date`` (e.g. the frozen ``PRIMARY_WINDOW_START``) constructs a
+    tz-naive ``pd.Timestamp``; comparing the two directly raises inside pandas.
     """
     idx = df.index
+    ts_start = pd.Timestamp(test_start)
+    if idx.tz is not None and ts_start.tzinfo is None:
+        ts_start = ts_start.tz_localize(idx.tz)
+    elif idx.tz is None and ts_start.tzinfo is not None:
+        ts_start = ts_start.tz_localize(None)
     windows = _slice_windows(
-        all_dates=idx, test_start=test_start,
+        all_dates=idx, test_start=ts_start,
         window_months=12, max_lookback_days=_MAX_LOOKBACK_DAYS,
     )
     calmars: list = []
