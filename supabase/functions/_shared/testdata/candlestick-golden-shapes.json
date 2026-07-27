@@ -1,0 +1,1660 @@
+{
+  "schema": 1,
+  "source": "backtest/run_candlestick_fixture_export.py",
+  "generated_from": "hand-constructed shapes lifted from tests/test_candlestick.py + degenerate cases + empty",
+  "thresholds": {
+    "DOJI_BODY_MAX": 0.1,
+    "HAMMER_WICK_MIN": 2.0,
+    "HAMMER_OPP_WICK_MAX": 0.1,
+    "PIN_WICK_MIN": 0.66,
+    "MARUBOZU_BODY_MIN": 0.9,
+    "STAR_BODY_MAX": 0.3,
+    "CONTEXT_SMA_WINDOW": 200,
+    "FIRING_RATE_MAX": 0.25,
+    "FIRING_RATE_MIN": 0.005
+  },
+  "pattern_order": [
+    "bullish_engulfing",
+    "bearish_engulfing",
+    "hammer",
+    "shooting_star",
+    "bullish_pin_bar",
+    "bearish_pin_bar",
+    "bullish_marubozu",
+    "bearish_marubozu",
+    "bullish_harami",
+    "bearish_harami",
+    "morning_star",
+    "evening_star",
+    "doji",
+    "inside_bar"
+  ],
+  "directions": {
+    "bullish_engulfing": "long",
+    "bearish_engulfing": "short",
+    "hammer": "long",
+    "shooting_star": "short",
+    "bullish_pin_bar": "long",
+    "bearish_pin_bar": "short",
+    "bullish_marubozu": "long",
+    "bearish_marubozu": "short",
+    "bullish_harami": "long",
+    "bearish_harami": "short",
+    "morning_star": "long",
+    "evening_star": "short",
+    "doji": "neutral",
+    "inside_bar": "neutral"
+  },
+  "cases": [
+    {
+      "name": "hammer_positive",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 101.2,
+          "l": 97.0,
+          "c": 101.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [
+          1
+        ],
+        "shooting_star": [],
+        "bullish_pin_bar": [
+          1
+        ],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 1,
+        "shooting_star": 0,
+        "bullish_pin_bar": 1,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "hammer_rejects_long_upper_wick",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 104.0,
+          "l": 99.8,
+          "c": 101.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [
+          1
+        ],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [
+          1
+        ],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 1,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 1,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "hammer_rejects_body_too_large_for_wick",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 103.1,
+          "l": 99.0,
+          "c": 103.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "shooting_star_is_the_hammer_mirror",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 101.0,
+          "h": 104.0,
+          "l": 100.8,
+          "c": 100.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [
+          1
+        ],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [
+          1
+        ],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 1,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 1,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "pin_bars_two_thirds_of_range",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.6,
+          "l": 97.6,
+          "c": 100.2
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [
+          1
+        ],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0,
+          1
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 1,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 2,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "marubozu_dominates_range",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.0,
+          "l": 100.0,
+          "c": 109.5
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [
+          1
+        ],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 1,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "marubozu_rejects_big_wicks",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 115.0,
+          "l": 95.0,
+          "c": 109.5
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "doji_small_body",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 102.0,
+          "l": 98.0,
+          "c": 100.05
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0,
+          1
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 2,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "doji_rejects_full_body",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.0,
+          "l": 100.0,
+          "c": 110.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [
+          1
+        ],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 1,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "bullish_engulfing_positive",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 105.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 99.0,
+          "h": 106.5,
+          "l": 98.5,
+          "c": 106.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [
+          2
+        ],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 1,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "bullish_engulfing_rejects_non_engulfing_body",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 105.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 101.0,
+          "h": 106.5,
+          "l": 100.5,
+          "c": 106.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "engulfing_inclusive_no_gap_bullish",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 105.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 106.5,
+          "l": 99.5,
+          "c": 106.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [
+          2
+        ],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 1,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "engulfing_inclusive_no_gap_bearish",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 105.0
+        },
+        {
+          "o": 105.0,
+          "h": 105.5,
+          "l": 98.5,
+          "c": 99.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [
+          2
+        ],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 1,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "harami_vs_engulfing_bearish_prior",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 110.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 102.0,
+          "h": 108.5,
+          "l": 101.5,
+          "c": 108.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [
+          1
+        ],
+        "bullish_harami": [
+          2
+        ],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": [
+          2
+        ]
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 1,
+        "bullish_harami": 1,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 1
+      }
+    },
+    {
+      "name": "harami_vs_engulfing_bullish_prior",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 110.0
+        },
+        {
+          "o": 111.0,
+          "h": 111.5,
+          "l": 98.5,
+          "c": 99.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [
+          2
+        ],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [
+          1
+        ],
+        "bearish_marubozu": [
+          2
+        ],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 1,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 1,
+        "bearish_marubozu": 1,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "bullish_engulfing_requires_prior_bearish",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 105.0
+        },
+        {
+          "o": 99.0,
+          "h": 106.5,
+          "l": 98.5,
+          "c": 106.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "bearish_engulfing_is_the_mirror",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 105.5,
+          "l": 99.5,
+          "c": 105.0
+        },
+        {
+          "o": 106.0,
+          "h": 106.5,
+          "l": 98.5,
+          "c": 99.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [
+          2
+        ],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 1,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "bearish_harami_positive",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 110.0
+        },
+        {
+          "o": 108.0,
+          "h": 108.5,
+          "l": 101.5,
+          "c": 102.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [
+          1
+        ],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [
+          2
+        ],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": [
+          2
+        ]
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 1,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 1,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 1
+      }
+    },
+    {
+      "name": "inside_bar_full_range_containment",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.0,
+          "l": 90.0,
+          "c": 105.0
+        },
+        {
+          "o": 101.0,
+          "h": 108.0,
+          "l": 92.0,
+          "c": 103.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": [
+          2
+        ]
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 1
+      }
+    },
+    {
+      "name": "inside_bar_rejects_poke_above",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.0,
+          "l": 90.0,
+          "c": 105.0
+        },
+        {
+          "o": 101.0,
+          "h": 111.0,
+          "l": 92.0,
+          "c": 103.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "morning_star_positive",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 110.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 98.0,
+          "h": 99.0,
+          "l": 97.0,
+          "c": 97.5
+        },
+        {
+          "o": 99.0,
+          "h": 107.5,
+          "l": 98.5,
+          "c": 107.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [
+          1
+        ],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [
+          3
+        ],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 1,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 1,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "morning_star_rejects_close_below_prior_midpoint",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 110.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 98.0,
+          "h": 99.0,
+          "l": 97.0,
+          "c": 97.5
+        },
+        {
+          "o": 99.0,
+          "h": 104.5,
+          "l": 98.5,
+          "c": 104.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [
+          1
+        ],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 1,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "morning_star_rejects_large_middle_body",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 110.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 98.0,
+          "h": 98.5,
+          "l": 94.0,
+          "c": 94.5
+        },
+        {
+          "o": 99.0,
+          "h": 107.5,
+          "l": 98.5,
+          "c": 107.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [
+          1
+        ],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 1,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "evening_star_positive",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 110.5,
+          "l": 99.5,
+          "c": 110.0
+        },
+        {
+          "o": 112.0,
+          "h": 114.0,
+          "l": 111.0,
+          "c": 112.5
+        },
+        {
+          "o": 111.0,
+          "h": 111.5,
+          "l": 102.5,
+          "c": 103.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [
+          1
+        ],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [
+          3
+        ],
+        "doji": [
+          0
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 1,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 1,
+        "doji": 1,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "degenerate_zero_range_bar",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.0,
+          "l": 100.0,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0,
+          2
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 2,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "degenerate_zero_body_long_lower_wick",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.0,
+          "l": 95.0,
+          "c": 100.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [
+          1
+        ],
+        "shooting_star": [],
+        "bullish_pin_bar": [
+          1
+        ],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0,
+          1
+        ],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 1,
+        "shooting_star": 0,
+        "bullish_pin_bar": 1,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 2,
+        "inside_bar": 0
+      }
+    },
+    {
+      "name": "warmup_rows_only_filler",
+      "bars": [
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        },
+        {
+          "o": 100.0,
+          "h": 100.5,
+          "l": 99.5,
+          "c": 100.0
+        }
+      ],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [
+          0,
+          1,
+          2
+        ],
+        "inside_bar": [
+          1,
+          2
+        ]
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 3,
+        "inside_bar": 2
+      }
+    },
+    {
+      "name": "empty",
+      "bars": [],
+      "fires": {
+        "bullish_engulfing": [],
+        "bearish_engulfing": [],
+        "hammer": [],
+        "shooting_star": [],
+        "bullish_pin_bar": [],
+        "bearish_pin_bar": [],
+        "bullish_marubozu": [],
+        "bearish_marubozu": [],
+        "bullish_harami": [],
+        "bearish_harami": [],
+        "morning_star": [],
+        "evening_star": [],
+        "doji": [],
+        "inside_bar": []
+      },
+      "counts": {
+        "bullish_engulfing": 0,
+        "bearish_engulfing": 0,
+        "hammer": 0,
+        "shooting_star": 0,
+        "bullish_pin_bar": 0,
+        "bearish_pin_bar": 0,
+        "bullish_marubozu": 0,
+        "bearish_marubozu": 0,
+        "bullish_harami": 0,
+        "bearish_harami": 0,
+        "morning_star": 0,
+        "evening_star": 0,
+        "doji": 0,
+        "inside_bar": 0
+      }
+    }
+  ]
+}
