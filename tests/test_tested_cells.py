@@ -107,6 +107,30 @@ def test_is_tested_false_for_a_data_blocked_cell():
     assert not tc.is_tested("opening_range_breakout", "5m", "SPY")
 
 
+def test_is_tested_false_for_the_mes_swing_pending_cell():
+    """#457 PR A: the frozen-but-unrun mes_swing grid is not evidence either."""
+    assert not tc.is_tested("mes_swing", "daily", "SPY")
+
+
+def test_mes_swing_pending_row_is_on_the_ledger_with_24_cells():
+    """#457 PR A: the freeze commits a PENDING row before any SPY number exists."""
+    rows = tc.find(family="mes_swing", cadence="daily", vehicle="SPY")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.verdict == tc.PENDING
+    assert row.power == "NONE"
+    assert row.n_cells == 24
+    assert row.exit_style == "bracket_2ATR_RxATR"
+
+
+def test_check_novel_reports_mes_swing_as_open_once_the_pending_row_lands():
+    """A fresh family string is trivially NOVEL before its own row lands (#448-style D-C
+    disclosure) — but once frozen, it must show up as OPEN, not silently invisible."""
+    res = tc.check_novel("mes_swing", "daily", "SPY")
+    assert res["novel"] is False
+    assert res["open"] and not res["closed"] and not res["weak"]
+
+
 def test_is_tested_false_for_a_directional_only_cell():
     """DIRECTIONAL_NO_GO is suggestive; a full-power re-test is legitimate."""
     assert not tc.is_tested("candlestick_pattern", "daily", "GOOG")
