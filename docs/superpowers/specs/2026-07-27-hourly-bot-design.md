@@ -337,7 +337,11 @@ when the next decision opposes the side that was stopped out**, not on any decis
   **same** side as `hourly_kill_switch_side`, no entry is placed and the scan is
   `skipped:kill_switch_active` (§9). Only a decision on the **opposite** side from
   `hourly_kill_switch_side` is allowed through — mirroring "bullish clears the flag" for a
-  bot where either side can be the one that got stopped out.
+  bot where either side can be the one that got stopped out. **Relative order (nit, round 2):
+  this gate runs *after* §7's reconciliation contract** (the every-scan step that writes
+  newly-closed exit legs and re-legs or flattens a naked position, run before any new-entry
+  decision) — matching §7's own "on every scan, before deciding" wording, so this gate always
+  sees post-reconciliation broker truth rather than a stale pre-reconciliation view.
 - **Clearing condition.** The first scan whose decision opposes `hourly_kill_switch_side`
   both clears the flag (sets `hourly_kill_switch_active = false`,
   `hourly_kill_switch_side = null`) **and** is the entry that is allowed through — clearing
@@ -482,10 +486,13 @@ verified otherwise.
 6 — this was the one Alpaca API assertion in this spec shipping unlabelled; corrected here).
 Before the first live scan, Batch 3 (or an early Batch 2 smoke step) must check `GET
 /v2/assets/SPY`, whose response is asserted here to carry `shortable` / `easy_to_borrow`
-boolean fields — **like the other four `[to verify]` items in this spec (bar alignment,
-bracket-on-short, bracket entry `type`/`time_in_force`, the paper-account marker), this is a
+boolean fields — **like the other five `[to verify]` items in this spec (bar alignment,
+bracket-on-short, bracket entry `type`/`time_in_force`, the paper-account marker, and the
+`/v2/clock` `next_close` field used by the session-close flatten mechanic below), this is a
 claim about Alpaca's live API surface, not a repo fact, and is not confirmed against a real
-response.** Required verification step: capture a real `/v2/assets/SPY` response on the
+response.** This spec now carries **six** `[to verify]` Alpaca API assertions in total, each
+with a documented fallback — the count is up from five as of must-fix round 2 finding 1
+(the `next_close` field). Required verification step: capture a real `/v2/assets/SPY` response on the
 paper account and confirm both field names and their boolean semantics before relying on
 them. If SPY is not shortable per the confirmed fields, every `SHORT` decision is
 `skipped:not_shortable` rather than attempting an order that would reject — fail-closed, not
@@ -529,7 +536,12 @@ this spec; it is specified here:
    or adding a dedicated helper is Batch 2's call).
 4. This check runs **before** §5's position-open / new-entry check on every scan, so a
    naked position is always re-legged or flattened before any new-entry decision is
-   considered — the same "reconcile before deciding" ordering the contract above already
+   considered — and, since §5's kill-switch-flag gate is itself part of that position-open /
+   new-entry check, this reconciliation contract (including the naked-position rule) also
+   runs **before** §5's kill-switch-flag gate (nit, round 2 — the two "before the
+   position-open check" statements at §5 and here left this relative order unstated; fixed
+   now so the read is unambiguous rather than merely non-divergent). The same "reconcile
+   before deciding" ordering the contract above already
    establishes for ordinary exit-leg fills.
 
 **Session-close exit rule — decided (lead's D2 on N3): flatten at session end.** No
@@ -545,17 +557,34 @@ scan per firing) — that alternative is rejected outright, not left open. Inste
 already calls `getClock()` (§4's market-open gate); the same response's `next_close` field is
 reused: if **`next_close − now ≤ 1 hour`** (the scan cadence itself — i.e., no further
 `hourly-check` scan will run before the session ends), this scan **is** the flatten scan.
-**Implementation note:** today's shared `getClock()` helper discards this field
-(`_shared/alpaca.ts:93-95` returns only `{ isOpen }` from Alpaca's `/v2/clock` response,
-which also carries `timestamp`/`next_open`/`next_close`) — this bot's client needs an
-additive extension (a new `nextClose` field alongside the existing `isOpen`) rather than a
-new endpoint call; existing callers (`daily-check`, `kill-switch`) are unaffected since they
-only destructure `isOpen`. Using the broker's own clock rather than a hardcoded UTC time
-means no DST branching is needed in code — the same principle §4 already applies to the
-market-open gate. **Both DST
-close times are confirmed to fall inside the `13-21 UTC` cron window:** US market close is
-16:00 ET year-round; in EDT (UTC−4) that is **20:00 UTC**, and in EST (UTC−5) that is **21:00
-UTC** — both within `13-21 UTC`.
+
+**`[to verify]` — Alpaca's `/v2/clock` response shape (must-fix round 2 finding 1).** Today's
+shared `getClock()` helper only parses `is_open` (`_shared/alpaca.ts:93-95` returns just
+`{ isOpen }`); a repo-wide grep finds no other evidence for `timestamp`/`next_open`/
+`next_close` on this endpoint. That a `next_close` field exists and is populated on every
+`/v2/clock` response is therefore **asserted, not verified against a live response** — the
+same class of unlabelled Alpaca API claim must-fix round 1 finding 6 corrected elsewhere in
+this spec (§7's shortability fields). **Required verification step:** Batch 2 must capture a
+real `/v2/clock` response (paper account) when extending `getClock()` with the additive
+`nextClose` field this mechanic needs — they must touch this helper anyway, so the capture
+rides along with the code change, not a separate step. **Fail-closed fallback (non-silent by
+construction):** a missing or unparseable `next_close` value must be a **hard error**, routed
+through the same `requireNumber` boundary (`_shared/num.ts`) every other JSON→number Alpaca
+field crosses in this spec — the scan throws and refuses to proceed, journaled as an
+`error:${err.name}` outcome (§9). It must **never** silently evaluate the
+`next_close − now ≤ 1 hour` comparison as false: a permanently-false comparison is exactly
+the failure mode that would hold positions overnight with no error anywhere, defeating N3's
+intraday-only decision and the kill-switch-coverage rationale below with no visible signal
+that anything is wrong. This is the sixth `[to verify]` item in this spec (see the updated
+count in §7's shortability discussion).
+
+**Implementation note:** existing callers (`daily-check`, `kill-switch`) are unaffected by
+the additive `nextClose` field since they only destructure `isOpen`. Using the broker's own
+clock rather than a hardcoded UTC time means no DST branching is needed in code — the same
+principle §4 already applies to the market-open gate. **Both DST close times are confirmed
+to fall inside the `13-21 UTC` cron window:** US market close is 16:00 ET year-round; in EDT
+(UTC−4) that is **20:00 UTC**, and in EST (UTC−5) that is **21:00 UTC** — both within
+`13-21 UTC`.
 
 **The flatten scan does not open new entries — flatten-only.** `decideHourly` still runs and
 the bar is still journaled (§9's "one row per scan including skips") so no diagnostic data is
@@ -701,8 +730,13 @@ correctly claim a bar until the retrofit's migration exists.
 
 ## §9 Persistence
 
-**New migration** — next free number is **0011** (`0001`–`0010` already exist,
-`supabase/migrations/`).
+**New migrations** — next free numbers are **0011** and **0012** (`0001`–`0010` already
+exist, `supabase/migrations/`). **Rule (should-fix round 2 finding 2): the retrofit package's
+migration always takes the lower next-free number, because §14's hard sequencing requires
+the retrofit to deploy first** — `supabase db push` applies migrations in numeric order, so
+a higher-numbered retrofit migration landing after a lower-numbered feature migration would
+be an out-of-order push. Concretely: `bar_claims` (retrofit) is **0011**; `hourly_scans`
+(feature, below) is **0012**.
 
 ### `hourly_scans` — one row per scan, including skips
 
@@ -894,10 +928,11 @@ baseline — a new `bot_config` key, `hourly_experiment_start_equity` (numeric, 
 Batch 3 deploy time when the paper experiment begins, read-only thereafter for v1). If
 current equity has fallen ≥15% below that baseline, the scan itself sets
 `bot_config.paused = true` (the same key `panic action=pause` sets) **before** evaluating any
-new entry, and journals the trigger (`error:equity_floor_breached` or a dedicated
-`success:auto_paused` outcome — Batch 2's call on the exact name, added to §9's vocabulary).
-The weekly review script (§14, Batch 3) reports this after the fact; it does not itself
-enforce the floor.
+new entry, and journals the trigger as `success:auto_paused` (nit, round 2: pinned to §9's
+vocabulary entry — the outcome is a successful pipeline run that happens to end in a pause,
+not an error, so `success:auto_paused` is the only candidate name; no alternative is left
+open). The weekly review script (§14, Batch 3) reports this after the fact; it does not
+itself enforce the floor.
 
 ---
 
@@ -921,7 +956,12 @@ PROPOSED — applied in Batch 2, not authoritative until merged into CLAUDE.md i
   scanner, a parallel strategy) without a fresh brainstorm and design spec — the
   rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was
   indistinguishable from a coin flip on 5y data, and a second live rule reintroduces the
-  same audit problem even without an LLM in the loop.
+  same audit problem even without an LLM in the loop. `decideHourly` is a single pure
+  function of its bar history and frozen config, so the **signal** stays fully
+  bar-reproducible; whether a signal becomes an entry additionally depends on
+  broker/journal state (open position, cooldown, kill-switch flag, bar claim), so **entry
+  gating is state-dependent and audit-log-reproducible, not SPY-history-reproducible alone**
+  (§13 narrows the original invariant text's reproducibility clause on exactly this point).
 - **No LLM in the trading path.** Unchanged in intent. The `hourly-check`, `kill-switch`,
   and `panic` Edge Functions import no model SDK and instantiate no agent. (Restated
   verbatim from the pre-amendment text; `daily-check` is removed from this list once P1's
@@ -1040,7 +1080,7 @@ every code-touching work package carry it.
    - **The feature build:** `hourly-check/{logic,handler,index}.ts`, `_shared/hourly_signal.ts`
      (or equivalent module name; consumes P3's `scanCandles`), `_shared/alpaca.ts` additions
      (`placeBracketOrder`, `checkPaperOnly`, short-side position/close helpers per §8.1),
-     `_shared/config.ts` additions (§10), `0011_hourly_scans.sql` (the `hourly_scans` table
+     `_shared/config.ts` additions (§10), `0012_hourly_scans.sql` (the `hourly_scans` table
      and the `trades.reason` check extension only — **not** `bar_claims`, see below), a new
      cron migration for the `hourly-check` job (§4). The CLAUDE.md amendment (§12) lands with
      this package's PR, not before.
@@ -1092,11 +1132,15 @@ should be able to sub-plan Batch 2 from this spec alone.** The implied file set:
 - `supabase/functions/_shared/config.ts` — extended per §10.
 - `supabase/functions/hourly-check/{logic.ts,handler.ts,index.ts}` — new function, following
   the `daily-check`/`kill-switch` three-file shape.
-- `supabase/migrations/0011_hourly_scans.sql` (feature package: `hourly_scans` +
-  `trades.reason` extension + the `hourly-check` cron), `0012_bar_claims.sql` (retrofit
-  package: `bar_claims` only) — exact numbering confirmed against the live migrations
-  directory at implementation time; the retrofit's migration must exist before the feature
-  package's cron is turned on (finding 5, finding 9).
+- `supabase/migrations/0011_bar_claims.sql` (retrofit package: `bar_claims` only),
+  `0012_hourly_scans.sql` (feature package: `hourly_scans` + `trades.reason` extension +
+  the `hourly-check` cron) — **the retrofit's migration takes the lower next-free number**
+  (should-fix round 2 finding 2), matching the required deploy order: `supabase db push`
+  applies migrations in numeric order, so `0011` (retrofit) must exist before `0012`
+  (feature) is pushed, which is also exactly the order finding 5 already requires operationally.
+  Exact numbers are confirmed against the live migrations directory at implementation time,
+  but the *lower-number-deploys-first* rule is fixed here so the numbering can never again
+  contradict the deploy order.
 - `supabase/functions/kill-switch/logic.ts` — short-aware retrofit (safety package).
 - `supabase/functions/panic/logic.ts` — side-aware + symbol-aware fix (safety package).
 - A new weekly-review aggregator script (Batch 3, per finding 10 above) — not part of
