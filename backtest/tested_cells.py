@@ -211,6 +211,17 @@ LEDGER: Tuple[TestedCell, ...] = (
              "widening programme (v1 context-free, v2 trend-context, v3 time-stop) is "
              "closed; no round 4 (vehicle-robustness) is frozen.",
     ),
+    # --- MES swing-contracts survey (#457 PR A) — grid frozen, awaiting data ---------
+    TestedCell(
+        family="mes_swing", cadence="daily", vehicle="SPY",
+        exit_style="bracket_2ATR_RxATR", n_cells=24, verdict=PENDING, power="NONE",
+        source="docs/research/2026-07-26-mes-contracts-survey-preregistration.md",
+        date="2026-07-26",
+        note="12 edge-trigger arms (trend/momentum/mean-reversion, long+short) x R{2,3}. "
+             "Turtle ATR(20) bracket, two co-primary MES cost presets (0.70/1.06 bp RT), "
+             "German annual-netting median/worst per-window scoring. Frozen, awaiting the "
+             "SPY read (PR B).",
+    ),
 )
 
 
