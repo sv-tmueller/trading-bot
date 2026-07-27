@@ -211,16 +211,20 @@ LEDGER: Tuple[TestedCell, ...] = (
              "widening programme (v1 context-free, v2 trend-context, v3 time-stop) is "
              "closed; no round 4 (vehicle-robustness) is frozen.",
     ),
-    # --- MES swing-contracts survey (#457 PR A) — grid frozen, awaiting data ---------
+    # --- MES swing-contracts survey (#457 PR B) — SPY read, closed -------------------
     TestedCell(
         family="mes_swing", cadence="daily", vehicle="SPY",
-        exit_style="bracket_2ATR_RxATR", n_cells=24, verdict=PENDING, power="NONE",
+        exit_style="bracket_2ATR_RxATR", n_cells=24, verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-07-26-mes-contracts-survey-preregistration.md",
-        date="2026-07-26",
-        note="12 edge-trigger arms (trend/momentum/mean-reversion, long+short) x R{2,3}. "
-             "Turtle ATR(20) bracket, two co-primary MES cost presets (0.70/1.06 bp RT), "
-             "German annual-netting median/worst per-window scoring. Frozen, awaiting the "
-             "SPY read (PR B).",
+        date="2026-07-27",
+        note="0/24 clear at either preset (0/24 at both); closest was M1L R3 (median "
+             "1.5475/1.5458 > bar but worst -0.8706/-0.8723 <= 0, fails the worst-window "
+             "condition). Pooled #398 gate at cumulative N=24: DSR 0.4804 FAIL, PBO 0.1660 "
+             "PASS, bootstrap ci_low -0.000465 FAIL -> combined FAIL. Per the "
+             "pre-registration's §6 stopping rule, all three conditions fail (no cell "
+             "clears the bar at both presets, gate fails, no cell exists to beat its "
+             "twin/always-in) -> the mes_swing family is closed NO_GO; no round 2 "
+             "(vol-regime gating) is frozen.",
     ),
 )
 
