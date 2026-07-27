@@ -361,14 +361,20 @@ def _per_window_scores(
 def cell_status(p: dict) -> str:
     """Classify a preset's primary statistic so a NaN median is never printed bare.
 
-    - ``no-trades`` — the arm never fired on this frame: nothing to judge.
-    - ``RUINED``    — it traded but every scored window was dropped or its curve was
-                      destroyed (the annual-netting tax model can still drive a stop-heavy
-                      curve non-positive within a single netting year).
-    - ``ok``        — a finite median Calmar to compare against the bar.
+    - ``no-trades``         — the arm never fired on this frame: nothing to judge.
+    - ``no-scored-windows`` — it traded, but every primary window was dropped (NaN/no-trade
+                              in every window) -- too sparse to judge, distinct from a
+                              genuine ruin (round-1 review finding 10).
+    - ``RUINED``            — defensive fallback: a non-finite median despite scored
+                              windows existing (not currently reachable from
+                              ``_per_window_scores``'s own return contract, kept for
+                              robustness against a future scoring change).
+    - ``ok``                — a finite median Calmar to compare against the bar.
     """
     if p["trade_count"] == 0:
         return "no-trades"
+    if p["n_windows"] == 0:
+        return "no-scored-windows"
     if not np.isfinite(p["median_calmar"]):
         return "RUINED"
     return "ok"
@@ -376,7 +382,7 @@ def cell_status(p: dict) -> str:
 
 def _sort_key(row: dict, label: str) -> tuple:
     p = row["presets"][label]
-    rank = {"ok": 0, "RUINED": 1, "no-trades": 2}[cell_status(p)]
+    rank = {"ok": 0, "RUINED": 1, "no-scored-windows": 2, "no-trades": 3}[cell_status(p)]
     median = p["median_calmar"]
     return (rank, -median if np.isfinite(median) else 0.0)
 
@@ -439,9 +445,54 @@ def run_grid(df: pd.DataFrame) -> list:
     return rows
 
 
-def format_report(rows: list, power: "idata.PowerReport", source: str) -> str:
-    """Render both co-primary preset tables. Callers MUST NOT call this on an
-    underpowered frame."""
+def compute_benchmark(df: pd.DataFrame) -> dict:
+    """The always-in (buy-and-hold) benchmark, scored through the SAME D3 pipeline as every
+    grid cell (primary window set, both co-primary presets), plus its own full-window
+    secondaries for symmetry (round-1 review finding 3).
+
+    Stopping-rule condition 3 ("beats ... the always-in benchmark on the same frame and the
+    same basis") must be adjudicable from the printed report alone — without this, PR B
+    would have to compute the benchmark ad hoc, re-opening the wiggle room the freeze closes.
+    """
+    benchmark = {}
+    for label, commission_bps in COST_PRESETS:
+        def bench_fn(d, _c=commission_bps):
+            return always_in(d, _c)
+
+        full_sim = bench_fn(df)
+        primary = _per_window_scores(df, bench_fn, PRIMARY_WINDOW_START, PRIMARY_WINDOW_END)
+        era = _per_window_scores(df, bench_fn, df.index[0].date())
+        after_us = tax.apply_tax_to_ledger(
+            full_sim["trades"], full_sim["equity_curve"], jurisdiction="US"
+        )
+        after_de = tax.apply_tax_to_ledger(
+            full_sim["trades"], full_sim["equity_curve"], jurisdiction="DE"
+        )
+        benchmark[label] = {
+            "median_calmar": primary["median_calmar"],
+            "worst_calmar": primary["worst_calmar"],
+            "n_windows": primary["n_windows"],
+            "n_positive": primary["n_positive"],
+            "era_median_calmar": era["median_calmar"],
+            "era_worst_calmar": era["worst_calmar"],
+            "era_n_windows": era["n_windows"],
+            "full_calmar_us": _curve_metrics(after_us)["calmar"],
+            "full_calmar_de": _curve_metrics(after_de)["calmar"],
+            "trade_count": full_sim["trade_count"],
+        }
+    return benchmark
+
+
+def _fmt_stat(value: float, width: int = 10) -> str:
+    """Format a Calmar-like statistic, never as a bare NaN."""
+    return f"{value:>+{width}.4f}" if np.isfinite(value) else f"{'—':>{width}}"
+
+
+def format_report(
+    rows: list, power: "idata.PowerReport", source: str, benchmark: dict,
+) -> str:
+    """Render both co-primary preset tables (cells + the always-in benchmark row) plus the
+    D3 secondary-column table(s). Callers MUST NOT call this on an underpowered frame."""
     out = [
         "MES swing-contracts study — frozen 24-cell grid (12 edge-trigger arms x R{2,3})",
         f"source: {source}",
@@ -455,23 +506,59 @@ def format_report(rows: list, power: "idata.PowerReport", source: str) -> str:
         out += [
             "",
             f"--- cost preset: {label} ({rt_bp:.2f} bp round trip) ---",
-            f"{'arm':<5} {'dir':<6} {'R':>3} {'median':>10} {'worst':>10} {'>bar?':>6} "
-            f"{'n_w':>4} {'#tr':>5} {'random':>9} {'status':>10}",
+            f"{'arm':<9} {'dir':<6} {'R':>3} {'median':>10} {'worst':>10} {'>bar?':>6} "
+            f"{'n_w':>4} {'#tr':>5} {'random':>9} {'status':>18}",
         ]
         for row in sorted(rows, key=lambda r: _sort_key(r, label)):
             p = row["presets"][label]
             status = cell_status(p)
-            med_txt = f"{p['median_calmar']:>+10.4f}" if status == "ok" else f"{'—':>10}"
-            worst_txt = f"{p['worst_calmar']:>+10.4f}" if status == "ok" else f"{'—':>10}"
+            med_txt = _fmt_stat(p["median_calmar"]) if status == "ok" else f"{'—':>10}"
+            worst_txt = _fmt_stat(p["worst_calmar"]) if status == "ok" else f"{'—':>10}"
             rand = p["random_median_calmar"]
             rand_txt = f"{rand:>+9.4f}" if np.isfinite(rand) else f"{'—':>9}"
             out.append(
-                f"{row['arm']:<5} {row['direction']:<6} {row['r']:>3.0f} "
+                f"{row['arm']:<9} {row['direction']:<6} {row['r']:>3.0f} "
                 f"{med_txt} {worst_txt} {'YES' if p['clears'] else 'no':>6} "
-                f"{p['n_windows']:>4} {p['trade_count']:>5} {rand_txt} {status:>10}"
+                f"{p['n_windows']:>4} {p['trade_count']:>5} {rand_txt} {status:>18}"
             )
+        bp = benchmark[label]
+        bstatus = cell_status(bp)
+        bmed_txt = _fmt_stat(bp["median_calmar"]) if bstatus == "ok" else f"{'—':>10}"
+        bworst_txt = _fmt_stat(bp["worst_calmar"]) if bstatus == "ok" else f"{'—':>10}"
+        out.append(
+            f"{'ALWAYS_IN':<9} {'-':<6} {'-':>3} "
+            f"{bmed_txt} {bworst_txt} {'n/a':>6} "
+            f"{bp['n_windows']:>4} {bp['trade_count']:>5} {'n/a':>9} {bstatus:>18}"
+        )
         cleared_here = [r for r in rows if r["presets"][label]["clears"]]
         out.append(f"cells clearing at {label}: {len(cleared_here)} / {len(rows)}")
+
+    out += [
+        "",
+        "--- D3 secondary columns (reported, never verdict-bearing) ---",
+    ]
+    for label, _commission_bps in COST_PRESETS:
+        out += [
+            "",
+            f"--- secondary columns: {label} ---",
+            f"{'arm':<9} {'dir':<6} {'R':>3} {'era_med':>10} {'era_wst':>10} "
+            f"{'era_nw':>6} {'full_us':>10} {'full_de':>10} {'n_pos':>5}",
+        ]
+        for row in sorted(rows, key=lambda r: _sort_key(r, label)):
+            p = row["presets"][label]
+            out.append(
+                f"{row['arm']:<9} {row['direction']:<6} {row['r']:>3.0f} "
+                f"{_fmt_stat(p['era_median_calmar'])} {_fmt_stat(p['era_worst_calmar'])} "
+                f"{p['era_n_windows']:>6} {_fmt_stat(p['full_calmar_us'])} "
+                f"{_fmt_stat(p['full_calmar_de'])} {p['n_positive']:>5}"
+            )
+        bp = benchmark[label]
+        out.append(
+            f"{'ALWAYS_IN':<9} {'-':<6} {'-':>3} "
+            f"{_fmt_stat(bp['era_median_calmar'])} {_fmt_stat(bp['era_worst_calmar'])} "
+            f"{bp['era_n_windows']:>6} {_fmt_stat(bp['full_calmar_us'])} "
+            f"{_fmt_stat(bp['full_calmar_de'])} {bp['n_positive']:>5}"
+        )
 
     clears_both = [r for r in rows if r["clears_both"]]
     out += [
@@ -532,7 +619,8 @@ def main(argv: Optional[list] = None) -> int:
         return 2
 
     rows = run_grid(df)
-    print(format_report(rows, power, source))
+    benchmark = compute_benchmark(df)
+    print(format_report(rows, power, source, benchmark))
     return 0
 
 

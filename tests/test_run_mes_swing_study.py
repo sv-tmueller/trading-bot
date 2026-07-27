@@ -377,11 +377,44 @@ def test_every_row_carries_both_cost_presets():
         assert "clears_both" in row
 
 
+def _stub_preset(**overrides) -> dict:
+    base = {
+        "median_calmar": float("nan"), "worst_calmar": float("nan"),
+        "n_windows": 0, "n_positive": 0, "clears": False,
+        "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
+        "era_n_windows": 0, "full_calmar_us": float("nan"),
+        "full_calmar_de": float("nan"), "random_median_calmar": float("nan"),
+        "trade_count": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+def _stub_benchmark() -> dict:
+    return {
+        "base": {
+            "median_calmar": float("nan"), "worst_calmar": float("nan"),
+            "n_windows": 0, "n_positive": 0,
+            "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
+            "era_n_windows": 0, "full_calmar_us": float("nan"),
+            "full_calmar_de": float("nan"), "trade_count": 0,
+        },
+        "pessimistic": {
+            "median_calmar": float("nan"), "worst_calmar": float("nan"),
+            "n_windows": 0, "n_positive": 0,
+            "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
+            "era_n_windows": 0, "full_calmar_us": float("nan"),
+            "full_calmar_de": float("nan"), "trade_count": 0,
+        },
+    }
+
+
 def test_report_prints_both_this_grid_and_cumulative_N_lines():
     df = _synth_daily(900, seed=5)
     power = rms.idata.describe_power(df)
     rows = rms.run_grid(df)
-    text = rms.format_report(rows, power, "test")
+    benchmark = rms.compute_benchmark(df)
+    text = rms.format_report(rows, power, "test", benchmark)
     assert f"this grid N = {rms.N_CELLS}" in text
     assert f"cumulative family N = {rms.CUMULATIVE_N}" in text
 
@@ -390,7 +423,8 @@ def test_report_prints_all_24_cells_at_both_presets_with_no_truncation():
     df = _synth_daily(900, seed=5)
     power = rms.idata.describe_power(df)
     rows = rms.run_grid(df)
-    text = rms.format_report(rows, power, "test")
+    benchmark = rms.compute_benchmark(df)
+    text = rms.format_report(rows, power, "test", benchmark)
     for arm in rms.ARMS:
         assert text.count(arm[0]) >= 2  # appears in at least both preset tables
     assert "base" in text and "pessimistic" in text
@@ -401,7 +435,8 @@ def test_report_prints_the_bar_at_full_precision():
     df = _synth_daily(900, seed=5)
     power = rms.idata.describe_power(df)
     rows = rms.run_grid(df)
-    text = rms.format_report(rows, power, "test")
+    benchmark = rms.compute_benchmark(df)
+    text = rms.format_report(rows, power, "test", benchmark)
     assert "1.3085475049604838" in text
 
 
@@ -410,27 +445,79 @@ def test_report_never_prints_a_bare_nan():
     rows = [{
         "arm": "T1L", "direction": LONG, "r": 2.0,
         "presets": {
-            "base": {
-                "median_calmar": float("nan"), "worst_calmar": float("nan"),
-                "n_windows": 0, "n_positive": 0, "clears": False,
-                "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
-                "era_n_windows": 0, "full_calmar_us": float("nan"),
-                "full_calmar_de": float("nan"), "random_median_calmar": float("nan"),
-                "trade_count": 0,
-            },
-            "pessimistic": {
-                "median_calmar": float("nan"), "worst_calmar": float("nan"),
-                "n_windows": 0, "n_positive": 0, "clears": False,
-                "era_median_calmar": float("nan"), "era_worst_calmar": float("nan"),
-                "era_n_windows": 0, "full_calmar_us": float("nan"),
-                "full_calmar_de": float("nan"), "random_median_calmar": float("nan"),
-                "trade_count": 0,
-            },
+            "base": _stub_preset(),
+            "pessimistic": _stub_preset(),
         },
         "clears_both": False,
     }]
-    text = rms.format_report(rows, power_stub, "test")
+    text = rms.format_report(rows, power_stub, "test", _stub_benchmark())
     assert "nan" not in text.lower()
+
+
+def test_report_never_prints_a_bare_nan_for_the_no_scored_windows_case():
+    """A cell that traded but had every window dropped (n_windows == 0, trade_count > 0)
+    must be labeled distinctly from a genuine ruin and never print a bare NaN."""
+    power_stub = rms.idata.describe_power(_synth_daily(600))
+    rows = [{
+        "arm": "T1L", "direction": LONG, "r": 2.0,
+        "presets": {
+            "base": _stub_preset(trade_count=3),
+            "pessimistic": _stub_preset(trade_count=3),
+        },
+        "clears_both": False,
+    }]
+    text = rms.format_report(rows, power_stub, "test", _stub_benchmark())
+    assert "nan" not in text.lower()
+    assert "no-scored-windows" in text
+
+
+# ---------------------------------------------------------------------------
+# always_in benchmark row (round-1 review finding 3): scored through the same D3 pipeline
+# on the primary window set, at both presets, printed so stopping-rule condition 3 is
+# adjudicable from the report alone.
+# ---------------------------------------------------------------------------
+
+def test_compute_benchmark_scores_always_in_on_the_primary_window_set():
+    df = _synth_daily(900, seed=5, drift=0.0002)
+    benchmark = rms.compute_benchmark(df)
+    assert set(benchmark.keys()) == {"base", "pessimistic"}
+    for label in ("base", "pessimistic"):
+        b = benchmark[label]
+        assert b["trade_count"] > 0  # always_in always has exactly one open trade
+        for key in (
+            "median_calmar", "worst_calmar", "n_windows", "n_positive",
+            "era_median_calmar", "era_worst_calmar", "era_n_windows",
+            "full_calmar_us", "full_calmar_de",
+        ):
+            assert key in b
+
+
+def test_report_prints_the_always_in_benchmark_row_at_both_presets():
+    df = _synth_daily(900, seed=5, drift=0.0002)
+    power = rms.idata.describe_power(df)
+    rows = rms.run_grid(df)
+    benchmark = rms.compute_benchmark(df)
+    text = rms.format_report(rows, power, "test", benchmark)
+    assert text.count("ALWAYS_IN") >= 2  # at least one appearance per preset table
+
+
+# ---------------------------------------------------------------------------
+# D3 secondary columns (round-1 review finding 4): era_median_calmar, era_worst_calmar,
+# era_n_windows, full_calmar_us, full_calmar_de, n_positive must be printed for every cell
+# (and the benchmark), never as a bare NaN.
+# ---------------------------------------------------------------------------
+
+def test_report_prints_the_d3_secondary_columns_for_every_cell():
+    df = _synth_daily(900, seed=5, drift=0.0002)
+    power = rms.idata.describe_power(df)
+    rows = rms.run_grid(df)
+    benchmark = rms.compute_benchmark(df)
+    text = rms.format_report(rows, power, "test", benchmark)
+    assert "era_med" in text or "era_median" in text
+    assert "full_us" in text or "full_calmar_us" in text
+    assert "full_de" in text or "full_calmar_de" in text
+    for arm in rms.ARMS:
+        assert text.count(arm[0]) >= 3  # both primary tables + the secondary table(s)
 
 
 # ---------------------------------------------------------------------------
