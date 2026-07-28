@@ -552,6 +552,28 @@ export async function getHourlyScanByBar(
   return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
 }
 
+// #475 T11: the `trades` table has no bar_ts column (§9 keeps bar_ts scoped
+// to hourly_scans), so the naked-position provenance lookup (spec §7 finding
+// 3, "keyed on the entry's bar_ts") is instead keyed on the entry's broker
+// order id -- entry_order_id and (symbol, bar_ts) both uniquely identify the
+// scan row that produced an open position's entry once the order is placed.
+export async function getHourlyScanByEntryOrderId(
+  sb: SupabaseClient,
+  symbol: string,
+  entryOrderId: string,
+): Promise<HourlyScanRow | null> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .eq("symbol", symbol)
+    .eq("entry_order_id", entryOrderId)
+    .order("bar_ts", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getHourlyScanByEntryOrderId: ${error.message}`);
+  return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
+}
+
 // Bar-level concurrency guard (spec §8.4), mirroring claimTradeDate exactly
 // but keyed on (script_name, bar_ts) instead of (script_name, trade_date) --
 // an hourly bot placing multiple entries/day cannot be expressed at date

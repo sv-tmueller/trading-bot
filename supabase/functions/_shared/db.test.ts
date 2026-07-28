@@ -13,6 +13,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getHourlyScanByBar,
+  getHourlyScanByEntryOrderId,
   getLastTrade,
   getLatestAuditForScript,
   getLatestEquitySnapshot,
@@ -846,6 +847,44 @@ Deno.test("upsertHourlyScan: throws on a DB error", async () => {
     Error,
     "upsertHourlyScan",
   );
+});
+
+Deno.test("getHourlyScanByEntryOrderId: filters by symbol + entry_order_id", async () => {
+  const calls: Array<[string, unknown]> = [];
+  // deno-lint-ignore no-explicit-any
+  const builder: any = {
+    select: () => builder,
+    eq: (col: string, val: unknown) => {
+      calls.push([col, val]);
+      return builder;
+    },
+    order: () => builder,
+    limit: () => builder,
+    maybeSingle: () =>
+      Promise.resolve({
+        data: {
+          symbol: "SPY",
+          bar_ts: "2026-07-27T14:00:00Z",
+          decision: "LONG",
+          skip_reason: null,
+          detectors_fired: ["hammer"],
+          context_mode: "none",
+          entry_ref_price: "550.1000",
+          stop_price: "547.7500",
+          target_price: "554.5500",
+          risk_per_share: "2.3500",
+          equity_usd: "100000.0000",
+          qty: "18",
+          entry_order_id: "o1",
+        },
+        error: null,
+      }),
+  };
+  // deno-lint-ignore no-explicit-any
+  const sb = { from: () => builder } as any;
+  const row = await getHourlyScanByEntryOrderId(sb, "SPY", "o1");
+  assertEquals(row?.bar_ts, "2026-07-27T14:00:00Z");
+  assertEquals(calls, [["symbol", "SPY"], ["entry_order_id", "o1"]]);
 });
 
 Deno.test({
