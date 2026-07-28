@@ -4,7 +4,7 @@
 // CLAUDE_AGENT_NO_BROKER is set by the `test` deno.json task; this script
 // never imports _shared/alpaca.ts, so the guard is inert here (defense in
 // depth only, per the repo's Architectural invariants).
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { AuditLogRow, HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
 import {
   type ClosedTradeResult,
@@ -12,6 +12,8 @@ import {
   computeWeeklyAggregates,
   type CumulativeStats,
   DEFAULT_PROPOSAL_CANDIDATES,
+  JournalExistsError,
+  MissingBaselineError,
   pairHourlyTrades,
   parseArgs,
   parseWeekLabel,
@@ -20,6 +22,8 @@ import {
   proposeParamChange,
   type RenderData,
   renderJournal,
+  runWeeklyReview,
+  type WeeklyReviewDeps,
   weekWindowUtc,
 } from "./render_weekly_journal.ts";
 
@@ -165,7 +169,11 @@ Deno.test("parseArgs: -h / --help sets help in either mode", () => {
 });
 
 Deno.test("parseArgs: --record-accepted-bump with --ref -> bump mode", () => {
-  const parsed = parseArgs(["--record-accepted-bump", "--ref", "docs/decisions/2026-08-01-bump.md"]);
+  const parsed = parseArgs([
+    "--record-accepted-bump",
+    "--ref",
+    "docs/decisions/2026-08-01-bump.md",
+  ]);
   assertEquals(parsed.mode, "bump");
   assertEquals((parsed as { ref: string }).ref, "docs/decisions/2026-08-01-bump.md");
 });
@@ -314,8 +322,16 @@ Deno.test("pairHourlyTrades: an in-window panic_cli fill is a manual interventio
 });
 
 Deno.test("pairHourlyTrades: sequential FIFO pairing across multiple entries for the same symbol", () => {
-  const e1 = trade({ reason: "hourly_long_entry", broker_order_id: "e1", fill_time: "2026-07-27T14:00:00Z" });
-  const e2 = trade({ reason: "hourly_long_entry", broker_order_id: "e2", fill_time: "2026-07-27T15:00:00Z" });
+  const e1 = trade({
+    reason: "hourly_long_entry",
+    broker_order_id: "e1",
+    fill_time: "2026-07-27T14:00:00Z",
+  });
+  const e2 = trade({
+    reason: "hourly_long_entry",
+    broker_order_id: "e2",
+    fill_time: "2026-07-27T15:00:00Z",
+  });
   const x1 = trade({
     reason: "hourly_bracket_exit",
     broker_order_id: "x1",
@@ -655,4 +671,117 @@ Deno.test("renderJournal: an all-quiet week renders the README's brief style, no
   assertEquals(rendered.includes("paused or not deployed for the full week"), true);
   assertEquals(rendered.includes("## Cumulative stats (since experiment start)"), true);
   assertEquals(rendered.includes("## Notes (operator)"), true);
+});
+
+// ---------------------------------------------------------------------------
+// T7 -- orchestration (deps-injected). Every dep is a plain mock; no real
+// Supabase client, no filesystem I/O.
+// ---------------------------------------------------------------------------
+
+function buildTestDeps(over: Partial<WeeklyReviewDeps> = {}): {
+  deps: WeeklyReviewDeps;
+  writes: { path: string; content: string }[];
+  configStore: Map<string, string>;
+} {
+  const writes: { path: string; content: string }[] = [];
+  const existingFiles = new Set<string>();
+  const configStore = new Map<string, string>([
+    ["hourly_experiment_start_equity", "100000"],
+  ]);
+
+  const deps: WeeklyReviewDeps = {
+    now: () => new Date("2026-08-04T12:00:00Z"), // Tue 2026-W32 -> previous completed week 2026-W31
+    db: {
+      getScansUntil: (_untilIso: string) => Promise.resolve([]),
+      getHourlyTradesUntil: (_untilIso: string) => Promise.resolve([]),
+      getAuditOutcomesUntil: (_untilIso: string) => Promise.resolve([]),
+      getConfig: (key: string) => Promise.resolve(configStore.get(key) ?? null),
+      setConfig: (key: string, value: string) => {
+        configStore.set(key, value);
+        return Promise.resolve();
+      },
+    },
+    fileExists: (path: string) => Promise.resolve(existingFiles.has(path)),
+    writeFile: (path: string, content: string) => {
+      writes.push({ path, content });
+      existingFiles.add(path);
+      return Promise.resolve();
+    },
+    log: (_line: string) => {},
+    ...over,
+  };
+  return { deps, writes, configStore };
+}
+
+Deno.test("runWeeklyReview: render mode defaults to the previous completed week and writes docs/trading-journal/<label>.md", async () => {
+  const { deps, writes } = buildTestDeps();
+  const summary = await runWeeklyReview(deps, { mode: "render", force: false });
+  assertEquals(summary.mode, "render");
+  if (summary.mode !== "render") throw new Error("unreachable");
+  assertEquals(summary.weekLabel, "2026-W31");
+  assertEquals(summary.outPath, "docs/trading-journal/2026-W31.md");
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0].path, "docs/trading-journal/2026-W31.md");
+  assertEquals(writes[0].content.startsWith("# Week 2026-W31"), true);
+});
+
+Deno.test("runWeeklyReview: an explicit --week overrides the default", async () => {
+  const { deps } = buildTestDeps();
+  const summary = await runWeeklyReview(deps, { mode: "render", week: "2026-W20", force: false });
+  if (summary.mode !== "render") throw new Error("unreachable");
+  assertEquals(summary.weekLabel, "2026-W20");
+});
+
+Deno.test("runWeeklyReview: refuses to overwrite an existing journal file without --force", async () => {
+  const { deps } = buildTestDeps({
+    fileExists: (_path: string) => Promise.resolve(true),
+  });
+  await assertRejects(
+    () => runWeeklyReview(deps, { mode: "render", force: false }),
+    JournalExistsError,
+  );
+});
+
+Deno.test("runWeeklyReview: --force overrides the refusal and writes anyway", async () => {
+  const { deps, writes } = buildTestDeps({
+    fileExists: (_path: string) => Promise.resolve(true),
+  });
+  const summary = await runWeeklyReview(deps, { mode: "render", force: true });
+  assertEquals(summary.mode, "render");
+  assertEquals(writes.length, 1);
+});
+
+Deno.test("runWeeklyReview: a missing hourly_experiment_start_equity baseline is a clear single-line error", async () => {
+  const { deps } = buildTestDeps();
+  deps.db.getConfig = (key: string) =>
+    Promise.resolve(key === "hourly_experiment_start_equity" ? null : "0");
+  await assertRejects(
+    () => runWeeklyReview(deps, { mode: "render", force: false }),
+    MissingBaselineError,
+    "hourly_experiment_start_equity",
+  );
+});
+
+Deno.test("runWeeklyReview: bump mode increments the trial counter and never writes a journal file", async () => {
+  const { deps, writes, configStore } = buildTestDeps();
+  configStore.set("hourly_param_trial_count", "3");
+  const summary = await runWeeklyReview(deps, {
+    mode: "bump",
+    ref: "docs/decisions/2026-08-04-bump.md",
+  });
+  assertEquals(summary, {
+    mode: "bump",
+    oldCount: 3,
+    newCount: 4,
+    ref: "docs/decisions/2026-08-04-bump.md",
+  });
+  assertEquals(configStore.get("hourly_param_trial_count"), "4");
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("runWeeklyReview: bump mode with no prior trial-count key starts from 0", async () => {
+  const { deps, configStore } = buildTestDeps();
+  const summary = await runWeeklyReview(deps, { mode: "bump", ref: "#481" });
+  assertEquals(summary, { mode: "bump", oldCount: 0, newCount: 1, ref: "#481" });
+  assertEquals(configStore.get("hourly_param_trial_count"), "1");
 });

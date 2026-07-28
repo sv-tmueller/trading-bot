@@ -48,12 +48,14 @@ export function parseWeekLabel(label: string): WeekId {
   const isoYear = Number(m[1]);
   const isoWeek = Number(m[2]);
   if (isoWeek < 1 || isoWeek > 53) {
-    throw new WeekLabelError(`malformed week label, week out of range 01-53: ${JSON.stringify(label)}`);
+    throw new WeekLabelError(
+      `malformed week label, week out of range 01-53: ${JSON.stringify(label)}`,
+    );
   }
   return { isoYear, isoWeek };
 }
 
-function formatWeekLabel(week: WeekId): string {
+export function formatWeekLabel(week: WeekId): string {
   return `${week.isoYear}-W${String(week.isoWeek).padStart(2, "0")}`;
 }
 
@@ -75,8 +77,18 @@ function addDaysYmd(ymd: string, days: number): string {
 }
 
 const SHORT_MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 
 function formatDayMonth(ymd: string): string {
@@ -576,7 +588,8 @@ export function proposeParamChange(
   if (cumulative.closedTradeCount < PROPOSAL_MIN_CLOSED_TRADES) {
     return {
       gated: true,
-      reason: `no proposal permitted (N=${cumulative.closedTradeCount} < ${PROPOSAL_MIN_CLOSED_TRADES})`,
+      reason:
+        `no proposal permitted (N=${cumulative.closedTradeCount} < ${PROPOSAL_MIN_CLOSED_TRADES})`,
     };
   }
   for (const c of candidates) {
@@ -671,7 +684,7 @@ export function renderJournal(data: RenderData): string {
       `# ${data.title}`,
       "",
       "No scans recorded and no trades filed this week -- the bot appears to have been paused " +
-        "or not deployed for the full week. See `bot_config.paused` and `audit_log` for the reason.",
+      "or not deployed for the full week. See `bot_config.paused` and `audit_log` for the reason.",
       "",
       "---",
       "",
@@ -756,12 +769,16 @@ export function renderJournal(data: RenderData): string {
     )
     : "_None._";
 
-  const skipReasonEntries = Object.entries(agg.skipReasonCounts).sort(([a], [b]) => a.localeCompare(b));
+  const skipReasonEntries = Object.entries(agg.skipReasonCounts).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
   const skipTable = skipReasonEntries.length > 0
     ? table(["Skip reason", "Count"], skipReasonEntries.map(([k, v]) => [k, String(v)]))
     : "_No skips this week._";
 
-  const auditEntries = Object.entries(agg.auditOutcomeCounts).sort(([a], [b]) => a.localeCompare(b));
+  const auditEntries = Object.entries(agg.auditOutcomeCounts).sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
   const auditTable = auditEntries.length > 0
     ? table(["Outcome", "Count"], auditEntries.map(([k, v]) => [k, String(v)]))
     : "_No hourly-check audit_log rows this week._";
@@ -810,9 +827,9 @@ export function renderJournal(data: RenderData): string {
     "## Gate-skip distribution",
     "",
     "Two sources (sub-plan's disclosed two-source gate-skip distribution): bar-level skips " +
-      "from `hourly_scans.skip_reason`, and run-level exits from `audit_log` " +
-      "(`script_name='hourly-check'`) -- a bar can be scanned and skipped without the run " +
-      "itself being a gate exit, and vice versa.",
+    "from `hourly_scans.skip_reason`, and run-level exits from `audit_log` " +
+    "(`script_name='hourly-check'`) -- a bar can be scanned and skipped without the run " +
+    "itself being a gate exit, and vice versa.",
     "",
     "### Bar-level (`hourly_scans.skip_reason`)",
     "",
@@ -853,4 +870,344 @@ export function renderJournal(data: RenderData): string {
     renderFooter(data.trialCount),
     "",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// T7 -- orchestration (deps-injected), thin PostgREST adapters, and main().
+// Every query is upper-bounded by the week window's end (D4); the render
+// layer above never sees a clock -- `deps.now()` is read exactly once, here,
+// to resolve the default `--week`.
+// ---------------------------------------------------------------------------
+
+export class JournalExistsError extends Error {
+  override name = "JournalExistsError";
+}
+export class MissingBaselineError extends Error {
+  override name = "MissingBaselineError";
+}
+
+export interface WeeklyReviewDeps {
+  now: () => Date;
+  db: {
+    getScansUntil: (untilIsoExclusive: string) => Promise<HourlyScanRow[]>;
+    getHourlyTradesUntil: (untilIsoExclusive: string) => Promise<TradeRow[]>;
+    getAuditOutcomesUntil: (untilIsoExclusive: string) => Promise<AuditLogRow[]>;
+    getConfig: (key: string) => Promise<string | null>;
+    setConfig: (key: string, value: string) => Promise<void>;
+  };
+  fileExists: (path: string) => Promise<boolean>;
+  writeFile: (path: string, content: string) => Promise<void>;
+  log: (line: string) => void;
+}
+
+export type RunOpts =
+  | { mode: "render"; week?: string; out?: string; force: boolean }
+  | { mode: "bump"; ref: string };
+
+export interface RenderSummary {
+  mode: "render";
+  weekLabel: string;
+  outPath: string;
+  markdown: string;
+}
+
+export interface BumpSummary {
+  mode: "bump";
+  oldCount: number;
+  newCount: number;
+  ref: string;
+}
+
+function withinWindow(iso: string, win: WeekWindow): boolean {
+  return iso >= win.startIso && iso < win.endIsoExclusive;
+}
+
+async function runBumpMode(deps: WeeklyReviewDeps, ref: string): Promise<BumpSummary> {
+  const raw = await deps.db.getConfig("hourly_param_trial_count");
+  const oldCount = raw == null ? 0 : requireNumber(raw, "hourly_param_trial_count");
+  const newCount = oldCount + 1;
+  await deps.db.setConfig("hourly_param_trial_count", String(newCount));
+  deps.log(`hourly_param_trial_count: ${oldCount} -> ${newCount} (ref: ${ref})`);
+  return { mode: "bump", oldCount, newCount, ref };
+}
+
+async function runRenderMode(
+  deps: WeeklyReviewDeps,
+  opts: { week?: string; out?: string; force: boolean },
+): Promise<RenderSummary> {
+  const week = opts.week !== undefined
+    ? parseWeekLabel(opts.week)
+    : previousCompletedWeek(deps.now());
+  const weekLabel = formatWeekLabel(week);
+  const win = weekWindowUtc(week.isoYear, week.isoWeek);
+  const outPath = opts.out ?? `docs/trading-journal/${weekLabel}.md`;
+
+  if (!opts.force && await deps.fileExists(outPath)) {
+    throw new JournalExistsError(
+      `${outPath} already exists -- pass --force to overwrite (journal entries are never ` +
+        "overwritten silently)",
+    );
+  }
+
+  const baselineRaw = await deps.db.getConfig("hourly_experiment_start_equity");
+  if (baselineRaw == null) {
+    throw new MissingBaselineError(
+      "bot_config.hourly_experiment_start_equity is not set -- required before any weekly " +
+        "review can be rendered (set once at paper-experiment start, spec §11).",
+    );
+  }
+  const floorBaseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+
+  const trialCountRaw = await deps.db.getConfig("hourly_param_trial_count");
+  const trialCount = trialCountRaw == null
+    ? 0
+    : requireNumber(trialCountRaw, "hourly_param_trial_count");
+
+  // Every read is bounded above by the window's end (D4) -- re-running this
+  // report weeks later reproduces the identical file.
+  const allScans = await deps.db.getScansUntil(win.endIsoExclusive);
+  const allTrades = await deps.db.getHourlyTradesUntil(win.endIsoExclusive);
+  const allAuditRows = await deps.db.getAuditOutcomesUntil(win.endIsoExclusive);
+
+  const scansInWeek = allScans.filter((s) => withinWindow(s.bar_ts, win));
+  const auditRowsInWeek = allAuditRows.filter((r) => withinWindow(r.started_at, win));
+
+  // Pairing runs over the FULL history up to week end (not just this week's
+  // trades), so a position opened last week and closed this week pairs
+  // correctly, and "open at week end" reflects true end-of-week state.
+  const pairing = pairHourlyTrades(allTrades, allScans);
+  const closedTradesInWeek = pairing.closedTrades.filter((t) => withinWindow(t.exitFillTime, win));
+  const orphanExitsInWeek = pairing.orphanExits.filter((t) => withinWindow(t.fill_time, win));
+  const manualInterventionsInWeek = pairing.manualInterventions.filter((t) =>
+    withinWindow(t.fill_time, win)
+  );
+
+  const agg = computeWeeklyAggregates(scansInWeek, auditRowsInWeek, floorBaseline);
+  const cumulative = computeCumulativeStats(pairing.closedTrades);
+  const proposal = proposeParamChange(cumulative);
+
+  const markdown = renderJournal({
+    weekLabel,
+    title: win.title,
+    agg,
+    closedTradesInWeek,
+    openEntries: pairing.openEntries,
+    orphanExitsInWeek,
+    manualInterventionsInWeek,
+    cumulative,
+    proposal,
+    trialCount,
+  });
+
+  await deps.writeFile(outPath, markdown);
+  deps.log(`wrote ${outPath}`);
+
+  return { mode: "render", weekLabel, outPath, markdown };
+}
+
+export function runWeeklyReview(
+  deps: WeeklyReviewDeps,
+  opts: RunOpts,
+): Promise<RenderSummary | BumpSummary> {
+  return opts.mode === "bump" ? runBumpMode(deps, opts.ref) : runRenderMode(deps, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Real-deps adapters (untested, per the backfill precedent -- thin wrappers
+// over `sb`, reusing coerceHourlyScanRow/coerceTradeRow so no business logic
+// lives here). Every select is upper-bounded by `untilIsoExclusive` plus a
+// defensive `.limit()`, mirroring _shared/db.ts's existing windowed reads.
+// ---------------------------------------------------------------------------
+
+// A conservative cap: an hourly bot scans at most ~7 bars/session x 5
+// sessions/week; even several years of history stays well under this.
+const SCANS_ROW_CAP = 20000;
+const TRADES_ROW_CAP = 5000;
+const AUDIT_ROW_CAP = 20000;
+
+export async function getScansUntilAdapter(
+  sb: SupabaseClient,
+  untilIsoExclusive: string,
+): Promise<HourlyScanRow[]> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .lt("bar_ts", untilIsoExclusive)
+    .order("bar_ts", { ascending: true })
+    .limit(SCANS_ROW_CAP);
+  if (error) throw new Error(`getScansUntil: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
+}
+
+// hourly_* reasons are unique to this bot's own trades. `panic_cli` is
+// shared with the retired daily bot's own liquidate path, so it is scoped
+// to `symbol` (derived by the caller from the scans it already read) to
+// avoid pulling in an unrelated bot's manual interventions -- disclosed in
+// the PR as the two-source-gate-skip-style scoping this script relies on.
+const HOURLY_TRADE_REASONS = [
+  "hourly_long_entry",
+  "hourly_short_entry",
+  "hourly_bracket_exit",
+  "hourly_session_close_exit",
+  "hourly_kill_switch",
+];
+
+export async function getHourlyTradesUntilAdapter(
+  sb: SupabaseClient,
+  untilIsoExclusive: string,
+  symbol: string,
+): Promise<TradeRow[]> {
+  const { data: hourlyRows, error: hourlyError } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .in("reason", HOURLY_TRADE_REASONS)
+    .lt("fill_time", untilIsoExclusive)
+    .order("fill_time", { ascending: true })
+    .limit(TRADES_ROW_CAP);
+  if (hourlyError) throw new Error(`getHourlyTradesUntil: ${hourlyError.message}`);
+
+  const { data: panicRows, error: panicError } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .eq("reason", "panic_cli")
+    .eq("symbol", symbol)
+    .lt("fill_time", untilIsoExclusive)
+    .order("fill_time", { ascending: true })
+    .limit(TRADES_ROW_CAP);
+  if (panicError) throw new Error(`getHourlyTradesUntil (panic_cli): ${panicError.message}`);
+
+  return [
+    ...((hourlyRows ?? []) as Record<string, unknown>[]).map(coerceTradeRow),
+    ...((panicRows ?? []) as Record<string, unknown>[]).map(coerceTradeRow),
+  ];
+}
+
+export async function getAuditOutcomesUntilAdapter(
+  sb: SupabaseClient,
+  untilIsoExclusive: string,
+): Promise<AuditLogRow[]> {
+  const { data, error } = await sb
+    .from("audit_log")
+    .select("script_name, started_at, finished_at, outcome, notes")
+    .eq("script_name", "hourly-check")
+    .lt("started_at", untilIsoExclusive)
+    .order("started_at", { ascending: true })
+    .limit(AUDIT_ROW_CAP);
+  if (error) throw new Error(`getAuditOutcomesUntil: ${error.message}`);
+  return (data ?? []) as AuditLogRow[];
+}
+
+async function getConfigAdapter(sb: SupabaseClient, key: string): Promise<string | null> {
+  const { data, error } = await sb.from("bot_config").select("value").eq("key", key).maybeSingle();
+  if (error) throw new Error(`getConfig: ${error.message}`);
+  return (data as { value: string } | null)?.value ?? null;
+}
+
+async function setConfigAdapter(sb: SupabaseClient, key: string, value: string): Promise<void> {
+  const { error } = await sb.from("bot_config").upsert(
+    { key, value, updated_at: new Date().toISOString() },
+    { onConflict: "key" },
+  );
+  if (error) throw new Error(`setConfig: ${error.message}`);
+}
+
+// The traded symbol is derived from hourly_scans itself (one bot instance,
+// one symbol) rather than read from _shared/config.ts -- this script's
+// allowed _shared surface is db.ts/supabase_client.ts/num.ts only. Falls
+// back to "SPY" (the documented HOURLY_BOT_TICKER default) when no scan
+// has ever been recorded.
+const DEFAULT_SYMBOL = "SPY";
+
+function deriveSymbol(scans: HourlyScanRow[]): string {
+  return scans[0]?.symbol ?? DEFAULT_SYMBOL;
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry point. Not exercised by any test, per the backfill precedent --
+// everything above this point is unit-tested with injected deps/mocks.
+// ---------------------------------------------------------------------------
+
+function usage(): string {
+  return [
+    "Usage: deno run --allow-env --allow-net --allow-write=docs/trading-journal \\",
+    "  --env-file=.env.weekly scripts/render_weekly_journal.ts [options]",
+    "",
+    "Renders the operator-run weekly review journal from hourly_scans + trades.",
+    "",
+    "Render mode (default):",
+    "  --week YYYY-Www     ISO week to render (default: the previous completed week)",
+    "  --out PATH          output path (default: docs/trading-journal/<week>.md)",
+    "  --force              overwrite an existing journal file (refused by default)",
+    "",
+    "Trial-counter mode (the only DB write this script ever makes):",
+    "  --record-accepted-bump --ref <ADR-path-or-issue>",
+    "                       increments bot_config.hourly_param_trial_count by 1",
+    "",
+    "  -h, --help           show this help",
+    "",
+    "See docs/runbooks/weekly-review.md for the full procedure.",
+  ].join("\n");
+}
+
+async function main(): Promise<void> {
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseArgs(Deno.args);
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`);
+    if (e instanceof UnknownArgError) {
+      console.error("");
+      console.error(usage());
+    }
+    Deno.exit(1);
+    return;
+  }
+
+  if (parsed.help) {
+    console.log(usage());
+    Deno.exit(0);
+    return;
+  }
+
+  try {
+    const sb = getServiceClient();
+    const deps: WeeklyReviewDeps = {
+      now: () => new Date(),
+      db: {
+        getScansUntil: (untilIso) => getScansUntilAdapter(sb, untilIso),
+        getHourlyTradesUntil: async (untilIso) => {
+          const scans = await getScansUntilAdapter(sb, untilIso);
+          return getHourlyTradesUntilAdapter(sb, untilIso, deriveSymbol(scans));
+        },
+        getAuditOutcomesUntil: (untilIso) => getAuditOutcomesUntilAdapter(sb, untilIso),
+        getConfig: (key) => getConfigAdapter(sb, key),
+        setConfig: (key, value) => setConfigAdapter(sb, key, value),
+      },
+      fileExists: async (path) => {
+        try {
+          await Deno.stat(path);
+          return true;
+        } catch (e) {
+          if (e instanceof Deno.errors.NotFound) return false;
+          throw e;
+        }
+      },
+      writeFile: (path, content) => Deno.writeTextFile(path, content),
+      log: (line) => console.log(line),
+    };
+
+    const opts: RunOpts = parsed.mode === "bump"
+      ? { mode: "bump", ref: parsed.ref }
+      : { mode: "render", week: parsed.week, out: parsed.out, force: parsed.force };
+
+    await runWeeklyReview(deps, opts);
+    Deno.exit(0);
+  } catch (e) {
+    console.error(`error: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
+}
+
+if (import.meta.main) {
+  main();
 }
