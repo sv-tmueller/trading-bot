@@ -46,6 +46,7 @@ deno task test
 
 # Run a single TS test file
 deno test --allow-env --allow-net supabase/functions/_shared/regime.test.ts
+deno test --allow-env --allow-net supabase/functions/hourly-check/logic.test.ts
 
 # DB integration tests — needs a local Postgres (gated behind RUN_DB_TESTS)
 deno task test:db
@@ -77,6 +78,15 @@ The production bot is **TypeScript on Deno** (Supabase Edge Functions). Producti
 The research backtester is **Python 3.9** (`backtest/`, `strategy/`, `main.py`). **Every Python
 file must start with `from __future__ import annotations`** — this enables modern type hint syntax
 on 3.9. Never use `list[dict]` or `dict[str, Any]` without this import.
+
+## Architecture / Daily flow / Intraday kill-switch / Key constraints (deprecation marker)
+
+The sections below describing `daily-check`'s post-open cadence and the SPY-close-vs-200-DMA
+signal are marked **deprecated — superseded by the hourly candlestick bot** as of the Batch
+2 merge. They are kept in this file as record, per this repo's own historical-layering
+convention (`docs/architecture/2026-07-05-codebase-map.md`'s documented practice of keeping
+retired architecture "as record rather than removed"), not deleted — a future reader can
+still reconstruct exactly what the bot did before this change.
 
 ## Architecture
 
@@ -175,7 +185,9 @@ calls MUST be mocked in any test that exercises a path which would reach them. W
 `CLAUDE_AGENT_NO_BROKER` is set, the guarded helpers raise `BrokerCallBlockedError` before any HTTP
 call — this is the mechanical safety net, but tests should still mock cleanly so the assertions are
 meaningful. The function `logic.ts` modules take their broker/db/notification dependencies via an
-injected `deps` object, so tests pass mocks directly.
+injected `deps` object, so tests pass mocks directly. This rule extends verbatim to the new
+guarded `placeBracketOrder` and any short-side helper: all Alpaca calls MUST be mocked in any
+test exercising a path that would reach them.
 
 ## Key constraints
 
@@ -195,11 +207,48 @@ migration (#220) re-pointed the *implementation* (IBKR -> Alpaca, `daily_check.p
 Edge Function, SQLite -> Supabase Postgres, `.env` -> `supabase secrets` / `bot_config`) but did not
 relax a single one of these guarantees.
 
-- **One decision rule.** The bot trades on exactly one signal: SPY close vs SPY 200-DMA, modulated by the kill-switch flag. The signal is computed by a pure function (`computeTargetState` in `supabase/functions/_shared/regime.ts`, a 1:1 port of `strategy/regime.py`) so every decision is reproducible from the SPY history alone. Do not add a second decision rule (sentiment overlay, sector tilt, etc.) without a fresh brainstorm and design spec — the rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was indistinguishable from a coin flip on 5y data.
-- **No LLM in the trading path.** The `daily-check`, `kill-switch`, and `panic` Edge Functions import no model SDK and instantiate no agent. The only Claude session in the repo is the operator's interactive Team Leader for development work — it never executes orders.
-- **Operational kill switch.** `bot_config.paused=true` halts new entries — `daily-check` writes `skipped:trading_paused` to `audit_log` and exits 0 without contacting Alpaca. The kill-switch function is unaffected and continues protecting an open position. The flag is set via the `panic` Edge Function (`action=pause`, cleared with `action=resume`), which is also the faster incident path — it can cancel orders or liquidate in the same family of invocations.
-- **Panic is the deterministic kill button.** The `panic` Edge Function (`action=pause|resume|cancel-orders|liquidate`, authenticated by the `x-panic-token` header) calls Alpaca and writes `bot_config` directly. No LLM is imported in this path. Its `audit_log` row (`script_name="panic"`) is written before the broker call and updated in a `finally` with the per-action result, so a partial run is recoverable from the DB. `runPanic` returns a typed `{ ok, result }`; a failed action returns HTTP 500 (failure is signalled by the status — the JSON body carries the raw `result` string, and the `error:` prefix lives on the `audit_log.outcome`, not the response body) — never treat a 500 as success.
-- **Engineer subagents must never execute against the live broker.** Subagents spawn into worktrees that inherit the project's Alpaca secrets via the parent shell, so any `deno test`, ad-hoc script, or direct function invocation could submit real orders if it reached a live broker path. The mutating helpers on the `supabase/functions/_shared/alpaca.ts` client — `placeMarketOrder`, `liquidate`, `cancelAllOrders` — call `checkGuard()` at the top of each function and raise `BrokerCallBlockedError` when `CLAUDE_AGENT_NO_BROKER` is set. `liquidate` routes through `placeMarketOrder`, so the guard covers it transitively; the read-only helpers (`getClock`, `getAccountValue`, `getPosition`) cannot place orders. All Alpaca calls MUST be mocked in agent-spawned tests (function `logic.ts` modules take an injected `deps` object — pass mocks directly). Integration tests that need a real broker must use the Alpaca **paper** account with explicitly-set secrets, or be explicitly skipped in agent contexts. **Mechanically enforced via the `CLAUDE_AGENT_NO_BROKER` env var (ported from #168) — when set, the guarded helpers raise `BrokerCallBlockedError` before any Alpaca call. Production leaves the var unset; the test setup sets it so any forgotten mock fails fast instead of materialising a live order. Defense in depth: dev/test use Alpaca paper keys.** _Rationale: 2026-05-06 incident #149 — six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions that would have filled unprotected at market open if not surgically cancelled. Re-materialised ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered via panic CLI). The production cron path was unaffected in both incidents; the gap was on the agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-depth)._ The rule originated against the pre-pivot `tools/broker.py`, applied to the IBKR `tools/ibkr_broker.py`, and now applies to `supabase/functions/_shared/alpaca.ts` exactly the same way.
+- **One decision rule.** The bot trades on exactly one signal: the composite hourly
+  candlestick decision `decideHourly` (`supabase/functions/_shared/hourly_signal.ts`),
+  sitting on P3's frozen 14-detector registry
+  (`_shared/candlestick.ts`), with its tie-break and cooldown rules frozen together as a
+  single configuration. Do not add a second decision rule (a sentiment overlay, a second
+  scanner, a parallel strategy) without a fresh brainstorm and design spec — the
+  rules-engine pivot exists precisely because the LLM-driven multi-signal v1.14 bot was
+  indistinguishable from a coin flip on 5y data, and a second live rule reintroduces the
+  same audit problem even without an LLM in the loop. `decideHourly` is a single pure
+  function of its bar history and frozen config, so the **signal** stays fully
+  bar-reproducible; whether a signal becomes an entry additionally depends on
+  broker/journal state (open position, cooldown, kill-switch flag, bar claim), so **entry
+  gating is state-dependent and audit-log-reproducible, not SPY-history-reproducible alone**
+  (§13 narrows the original invariant text's reproducibility clause on exactly this point).
+- **No LLM in the trading path.** Unchanged in intent. The `hourly-check`, `kill-switch`,
+  and `panic` Edge Functions import no model SDK and instantiate no agent. (Restated
+  verbatim from the pre-amendment text; `daily-check` is removed from this list once P1's
+  deprecation completes its decommission window.)
+- **Mechanical paper-only guard.** [NEW] The hourly bot's Alpaca client MUST refuse to place
+  any order unless (a) `getAlpacaConfig().paper === true`, (b) the trading base URL is
+  `https://paper-api.alpaca.markets`, and (c) the broker's own `/v2/account` response
+  carries a confirmed paper-account marker. All three checks are enforced in code, not
+  procedure; a failure throws before any broker call. See
+  `docs/superpowers/specs/2026-07-27-hourly-bot-design.md` §8.
+- **Operational kill switch.** Unchanged in intent — `bot_config.paused=true` halts new
+  entries for every bot sharing this flag.
+- **Panic is the deterministic kill button.** Unchanged contract (actions, token auth,
+  audit-before-broker-call, 500-on-failure). [CORRECTED] Its implementation is side-aware
+  (closes a short via BUY, a long via SELL) and targets the symbol of whichever bot is
+  currently live, not a hardcoded long-only `BOT_TICKER` liquidate. See §8.2 of the design
+  spec cited above for the finding this corrects.
+- **Engineer subagents must never execute against the live broker.** Unchanged mechanism
+  (`CLAUDE_AGENT_NO_BROKER`, `checkGuard()` on every mutating Alpaca helper including the new
+  bracket-order and short-side helpers this bot adds). _Rationale: 2026-05-06 incident #149 —
+  six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer
+  worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions
+  that would have filled unprotected at market open if not surgically cancelled. Re-materialised
+  ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an
+  unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered
+  via panic CLI). The production cron path was unaffected in both incidents; the gap was on the
+  agent-test side and is now closed by the mechanical guard plus the docs/skill rule
+  (defense-in-depth)._
 
 Development decisions that affect the safety stack or trading logic are recorded as ADRs in `docs/decisions/`. Weekly trading outcomes and observations are recorded in `docs/trading-journal/`.
 

@@ -104,6 +104,17 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `PANIC_TOKEN` | — | `x-panic-token` header value for the panic function |
 | `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status function; no default — unset/blank throws |
 | `NOTIFY_WEBHOOK_URL` | — (optional) | Discord incoming-webhook URL; unset = notifications skipped |
+| `HOURLY_BOT_TICKER` | `SPY` | Instrument the hourly-candlestick bot trades (#475) |
+| `SIZING_RISK_PCT` | `0.01` | Hourly bot risk budget per trade as a fraction of equity (0, 0.05] |
+| `SIZING_NOTIONAL_CAP_PCT` | `0.10` | Hourly bot notional cap per position as a fraction of equity (0, 1.0] |
+| `HOURLY_BRACKET_R_MULTIPLE` | `2` | Bracket target multiple; fixed at 2 for v1 (spec revision required to change) |
+| `HOURLY_STOP_BUFFER_PCT` | `0.05` | Stop buffer as a fraction of the signal bar's range (0, 0.5] |
+| `HOURLY_MIN_STOP_DISTANCE` | `0.05` | Minimum entry/stop distance in USD; below this `skipped:geometry_invalid` |
+| `HOURLY_MAX_ENTRIES_PER_DAY` | `3` | Max new entries per symbol per day (1 - 10) |
+| `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | Minutes past a completed bar's end before it is stale (1 - 60) |
+| `HOURLY_CONTEXT_MODE` | `none` | `none` \| `reversal` \| `continuation` trend-context mask |
+| `HOURLY_SHORTS_ENABLED` | `true` | Fail-closed override for short entries; flipped to `false` if shortability cannot be confirmed |
+| `HOURLY_BOT_PAPER_ONLY` | — | MUST be `true`; unset or `false` throws — the mechanical paper-only gate (§8.3) |
 
 See `docs/CURRENT_CONFIG.md` for the current deployed values.
 

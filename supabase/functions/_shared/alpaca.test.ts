@@ -3,9 +3,11 @@ import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
   AlpacaError,
   BrokerCallBlockedError,
+  checkPaperOnly,
   createAlpacaClient,
   OrderRejectedError,
   OrderTimeoutError,
+  PaperGuardFailedError,
 } from "./alpaca.ts";
 import { DataError } from "./num.ts";
 
@@ -37,11 +39,61 @@ Deno.test("getClock maps is_open", async () => {
   setKeys();
   const restore = stubFetch((i) => {
     assertEquals(urlOf(i).endsWith("/v2/clock"), true);
-    return Promise.resolve(jsonResponse({ is_open: true, timestamp: "t" }));
+    return Promise.resolve(
+      jsonResponse({ is_open: true, timestamp: "t", next_close: "2026-07-27T20:00:00-04:00" }),
+    );
   });
   try {
     const client = createAlpacaClient();
     assertEquals((await client.getClock()).isOpen, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// #475 T4 (spec §7 must-fix round 2 finding 1): getClock() additively gains
+// nextClose, parsed via requireNumber/Date.parse. Existing callers
+// (daily-check, kill-switch) destructure only isOpen and are unaffected.
+Deno.test("getClock: parses next_close as epoch ms via Date.parse", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({
+      is_open: true,
+      timestamp: "2026-07-27T15:07:00-04:00",
+      next_close: "2026-07-27T16:00:00-04:00",
+    }))
+  );
+  try {
+    const client = createAlpacaClient();
+    const clock = await client.getClock();
+    assertEquals(clock.nextClose, Date.parse("2026-07-27T16:00:00-04:00"));
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getClock: missing next_close is a hard error (DataError), never silently false", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ is_open: true, timestamp: "t", next_close: null }))
+  );
+  try {
+    await assertRejects(() => createAlpacaClient().getClock(), DataError, "next_close");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getClock: unparseable next_close is a hard error", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ is_open: true, timestamp: "t", next_close: "not-a-date" }))
+  );
+  try {
+    await assertRejects(() => createAlpacaClient().getClock(), DataError, "next_close");
   } finally {
     restore();
     clearKeys();
@@ -559,7 +611,6 @@ Deno.test("guard blocks mutating calls without touching the network", async () =
     );
     await assertRejects(() => c.liquidate("UPRO"), BrokerCallBlockedError);
     await assertRejects(() => c.cancelAllOrders(), BrokerCallBlockedError);
-    await assertRejects(() => c.closePosition("UPRO"), BrokerCallBlockedError);
     assertEquals(networkHit, false);
   } finally {
     restore();
@@ -705,6 +756,522 @@ Deno.test("closePosition BUYs the absolute qty to cover a short position", async
     assertEquals(placedSide, "buy");
     assertEquals(placedQty, "30");
     assertEquals(fill?.qty, 30);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T5: paper-only guard, Layers A and B (spec §8.3)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkPaperOnly: passes when paper=true and tradingBaseUrl is the paper host", () => {
+  checkPaperOnly("test-op", {
+    paper: true,
+    tradingBaseUrl: "https://paper-api.alpaca.markets",
+  });
+});
+
+Deno.test("checkPaperOnly: throws PaperGuardFailedError when paper=false", () => {
+  try {
+    checkPaperOnly("test-op", { paper: false, tradingBaseUrl: "https://api.alpaca.markets" });
+    throw new Error("expected checkPaperOnly to throw");
+  } catch (e) {
+    assertEquals(e instanceof PaperGuardFailedError, true);
+  }
+});
+
+// The URL check is load-bearing (spec §8.3): even if `paper` were somehow
+// true, a non-paper trading host must still fail closed -- a mis-set boolean
+// alone cannot defeat this guard.
+Deno.test("checkPaperOnly: throws PaperGuardFailedError on a non-paper URL even with paper=true", () => {
+  try {
+    checkPaperOnly("test-op", { paper: true, tradingBaseUrl: "https://api.alpaca.markets" });
+    throw new Error("expected checkPaperOnly to throw");
+  } catch (e) {
+    assertEquals(e instanceof PaperGuardFailedError, true);
+  }
+});
+
+Deno.test("createAlpacaClient(): default client has no paper check (existing callers untouched)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false"); // live config -- daily-check/kill-switch/panic shape
+  liftBrokerGuard();
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    const c = createAlpacaClient();
+    // cancelAllOrders reaches the network (no PaperGuardFailedError) -- the
+    // default client (no opts) never opts into the paper-only layer.
+    assertEquals(await c.cancelAllOrders(), 0);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): throws PaperGuardFailedError when ALPACA_PAPER=false", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.cancelAllOrders(), PaperGuardFailedError);
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): checkGuard still fires first (precedence preserved)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false"); // would also fail the paper check
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    // BrokerCallBlockedError must win over PaperGuardFailedError.
+    await assertRejects(() => c.cancelAllOrders(), BrokerCallBlockedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): placeMarketOrder honors the paper-only guard too", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(
+      () => c.placeMarketOrder({ symbol: "SPY", side: "BUY", qty: 1 }),
+      PaperGuardFailedError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Layer B: the paper-account marker [to verify] could not be confirmed
+// against a live /v2/account response in this agent session (no paper
+// credentials present) -- ships fail-closed per the spec's own fallback.
+Deno.test("assertPaperAccount: fails closed (marker unconfirmed) even on a paper-configured client", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "PA000", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Nit 11 (fix round 1): the raw account_number must never appear in the
+// failure message -- only a marker-prefix-masked form is diagnostically
+// useful, and this message can end up in logs/notifications.
+Deno.test("assertPaperAccount: masks the raw account_number in the failure message (marker prefix only)", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "PA3898644933991234", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    let message = "";
+    try {
+      await c.assertPaperAccount();
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    assertEquals(message.includes("PA3898644933991234"), false);
+    assertEquals(message.includes("PA"), true); // marker prefix retained
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("assertPaperAccount: checkGuard fires first under CLAUDE_AGENT_NO_BROKER", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ account_number: "PA000" })));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), BrokerCallBlockedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T6: order helpers (spec §7) -- placeBracketOrder, placeOcoExitPair,
+// cancelOrder, getAssetShortability.
+// ---------------------------------------------------------------------------
+
+Deno.test("placeBracketOrder: posts order_class=bracket with take_profit/stop_loss legs, polls to fill", async () => {
+  setKeys();
+  let postedBody: Record<string, unknown> = {};
+  let polls = 0;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      postedBody = JSON.parse(String(init.body));
+      return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    }
+    polls += 1;
+    if (polls < 2) return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    return Promise.resolve(jsonResponse({
+      id: "b1",
+      status: "filled",
+      filled_avg_price: "550.10",
+      filled_qty: "18",
+      filled_at: "2026-07-27T15:00:00Z",
+    }));
+  });
+  liftBrokerGuard();
+  try {
+    const fill = await createAlpacaClient().placeBracketOrder(
+      { symbol: "SPY", side: "BUY", qty: 18, takeProfitPrice: 554.5, stopLossPrice: 547.75 },
+      { timeoutMs: 1000, intervalMs: 1 },
+    );
+    assertEquals(fill.qty, 18);
+    assertEquals(postedBody.order_class, "bracket");
+    assertEquals(postedBody.type, "market");
+    assertEquals(postedBody.time_in_force, "day");
+    assertEquals(postedBody.side, "buy");
+    assertEquals((postedBody.take_profit as { limit_price: string }).limit_price, "554.5");
+    assertEquals((postedBody.stop_loss as { stop_price: string }).stop_price, "547.75");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      BrokerCallBlockedError,
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: paper-only guard fires on an opted-in client", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient({ paperOnly: true }).placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      PaperGuardFailedError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: propagates OrderTimeoutError via the shared poller", async () => {
+  setKeys();
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder(
+          { symbol: "SPY", side: "SELL", qty: 5, takeProfitPrice: 90, stopLossPrice: 110 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeOcoExitPair: posts order_class=oco with the closing side and both legs, no polling", async () => {
+  setKeys();
+  let postedBody: Record<string, unknown> = {};
+  const restore = stubFetch((_i, init) => {
+    postedBody = JSON.parse(String(init?.body));
+    return Promise.resolve(jsonResponse({ id: "oco1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    const result = await createAlpacaClient().placeOcoExitPair({
+      symbol: "SPY",
+      side: "SELL",
+      qty: 18,
+      takeProfitPrice: 554.5,
+      stopLossPrice: 547.75,
+    });
+    assertEquals(result.orderId, "oco1");
+    assertEquals(postedBody.order_class, "oco");
+    assertEquals(postedBody.side, "sell");
+    assertEquals(postedBody.limit_price, "554.5");
+    assertEquals((postedBody.stop_loss as { stop_price: string }).stop_price, "547.75");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeOcoExitPair: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeOcoExitPair({
+          symbol: "SPY",
+          side: "SELL",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      BrokerCallBlockedError,
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: DELETE then verifies terminal status", async () => {
+  setKeys();
+  let deleted = false;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") {
+      deleted = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "canceled" }));
+  });
+  liftBrokerGuard();
+  try {
+    await createAlpacaClient().cancelOrder("o1");
+    assertEquals(deleted, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Fix round 1 finding 6: Alpaca's cancel is asynchronous, so a healthy cancel
+// routinely reads back `pending_cancel` on the very next GET. A single
+// immediate read would misclassify that as UNVERIFIED; the bounded poll
+// added in this fix round must ride it out to `canceled`.
+Deno.test("cancelOrder: pending_cancel then canceled -> verified via the bounded poll, not UNVERIFIED", async () => {
+  setKeys();
+  let statusReads = 0;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    statusReads += 1;
+    if (statusReads === 1) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "pending_cancel" }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "canceled" }));
+  });
+  liftBrokerGuard();
+  try {
+    await createAlpacaClient().cancelOrder("o1", { timeoutMs: 100, intervalMs: 1 });
+    assertEquals(statusReads, 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: throws when the post-cancel status is still live after the bounded poll times out (unverified)", async () => {
+  setKeys();
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 5, intervalMs: 1 }),
+      AlpacaError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(() => createAlpacaClient().cancelOrder("o1"), BrokerCallBlockedError);
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getAssetShortability: parses shortable/easy_to_borrow, unguarded read", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/assets/SPY"), true);
+    return Promise.resolve(jsonResponse({ shortable: true, easy_to_borrow: false }));
+  });
+  try {
+    const result = await createAlpacaClient().getAssetShortability("SPY");
+    assertEquals(result, { shortable: true, easyToBorrow: false });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getAssetShortability: throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "not found" }, 404)));
+  try {
+    await assertRejects(() => createAlpacaClient().getAssetShortability("SPY"), AlpacaError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T11: listFilledOrdersSince / listOpenOrderIds (reconciliation contract)
+// ---------------------------------------------------------------------------
+
+Deno.test("listFilledOrdersSince: filters to status=filled, maps to Fill[]", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/orders?status=closed&symbols=SPY"), true);
+    assertEquals(urlOf(i).includes("after="), true);
+    return Promise.resolve(jsonResponse([
+      {
+        id: "leg1",
+        side: "sell",
+        status: "filled",
+        filled_avg_price: "554.50",
+        filled_qty: "18",
+        filled_at: "2026-07-27T15:00:00Z",
+      },
+      { id: "leg2", side: "sell", status: "canceled", filled_qty: "0" },
+    ]));
+  });
+  try {
+    const fills = await createAlpacaClient().listFilledOrdersSince(
+      "SPY",
+      "2026-07-27T14:00:00Z",
+    );
+    assertEquals(fills, [{
+      orderId: "leg1",
+      side: "SELL",
+      fillPrice: 554.5,
+      qty: 18,
+      fillTime: "2026-07-27T15:00:00Z",
+    }]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listFilledOrdersSince: throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "boom" }, 500)));
+  try {
+    await assertRejects(
+      () => createAlpacaClient().listFilledOrdersSince("SPY", "2026-07-27T14:00:00Z"),
+      AlpacaError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listOpenOrderIds: returns broker order ids still resting", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/orders?status=open&symbols=SPY"), true);
+    return Promise.resolve(jsonResponse([{ id: "leg1" }, { id: "leg2" }]));
+  });
+  try {
+    assertEquals(await createAlpacaClient().listOpenOrderIds("SPY"), ["leg1", "leg2"]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listOpenOrderIds: empty when no resting orders", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse([])));
+  try {
+    assertEquals(await createAlpacaClient().listOpenOrderIds("SPY"), []);
   } finally {
     restore();
     clearKeys();

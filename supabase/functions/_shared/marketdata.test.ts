@@ -1,6 +1,12 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
-import { getDailyCloses, getLatestQuote, getLatestTradePrice } from "./marketdata.ts";
+import {
+  getCalendarSessions,
+  getDailyCloses,
+  getHourlyBars,
+  getLatestQuote,
+  getLatestTradePrice,
+} from "./marketdata.ts";
 import { DataError } from "./num.ts";
 
 function setKeys() {
@@ -254,5 +260,128 @@ Deno.test("getLatestTradePrice uses ALPACA_DATA_FEED (not hard-coded iex)", asyn
     restore();
     clearKeys();
     Deno.env.delete("ALPACA_DATA_FEED");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T3: getHourlyBars + getCalendarSessions
+// ---------------------------------------------------------------------------
+
+Deno.test("getHourlyBars: URL uses timeframe=1Hour and the configured feed", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/stocks/SPY/bars"), true);
+    assertEquals(urlOf(i).includes("timeframe=1Hour"), true);
+    assertEquals(urlOf(i).includes("feed=iex"), true);
+    assertEquals(urlOf(i).includes("sort=asc"), true);
+    assertEquals(urlOf(i).includes("adjustment=all"), true);
+    return Promise.resolve(jsonResponse({ bars: [] }));
+  });
+  try {
+    await getHourlyBars("SPY", { count: 10 });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getHourlyBars: maps o/h/l/c/t into Bar-shaped rows", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({
+      bars: [
+        { t: "2026-07-27T14:00:00Z", o: 550, h: 551, l: 549, c: 550.5 },
+        { t: "2026-07-27T15:00:00Z", o: 550.5, h: 552, l: 550, c: 551.5 },
+      ],
+    }))
+  );
+  try {
+    const bars = await getHourlyBars("SPY", { count: 10 });
+    assertEquals(bars.length, 2);
+    assertEquals(bars[0], {
+      timestamp: "2026-07-27T14:00:00Z",
+      open: 550,
+      high: 551,
+      low: 549,
+      close: 550.5,
+    });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getHourlyBars: throws DataError on a malformed number (no silent zero)", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({
+      bars: [{ t: "2026-07-27T14:00:00Z", o: 550, h: 551, l: null, c: 550.5 }],
+    }))
+  );
+  try {
+    await assertRejects(() => getHourlyBars("SPY", { count: 10 }), DataError, "bar low");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getHourlyBars: empty bars array returns []", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ bars: null })));
+  try {
+    assertEquals(await getHourlyBars("SPY", { count: 10 }), []);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendarSessions: returns {date, open, close} per day", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/calendar?start=2026-07-27&end=2026-07-27"), true);
+    return Promise.resolve(jsonResponse([
+      { date: "2026-07-27", open: "09:30", close: "16:00" },
+    ]));
+  });
+  try {
+    const sessions = await getCalendarSessions("2026-07-27", "2026-07-27");
+    assertEquals(sessions, [{ date: "2026-07-27", open: "09:30", close: "16:00" }]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendarSessions: missing open/close is a hard error, never a permissive filter", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse([{ date: "2026-07-27", open: null, close: "16:00" }]))
+  );
+  try {
+    await assertRejects(
+      () => getCalendarSessions("2026-07-27", "2026-07-27"),
+      DataError,
+      "open/close",
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getCalendarSessions: throws on a non-array body", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "boom" })));
+  try {
+    await assertRejects(
+      () => getCalendarSessions("2026-07-27", "2026-07-27"),
+      DataError,
+      "non-array",
+    );
+  } finally {
+    restore();
+    clearKeys();
   }
 });

@@ -1,11 +1,30 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   getAlpacaConfig,
+  getHourlyConfig,
   getNotifyWebhookUrl,
   getStatusToken,
   getStrategyConfig,
   isClaudeAgentNoBroker,
 } from "./config.ts";
+
+const HOURLY_KEYS = [
+  "HOURLY_BOT_TICKER",
+  "SIZING_RISK_PCT",
+  "SIZING_NOTIONAL_CAP_PCT",
+  "HOURLY_BRACKET_R_MULTIPLE",
+  "HOURLY_STOP_BUFFER_PCT",
+  "HOURLY_MIN_STOP_DISTANCE",
+  "HOURLY_MAX_ENTRIES_PER_DAY",
+  "HOURLY_STALENESS_TOLERANCE_MIN",
+  "HOURLY_CONTEXT_MODE",
+  "HOURLY_SHORTS_ENABLED",
+  "HOURLY_BOT_PAPER_ONLY",
+];
+
+function clearHourlyEnv() {
+  for (const k of HOURLY_KEYS) Deno.env.delete(k);
+}
 
 function clearEnv() {
   for (
@@ -206,4 +225,165 @@ Deno.test("getStatusToken: set returns trimmed value", () => {
   Deno.env.set("STATUS_TOKEN", "  s3cr3t  ");
   assertEquals(getStatusToken(), "s3cr3t");
   Deno.env.delete("STATUS_TOKEN");
+});
+
+// ---------------------------------------------------------------------------
+// #475 T1: getHourlyConfig() -- §10 settings for the hourly-check bot. Kept
+// separate from getStrategyConfig() so daily-check/kill-switch are untouched.
+// ---------------------------------------------------------------------------
+
+Deno.test("getHourlyConfig: defaults when env is unset (except the mandatory paper-only flag)", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  const c = getHourlyConfig();
+  assertEquals(c.hourlyBotTicker, "SPY");
+  assertEquals(c.sizingRiskPct, 0.01);
+  assertEquals(c.sizingNotionalCapPct, 0.10);
+  assertEquals(c.hourlyBracketRMultiple, 2);
+  assertEquals(c.hourlyStopBufferPct, 0.05);
+  assertEquals(c.hourlyMinStopDistance, 0.05);
+  assertEquals(c.hourlyMaxEntriesPerDay, 3);
+  assertEquals(c.hourlyStalenessToleranceMin, 10);
+  assertEquals(c.hourlyContextMode, "none");
+  assertEquals(c.hourlyShortsEnabled, true);
+  assertEquals(c.hourlyBotPaperOnly, true);
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: reads valid overrides", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_BOT_TICKER", "QQQ");
+  Deno.env.set("SIZING_RISK_PCT", "0.02");
+  Deno.env.set("SIZING_NOTIONAL_CAP_PCT", "0.20");
+  Deno.env.set("HOURLY_STOP_BUFFER_PCT", "0.10");
+  Deno.env.set("HOURLY_MIN_STOP_DISTANCE", "0.10");
+  Deno.env.set("HOURLY_MAX_ENTRIES_PER_DAY", "5");
+  Deno.env.set("HOURLY_STALENESS_TOLERANCE_MIN", "15");
+  Deno.env.set("HOURLY_CONTEXT_MODE", "reversal");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "false");
+  const c = getHourlyConfig();
+  assertEquals(c.hourlyBotTicker, "QQQ");
+  assertEquals(c.sizingRiskPct, 0.02);
+  assertEquals(c.sizingNotionalCapPct, 0.20);
+  assertEquals(c.hourlyStopBufferPct, 0.10);
+  assertEquals(c.hourlyMinStopDistance, 0.10);
+  assertEquals(c.hourlyMaxEntriesPerDay, 5);
+  assertEquals(c.hourlyStalenessToleranceMin, 15);
+  assertEquals(c.hourlyContextMode, "reversal");
+  assertEquals(c.hourlyShortsEnabled, false);
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects empty HOURLY_BOT_TICKER", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_BOT_TICKER", "  ");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_BOT_TICKER");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects SIZING_RISK_PCT out of (0, 0.05]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("SIZING_RISK_PCT", "0.06");
+  assertThrows(() => getHourlyConfig(), Error, "SIZING_RISK_PCT");
+  Deno.env.set("SIZING_RISK_PCT", "0");
+  assertThrows(() => getHourlyConfig(), Error, "SIZING_RISK_PCT");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects SIZING_NOTIONAL_CAP_PCT out of (0, 1.0]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("SIZING_NOTIONAL_CAP_PCT", "1.01");
+  assertThrows(() => getHourlyConfig(), Error, "SIZING_NOTIONAL_CAP_PCT");
+  Deno.env.set("SIZING_NOTIONAL_CAP_PCT", "0");
+  assertThrows(() => getHourlyConfig(), Error, "SIZING_NOTIONAL_CAP_PCT");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: HOURLY_BRACKET_R_MULTIPLE must be exactly 2", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_BRACKET_R_MULTIPLE", "3");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_BRACKET_R_MULTIPLE");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_STOP_BUFFER_PCT out of (0, 0.5]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_STOP_BUFFER_PCT", "0.51");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_STOP_BUFFER_PCT");
+  Deno.env.set("HOURLY_STOP_BUFFER_PCT", "0");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_STOP_BUFFER_PCT");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_MIN_STOP_DISTANCE <= 0", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_MIN_STOP_DISTANCE", "0");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_MIN_STOP_DISTANCE");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_MAX_ENTRIES_PER_DAY out of [1, 10]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_MAX_ENTRIES_PER_DAY", "0");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_MAX_ENTRIES_PER_DAY");
+  Deno.env.set("HOURLY_MAX_ENTRIES_PER_DAY", "11");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_MAX_ENTRIES_PER_DAY");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_STALENESS_TOLERANCE_MIN out of [1, 60]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_STALENESS_TOLERANCE_MIN", "0");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_STALENESS_TOLERANCE_MIN");
+  Deno.env.set("HOURLY_STALENESS_TOLERANCE_MIN", "61");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_STALENESS_TOLERANCE_MIN");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects an unknown HOURLY_CONTEXT_MODE", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_CONTEXT_MODE", "momentum");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_CONTEXT_MODE");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects a non-boolean HOURLY_SHORTS_ENABLED", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "yes");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
+  clearHourlyEnv();
+});
+
+// HOURLY_BOT_PAPER_ONLY: strict reading (the derived T1 decision) -- throws
+// unless the operator has explicitly set it to "true". Unset is NOT treated
+// as the table's "default true"; a missing knob for the mechanical paper-only
+// gate must fail closed, not fail open.
+Deno.test("getHourlyConfig: HOURLY_BOT_PAPER_ONLY unset throws (fail-closed, not default-true)", () => {
+  clearHourlyEnv();
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_BOT_PAPER_ONLY");
+});
+
+Deno.test("getHourlyConfig: HOURLY_BOT_PAPER_ONLY=false throws", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "false");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_BOT_PAPER_ONLY");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: HOURLY_BOT_PAPER_ONLY=true passes", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  assertEquals(getHourlyConfig().hourlyBotPaperOnly, true);
+  clearHourlyEnv();
 });
