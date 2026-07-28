@@ -12,7 +12,7 @@ function clearKeys() {
   Deno.env.delete("ALPACA_SECRET_KEY");
 }
 
-Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
+Deno.test("getDailyCloses returns ordered {date, close, high, low}", async () => {
   setKeys();
   const restore = stubFetch((i) => {
     assertEquals(urlOf(i).includes("/v2/stocks/SPY/bars"), true);
@@ -22,8 +22,8 @@ Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
     assertEquals(urlOf(i).includes("adjustment=all"), true);
     return Promise.resolve(jsonResponse({
       bars: [
-        { t: "2026-06-03T04:00:00Z", o: 1, h: 401, l: 1, c: 400, v: 1 },
-        { t: "2026-06-04T04:00:00Z", o: 1, h: 412, l: 1, c: 410, v: 1 },
+        { t: "2026-06-03T04:00:00Z", o: 1, h: 401, l: 397, c: 400, v: 1 },
+        { t: "2026-06-04T04:00:00Z", o: 1, h: 412, l: 405, c: 410, v: 1 },
       ],
       next_page_token: null,
     }));
@@ -31,7 +31,25 @@ Deno.test("getDailyCloses returns ordered {date, close, high}", async () => {
   try {
     const bars = await getDailyCloses("SPY", 250);
     assertEquals(bars.length, 2);
-    assertEquals(bars[1], { date: "2026-06-04", close: 410, high: 412 });
+    assertEquals(bars[1], { date: "2026-06-04", close: 410, high: 412, low: 405 });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// #474 T2 (D5): the short-side kill-switch mirror needs daily lows for its
+// rolling-low reference -- this pins the JSON->number boundary the same way
+// the existing high/close fields are pinned above.
+Deno.test("getDailyCloses throws on a null low (no silent zero)", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({
+      bars: [{ t: "2026-06-04T04:00:00Z", h: 412, l: null, c: 410 }],
+    }))
+  );
+  try {
+    await assertRejects(() => getDailyCloses("SPY", 250), DataError, "bar low");
   } finally {
     restore();
     clearKeys();
