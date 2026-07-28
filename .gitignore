@@ -39,3 +39,7 @@ supabase/.branches/
 # Exported live trading history (#403) — CSVs from scripts/export_live_history.sh,
 # consumed by backtest/run_live_divergence.py. Account data; never committed.
 /live_export/
+
+# Local weekly-review config (#481) — Supabase service-role creds for
+# scripts/render_weekly_journal.ts; see .env.weekly.example
+.env.weekly
