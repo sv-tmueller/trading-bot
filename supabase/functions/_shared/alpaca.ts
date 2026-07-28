@@ -43,6 +43,14 @@ export interface Fill {
   fillTime: string;
 }
 
+// #475 T11: a fill discovered via listFilledOrdersSince, which (unlike
+// placeMarketOrder's Fill) does not already know its own side from the
+// caller's request -- the reconciliation consumer needs it to write a
+// trades row.
+export interface ClosedOrderFill extends Fill {
+  side: "BUY" | "SELL";
+}
+
 export interface PollOpts {
   timeoutMs?: number;
   intervalMs?: number;
@@ -108,7 +116,7 @@ export interface AlpacaClient {
   // list read. Disclosed as a delta in the PR; both are read-only (unguarded)
   // and use Alpaca's documented GET /v2/orders list endpoint, [to verify]
   // like every other API-shape assertion in this file.
-  listFilledOrdersSince(symbol: string, sinceIso: string): Promise<Fill[]>;
+  listFilledOrdersSince(symbol: string, sinceIso: string): Promise<ClosedOrderFill[]>;
   listOpenOrderIds(symbol: string): Promise<string[]>;
 }
 
@@ -460,7 +468,10 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
   // #475 T11: read-only, unguarded. Lists CLOSED orders for `symbol` filled
   // strictly after `sinceIso`, so the reconciliation contract (spec §7) can
   // discover bracket/OCO exit-leg fills the caller did not itself poll for.
-  async function listFilledOrdersSince(symbol: string, sinceIso: string): Promise<Fill[]> {
+  async function listFilledOrdersSince(
+    symbol: string,
+    sinceIso: string,
+  ): Promise<ClosedOrderFill[]> {
     const res = await trade(
       `/v2/orders?status=closed&symbols=${encodeURIComponent(symbol)}` +
         `&after=${encodeURIComponent(sinceIso)}&direction=asc&limit=500`,
@@ -476,6 +487,7 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       .filter((o) => o.status === "filled")
       .map((o) => ({
         orderId: String(o.id),
+        side: String(o.side).toLowerCase() === "buy" ? "BUY" : "SELL",
         fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
         qty: Math.trunc(requireNumber(o.filled_qty, "filled_qty")),
         fillTime: String(o.filled_at),

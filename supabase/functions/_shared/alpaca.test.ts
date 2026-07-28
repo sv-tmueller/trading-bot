@@ -1015,12 +1015,13 @@ Deno.test("listFilledOrdersSince: filters to status=filled, maps to Fill[]", asy
     return Promise.resolve(jsonResponse([
       {
         id: "leg1",
+        side: "sell",
         status: "filled",
         filled_avg_price: "554.50",
         filled_qty: "18",
         filled_at: "2026-07-27T15:00:00Z",
       },
-      { id: "leg2", status: "canceled", filled_qty: "0" },
+      { id: "leg2", side: "sell", status: "canceled", filled_qty: "0" },
     ]));
   });
   try {
@@ -1030,6 +1031,7 @@ Deno.test("listFilledOrdersSince: filters to status=filled, maps to Fill[]", asy
     );
     assertEquals(fills, [{
       orderId: "leg1",
+      side: "SELL",
       fillPrice: 554.5,
       qty: 18,
       fillTime: "2026-07-27T15:00:00Z",
