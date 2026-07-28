@@ -37,11 +37,61 @@ Deno.test("getClock maps is_open", async () => {
   setKeys();
   const restore = stubFetch((i) => {
     assertEquals(urlOf(i).endsWith("/v2/clock"), true);
-    return Promise.resolve(jsonResponse({ is_open: true, timestamp: "t" }));
+    return Promise.resolve(
+      jsonResponse({ is_open: true, timestamp: "t", next_close: "2026-07-27T20:00:00-04:00" }),
+    );
   });
   try {
     const client = createAlpacaClient();
     assertEquals((await client.getClock()).isOpen, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// #475 T4 (spec §7 must-fix round 2 finding 1): getClock() additively gains
+// nextClose, parsed via requireNumber/Date.parse. Existing callers
+// (daily-check, kill-switch) destructure only isOpen and are unaffected.
+Deno.test("getClock: parses next_close as epoch ms via Date.parse", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({
+      is_open: true,
+      timestamp: "2026-07-27T15:07:00-04:00",
+      next_close: "2026-07-27T16:00:00-04:00",
+    }))
+  );
+  try {
+    const client = createAlpacaClient();
+    const clock = await client.getClock();
+    assertEquals(clock.nextClose, Date.parse("2026-07-27T16:00:00-04:00"));
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getClock: missing next_close is a hard error (DataError), never silently false", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ is_open: true, timestamp: "t", next_close: null }))
+  );
+  try {
+    await assertRejects(() => createAlpacaClient().getClock(), DataError, "next_close");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getClock: unparseable next_close is a hard error", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ is_open: true, timestamp: "t", next_close: "not-a-date" }))
+  );
+  try {
+    await assertRejects(() => createAlpacaClient().getClock(), DataError, "next_close");
   } finally {
     restore();
     clearKeys();

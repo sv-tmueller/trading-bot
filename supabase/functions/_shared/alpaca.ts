@@ -43,7 +43,9 @@ export interface PollOpts {
 }
 
 export interface AlpacaClient {
-  getClock(): Promise<{ isOpen: boolean }>;
+  // nextClose is epoch ms (spec §7): additive field, existing callers
+  // (daily-check, kill-switch) destructure only isOpen and are unaffected.
+  getClock(): Promise<{ isOpen: boolean; nextClose: number }>;
   /** US trading-session dates (YYYY-MM-DD) in [start, end], oldest-first. */
   getCalendar(start: string, end: string): Promise<string[]>;
   getAccountValue(): Promise<number>;
@@ -92,7 +94,19 @@ export function createAlpacaClient(): AlpacaClient {
 
   async function getClock() {
     const j = await tradeJson("/v2/clock");
-    return { isOpen: Boolean(j.is_open) };
+    // #475 T4 (spec §7 must-fix round 2 finding 1): next_close is asserted,
+    // not verified against a live response in this agent session (no paper
+    // credentials present -- disclosed in the PR). Missing/unparseable is a
+    // hard error, routed through the same requireNumber boundary as every
+    // other JSON->number Alpaca field: a permanently-false
+    // `nextClose - now <= 1h` comparison would silently hold positions
+    // overnight with no visible signal that anything is wrong.
+    const raw = j.next_close;
+    const nextClose = requireNumber(
+      typeof raw === "string" ? Date.parse(raw) : raw,
+      "next_close",
+    );
+    return { isOpen: Boolean(j.is_open), nextClose };
   }
 
   async function getCalendar(start: string, end: string): Promise<string[]> {
