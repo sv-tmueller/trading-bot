@@ -1221,3 +1221,90 @@ Deno.test("recovery + gate 13: adopted entry + discovered bracket exit in the sa
     true,
   );
 });
+
+// ---------------------------------------------------------------------------
+// #480 T5: pin the lead-ruled decision -- recovery NEVER clears stale
+// hourly_kill_switch_* keys. Three-run scenario sharing one bot_config store:
+// (1) a double fault (clear group + journal group both exhaust retries) on
+// the would-be clearing entry leaves the flag stale AND the scan row
+// pending; (2) the next scan's recovery adopts the pending entry (restoring
+// entry_order_id) but must not touch the flag; (3) self-healing proof -- a
+// later fully-successful opposite-side entry still clears it via the
+// ordinary step 20 path, exactly as PR #477's round-2 review ratified.
+// ---------------------------------------------------------------------------
+
+Deno.test("recovery T5: double-fault leaves hourly_kill_switch_* stale through recovery; a later fully-successful opposite-side entry self-heals via the normal step 20 path", async () => {
+  const { deps, rec } = buildDeps();
+  const configStore = new Map<string, string>([
+    ["hourly_experiment_start_equity", "100000"],
+    ["hourly_kill_switch_active", "true"],
+    ["hourly_kill_switch_side", "SHORT"], // opposite of the LONG decision every run below produces
+  ]);
+  deps.db.getConfig = (key) => Promise.resolve(configStore.get(key) ?? null);
+  const realUpsert = deps.db.upsertHourlyScan;
+
+  // --- Run 1: this scan's own LONG entry is the clearing entry, but BOTH
+  // the clear group and the post-order journal group exhaust every retry
+  // (T1 double fault) -- leaving the flag stale and the scan row pending.
+  deps.db.setConfig = (key, _value) => {
+    if (key.startsWith("hourly_kill_switch_")) return Promise.reject(new Error("db down"));
+    return Promise.resolve();
+  };
+  deps.db.upsertHourlyScan = (p) => {
+    if (p.entryOrderId !== null) return Promise.reject(new Error("boom")); // post-order journal fails
+    return realUpsert(p);
+  };
+  deps.alpaca.placeBracketOrder = (_args) =>
+    Promise.resolve(fill({ orderId: "bracket1", fillTime: "2026-07-27T15:05:00Z" }));
+
+  const outcome1 = await runHourlyCheck(deps);
+  assertEquals(outcome1, "success:journal_degraded");
+  assertEquals(rec.trades.length, 1); // insertTrade group succeeded
+  assertEquals(configStore.get("hourly_kill_switch_active"), "true");
+  assertEquals(configStore.get("hourly_kill_switch_side"), "SHORT");
+
+  // --- Run 2: recovery adopts the pending row left by run 1. This scan's
+  // OWN decision is blocked at gate 12 (position_open) so the ordinary step
+  // 20 path can't confound the assertion -- only recovery is exercised.
+  deps.db.upsertHourlyScan = realUpsert;
+  deps.db.setConfig = (key, value) => {
+    configStore.set(key, value);
+    rec.configSets.push([key, value]);
+    return Promise.resolve();
+  };
+  deps.db.getHourlyScansPendingEntry = () =>
+    Promise.resolve([pendingScanRow({ bar_ts: BAR1.timestamp, decision: "LONG" })]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "bracket1",
+        side: "BUY",
+        qty: 18,
+        fillPrice: 550,
+        fillTime: "2026-07-27T15:05:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(18); // still open -- forces skipped:position_open
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // resting -- not naked
+
+  const outcome2 = await runHourlyCheck(deps);
+  assertEquals(outcome2, "skipped:position_open");
+  assertEquals(rec.trades.length, 1); // no duplicate insertTrade -- run 1's row is dedup-matched
+  const recoveredScan = rec.scans.find((s) =>
+    s.barTs === BAR1.timestamp && s.entryOrderId !== null
+  );
+  assertEquals(recoveredScan?.entryOrderId, "bracket1"); // provenance restored
+  assertEquals(configStore.get("hourly_kill_switch_active"), "true"); // still untouched
+  assertEquals(configStore.get("hourly_kill_switch_side"), "SHORT");
+
+  // --- Run 3 (self-healing proof): no pending rows, position flat, a fresh
+  // fully-successful opposite-side entry clears the flag via the ordinary
+  // step 20 path -- proving recovery never needed to clear it itself.
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([]);
+  deps.alpaca.getPosition = () => Promise.resolve(0);
+
+  const outcome3 = await runHourlyCheck(deps);
+  assertEquals(outcome3, "success");
+  assertEquals(configStore.get("hourly_kill_switch_active"), "false");
+  assertEquals(configStore.get("hourly_kill_switch_side"), "");
+});
