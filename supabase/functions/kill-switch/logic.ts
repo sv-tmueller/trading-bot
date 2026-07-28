@@ -20,6 +20,10 @@ export interface KillSwitchDeps {
     getOpenPositions: () => Promise<OpenPosition[]>;
     // #474 D1: side-aware close (SELL a long, BUY to cover a short).
     closePosition: (symbol: string) => Promise<Fill | null>;
+    // #474 D4/§7 (Task 7): cancel resting bracket/OCO legs before closing a
+    // position outside its own bracket, so a stale leg can't fire after the
+    // position is already flat and open an unintended reverse position.
+    cancelAllOrders: () => Promise<number>;
   };
   db: {
     getLatestRegimeState: () => Promise<RegimeStateRow | null>;
@@ -212,6 +216,23 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         return "skipped:duplicate_run";
       }
 
+      // Orphan-leg hazard (#474 D4, spec §7): closing a bracketed position
+      // outside its own bracket can leave resting stop/target legs live at
+      // the broker, which can fire after the position is already flat and
+      // open an unintended reverse position. Cancel first and verify --
+      // wrapped LOCALLY (fail-toward-protection: a running breach on a 3x or
+      // short position outranks stale-leg risk, so a cancel failure must not
+      // abort the close or route to the outer error:* catch).
+      let cancelNote = "cancel=verified";
+      try {
+        await alpaca.cancelAllOrders();
+      } catch (e) {
+        cancelNote = `cancel=UNVERIFIED (${String((e as Error)?.message ?? e).slice(0, 100)})`;
+        await notifications.notifyError(
+          `kill-switch: cancelAllOrders failed before closing ${position.symbol} (${cancelNote}) — proceeding with the close anyway (fail-toward-protection)`,
+        );
+      }
+
       const fill = await alpaca.closePosition(position.symbol);
 
       // Persist the flip FIRST, before insertTrade or the notification, so a
@@ -260,7 +281,7 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       const bidNote = fireBid !== null ? ` bid=${fireBid}` : "";
       await finish(
         "success:kill_switch_fired",
-        `dd=${drawdown.toFixed(4)}${bidNote} confirmation=${confirmation}`,
+        `dd=${drawdown.toFixed(4)}${bidNote} confirmation=${confirmation} ${cancelNote}`,
       );
       return "success:kill_switch_fired";
     };
@@ -351,6 +372,19 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         return "skipped:duplicate_run";
       }
 
+      // Orphan-leg hazard (#474 D4, spec §7): same cancel-before-close as the
+      // long path, wrapped LOCALLY so a cancel failure never aborts the close
+      // or routes to the outer error:* catch.
+      let cancelNote = "cancel=verified";
+      try {
+        await alpaca.cancelAllOrders();
+      } catch (e) {
+        cancelNote = `cancel=UNVERIFIED (${String((e as Error)?.message ?? e).slice(0, 100)})`;
+        await notifications.notifyError(
+          `kill-switch: cancelAllOrders failed before closing ${position.symbol} (${cancelNote}) — proceeding with the close anyway (fail-toward-protection)`,
+        );
+      }
+
       const fill = await alpaca.closePosition(position.symbol);
 
       // D2: a short is never the legacy branch -- always write the hourly keys.
@@ -384,7 +418,7 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
       const askNote = fireAsk !== null ? ` ask=${fireAsk}` : "";
       await finish(
         "success:kill_switch_fired",
-        `dd=${adverse.toFixed(4)}${askNote} confirmation=${confirmation}`,
+        `dd=${adverse.toFixed(4)}${askNote} confirmation=${confirmation} ${cancelNote}`,
       );
       return "success:kill_switch_fired";
     };

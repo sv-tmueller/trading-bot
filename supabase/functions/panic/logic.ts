@@ -81,6 +81,21 @@ export async function runPanic(
         // liquidate. This is NOT a kill-switch fire, so it never writes the
         // hourly_kill_switch_* keys (paused=true is its own gate instead).
         const positions = await alpaca.getOpenPositions();
+        // Orphan-leg hazard (#474 D4, spec §7): cancel resting bracket/OCO
+        // legs before closing, so a stale leg can't fire after the position
+        // is already flat and open an unintended reverse position. Wrapped
+        // LOCALLY (fail-toward-protection): a cancel failure must not abort
+        // the flatten -- panic is the operator's last resort.
+        let cancelNote = "";
+        if (positions.length > 0) {
+          try {
+            await alpaca.cancelAllOrders();
+          } catch (e) {
+            cancelNote = `resting-order cancel UNVERIFIED (${
+              String((e as Error)?.message ?? e).slice(0, 100)
+            }); `;
+          }
+        }
         const parts: string[] = [];
         for (const position of positions) {
           const fill = await alpaca.closePosition(position.symbol);
@@ -98,7 +113,7 @@ export async function runPanic(
           const verb = position.qty > 0 ? "liquidated" : "covered";
           parts.push(`${verb} ${fill.qty} ${position.symbol} @ ${fill.fillPrice}`);
         }
-        result = parts.length > 0 ? parts.join("; ") : "no position to liquidate";
+        result = cancelNote + (parts.length > 0 ? parts.join("; ") : "no position to liquidate");
         // Finding 13 / #185 option 1: pause AFTER a successful liquidation (a
         // throw above skips this), unless explicitly opted out via pause=false.
         // The result string always says which happened.

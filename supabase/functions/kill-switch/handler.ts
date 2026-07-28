@@ -33,6 +33,8 @@ function buildDeps(): KillSwitchDeps {
       // getPosition/liquidate pair.
       getOpenPositions: () => alpaca.getOpenPositions(),
       closePosition: (s) => alpaca.closePosition(s),
+      // #474 D4/§7 (Task 7): orphan-leg cancel-before-close.
+      cancelAllOrders: () => alpaca.cancelAllOrders(),
     },
     db: {
       getLatestRegimeState: () => getLatestRegimeState(sb),

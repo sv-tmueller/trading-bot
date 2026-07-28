@@ -4,10 +4,11 @@ import { type PanicDeps, runPanic } from "./logic.ts";
 function makeDeps(
   over: Partial<PanicDeps> = {},
 ): { deps: PanicDeps; calls: Record<string, unknown> } {
-  const calls: Record<string, unknown> = { insertTradeCalls: [] };
+  const calls: Record<string, unknown> = { insertTradeCalls: [], order: [] };
   const defaultAlpaca: PanicDeps["alpaca"] = {
     cancelAllOrders: () => {
       calls.cancel = true;
+      (calls.order as string[]).push("cancelAllOrders");
       return Promise.resolve(3);
     },
     // #474 D1/§8.2: side-aware + symbol-aware default -- one long position in
@@ -15,6 +16,7 @@ function makeDeps(
     getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
     closePosition: (symbol: string) => {
       calls.closePosition = symbol;
+      (calls.order as string[]).push("closePosition");
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
     },
   };
@@ -265,4 +267,37 @@ Deno.test("#474: liquidate does NOT write the hourly_kill_switch_* keys (not a k
   await runPanic(deps, "liquidate");
   // Only the "paused" key is ever set by panic -- no hourly key of any kind.
   assertEquals(calls.setConfig, ["paused", "true"]);
+});
+
+// ---------------------------------------------------------------------------
+// #474 T7 (D4, severable): orphan-leg cancel-before-close (spec §7)
+// ---------------------------------------------------------------------------
+
+Deno.test("#474: orphan-leg -- cancelAllOrders is called before closePosition", async () => {
+  const { deps, calls } = makeDeps();
+  await runPanic(deps, "liquidate");
+  assertEquals(calls.order, ["cancelAllOrders", "closePosition"]);
+});
+
+Deno.test("#474: orphan-leg -- cancel failure does not abort the close, result records UNVERIFIED", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      cancelAllOrders: () => Promise.reject(new Error("cancel-all: 1 cancelled, 1 failed of 2")),
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  // The failure must NOT route into the outer error:* catch (which would
+  // report the panic action as failed) -- the close still completes.
+  assertEquals(r.ok, true);
+  assertEquals(calls.closePosition, "UPRO");
+  assertEquals(r.result.includes("cancel UNVERIFIED"), true);
+});
+
+Deno.test("#474: orphan-leg -- flat account does not call cancelAllOrders", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: { getOpenPositions: () => Promise.resolve([]) } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(calls.cancel, undefined);
+  assertEquals(r.result, "no position to liquidate; trading paused");
 });

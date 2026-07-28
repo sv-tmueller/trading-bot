@@ -38,7 +38,7 @@ function breachingQuote(mid: number) {
 function makeDeps(
   over: Partial<KillSwitchDeps> = {},
 ): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
-  const calls: Record<string, unknown> = { upserts: [], setConfigCalls: [] };
+  const calls: Record<string, unknown> = { upserts: [], setConfigCalls: [], order: [] };
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
     getLatestTradePrice: () => Promise.resolve(100),
@@ -57,7 +57,12 @@ function makeDeps(
     getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
     closePosition: () => {
       calls.liquidate = true;
+      (calls.order as string[]).push("closePosition");
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
+    },
+    cancelAllOrders: () => {
+      (calls.order as string[]).push("cancelAllOrders");
+      return Promise.resolve(0);
     },
   };
   const defaultDb: KillSwitchDeps["db"] = {
@@ -1034,4 +1039,67 @@ Deno.test("#474: claim conflict on the short path -> skipped:duplicate_run, no c
   assertEquals(await runKillSwitch(deps), "skipped:duplicate_run");
   assertEquals(calls.liquidate, undefined);
   assertEquals((calls.setConfigCalls as unknown[]).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// #474 T7 (D4, severable): orphan-leg cancel-before-close (spec §7)
+// ---------------------------------------------------------------------------
+
+Deno.test("#474: orphan-leg -- cancelAllOrders is called before closePosition on a long fire", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.order, ["cancelAllOrders", "closePosition"]);
+});
+
+Deno.test("#474: orphan-leg -- cancelAllOrders is called before closePosition on a short fire", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse 0.30, breach
+      getLatestQuote: () => Promise.resolve({ bid: 129, ask: 131, mid: 130 }),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.order, ["cancelAllOrders", "closePosition"]);
+});
+
+Deno.test("#474: orphan-leg -- cancel failure does not abort the close, note records UNVERIFIED", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      cancelAllOrders: () => Promise.reject(new Error("cancel-all: 1 cancelled, 1 failed of 2")),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  // The failure must NOT route into the outer error:* catch (which would
+  // disarm the switch) -- the fire still completes.
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("cancel=UNVERIFIED"), true);
+});
+
+Deno.test("#474: orphan-leg -- cancel succeeds, note records verified", async () => {
+  const { deps, calls } = makeDeps({
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("cancel=verified"), true);
 });
