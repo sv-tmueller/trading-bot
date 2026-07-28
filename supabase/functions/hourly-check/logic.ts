@@ -247,9 +247,9 @@ async function reconcile(
   // Bounded lookback: a position can never span more than a few sessions
   // given the flatten-scan rule closes everything by session end.
   const lookbackIso = new Date(deps.now().getTime() - 5 * 24 * HOUR_MS).toISOString();
-  const hourlyTrades = (await db.getTradesSince(lookbackIso)).filter(
-    (t) =>
-      t.symbol === symbol && (ENTRY_REASONS.includes(t.reason) || EXIT_REASONS.includes(t.reason)),
+  const allSymbolTrades = (await db.getTradesSince(lookbackIso)).filter((t) => t.symbol === symbol);
+  const hourlyTrades = allSymbolTrades.filter(
+    (t) => ENTRY_REASONS.includes(t.reason) || EXIT_REASONS.includes(t.reason),
   );
   const byTimeDesc = [...hourlyTrades].sort((a, b) => b.fill_time.localeCompare(a.fill_time));
   const lastEntry = byTimeDesc.find((t) => ENTRY_REASONS.includes(t.reason)) ?? null;
@@ -258,12 +258,19 @@ async function reconcile(
     (lastExit === null || lastExit.fill_time < lastEntry.fill_time);
 
   // 1. Discover newly-filled exit legs since the last journaled exit, so the
-  // position check below sees post-fill broker truth.
+  // position check below sees post-fill broker truth. Bounded by the same
+  // 5-day reconcile lookback rather than the last entry's fill_time (must-fix
+  // round 1 finding 3): Alpaca's `after` filters on SUBMISSION time, and
+  // bracket children are submitted alongside the parent -- before the entry
+  // fill -- so `after=lastEntry.fill_time` would silently never find them.
+  // The wider window is safe because every discovered fill is deduped below
+  // against ALL journaled trades for the symbol (should-fix finding 5:
+  // regardless of reason, so a panic_cli fill is never re-journaled here).
   if (entryConsideredOpen && lastEntry) {
-    const discovered = await alpaca.listFilledOrdersSince(symbol, lastEntry.fill_time);
+    const discovered = await alpaca.listFilledOrdersSince(symbol, lookbackIso);
     for (const f of discovered) {
       if (f.orderId === lastEntry.broker_order_id) continue; // the entry itself
-      if (hourlyTrades.some((t) => t.broker_order_id === f.orderId)) continue; // already recorded
+      if (allSymbolTrades.some((t) => t.broker_order_id === f.orderId)) continue; // already recorded
       await db.insertTrade({
         symbol,
         side: f.side,
@@ -438,26 +445,79 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     }
     const candidate = completed[completed.length - 1];
     const today = ymd(deps.now());
-    const sessions = await marketdata.getCalendarSessions(today, today);
-    const session = sessions.find((s) => s.date === today);
-    if (!session) {
+
+    // Session lookup spans every date the completed series touches, not just
+    // today's candidate -- must-fix round 1 finding 1. The per-bar partial
+    // filter below needs each bar's OWN session (a t-1 stub can fall on a
+    // different session day than the candidate); a bar with no matching
+    // session is excluded from the signal -- over-exclusion is the specced
+    // fail-safe direction.
+    const barDates = [
+      ...new Set(completed.map((b) => new Date(b.timestamp).toISOString().slice(0, 10))),
+    ].sort();
+    const sessions = await marketdata.getCalendarSessions(
+      barDates[0],
+      barDates[barDates.length - 1],
+    );
+    const sessionsByDate = new Map(sessions.map((s) => [s.date, s]));
+
+    const todaySession = sessionsByDate.get(today);
+    if (!todaySession) {
       throw new DataError(`no calendar session found for ${today} (market reported open)`);
     }
-    if (isBarPartial(candidate, session)) {
-      return await done("skipped:partial_bar", `candidate bar ${candidate.timestamp}`);
+
+    // A gate that skips before decideHourly runs, keyed to the candidate bar
+    // (must-fix round 1 finding 2): journal a SKIP row so a partial/stale
+    // scan is visible in hourly_scans, not audit_log-only. Detectors are
+    // never computed for a scan that skips here, so detectorsFired is empty
+    // and the sizing columns stay null ("null unless computed").
+    const preDecisionSkip = async (reason: string, notes?: string): Promise<string> => {
+      await db.upsertHourlyScan({
+        symbol,
+        barTs: candidate.timestamp,
+        decision: "SKIP",
+        skipReason: reason,
+        detectorsFired: [],
+        contextMode: config.hourlyContextMode,
+        entryRefPrice: null,
+        stopPrice: null,
+        targetPrice: null,
+        riskPerShare: null,
+        equityUsd: equityAtStart,
+        qty: 0,
+        entryOrderId: null,
+      });
+      return await done(`skipped:${reason}`, notes);
+    };
+
+    if (isBarPartial(candidate, todaySession)) {
+      return await preDecisionSkip("partial_bar", `candidate bar ${candidate.timestamp}`);
     }
     const barEndMs = new Date(candidate.timestamp).getTime() + HOUR_MS;
     const staleMinutes = (nowMs - barEndMs) / 60000;
     if (staleMinutes > config.hourlyStalenessToleranceMin) {
-      return await done(
-        "skipped:stale_data",
+      return await preDecisionSkip(
+        "stale_data",
         `bar end=${new Date(barEndMs).toISOString()} stale by ${staleMinutes.toFixed(1)}min`,
       );
     }
     const barTs = candidate.timestamp;
 
+    // The series passed to decideHourly excludes every partial bar against
+    // ITS OWN session, not just the candidate (must-fix round 1 finding 1):
+    // every session has a session-open stub at its first wall-clock hour
+    // (spec §4), and leaving that stub in the series corrupts the
+    // proportional body/wick detectors that look at the prior bar. A bar
+    // with no matching session is excluded (over-exclusion is the fail-safe
+    // direction, same as the candidate's own partial check above).
+    const series = completed.filter((b) => {
+      const bDate = new Date(b.timestamp).toISOString().slice(0, 10);
+      const bSession = sessionsByDate.get(bDate);
+      return bSession ? !isBarPartial(b, bSession) : false;
+    });
+
     // 8. decideHourly.
-    const decision = decideHourly(completed, { contextMode: config.hourlyContextMode });
+    const decision = decideHourly(series, { contextMode: config.hourlyContextMode });
 
     // hourly_scans row policy (disclosed): `decision`/`skipReason` reflect
     // the FINAL post-gating result (a gated LONG/SHORT is journaled as
@@ -514,16 +574,20 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
 
     // 10. Kill-switch flag gate -- runs for every decision (including SKIP)
     // once the flag is active; only a decision on the opposite side from
-    // hourly_kill_switch_side clears the flag and is allowed through.
+    // hourly_kill_switch_side is allowed through. The clear itself is
+    // deferred to step 20, after the entry order is successfully placed
+    // (lead ruling, fix round 1 finding 4): clearing here and only then
+    // failing a later gate (shorts disabled, position open, geometry
+    // invalid, ...) would clear the flag on a scan that never entered,
+    // defeating §5's atomic clear+enter intent.
     const flagActive = (await db.getConfig("hourly_kill_switch_active"))?.toLowerCase() === "true";
+    let shouldClearKillSwitch = false;
     if (flagActive) {
       const side = await db.getConfig("hourly_kill_switch_side");
       if (action === "SKIP" || action === side) {
         return await gateSkip("kill_switch_active");
       }
-      await db.setConfig("hourly_kill_switch_active", "false");
-      await db.setConfig("hourly_kill_switch_side", "");
-      await db.setConfig("hourly_kill_switch_fired_at", "");
+      shouldClearKillSwitch = true;
     }
 
     // 11. SKIP decisions (flag not active, or the flag gate above didn't apply).
@@ -658,6 +722,19 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
         stopLossPrice: stopPrice,
       });
       reason = "hourly_short_entry";
+    }
+
+    // Atomic clear+enter (spec §5; lead ruling, fix round 1 finding 4): the
+    // three hourly_kill_switch_* keys clear only now that the entry order has
+    // actually been placed and filled -- never earlier, so a scan that later
+    // failed a gate (or, before this point, the entry itself) would have left
+    // the flag untouched. "" matches bot_config.value's NOT NULL column (the
+    // only representable "cleared" string; #474's writer never clears these
+    // keys itself, so there is no other precedent to diverge from -- nit 12).
+    if (shouldClearKillSwitch) {
+      await db.setConfig("hourly_kill_switch_active", "false");
+      await db.setConfig("hourly_kill_switch_side", "");
+      await db.setConfig("hourly_kill_switch_fired_at", "");
     }
 
     await db.insertTrade({
