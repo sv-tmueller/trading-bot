@@ -881,3 +881,93 @@ Deno.test("reconciliation: a panic_cli fill on the symbol is not re-journaled as
   assertEquals(typeof outcome, "string");
   assertEquals(rec.trades.length, 0); // the already-journaled panic_cli fill must not be re-journaled
 });
+
+// ---------------------------------------------------------------------------
+// #480 T1: bounded retry + deterministic degraded outcome at step 20's
+// post-fill writes (PR #477 round-2 review finding 2 + corollary).
+// ---------------------------------------------------------------------------
+
+Deno.test("step 20: insertTrade fails all attempts -> success:journal_degraded; notes carry the label + order id; the entryOrderId journal update is still attempted", async () => {
+  const { deps, rec } = buildDeps();
+  let insertCalls = 0;
+  deps.db.insertTrade = (_p) => {
+    insertCalls++;
+    return Promise.reject(new Error("db down"));
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:journal_degraded");
+  assertEquals(insertCalls, 3); // POST_FILL_WRITE_ATTEMPTS
+  assertEquals(rec.trades.length, 0);
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes, "failed=[insert_trade] order=bracket1");
+  // journal called twice regardless: pre-order (entryOrderId null), then the
+  // post-order update -- insertTrade's exhaustion never blocks it.
+  assertEquals(rec.scans.length, 2);
+  assertEquals(rec.scans[1].entryOrderId, "bracket1");
+});
+
+Deno.test("step 20: insertTrade throws once then succeeds -> success, exactly 2 insertTrade calls", async () => {
+  const { deps, rec } = buildDeps();
+  let insertCalls = 0;
+  const realInsert = deps.db.insertTrade;
+  deps.db.insertTrade = (p) => {
+    insertCalls++;
+    if (insertCalls === 1) return Promise.reject(new Error("transient"));
+    return realInsert(p);
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success");
+  assertEquals(insertCalls, 2);
+  assertEquals(rec.trades.length, 1);
+});
+
+Deno.test("step 20: kill-switch clear-group fails every attempt while insertTrade/journal succeed -> success:journal_degraded, trades row present, keys untouched", async () => {
+  const { deps, rec } = buildDeps();
+  // Arm the flag opposite-side so this LONG entry is the clearing entry.
+  deps.db.getConfig = (key) => {
+    if (key === "hourly_kill_switch_active") return Promise.resolve("true");
+    if (key === "hourly_kill_switch_side") return Promise.resolve("SHORT");
+    if (key === "hourly_experiment_start_equity") return Promise.resolve("100000");
+    return Promise.resolve(null);
+  };
+  let setCalls = 0;
+  deps.db.setConfig = (key, _value) => {
+    if (key.startsWith("hourly_kill_switch_")) {
+      setCalls++;
+      return Promise.reject(new Error("db down"));
+    }
+    return Promise.resolve();
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:journal_degraded");
+  assertEquals(setCalls, 3); // the whole 3-key group is retried as one unit
+  assertEquals(rec.trades.length, 1);
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes, "failed=[kill_switch_clear] order=bracket1");
+});
+
+Deno.test("step 20: all three post-fill groups fail -> notes enumerate all three labels in fixed order", async () => {
+  const { deps, rec } = buildDeps();
+  deps.db.getConfig = (key) => {
+    if (key === "hourly_kill_switch_active") return Promise.resolve("true");
+    if (key === "hourly_kill_switch_side") return Promise.resolve("SHORT");
+    if (key === "hourly_experiment_start_equity") return Promise.resolve("100000");
+    return Promise.resolve(null);
+  };
+  deps.db.setConfig = (key, _value) => {
+    if (key.startsWith("hourly_kill_switch_")) return Promise.reject(new Error("boom"));
+    return Promise.resolve();
+  };
+  deps.db.insertTrade = (_p) => Promise.reject(new Error("boom"));
+  const realUpsert = deps.db.upsertHourlyScan;
+  deps.db.upsertHourlyScan = (p) => {
+    // Only the post-order journal (entryOrderId set) belongs to the retried
+    // group -- the pre-order journal must still succeed normally.
+    if (p.entryOrderId !== null) return Promise.reject(new Error("boom"));
+    return realUpsert(p);
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:journal_degraded");
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes, "failed=[kill_switch_clear,insert_trade,journal] order=bracket1");
+});

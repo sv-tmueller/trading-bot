@@ -32,6 +32,37 @@ const EXIT_REASONS: string[] = [
   "hourly_kill_switch",
 ];
 
+// #480 T1: step 20's post-fill writes (kill-switch clears -> insertTrade ->
+// provenance journal) used to abort on the first throw, leaving a filled
+// entry with no trades row and no entry_order_id (PR #477 round-2 review
+// finding 2 + corollary). POST_FILL_WRITE_ATTEMPTS bounds an immediate
+// (no-sleep) retry per write group; a group's exhaustion degrades the run's
+// outcome instead of throwing, so the remaining groups still get their own
+// attempt. Not a config setting -- fixed, like EQUITY_FLOOR_PCT above.
+const POST_FILL_WRITE_ATTEMPTS = 3;
+
+/**
+ * Retries `fn` up to POST_FILL_WRITE_ATTEMPTS times (no backoff -- these are
+ * fast, independent DB writes, not broker calls). Returns true once `fn`
+ * resolves; false (after a `console.warn`) once every attempt has thrown.
+ */
+async function tryPostFillWrite(label: string, fn: () => Promise<unknown>): Promise<boolean> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= POST_FILL_WRITE_ATTEMPTS; attempt++) {
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  console.warn(
+    `hourly-check: post-fill write '${label}' failed after ${POST_FILL_WRITE_ATTEMPTS} ` +
+      `attempts: ${String((lastErr as Error)?.message ?? lastErr)}`,
+  );
+  return false;
+}
+
 export interface HourlyCheckDeps {
   config: HourlyConfig;
   now: () => Date;
@@ -724,6 +755,16 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       reason = "hourly_short_entry";
     }
 
+    // 20b. Post-fill writes (#480 T1): three independent groups, each bounded-
+    // retried via tryPostFillWrite -- a group's exhaustion no longer aborts
+    // the remaining groups (PR #477 round-2 review finding 2 + corollary).
+    // Fixed order for both execution and the degraded-outcome notes below:
+    // kill_switch_clear, insert_trade, journal. A reconciliation-side
+    // recovery step (T3) closes the residual window this can't fully cover
+    // on its own (a group that exhausts all attempts still leaves the DB
+    // write undone until the next scan's recovery pass).
+    const failedGroups: string[] = [];
+
     // Atomic clear+enter (spec §5; lead ruling, fix round 1 finding 4): the
     // three hourly_kill_switch_* keys clear only now that the entry order has
     // actually been placed and filled -- never earlier, so a scan that later
@@ -731,34 +772,52 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // the flag untouched. "" matches bot_config.value's NOT NULL column (the
     // only representable "cleared" string; #474's writer never clears these
     // keys itself, so there is no other precedent to diverge from -- nit 12).
+    // All three writes are one retried unit, key order active -> side ->
+    // fired_at, so a partial clear (if the group is abandoned mid-retry by a
+    // crash rather than a caught error) leaves the flag fully inert.
     if (shouldClearKillSwitch) {
-      await db.setConfig("hourly_kill_switch_active", "false");
-      await db.setConfig("hourly_kill_switch_side", "");
-      await db.setConfig("hourly_kill_switch_fired_at", "");
+      const clearOk = await tryPostFillWrite("kill_switch_clear", async () => {
+        await db.setConfig("hourly_kill_switch_active", "false");
+        await db.setConfig("hourly_kill_switch_side", "");
+        await db.setConfig("hourly_kill_switch_fired_at", "");
+      });
+      if (!clearOk) failedGroups.push("kill_switch_clear");
     }
 
-    await db.insertTrade({
-      symbol,
-      side: action === "LONG" ? "BUY" : "SELL",
-      qty: fill.qty,
-      fillPrice: fill.fillPrice,
-      fillTime: fill.fillTime,
-      brokerOrderId: fill.orderId,
-      reason,
-    });
+    const insertOk = await tryPostFillWrite("insert_trade", () =>
+      db.insertTrade({
+        symbol,
+        side: action === "LONG" ? "BUY" : "SELL",
+        qty: fill.qty,
+        fillPrice: fill.fillPrice,
+        fillTime: fill.fillTime,
+        brokerOrderId: fill.orderId,
+        reason,
+      }));
+    if (!insertOk) failedGroups.push("insert_trade");
 
-    await journal({
-      finalDecision: action,
-      finalSkipReason: null,
-      qty: sizing.qty,
-      entryRefPrice: entryRef,
-      stopPrice,
-      targetPrice,
-      riskPerShare: sizing.stopDistance,
-      entryOrderId: fill.orderId,
-    });
+    const journalOk = await tryPostFillWrite("journal", () =>
+      journal({
+        finalDecision: action,
+        finalSkipReason: null,
+        qty: sizing.qty,
+        entryRefPrice: entryRef,
+        stopPrice,
+        targetPrice,
+        riskPerShare: sizing.stopDistance,
+        entryOrderId: fill.orderId,
+      }));
+    if (!journalOk) failedGroups.push("journal");
 
-    return await done("success");
+    if (failedGroups.length === 0) {
+      return await done("success");
+    }
+    // The broker_order_id is the forensic breadcrumb: it lets a human (or the
+    // T3 recovery step) locate the fill that a degraded write left dangling.
+    return await done(
+      "success:journal_degraded",
+      `failed=[${failedGroups.join(",")}] order=${fill.orderId}`,
+    );
   } catch (e) {
     const err = e as Error;
     if (err instanceof AlpacaError) {
