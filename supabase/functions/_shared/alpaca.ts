@@ -66,6 +66,40 @@ export interface AlpacaClient {
   // asserting a confirmed paper-account marker. Piggybacks the equity read
   // so the caller needs only one account read per run.
   assertPaperAccount(): Promise<{ equity: number }>;
+  // #475 T6 (spec §7): bracket entry (both legs placed atomically with the
+  // entry order); the entry leg reuses the market-order poll/timeout/reject
+  // contract, the exit legs are broker-resident.
+  placeBracketOrder(
+    args: {
+      symbol: string;
+      side: "BUY" | "SELL";
+      qty: number;
+      takeProfitPrice: number;
+      stopLossPrice: number;
+    },
+    opts?: PollOpts,
+  ): Promise<Fill>;
+  // #475 T6: OCO exit pair (stop + limit) against an EXISTING position --
+  // the §7 fallback path (plain entry, then legs once the fill confirms) and
+  // the position-without-legs re-leg rule (§7 finding 3) both need this
+  // regardless of whether bracket-on-short is confirmed. `side` is the
+  // CLOSING side (SELL to exit a long, BUY to cover a short). No polling --
+  // this places a resting order and returns its broker id immediately.
+  placeOcoExitPair(args: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    qty: number;
+    takeProfitPrice: number;
+    stopLossPrice: number;
+  }): Promise<{ orderId: string }>;
+  // #475 T6: targeted cancel (verified) -- cancelAllOrders would also kill
+  // the incumbent daily-check bot's orders during the decommission window,
+  // so leg cancels must be surgical (spec §7 orphan-leg hazard).
+  cancelOrder(orderId: string): Promise<void>;
+  // #475 T6: read-only GET /v2/assets/{symbol}. Field names (shortable/
+  // easy_to_borrow) are [to verify] -- see the PR disclosure; unguarded like
+  // every other read-only helper (cannot place an order).
+  getAssetShortability(symbol: string): Promise<{ shortable: boolean; easyToBorrow: boolean }>;
 }
 
 function checkGuard(op: string): void {
@@ -173,49 +207,37 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     return Math.trunc(requireNumber(j.qty, "position qty"));
   }
 
-  async function placeMarketOrder(
-    args: { symbol: string; side: "BUY" | "SELL"; qty: number },
+  // Extracts a Fill from an order body when any shares actually filled (full
+  // or partial); null otherwise. Partial fills must reach the caller so the
+  // trades table records the shares really owned (#267). Shared by every
+  // entry-leg poller (placeMarketOrder, placeBracketOrder's entry leg).
+  function partialOrFullFill(orderId: string, o: Record<string, unknown>): Fill | null {
+    const raw = o.filled_qty;
+    const qty = raw === null || raw === undefined || raw === "" ? 0 : Math.trunc(Number(raw));
+    if (!Number.isFinite(qty) || qty <= 0) return null;
+    return {
+      orderId,
+      fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
+      qty,
+      // filled_at is only set on a full fill; fall back for partials.
+      fillTime: String(o.filled_at ?? o.updated_at ?? new Date().toISOString()),
+    };
+  }
+
+  const TERMINAL_NON_FILL = ["rejected", "canceled", "expired"];
+
+  // Poll-until-filled / timeout / reject contract (#267/#262/#342), factored
+  // out of placeMarketOrder (#475 T6) so placeBracketOrder's entry leg reuses
+  // it verbatim rather than duplicating the timeout/verified-cancel logic.
+  // `label` carries the human-readable order description into every thrown
+  // message (e.g. "BUY 100 UPRO" for a plain market order).
+  async function pollOrderUntilFilled(
+    orderId: string,
+    label: string,
     opts?: PollOpts,
   ): Promise<Fill> {
-    guardMutation("placeMarketOrder");
-    if (args.side !== "BUY" && args.side !== "SELL") {
-      throw new Error(`side must be BUY or SELL, got ${args.side}`);
-    }
-    if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
-
     const timeoutMs = opts?.timeoutMs ?? 30_000;
     const intervalMs = opts?.intervalMs ?? 500;
-
-    const created = await tradeJson("/v2/orders", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        symbol: args.symbol,
-        qty: String(args.qty),
-        side: args.side.toLowerCase(),
-        type: "market",
-        time_in_force: "day",
-      }),
-    });
-    const orderId = String(created.id);
-
-    // Extracts a Fill from an order body when any shares actually filled
-    // (full or partial); null otherwise. Partial fills must reach the caller
-    // so the trades table records the shares really owned (#267).
-    const partialOrFullFill = (o: Record<string, unknown>): Fill | null => {
-      const raw = o.filled_qty;
-      const qty = raw === null || raw === undefined || raw === "" ? 0 : Math.trunc(Number(raw));
-      if (!Number.isFinite(qty) || qty <= 0) return null;
-      return {
-        orderId,
-        fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
-        qty,
-        // filled_at is only set on a full fill; fall back for partials.
-        fillTime: String(o.filled_at ?? o.updated_at ?? new Date().toISOString()),
-      };
-    };
-
-    const TERMINAL_NON_FILL = ["rejected", "canceled", "expired"];
 
     let waited = 0;
     while (waited < timeoutMs) {
@@ -232,12 +254,11 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
         // Terminal without a full fill: break immediately (#267) — no point
         // spinning out the timeout. A partial fill (e.g. canceled after a
         // partial execution) is still returned so the caller records it.
-        const partial = partialOrFullFill(o);
+        const partial = partialOrFullFill(orderId, o);
         if (partial) return partial;
         const reason = o.reject_reason ? `: ${o.reject_reason}` : "";
         throw new OrderRejectedError(
-          `${args.side} ${args.qty} ${args.symbol} order ${orderId} ` +
-            `terminal status '${o.status}'${reason}`,
+          `${label} order ${orderId} terminal status '${o.status}'${reason}`,
           String(o.status),
         );
       }
@@ -256,14 +277,14 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     } catch (_e) { /* best effort — fetch-level failure only */ }
     try {
       const final = await tradeJson(`/v2/orders/${orderId}`);
-      const fill = partialOrFullFill(final);
+      const fill = partialOrFullFill(orderId, final);
       if (fill) return fill;
       if (TERMINAL_NON_FILL.includes(String(final.status))) {
         // Cancel verified: the order is confirmed dead. `rejected` counts as
         // verified too — the order cannot be live, which is the property
         // being verified.
         throw new OrderTimeoutError(
-          `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+          `${label} did not fill within ${timeoutMs}ms; ` +
             `cancelled (verified: status '${final.status}')`,
         );
       }
@@ -271,17 +292,159 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       // race the broker's own cancel processing, so this is classified
       // UNVERIFIED rather than assumed cancelled.
       throw new OrderTimeoutError(
-        `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+        `${label} did not fill within ${timeoutMs}ms; ` +
           `cancel UNVERIFIED — order ${orderId} may still be live (status '${final.status}')`,
       );
     } catch (e) {
       if (e instanceof OrderTimeoutError) throw e;
       throw new OrderTimeoutError(
-        `${args.side} ${args.qty} ${args.symbol} did not fill within ${timeoutMs}ms; ` +
+        `${label} did not fill within ${timeoutMs}ms; ` +
           `cancel UNVERIFIED — order ${orderId} may still be live ` +
           `(post-cancel status check failed: ${(e as Error).message})`,
       );
     }
+  }
+
+  async function placeMarketOrder(
+    args: { symbol: string; side: "BUY" | "SELL"; qty: number },
+    opts?: PollOpts,
+  ): Promise<Fill> {
+    guardMutation("placeMarketOrder");
+    if (args.side !== "BUY" && args.side !== "SELL") {
+      throw new Error(`side must be BUY or SELL, got ${args.side}`);
+    }
+    if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+
+    const created = await tradeJson("/v2/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: args.symbol,
+        qty: String(args.qty),
+        side: args.side.toLowerCase(),
+        type: "market",
+        time_in_force: "day",
+      }),
+    });
+    const orderId = String(created.id);
+    return await pollOrderUntilFilled(orderId, `${args.side} ${args.qty} ${args.symbol}`, opts);
+  }
+
+  // #475 T6 (spec §7): bracket entry. Body field names confirmed against
+  // Alpaca's documented bracket-order shape (nested take_profit.limit_price /
+  // stop_loss.stop_price objects) -- the PR discloses the evidence cited for
+  // this shape. time_in_force defaults to "day" (fallback per the spec's
+  // [to verify] note: every existing order in this repo uses "day", and no
+  // live capture was possible in this agent session to confirm "gtc" is also
+  // accepted on a bracket entry).
+  async function placeBracketOrder(
+    args: {
+      symbol: string;
+      side: "BUY" | "SELL";
+      qty: number;
+      takeProfitPrice: number;
+      stopLossPrice: number;
+    },
+    opts?: PollOpts,
+  ): Promise<Fill> {
+    guardMutation("placeBracketOrder");
+    if (args.side !== "BUY" && args.side !== "SELL") {
+      throw new Error(`side must be BUY or SELL, got ${args.side}`);
+    }
+    if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+
+    const created = await tradeJson("/v2/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: args.symbol,
+        qty: String(args.qty),
+        side: args.side.toLowerCase(),
+        type: "market",
+        time_in_force: "day",
+        order_class: "bracket",
+        take_profit: { limit_price: String(args.takeProfitPrice) },
+        stop_loss: { stop_price: String(args.stopLossPrice) },
+      }),
+    });
+    const orderId = String(created.id);
+    return await pollOrderUntilFilled(
+      orderId,
+      `${args.side} ${args.qty} ${args.symbol} bracket entry`,
+      opts,
+    );
+  }
+
+  // #475 T6 (spec §7): OCO exit pair against an existing position. No
+  // polling -- these legs are broker-resident and fill (or don't) on their
+  // own; the reconciliation contract (hourly-check/logic.ts, T11) discovers
+  // fills on a later scan.
+  async function placeOcoExitPair(args: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    qty: number;
+    takeProfitPrice: number;
+    stopLossPrice: number;
+  }): Promise<{ orderId: string }> {
+    guardMutation("placeOcoExitPair");
+    if (args.side !== "BUY" && args.side !== "SELL") {
+      throw new Error(`side must be BUY or SELL, got ${args.side}`);
+    }
+    if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+
+    const created = await tradeJson("/v2/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: args.symbol,
+        qty: String(args.qty),
+        side: args.side.toLowerCase(),
+        // An OCO exit is a single order: type="limit" carries the take-profit
+        // price at the top level, paired with a stop_loss sub-order -- unlike
+        // a bracket entry, there is no separate take_profit object here.
+        type: "limit",
+        limit_price: String(args.takeProfitPrice),
+        time_in_force: "day",
+        order_class: "oco",
+        stop_loss: { stop_price: String(args.stopLossPrice) },
+      }),
+    });
+    return { orderId: String(created.id) };
+  }
+
+  // #475 T6 (spec §7 orphan-leg hazard): targeted, verified cancel. Confirms
+  // the order reaches a terminal state (canceled/filled/rejected/expired)
+  // before returning -- an unverified cancel must not be treated as "the
+  // leg is gone" (the same discipline as cancelAllOrders/placeMarketOrder's
+  // post-timeout cancel verification).
+  async function cancelOrder(orderId: string): Promise<void> {
+    guardMutation("cancelOrder");
+    const res = await trade(`/v2/orders/${encodeURIComponent(orderId)}`, { method: "DELETE" });
+    if (res.status !== 204 && !res.ok) {
+      throw new AlpacaError(`DELETE order ${orderId} -> ${res.status}: ${await res.text()}`);
+    }
+    const final = await tradeJson(`/v2/orders/${orderId}`);
+    const TERMINAL_ANY = ["canceled", "filled", "rejected", "expired"];
+    if (!TERMINAL_ANY.includes(String(final.status))) {
+      throw new AlpacaError(
+        `cancelOrder(${orderId}) UNVERIFIED — order status still '${final.status}' after DELETE`,
+      );
+    }
+  }
+
+  // #475 T6 (spec §7 shortability [to verify]): read-only, unguarded (cannot
+  // place an order). Field names asserted here (shortable/easy_to_borrow) are
+  // per the spec's documented claim, not confirmed against a live response in
+  // this agent session (no paper credentials present) -- disclosed in the PR.
+  async function getAssetShortability(
+    symbol: string,
+  ): Promise<{ shortable: boolean; easyToBorrow: boolean }> {
+    const res = await trade(`/v2/assets/${encodeURIComponent(symbol)}`);
+    if (!res.ok) {
+      throw new AlpacaError(`GET asset ${symbol} -> ${res.status}: ${await res.text()}`);
+    }
+    const j = await res.json();
+    return { shortable: Boolean(j.shortable), easyToBorrow: Boolean(j.easy_to_borrow) };
   }
 
   async function liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null> {
@@ -339,5 +502,9 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     liquidate,
     cancelAllOrders,
     assertPaperAccount,
+    placeBracketOrder,
+    placeOcoExitPair,
+    cancelOrder,
+    getAssetShortability,
   };
 }

@@ -750,3 +750,255 @@ Deno.test("assertPaperAccount: checkGuard fires first under CLAUDE_AGENT_NO_BROK
     clearKeys();
   }
 });
+
+// ---------------------------------------------------------------------------
+// #475 T6: order helpers (spec §7) -- placeBracketOrder, placeOcoExitPair,
+// cancelOrder, getAssetShortability.
+// ---------------------------------------------------------------------------
+
+Deno.test("placeBracketOrder: posts order_class=bracket with take_profit/stop_loss legs, polls to fill", async () => {
+  setKeys();
+  let postedBody: Record<string, unknown> = {};
+  let polls = 0;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      postedBody = JSON.parse(String(init.body));
+      return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    }
+    polls += 1;
+    if (polls < 2) return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    return Promise.resolve(jsonResponse({
+      id: "b1",
+      status: "filled",
+      filled_avg_price: "550.10",
+      filled_qty: "18",
+      filled_at: "2026-07-27T15:00:00Z",
+    }));
+  });
+  liftBrokerGuard();
+  try {
+    const fill = await createAlpacaClient().placeBracketOrder(
+      { symbol: "SPY", side: "BUY", qty: 18, takeProfitPrice: 554.5, stopLossPrice: 547.75 },
+      { timeoutMs: 1000, intervalMs: 1 },
+    );
+    assertEquals(fill.qty, 18);
+    assertEquals(postedBody.order_class, "bracket");
+    assertEquals(postedBody.type, "market");
+    assertEquals(postedBody.time_in_force, "day");
+    assertEquals(postedBody.side, "buy");
+    assertEquals((postedBody.take_profit as { limit_price: string }).limit_price, "554.5");
+    assertEquals((postedBody.stop_loss as { stop_price: string }).stop_price, "547.75");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      BrokerCallBlockedError,
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: paper-only guard fires on an opted-in client", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient({ paperOnly: true }).placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      PaperGuardFailedError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeBracketOrder: propagates OrderTimeoutError via the shared poller", async () => {
+  setKeys();
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder(
+          { symbol: "SPY", side: "SELL", qty: 5, takeProfitPrice: 90, stopLossPrice: 110 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeOcoExitPair: posts order_class=oco with the closing side and both legs, no polling", async () => {
+  setKeys();
+  let postedBody: Record<string, unknown> = {};
+  const restore = stubFetch((i, init) => {
+    postedBody = JSON.parse(String(init?.body));
+    return Promise.resolve(jsonResponse({ id: "oco1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    const result = await createAlpacaClient().placeOcoExitPair({
+      symbol: "SPY",
+      side: "SELL",
+      qty: 18,
+      takeProfitPrice: 554.5,
+      stopLossPrice: 547.75,
+    });
+    assertEquals(result.orderId, "oco1");
+    assertEquals(postedBody.order_class, "oco");
+    assertEquals(postedBody.side, "sell");
+    assertEquals(postedBody.limit_price, "554.5");
+    assertEquals((postedBody.stop_loss as { stop_price: string }).stop_price, "547.75");
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("placeOcoExitPair: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeOcoExitPair({
+          symbol: "SPY",
+          side: "SELL",
+          qty: 1,
+          takeProfitPrice: 100,
+          stopLossPrice: 90,
+        }),
+      BrokerCallBlockedError,
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: DELETE then verifies terminal status", async () => {
+  setKeys();
+  let deleted = false;
+  const restore = stubFetch((i, init) => {
+    if (init?.method === "DELETE") {
+      deleted = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "canceled" }));
+  });
+  liftBrokerGuard();
+  try {
+    await createAlpacaClient().cancelOrder("o1");
+    assertEquals(deleted, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: throws when the post-cancel status is still live (unverified)", async () => {
+  setKeys();
+  const restore = stubFetch((i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(() => createAlpacaClient().cancelOrder("o1"), AlpacaError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: guarded (BrokerCallBlockedError before any fetch)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(() => createAlpacaClient().cancelOrder("o1"), BrokerCallBlockedError);
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getAssetShortability: parses shortable/easy_to_borrow, unguarded read", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/assets/SPY"), true);
+    return Promise.resolve(jsonResponse({ shortable: true, easy_to_borrow: false }));
+  });
+  try {
+    const result = await createAlpacaClient().getAssetShortability("SPY");
+    assertEquals(result, { shortable: true, easyToBorrow: false });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getAssetShortability: throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "not found" }, 404)));
+  try {
+    await assertRejects(() => createAlpacaClient().getAssetShortability("SPY"), AlpacaError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
