@@ -42,17 +42,26 @@ export interface PollOpts {
   intervalMs?: number;
 }
 
+export interface OpenPosition {
+  symbol: string;
+  qty: number;
+}
+
 export interface AlpacaClient {
   getClock(): Promise<{ isOpen: boolean }>;
   /** US trading-session dates (YYYY-MM-DD) in [start, end], oldest-first. */
   getCalendar(start: string, end: string): Promise<string[]>;
   getAccountValue(): Promise<number>;
   getPosition(symbol: string): Promise<number>;
+  /** Every open position, signed qty (negative = short). [] when flat. */
+  getOpenPositions(): Promise<OpenPosition[]>;
   placeMarketOrder(
     args: { symbol: string; side: "BUY" | "SELL"; qty: number },
     opts?: PollOpts,
   ): Promise<Fill>;
   liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null>;
+  /** Side-aware close: SELL for a long, BUY (to cover) for a short. null when flat. */
+  closePosition(symbol: string, opts?: PollOpts): Promise<Fill | null>;
   cancelAllOrders(): Promise<number>;
 }
 
@@ -240,6 +249,35 @@ export function createAlpacaClient(): AlpacaClient {
     return await placeMarketOrder({ symbol, side: "SELL", qty }, opts);
   }
 
+  // Read-only: distinguishes "no position" from a short (getPosition already
+  // returns signed qty via Math.trunc; this just lists every symbol at once).
+  // [to verify] the exact GET /v2/positions response shape is asserted from
+  // the single-position endpoint's own field names, not captured live.
+  async function getOpenPositions(): Promise<OpenPosition[]> {
+    const res = await trade("/v2/positions");
+    if (!res.ok) {
+      throw new AlpacaError(`GET positions -> ${res.status}: ${await res.text()}`);
+    }
+    const arr = await res.json();
+    if (!Array.isArray(arr)) return [];
+    return arr.map((p) => ({
+      symbol: String((p as { symbol: unknown }).symbol),
+      qty: Math.trunc(requireNumber((p as { qty: unknown }).qty, "position qty")),
+    }));
+  }
+
+  // Side-aware close (#474, D1/§8.1): the retrofit's BUY-to-cover helper.
+  // Routes through placeMarketOrder, so checkGuard/CLAUDE_AGENT_NO_BROKER
+  // covers it twice (directly and transitively) and it inherits the same
+  // poll/timeout/partial-fill/verified-cancel contract as liquidate.
+  async function closePosition(symbol: string, opts?: PollOpts): Promise<Fill | null> {
+    checkGuard("closePosition");
+    const qty = await getPosition(symbol);
+    if (qty === 0) return null;
+    if (qty > 0) return await placeMarketOrder({ symbol, side: "SELL", qty }, opts);
+    return await placeMarketOrder({ symbol, side: "BUY", qty: Math.abs(qty) }, opts);
+  }
+
   async function cancelAllOrders(): Promise<number> {
     checkGuard("cancelAllOrders");
     const res = await trade("/v2/orders", { method: "DELETE" });
@@ -264,8 +302,10 @@ export function createAlpacaClient(): AlpacaClient {
     getCalendar,
     getAccountValue,
     getPosition,
+    getOpenPositions,
     placeMarketOrder,
     liquidate,
+    closePosition,
     cancelAllOrders,
   };
 }
