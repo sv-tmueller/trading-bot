@@ -157,3 +157,230 @@ export function previousCompletedWeek(now: Date): WeekId {
   const sevenDaysAgo = new Date(now.getTime() - 7 * MS_PER_DAY);
   return isoWeekOfUtcDate(sevenDaysAgo);
 }
+
+// ---------------------------------------------------------------------------
+// T2 -- arg parsing. Same ArgError/UnknownArgError split as
+// scripts/backfill_equity_snapshots.ts (D6/D7): render mode is the default;
+// `--record-accepted-bump --ref <...>` is a separate, mutually-exclusive
+// mode that is the ONLY DB write in this script (D6).
+// ---------------------------------------------------------------------------
+
+export class ArgError extends Error {
+  override name = "ArgError";
+}
+export class UnknownArgError extends ArgError {
+  override name = "UnknownArgError";
+}
+
+export interface RenderArgs {
+  mode: "render";
+  help: boolean;
+  week: string | undefined;
+  out: string | undefined;
+  force: boolean;
+}
+
+export interface BumpArgs {
+  mode: "bump";
+  help: boolean;
+  ref: string;
+}
+
+export type ParsedArgs = RenderArgs | BumpArgs;
+
+export function parseArgs(argv: string[]): ParsedArgs {
+  let help = false;
+  let week: string | undefined;
+  let out: string | undefined;
+  let force = false;
+  let bump = false;
+  let ref: string | undefined;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case "-h":
+      case "--help":
+        help = true;
+        break;
+      case "--week": {
+        const val = argv[++i];
+        if (val === undefined) throw new ArgError("--week requires a value (YYYY-Www)");
+        week = val;
+        break;
+      }
+      case "--out": {
+        const val = argv[++i];
+        if (val === undefined) throw new ArgError("--out requires a value (a file path)");
+        out = val;
+        break;
+      }
+      case "--force":
+        force = true;
+        break;
+      case "--record-accepted-bump":
+        bump = true;
+        break;
+      case "--ref": {
+        const val = argv[++i];
+        if (val === undefined) throw new ArgError("--ref requires a value");
+        ref = val;
+        break;
+      }
+      default:
+        throw new UnknownArgError(`unknown argument: ${arg}`);
+    }
+  }
+
+  // Help short-circuits before any mode-specific validation, so `-h` always
+  // works regardless of what else was passed alongside it.
+  if (help) {
+    return bump ? { mode: "bump", help: true, ref: ref ?? "" } : {
+      mode: "render",
+      help: true,
+      week,
+      out,
+      force,
+    };
+  }
+
+  if (bump) {
+    if (week !== undefined || out !== undefined || force) {
+      throw new ArgError(
+        "--record-accepted-bump is mutually exclusive with --week/--out/--force",
+      );
+    }
+    if (ref === undefined) {
+      throw new ArgError("--record-accepted-bump requires --ref <ADR-path-or-issue>");
+    }
+    return { mode: "bump", help: false, ref };
+  }
+
+  if (ref !== undefined) {
+    throw new ArgError("--ref is only valid together with --record-accepted-bump");
+  }
+
+  return { mode: "render", help: false, week, out, force };
+}
+
+// ---------------------------------------------------------------------------
+// T3 -- pairing + R-multiples (pure, spec §11/sub-plan). Entries/exits are
+// paired sequentially per symbol (FIFO), keyed off `trades.reason`
+// (ENTRY_REASONS/EXIT_REASONS) -- not `trades.side`, since BUY/SELL alone
+// can't distinguish a long entry from a short exit. `panic_cli` fills are
+// never paired (sub-plan's explicit rule): they are reported as manual
+// interventions regardless of any open entry queued for that symbol.
+// ---------------------------------------------------------------------------
+
+const ENTRY_REASONS = new Set(["hourly_long_entry", "hourly_short_entry"]);
+const EXIT_REASONS = new Set([
+  "hourly_bracket_exit",
+  "hourly_session_close_exit",
+  "hourly_kill_switch",
+]);
+
+export interface ClosedTradeResult {
+  symbol: string;
+  side: "LONG" | "SHORT";
+  entryFillPrice: number;
+  entryFillTime: string;
+  entryOrderId: string;
+  exitFillPrice: number;
+  exitFillTime: string;
+  exitOrderId: string;
+  exitReason: string;
+  qty: number;
+  /** Whole hours between entry and exit fills -- "holding bars" for an hourly bot. */
+  holdingBars: number;
+  rMultiple: number | null;
+  /** Set only when rMultiple is null -- degrade-not-throw per the sub-plan. */
+  rMultipleNaReason?: string;
+}
+
+export interface PairingResult {
+  closedTrades: ClosedTradeResult[];
+  openEntries: TradeRow[];
+  orphanExits: TradeRow[];
+  manualInterventions: TradeRow[];
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+function sideForEntryReason(reason: string): "LONG" | "SHORT" {
+  return reason === "hourly_short_entry" ? "SHORT" : "LONG";
+}
+
+/**
+ * Pairs a (bounded-by-week-end) trades list into closed round-trips, open
+ * entries, orphan exits, and manual (`panic_cli`) interventions. `scans` is
+ * matched by `entry_order_id` (spec §9/§14: `trades` has no `bar_ts`
+ * column, so provenance is keyed on the entry's own broker order id).
+ */
+export function pairHourlyTrades(trades: TradeRow[], scans: HourlyScanRow[]): PairingResult {
+  const scanByEntryOrderId = new Map<string, HourlyScanRow>();
+  for (const s of scans) {
+    if (s.entry_order_id) scanByEntryOrderId.set(s.entry_order_id, s);
+  }
+
+  const openQueueBySymbol = new Map<string, TradeRow[]>();
+  const closedTrades: ClosedTradeResult[] = [];
+  const orphanExits: TradeRow[] = [];
+  const manualInterventions: TradeRow[] = [];
+
+  const ordered = [...trades].sort((a, b) => a.fill_time.localeCompare(b.fill_time));
+  for (const t of ordered) {
+    if (t.reason === "panic_cli") {
+      manualInterventions.push(t);
+      continue;
+    }
+    if (ENTRY_REASONS.has(t.reason)) {
+      const queue = openQueueBySymbol.get(t.symbol) ?? [];
+      queue.push(t);
+      openQueueBySymbol.set(t.symbol, queue);
+      continue;
+    }
+    if (EXIT_REASONS.has(t.reason)) {
+      const queue = openQueueBySymbol.get(t.symbol) ?? [];
+      const entryTrade = queue.shift();
+      if (!entryTrade) {
+        orphanExits.push(t);
+        continue;
+      }
+      const scanRow = scanByEntryOrderId.get(entryTrade.broker_order_id);
+      const riskPerShare = scanRow?.risk_per_share ?? null;
+      let rMultiple: number | null = null;
+      let rMultipleNaReason: string | undefined;
+      if (!scanRow) {
+        rMultipleNaReason = `missing scan row for entry ${entryTrade.broker_order_id}`;
+      } else if (riskPerShare == null || riskPerShare <= 0) {
+        rMultipleNaReason = "risk_per_share unavailable";
+      } else {
+        const sign = sideForEntryReason(entryTrade.reason) === "LONG" ? 1 : -1;
+        rMultiple = sign * (t.fill_price - entryTrade.fill_price) / riskPerShare;
+      }
+      const holdingBars = Math.round(
+        (new Date(t.fill_time).getTime() - new Date(entryTrade.fill_time).getTime()) / HOUR_MS,
+      );
+      closedTrades.push({
+        symbol: t.symbol,
+        side: sideForEntryReason(entryTrade.reason),
+        entryFillPrice: entryTrade.fill_price,
+        entryFillTime: entryTrade.fill_time,
+        entryOrderId: entryTrade.broker_order_id,
+        exitFillPrice: t.fill_price,
+        exitFillTime: t.fill_time,
+        exitOrderId: t.broker_order_id,
+        exitReason: t.reason,
+        qty: entryTrade.qty,
+        holdingBars,
+        rMultiple,
+        ...(rMultipleNaReason !== undefined ? { rMultipleNaReason } : {}),
+      });
+    }
+  }
+
+  const openEntries: TradeRow[] = [];
+  for (const queue of openQueueBySymbol.values()) openEntries.push(...queue);
+
+  return { closedTrades, openEntries, orphanExits, manualInterventions };
+}
