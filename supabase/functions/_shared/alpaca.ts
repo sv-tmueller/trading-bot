@@ -103,7 +103,7 @@ export interface AlpacaClient {
   // #475 T6: targeted cancel (verified) -- cancelAllOrders would also kill
   // the incumbent daily-check bot's orders during the decommission window,
   // so leg cancels must be surgical (spec §7 orphan-leg hazard).
-  cancelOrder(orderId: string): Promise<void>;
+  cancelOrder(orderId: string, opts?: PollOpts): Promise<void>;
   // #475 T6: read-only GET /v2/assets/{symbol}. Field names (shortable/
   // easy_to_borrow) are [to verify] -- see the PR disclosure; unguarded like
   // every other read-only helper (cannot place an order).
@@ -434,20 +434,34 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
   // the order reaches a terminal state (canceled/filled/rejected/expired)
   // before returning -- an unverified cancel must not be treated as "the
   // leg is gone" (the same discipline as cancelAllOrders/placeMarketOrder's
-  // post-timeout cancel verification).
-  async function cancelOrder(orderId: string): Promise<void> {
+  // post-timeout cancel verification). Short bounded poll (fix round 1
+  // finding 6): Alpaca's cancel is asynchronous, so a healthy cancel
+  // routinely reads back `pending_cancel` on the very next GET -- a single
+  // immediate read would misclassify that as UNVERIFIED. Mirrors
+  // pollOrderUntilFilled's poll/timeout shape, just against the narrower
+  // terminal-status set already used here.
+  async function cancelOrder(orderId: string, opts?: PollOpts): Promise<void> {
     guardMutation("cancelOrder");
     const res = await trade(`/v2/orders/${encodeURIComponent(orderId)}`, { method: "DELETE" });
     if (res.status !== 204 && !res.ok) {
       throw new AlpacaError(`DELETE order ${orderId} -> ${res.status}: ${await res.text()}`);
     }
-    const final = await tradeJson(`/v2/orders/${orderId}`);
     const TERMINAL_ANY = ["canceled", "filled", "rejected", "expired"];
-    if (!TERMINAL_ANY.includes(String(final.status))) {
-      throw new AlpacaError(
-        `cancelOrder(${orderId}) UNVERIFIED — order status still '${final.status}' after DELETE`,
-      );
+    const timeoutMs = opts?.timeoutMs ?? 3_000;
+    const intervalMs = opts?.intervalMs ?? 250;
+
+    let waited = 0;
+    let lastStatus = "";
+    while (waited < timeoutMs) {
+      const final = await tradeJson(`/v2/orders/${orderId}`);
+      lastStatus = String(final.status);
+      if (TERMINAL_ANY.includes(lastStatus)) return;
+      await sleep(intervalMs);
+      waited += intervalMs;
     }
+    throw new AlpacaError(
+      `cancelOrder(${orderId}) UNVERIFIED — order status still '${lastStatus}' after DELETE`,
+    );
   }
 
   // #475 T6 (spec §7 shortability [to verify]): read-only, unguarded (cannot
@@ -550,10 +564,18 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     guardMutation("assertPaperAccount");
     const j = await tradeJson("/v2/account");
     const equity = requireNumber(j.equity, "account equity");
+    // Nit 11 (fix round 1): mask the raw account_number in this error
+    // message -- only the marker prefix (e.g. the "PA" paper-account marker)
+    // is diagnostically useful here, and this message can end up in
+    // notifications/logs that shouldn't carry the full account identifier.
+    const rawAccountNumber = typeof j.account_number === "string" ? j.account_number : null;
+    const maskedAccountNumber = rawAccountNumber === null
+      ? null
+      : rawAccountNumber.slice(0, 2) + "*".repeat(Math.max(rawAccountNumber.length - 2, 0));
     throw new PaperGuardFailedError(
       `Layer B paper-account marker not yet confirmed against a live /v2/account response ` +
         `(spec §8.3 [to verify]) -- refusing to trade (fail-closed); ` +
-        `account_number=${JSON.stringify(j.account_number ?? null)}, equity=${equity}`,
+        `account_number=${JSON.stringify(maskedAccountNumber)}, equity=${equity}`,
     );
   }
 

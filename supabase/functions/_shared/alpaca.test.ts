@@ -738,6 +738,31 @@ Deno.test("assertPaperAccount: fails closed (marker unconfirmed) even on a paper
   }
 });
 
+// Nit 11 (fix round 1): the raw account_number must never appear in the
+// failure message -- only a marker-prefix-masked form is diagnostically
+// useful, and this message can end up in logs/notifications.
+Deno.test("assertPaperAccount: masks the raw account_number in the failure message (marker prefix only)", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "PA3898644933991234", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    let message = "";
+    try {
+      await c.assertPaperAccount();
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    assertEquals(message.includes("PA3898644933991234"), false);
+    assertEquals(message.includes("PA"), true); // marker prefix retained
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 Deno.test("assertPaperAccount: checkGuard fires first under CLAUDE_AGENT_NO_BROKER", async () => {
   setKeys();
   Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
@@ -945,7 +970,32 @@ Deno.test("cancelOrder: DELETE then verifies terminal status", async () => {
   }
 });
 
-Deno.test("cancelOrder: throws when the post-cancel status is still live (unverified)", async () => {
+// Fix round 1 finding 6: Alpaca's cancel is asynchronous, so a healthy cancel
+// routinely reads back `pending_cancel` on the very next GET. A single
+// immediate read would misclassify that as UNVERIFIED; the bounded poll
+// added in this fix round must ride it out to `canceled`.
+Deno.test("cancelOrder: pending_cancel then canceled -> verified via the bounded poll, not UNVERIFIED", async () => {
+  setKeys();
+  let statusReads = 0;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    statusReads += 1;
+    if (statusReads === 1) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "pending_cancel" }));
+    }
+    return Promise.resolve(jsonResponse({ id: "o1", status: "canceled" }));
+  });
+  liftBrokerGuard();
+  try {
+    await createAlpacaClient().cancelOrder("o1", { timeoutMs: 100, intervalMs: 1 });
+    assertEquals(statusReads, 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("cancelOrder: throws when the post-cancel status is still live after the bounded poll times out (unverified)", async () => {
   setKeys();
   const restore = stubFetch((_i, init) => {
     if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
@@ -953,7 +1003,10 @@ Deno.test("cancelOrder: throws when the post-cancel status is still live (unveri
   });
   liftBrokerGuard();
   try {
-    await assertRejects(() => createAlpacaClient().cancelOrder("o1"), AlpacaError);
+    await assertRejects(
+      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 5, intervalMs: 1 }),
+      AlpacaError,
+    );
   } finally {
     restore();
     clearKeys();
