@@ -15,13 +15,16 @@ const VALID: PanicAction[] = ["pause", "resume", "cancel-orders", "liquidate"];
 
 function runWithRealDeps(action: PanicAction, opts: PanicOpts): Promise<PanicResult> {
   const sb = getServiceClient();
+  const alpaca = createAlpacaClient();
   return runPanic(
     {
       config: getStrategyConfig(),
       now: () => new Date(),
       alpaca: {
-        cancelAllOrders: () => createAlpacaClient().cancelAllOrders(),
-        liquidate: (s) => createAlpacaClient().liquidate(s),
+        cancelAllOrders: () => alpaca.cancelAllOrders(),
+        // #474 D1/§8.2: position-driven, side-aware flatten.
+        getOpenPositions: () => alpaca.getOpenPositions(),
+        closePosition: (s) => alpaca.closePosition(s),
       },
       db: {
         setConfig: (k, v) => setConfig(sb, k, v),

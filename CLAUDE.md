@@ -247,8 +247,8 @@ relax a single one of these guarantees.
   ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an
   unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered
   via panic CLI). The production cron path was unaffected in both incidents; the gap was on the
-  agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-
-  depth)._
+  agent-test side and is now closed by the mechanical guard plus the docs/skill rule
+  (defense-in-depth)._
 
 Development decisions that affect the safety stack or trading logic are recorded as ADRs in `docs/decisions/`. Weekly trading outcomes and observations are recorded in `docs/trading-journal/`.
 

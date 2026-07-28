@@ -12,6 +12,7 @@ import {
   getLatestRegimeState,
   insertAuditLog,
   insertTrade,
+  setConfig,
   updateAuditLog,
   upsertRegimeState,
 } from "../_shared/db.ts";
@@ -27,13 +28,19 @@ function buildDeps(): KillSwitchDeps {
     marketdata: { getDailyCloses, getLatestTradePrice, getLatestQuote },
     alpaca: {
       getClock: () => alpaca.getClock(),
-      getPosition: (s) => alpaca.getPosition(s),
-      liquidate: (s) => alpaca.liquidate(s),
+      // #474 D1: position-driven safety stack -- discover every open
+      // position and close side-aware, instead of a single botTicker-keyed
+      // getPosition/liquidate pair.
+      getOpenPositions: () => alpaca.getOpenPositions(),
+      closePosition: (s) => alpaca.closePosition(s),
+      // #474 D4/§7 (Task 7): orphan-leg cancel-before-close.
+      cancelAllOrders: () => alpaca.cancelAllOrders(),
     },
     db: {
       getLatestRegimeState: () => getLatestRegimeState(sb),
       claimTradeDate: (scriptName, tradeDate) => claimTradeDate(sb, scriptName, tradeDate),
       upsertRegimeState: (p) => upsertRegimeState(sb, p),
+      setConfig: (key, value) => setConfig(sb, key, value),
       insertTrade: (p) => insertTrade(sb, p),
       insertAuditLog: (p) => insertAuditLog(sb, p),
       updateAuditLog: (p) => updateAuditLog(sb, p),

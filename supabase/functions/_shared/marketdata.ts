@@ -6,6 +6,11 @@ export interface DailyBar {
   date: string; // YYYY-MM-DD (UTC)
   close: number;
   high: number;
+  // Optional (#474 D5) so the additive field doesn't force every existing
+  // DailyBar[] literal (e.g. daily-check's own test fixtures, out of scope
+  // for this package) to be edited. Always populated by getDailyCloses below;
+  // only the short-side kill-switch mirror reads it.
+  low?: number;
 }
 
 function headers() {
@@ -35,10 +40,11 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
   }
   const j = await res.json();
   const bars = Array.isArray(j.bars) ? j.bars : [];
-  return bars.map((b: { t: string; c: unknown; h: unknown }) => ({
+  return bars.map((b: { t: string; c: unknown; h: unknown; l: unknown }) => ({
     date: String(b.t).slice(0, 10),
     close: requireNumber(b.c, "bar close"),
     high: requireNumber(b.h, "bar high"),
+    low: requireNumber(b.l, "bar low"),
   }));
 }
 

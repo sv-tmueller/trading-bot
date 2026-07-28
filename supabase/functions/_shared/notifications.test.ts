@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { stubFetch } from "./test_helpers.ts";
 import {
+  killSwitchFiredEvent,
   notify,
   notifyBrokerError,
   notifyError,
@@ -102,6 +103,47 @@ Deno.test("notifyRegimeFlip builds the structured payload", async () => {
     restore();
     Deno.env.delete("NOTIFY_WEBHOOK_URL");
   }
+});
+
+// ---------------------------------------------------------------------------
+// #474 T4: side-aware kill-switch notification. side-neutral refPrice is the
+// rolling high for a LONG fire, the rolling low for a SHORT fire.
+// ---------------------------------------------------------------------------
+
+Deno.test("killSwitchFiredEvent (LONG): message names LONG and SELL, ref high", () => {
+  const event = killSwitchFiredEvent({
+    ticker: "UPRO",
+    side: "LONG",
+    drawdownPct: 0.3,
+    refPrice: 100,
+    lastPrice: 70,
+    qty: 100,
+    fillPrice: 70,
+  });
+  assertEquals(event.event_type, "kill_switch_fired");
+  assertEquals(event.side, "LONG");
+  assertEquals(event.ref_price, 100);
+  const message = String(event.message);
+  assertEquals(message.includes("LONG"), true);
+  assertEquals(message.includes("SELL"), true);
+});
+
+Deno.test("killSwitchFiredEvent (SHORT): message names SHORT and BUY, ref low", () => {
+  const event = killSwitchFiredEvent({
+    ticker: "SPY",
+    side: "SHORT",
+    drawdownPct: 0.3,
+    refPrice: 400,
+    lastPrice: 520,
+    qty: 50,
+    fillPrice: 520,
+  });
+  assertEquals(event.event_type, "kill_switch_fired");
+  assertEquals(event.side, "SHORT");
+  assertEquals(event.ref_price, 400);
+  const message = String(event.message);
+  assertEquals(message.includes("SHORT"), true);
+  assertEquals(message.includes("BUY"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -358,8 +400,9 @@ Deno.test("all seven notify helpers carry content === message", async () => {
     });
     await notifyKillSwitchFired({
       ticker: "UPRO",
+      side: "LONG",
       drawdownPct: 0.3,
-      refHigh: 100,
+      refPrice: 100,
       lastPrice: 70,
       qty: 100,
       fillPrice: 70,
