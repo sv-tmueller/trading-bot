@@ -73,6 +73,9 @@ export async function getLatestRegimeState(
   return data ? coerceRegimeRow(data as Record<string, unknown>) : null;
 }
 
+// #475 T7: widened to include the five hourly-check reasons (0012 migration's
+// trades.reason check extension). Existing callers (daily-check, kill-switch)
+// pass their own narrower literal unions, which remain assignable here.
 export async function insertTrade(sb: SupabaseClient, p: {
   symbol: string;
   side: "BUY" | "SELL";
@@ -80,7 +83,16 @@ export async function insertTrade(sb: SupabaseClient, p: {
   fillPrice: number;
   fillTime: string;
   brokerOrderId: string;
-  reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
+  reason:
+    | "regime_flip_long"
+    | "regime_flip_cash"
+    | "kill_switch"
+    | "panic_cli"
+    | "hourly_long_entry"
+    | "hourly_short_entry"
+    | "hourly_bracket_exit"
+    | "hourly_session_close_exit"
+    | "hourly_kill_switch";
 }): Promise<number> {
   const { data, error } = await sb.from("trades").insert({
     symbol: p.symbol,
@@ -440,4 +452,127 @@ export async function claimTradeDate(
   if (!error) return true;
   if (error.code === "23505") return false;
   throw new Error(`claimTradeDate: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// #475 T7: hourly_scans (0012 migration) -- one row per scan, including skips.
+// ---------------------------------------------------------------------------
+
+export interface HourlyScanRow {
+  symbol: string;
+  bar_ts: string;
+  decision: "LONG" | "SHORT" | "SKIP";
+  skip_reason: string | null;
+  detectors_fired: string[];
+  context_mode: string;
+  entry_ref_price: number | null;
+  stop_price: number | null;
+  target_price: number | null;
+  risk_per_share: number | null;
+  equity_usd: number;
+  qty: number;
+  entry_order_id: string | null;
+  created_at?: string;
+}
+
+// PostgREST returns `numeric` columns as JSON strings to preserve precision
+// (same reason as coerceRegimeRow/coerceTradeRow/coerceEquitySnapshotRow).
+export function coerceHourlyScanRow(raw: Record<string, unknown>): HourlyScanRow {
+  const num = (v: unknown, field: string): number | null =>
+    v == null ? null : requireNumber(v, field);
+  return {
+    symbol: raw.symbol as string,
+    bar_ts: raw.bar_ts as string,
+    decision: raw.decision as "LONG" | "SHORT" | "SKIP",
+    skip_reason: (raw.skip_reason as string | null) ?? null,
+    detectors_fired: (raw.detectors_fired as string[] | null) ?? [],
+    context_mode: raw.context_mode as string,
+    entry_ref_price: num(raw.entry_ref_price, "entry_ref_price"),
+    stop_price: num(raw.stop_price, "stop_price"),
+    target_price: num(raw.target_price, "target_price"),
+    risk_per_share: num(raw.risk_per_share, "risk_per_share"),
+    equity_usd: requireNumber(raw.equity_usd, "equity_usd"),
+    qty: requireNumber(raw.qty, "qty"),
+    entry_order_id: (raw.entry_order_id as string | null) ?? null,
+    created_at: raw.created_at as string | undefined,
+  };
+}
+
+// Upsert on (symbol, bar_ts): a re-run on the same bar replaces the row
+// idempotently, same regime_state date-PK + onConflict pattern.
+export async function upsertHourlyScan(sb: SupabaseClient, p: {
+  symbol: string;
+  barTs: string;
+  decision: "LONG" | "SHORT" | "SKIP";
+  skipReason: string | null;
+  detectorsFired: string[];
+  contextMode: string;
+  entryRefPrice: number | null;
+  stopPrice: number | null;
+  targetPrice: number | null;
+  riskPerShare: number | null;
+  equityUsd: number;
+  qty: number;
+  entryOrderId: string | null;
+}): Promise<void> {
+  const { error } = await sb.from("hourly_scans").upsert({
+    symbol: p.symbol,
+    bar_ts: p.barTs,
+    decision: p.decision,
+    skip_reason: p.skipReason,
+    detectors_fired: p.detectorsFired,
+    context_mode: p.contextMode,
+    entry_ref_price: p.entryRefPrice,
+    stop_price: p.stopPrice,
+    target_price: p.targetPrice,
+    risk_per_share: p.riskPerShare,
+    equity_usd: p.equityUsd,
+    qty: p.qty,
+    entry_order_id: p.entryOrderId,
+  }, { onConflict: "symbol,bar_ts" });
+  if (error) throw new Error(`upsertHourlyScan: ${error.message}`);
+}
+
+// Naked-position geometry provenance (spec §7 finding 3): looks up the
+// hourly_scans row that produced an open position's entry, keyed on the
+// entry's bar_ts, so a missing re-leg can be re-placed against the recorded
+// stop/target rather than guessed.
+export async function getHourlyScanByBar(
+  sb: SupabaseClient,
+  symbol: string,
+  barTs: string,
+): Promise<HourlyScanRow | null> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .eq("symbol", symbol)
+    .eq("bar_ts", barTs)
+    .maybeSingle();
+  if (error) throw new Error(`getHourlyScanByBar: ${error.message}`);
+  return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
+}
+
+// Bar-level concurrency guard (spec §8.4), mirroring claimTradeDate exactly
+// but keyed on (script_name, bar_ts) instead of (script_name, trade_date) --
+// an hourly bot placing multiple entries/day cannot be expressed at date
+// granularity. `bar_claims` is owned by the sibling #474 package
+// (short-side safety-stack retrofit, migration 0011); this function consumes
+// the table without owning its schema. Returns:
+//   true  — claim succeeded; this invocation may proceed to place an order
+//   false — unique-violation (Postgres 23505); another invocation already
+//            claimed this bar
+// Any other error is re-thrown so the caller surfaces it as error:* rather
+// than silently swallowing a DB failure as a false skipped:duplicate_run.
+export async function claimBar(
+  sb: SupabaseClient,
+  scriptName: string,
+  barTs: string,
+): Promise<boolean> {
+  const { error } = await sb.from("bar_claims").insert({
+    script_name: scriptName,
+    bar_ts: barTs,
+  });
+  if (!error) return true;
+  if (error.code === "23505") return false;
+  throw new Error(`claimBar: ${error.message}`);
 }

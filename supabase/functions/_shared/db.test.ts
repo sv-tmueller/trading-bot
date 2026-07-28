@@ -1,7 +1,9 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { createClient } from "@supabase/supabase-js";
 import {
+  claimBar,
   coerceEquitySnapshotRow,
+  coerceHourlyScanRow,
   coerceRegimeRow,
   coerceTradeRow,
   deleteNotifications,
@@ -10,6 +12,7 @@ import {
   getConfig,
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
+  getHourlyScanByBar,
   getLastTrade,
   getLatestAuditForScript,
   getLatestEquitySnapshot,
@@ -23,6 +26,7 @@ import {
   setConfig,
   updateAuditLog,
   upsertEquitySnapshot,
+  upsertHourlyScan,
   upsertRegimeState,
 } from "./db.ts";
 import { DataError } from "./num.ts";
@@ -669,5 +673,251 @@ Deno.test({
     await deleteNotifications(sb, [row.id]);
     const afterDelete = await getPendingNotifications(sb, 10);
     assertEquals(afterDelete.some((r) => r.id === row.id), false);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #475 T7: hourly_scans + claimBar (bar_claims, owned by the sibling #474
+// package). These use lightweight mocked clients (not real Postgres) for the
+// coercion / conflict-mapping / upsert-shape logic, per the sub-plan's own
+// "mocked client" instruction -- the RUN_DB_TESTS-gated tests below cover the
+// real round trip when a local Postgres with the 0011+0012 migrations
+// applied is available.
+// ---------------------------------------------------------------------------
+
+Deno.test("coerceHourlyScanRow: round-trips numeric-string columns and defaults", () => {
+  const row = coerceHourlyScanRow({
+    symbol: "SPY",
+    bar_ts: "2026-07-27T14:00:00Z",
+    decision: "LONG",
+    skip_reason: null,
+    detectors_fired: ["hammer", "bullish_pin_bar"],
+    context_mode: "none",
+    entry_ref_price: "550.1000",
+    stop_price: "547.7500",
+    target_price: "554.5500",
+    risk_per_share: "2.3500",
+    equity_usd: "100000.0000",
+    qty: "18",
+    entry_order_id: "o1",
+  });
+  assertEquals(row.entry_ref_price, 550.1);
+  assertEquals(row.stop_price, 547.75);
+  assertEquals(row.target_price, 554.55);
+  assertEquals(row.risk_per_share, 2.35);
+  assertEquals(row.equity_usd, 100000);
+  assertEquals(row.qty, 18);
+  assertEquals(row.detectors_fired, ["hammer", "bullish_pin_bar"]);
+});
+
+Deno.test("coerceHourlyScanRow: 'null unless computed' -- sizing columns null on a pre-gate SKIP", () => {
+  const row = coerceHourlyScanRow({
+    symbol: "SPY",
+    bar_ts: "2026-07-27T14:00:00Z",
+    decision: "SKIP",
+    skip_reason: "signal_conflict",
+    detectors_fired: ["bullish_harami", "shooting_star"],
+    context_mode: "none",
+    entry_ref_price: null,
+    stop_price: null,
+    target_price: null,
+    risk_per_share: null,
+    equity_usd: "100000.0000",
+    qty: "0",
+    entry_order_id: null,
+  });
+  assertEquals(row.entry_ref_price, null);
+  assertEquals(row.stop_price, null);
+  assertEquals(row.target_price, null);
+  assertEquals(row.risk_per_share, null);
+  assertEquals(row.qty, 0);
+});
+
+function fakeInsertClient(
+  table: string,
+  response: { error: { code?: string; message: string } | null },
+  // deno-lint-ignore no-explicit-any
+): any {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    sb: {
+      from: (t: string) => {
+        if (t !== table) throw new Error(`unexpected table ${t}`);
+        return {
+          insert: (row: unknown) => {
+            calls.push(row);
+            return Promise.resolve(response);
+          },
+        };
+      },
+    },
+  };
+}
+
+Deno.test("claimBar: insert succeeds -> true", async () => {
+  const { sb, calls } = fakeInsertClient("bar_claims", { error: null });
+  const claimed = await claimBar(sb, "hourly-check", "2026-07-27T14:00:00Z");
+  assertEquals(claimed, true);
+  assertEquals(calls, [{ script_name: "hourly-check", bar_ts: "2026-07-27T14:00:00Z" }]);
+});
+
+Deno.test("claimBar: 23505 unique-violation -> false (another invocation already claimed this bar)", async () => {
+  const { sb } = fakeInsertClient("bar_claims", { error: { code: "23505", message: "dup" } });
+  const claimed = await claimBar(sb, "hourly-check", "2026-07-27T14:00:00Z");
+  assertEquals(claimed, false);
+});
+
+Deno.test("claimBar: any other error re-throws (never a false skipped:duplicate_run)", async () => {
+  const { sb } = fakeInsertClient("bar_claims", { error: { code: "42P01", message: "boom" } });
+  await assertRejects(
+    () => claimBar(sb, "hourly-check", "2026-07-27T14:00:00Z"),
+    Error,
+    "claimBar",
+  );
+});
+
+function fakeUpsertClient(
+  table: string,
+  response: { error: { message: string } | null } = { error: null },
+  // deno-lint-ignore no-explicit-any
+): any {
+  const calls: Array<{ row: unknown; opts: unknown }> = [];
+  return {
+    calls,
+    sb: {
+      from: (t: string) => {
+        if (t !== table) throw new Error(`unexpected table ${t}`);
+        return {
+          upsert: (row: unknown, opts: unknown) => {
+            calls.push({ row, opts });
+            return Promise.resolve(response);
+          },
+        };
+      },
+    },
+  };
+}
+
+Deno.test("upsertHourlyScan: upserts on (symbol, bar_ts), same row twice is idempotent", async () => {
+  const { sb, calls } = fakeUpsertClient("hourly_scans");
+  const p = {
+    symbol: "SPY",
+    barTs: "2026-07-27T14:00:00Z",
+    decision: "LONG" as const,
+    skipReason: null,
+    detectorsFired: ["hammer"],
+    contextMode: "none",
+    entryRefPrice: 550.1,
+    stopPrice: 547.75,
+    targetPrice: 554.55,
+    riskPerShare: 2.35,
+    equityUsd: 100000,
+    qty: 18,
+    entryOrderId: "o1",
+  };
+  await upsertHourlyScan(sb, p);
+  await upsertHourlyScan(sb, p);
+  assertEquals(calls.length, 2);
+  assertEquals(calls[0].opts, { onConflict: "symbol,bar_ts" });
+  assertEquals((calls[0].row as Record<string, unknown>).bar_ts, "2026-07-27T14:00:00Z");
+  assertEquals(calls[0].row, calls[1].row);
+});
+
+Deno.test("upsertHourlyScan: throws on a DB error", async () => {
+  const { sb } = fakeUpsertClient("hourly_scans", { error: { message: "boom" } });
+  await assertRejects(
+    () =>
+      upsertHourlyScan(sb, {
+        symbol: "SPY",
+        barTs: "t",
+        decision: "SKIP",
+        skipReason: "no_detectors_fired",
+        detectorsFired: [],
+        contextMode: "none",
+        entryRefPrice: null,
+        stopPrice: null,
+        targetPrice: null,
+        riskPerShare: null,
+        equityUsd: 100000,
+        qty: 0,
+        entryOrderId: null,
+      }),
+    Error,
+    "upsertHourlyScan",
+  );
+});
+
+Deno.test({
+  name: "hourly_scans: upsert + getHourlyScanByBar roundtrip (ON CONFLICT replaces same bar)",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").eq(
+      "bar_ts",
+      "2030-01-02T14:00:00Z",
+    );
+    await upsertHourlyScan(sb, {
+      symbol: "SPY",
+      barTs: "2030-01-02T14:00:00Z",
+      decision: "LONG",
+      skipReason: null,
+      detectorsFired: ["hammer"],
+      contextMode: "none",
+      entryRefPrice: 550.1,
+      stopPrice: 547.75,
+      targetPrice: 554.55,
+      riskPerShare: 2.35,
+      equityUsd: 100000,
+      qty: 18,
+      entryOrderId: "o1",
+    });
+    await upsertHourlyScan(sb, {
+      symbol: "SPY",
+      barTs: "2030-01-02T14:00:00Z",
+      decision: "LONG",
+      skipReason: null,
+      detectorsFired: ["hammer"],
+      contextMode: "none",
+      entryRefPrice: 550.1,
+      stopPrice: 547.75,
+      targetPrice: 554.55,
+      riskPerShare: 2.35,
+      equityUsd: 100000,
+      qty: 18,
+      entryOrderId: "o2",
+    });
+    const row = await getHourlyScanByBar(sb, "SPY", "2030-01-02T14:00:00Z");
+    assertEquals(row?.entry_order_id, "o2");
+    assertEquals(row?.qty, 18);
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").eq(
+      "bar_ts",
+      "2030-01-02T14:00:00Z",
+    );
+  },
+});
+
+// claimBar consumes bar_claims (owned by #474) without owning the schema --
+// this integration test must skip cleanly when the table is absent (it lands
+// via #474's migration 0011, not this branch's 0012).
+Deno.test({
+  name:
+    "claimBar: real-Postgres roundtrip (skips cleanly if bar_claims is absent -- owned by #474)",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const scriptName = "hourly-check-test";
+    const barTs = "2030-01-02T14:00:00Z";
+    const probe = await sb.from("bar_claims").select("*").limit(1);
+    if (probe.error && /relation .* does not exist/i.test(probe.error.message)) {
+      console.warn("claimBar roundtrip: bar_claims table absent (lands via #474) -- skipping");
+      return;
+    }
+    await sb.from("bar_claims").delete().eq("script_name", scriptName).eq("bar_ts", barTs);
+    const first = await claimBar(sb, scriptName, barTs);
+    const second = await claimBar(sb, scriptName, barTs);
+    assertEquals(first, true);
+    assertEquals(second, false);
+    await sb.from("bar_claims").delete().eq("script_name", scriptName).eq("bar_ts", barTs);
   },
 });
