@@ -100,6 +100,16 @@ export interface AlpacaClient {
   // easy_to_borrow) are [to verify] -- see the PR disclosure; unguarded like
   // every other read-only helper (cannot place an order).
   getAssetShortability(symbol: string): Promise<{ shortable: boolean; easyToBorrow: boolean }>;
+  // #475 T11 (spec §7 reconciliation contract): implied-by-spec additions not
+  // separately named in T6's helper list -- the reconciliation contract
+  // ("list closed orders for the symbol since the last journaled exit") and
+  // the position-without-legs rule ("an open position with no resting
+  // stop/target legs at all") cannot be implemented without a broker order
+  // list read. Disclosed as a delta in the PR; both are read-only (unguarded)
+  // and use Alpaca's documented GET /v2/orders list endpoint, [to verify]
+  // like every other API-shape assertion in this file.
+  listFilledOrdersSince(symbol: string, sinceIso: string): Promise<Fill[]>;
+  listOpenOrderIds(symbol: string): Promise<string[]>;
 }
 
 function checkGuard(op: string): void {
@@ -447,6 +457,48 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     return { shortable: Boolean(j.shortable), easyToBorrow: Boolean(j.easy_to_borrow) };
   }
 
+  // #475 T11: read-only, unguarded. Lists CLOSED orders for `symbol` filled
+  // strictly after `sinceIso`, so the reconciliation contract (spec §7) can
+  // discover bracket/OCO exit-leg fills the caller did not itself poll for.
+  async function listFilledOrdersSince(symbol: string, sinceIso: string): Promise<Fill[]> {
+    const res = await trade(
+      `/v2/orders?status=closed&symbols=${encodeURIComponent(symbol)}` +
+        `&after=${encodeURIComponent(sinceIso)}&direction=asc&limit=500`,
+    );
+    if (!res.ok) {
+      throw new AlpacaError(`GET orders (closed) ${symbol} -> ${res.status}: ${await res.text()}`);
+    }
+    const arr = await res.json();
+    if (!Array.isArray(arr)) {
+      throw new AlpacaError("GET orders (closed) -> unexpected non-array body");
+    }
+    return (arr as Record<string, unknown>[])
+      .filter((o) => o.status === "filled")
+      .map((o) => ({
+        orderId: String(o.id),
+        fillPrice: requireNumber(o.filled_avg_price, "filled_avg_price"),
+        qty: Math.trunc(requireNumber(o.filled_qty, "filled_qty")),
+        fillTime: String(o.filled_at),
+      }));
+  }
+
+  // #475 T11: read-only, unguarded. Broker order ids still resting (open)
+  // for `symbol` -- used by the position-without-legs rule (spec §7 finding
+  // 3) to detect an open position with no resting stop/target legs at all.
+  async function listOpenOrderIds(symbol: string): Promise<string[]> {
+    const res = await trade(
+      `/v2/orders?status=open&symbols=${encodeURIComponent(symbol)}&limit=500`,
+    );
+    if (!res.ok) {
+      throw new AlpacaError(`GET orders (open) ${symbol} -> ${res.status}: ${await res.text()}`);
+    }
+    const arr = await res.json();
+    if (!Array.isArray(arr)) {
+      throw new AlpacaError("GET orders (open) -> unexpected non-array body");
+    }
+    return (arr as Record<string, unknown>[]).map((o) => String(o.id));
+  }
+
   async function liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null> {
     guardMutation("liquidate");
     const qty = await getPosition(symbol);
@@ -506,5 +558,7 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     placeOcoExitPair,
     cancelOrder,
     getAssetShortability,
+    listFilledOrdersSince,
+    listOpenOrderIds,
   };
 }

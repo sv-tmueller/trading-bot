@@ -654,7 +654,7 @@ Deno.test("createAlpacaClient(): default client has no paper check (existing cal
   setKeys();
   Deno.env.set("ALPACA_PAPER", "false"); // live config -- daily-check/kill-switch/panic shape
   liftBrokerGuard();
-  const restore = stubFetch((i, init) => {
+  const restore = stubFetch((_i, init) => {
     if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
     return Promise.resolve(jsonResponse({}));
   });
@@ -874,7 +874,7 @@ Deno.test("placeBracketOrder: propagates OrderTimeoutError via the shared poller
 Deno.test("placeOcoExitPair: posts order_class=oco with the closing side and both legs, no polling", async () => {
   setKeys();
   let postedBody: Record<string, unknown> = {};
-  const restore = stubFetch((i, init) => {
+  const restore = stubFetch((_i, init) => {
     postedBody = JSON.parse(String(init?.body));
     return Promise.resolve(jsonResponse({ id: "oco1", status: "accepted" }));
   });
@@ -928,7 +928,7 @@ Deno.test("placeOcoExitPair: guarded (BrokerCallBlockedError before any fetch)",
 Deno.test("cancelOrder: DELETE then verifies terminal status", async () => {
   setKeys();
   let deleted = false;
-  const restore = stubFetch((i, init) => {
+  const restore = stubFetch((_i, init) => {
     if (init?.method === "DELETE") {
       deleted = true;
       return Promise.resolve(new Response(null, { status: 204 }));
@@ -947,7 +947,7 @@ Deno.test("cancelOrder: DELETE then verifies terminal status", async () => {
 
 Deno.test("cancelOrder: throws when the post-cancel status is still live (unverified)", async () => {
   setKeys();
-  const restore = stubFetch((i, init) => {
+  const restore = stubFetch((_i, init) => {
     if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
     return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
   });
@@ -997,6 +997,82 @@ Deno.test("getAssetShortability: throws AlpacaError on non-ok response", async (
   const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "not found" }, 404)));
   try {
     await assertRejects(() => createAlpacaClient().getAssetShortability("SPY"), AlpacaError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T11: listFilledOrdersSince / listOpenOrderIds (reconciliation contract)
+// ---------------------------------------------------------------------------
+
+Deno.test("listFilledOrdersSince: filters to status=filled, maps to Fill[]", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/orders?status=closed&symbols=SPY"), true);
+    assertEquals(urlOf(i).includes("after="), true);
+    return Promise.resolve(jsonResponse([
+      {
+        id: "leg1",
+        status: "filled",
+        filled_avg_price: "554.50",
+        filled_qty: "18",
+        filled_at: "2026-07-27T15:00:00Z",
+      },
+      { id: "leg2", status: "canceled", filled_qty: "0" },
+    ]));
+  });
+  try {
+    const fills = await createAlpacaClient().listFilledOrdersSince(
+      "SPY",
+      "2026-07-27T14:00:00Z",
+    );
+    assertEquals(fills, [{
+      orderId: "leg1",
+      fillPrice: 554.5,
+      qty: 18,
+      fillTime: "2026-07-27T15:00:00Z",
+    }]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listFilledOrdersSince: throws AlpacaError on non-ok response", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "boom" }, 500)));
+  try {
+    await assertRejects(
+      () => createAlpacaClient().listFilledOrdersSince("SPY", "2026-07-27T14:00:00Z"),
+      AlpacaError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listOpenOrderIds: returns broker order ids still resting", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).includes("/v2/orders?status=open&symbols=SPY"), true);
+    return Promise.resolve(jsonResponse([{ id: "leg1" }, { id: "leg2" }]));
+  });
+  try {
+    assertEquals(await createAlpacaClient().listOpenOrderIds("SPY"), ["leg1", "leg2"]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("listOpenOrderIds: empty when no resting orders", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse([])));
+  try {
+    assertEquals(await createAlpacaClient().listOpenOrderIds("SPY"), []);
   } finally {
     restore();
     clearKeys();
