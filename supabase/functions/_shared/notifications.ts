@@ -108,24 +108,32 @@ export function notifyRegimeFlip(p: Parameters<typeof regimeFlipEvent>[0]): Prom
   return notify(regimeFlipEvent(p));
 }
 
+// #474 T4 (spec §8.1): side-aware -- refPrice is side-neutral (the rolling
+// high for a LONG fire, the rolling low for a SHORT fire) so the same event
+// shape covers the kill-switch's short mirror. side names which close verb
+// fired (SELL closes a long, BUY covers a short).
 export function killSwitchFiredEvent(p: {
   ticker: string;
+  side: "LONG" | "SHORT";
   drawdownPct: number;
-  refHigh: number;
+  refPrice: number;
   lastPrice: number;
   qty: number;
   fillPrice: number;
 }): Record<string, unknown> {
+  const closeVerb = p.side === "LONG" ? "SELL" : "BUY";
+  const refLabel = p.side === "LONG" ? "ref high" : "ref low";
   const message =
-    `Kill switch fired on ${p.ticker}: drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
-    `(ref high $${p.refHigh.toFixed(2)}, last $${p.lastPrice.toFixed(2)}), ` +
-    `liquidated qty=${p.qty} @ $${p.fillPrice.toFixed(2)}`;
+    `Kill switch fired on ${p.ticker} (${p.side}): drawdown ${(p.drawdownPct * 100).toFixed(1)}% ` +
+    `(${refLabel} $${p.refPrice.toFixed(2)}, last $${p.lastPrice.toFixed(2)}), ` +
+    `${closeVerb} qty=${p.qty} @ $${p.fillPrice.toFixed(2)}`;
   return {
     event_type: "kill_switch_fired",
     message,
     ticker: p.ticker,
+    side: p.side,
     drawdown_pct: p.drawdownPct,
-    ref_high: p.refHigh,
+    ref_price: p.refPrice,
     last_price: p.lastPrice,
     qty: p.qty,
     fill_price: p.fillPrice,

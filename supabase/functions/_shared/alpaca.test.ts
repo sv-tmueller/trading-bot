@@ -559,7 +559,152 @@ Deno.test("guard blocks mutating calls without touching the network", async () =
     );
     await assertRejects(() => c.liquidate("UPRO"), BrokerCallBlockedError);
     await assertRejects(() => c.cancelAllOrders(), BrokerCallBlockedError);
+    await assertRejects(() => c.closePosition("UPRO"), BrokerCallBlockedError);
     assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #474 T3 (D1): short-aware position read + close/cover helper.
+// ---------------------------------------------------------------------------
+
+Deno.test("getOpenPositions returns [] when flat", async () => {
+  setKeys();
+  const restore = stubFetch((i) => {
+    assertEquals(urlOf(i).endsWith("/v2/positions"), true);
+    return Promise.resolve(jsonResponse([]));
+  });
+  try {
+    assertEquals(await createAlpacaClient().getOpenPositions(), []);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getOpenPositions parses signed qtys (long positive, short negative)", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse([
+      { symbol: "SPY", qty: "50" },
+      { symbol: "UPRO", qty: "-25" },
+    ]))
+  );
+  try {
+    assertEquals(await createAlpacaClient().getOpenPositions(), [
+      { symbol: "SPY", qty: 50 },
+      { symbol: "UPRO", qty: -25 },
+    ]);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("closePosition raises BrokerCallBlockedError before any fetch when CLAUDE_AGENT_NO_BROKER is set", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(() => createAlpacaClient().closePosition("SPY"), BrokerCallBlockedError);
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("closePosition returns null on a flat position", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ message: "position does not exist" }, 404))
+  );
+  liftBrokerGuard();
+  try {
+    assertEquals(await createAlpacaClient().closePosition("SPY"), null);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("closePosition SELLs the full qty for a long position", async () => {
+  setKeys();
+  let placedSide = "";
+  let placedQty = "";
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (url.includes("/v2/positions/")) {
+      return Promise.resolve(jsonResponse({ qty: "50" }));
+    }
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      const body = JSON.parse(String(init?.body));
+      placedSide = body.side;
+      placedQty = body.qty;
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    return Promise.resolve(jsonResponse({
+      id: "o1",
+      status: "filled",
+      filled_avg_price: "550.00",
+      filled_qty: "50",
+      filled_at: "2026-07-28T15:00:00Z",
+    }));
+  });
+  liftBrokerGuard();
+  try {
+    const fill = await createAlpacaClient().closePosition("SPY", {
+      timeoutMs: 1000,
+      intervalMs: 1,
+    });
+    assertEquals(placedSide, "sell");
+    assertEquals(placedQty, "50");
+    assertEquals(fill?.qty, 50);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("closePosition BUYs the absolute qty to cover a short position", async () => {
+  setKeys();
+  let placedSide = "";
+  let placedQty = "";
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (url.includes("/v2/positions/")) {
+      return Promise.resolve(jsonResponse({ qty: "-30" }));
+    }
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      const body = JSON.parse(String(init?.body));
+      placedSide = body.side;
+      placedQty = body.qty;
+      return Promise.resolve(jsonResponse({ id: "o2", status: "accepted" }));
+    }
+    return Promise.resolve(jsonResponse({
+      id: "o2",
+      status: "filled",
+      filled_avg_price: "551.00",
+      filled_qty: "30",
+      filled_at: "2026-07-28T15:00:00Z",
+    }));
+  });
+  liftBrokerGuard();
+  try {
+    const fill = await createAlpacaClient().closePosition("SPY", {
+      timeoutMs: 1000,
+      intervalMs: 1,
+    });
+    assertEquals(placedSide, "buy");
+    assertEquals(placedQty, "30");
+    assertEquals(fill?.qty, 30);
   } finally {
     restore();
     clearKeys();
