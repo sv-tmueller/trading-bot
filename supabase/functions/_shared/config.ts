@@ -144,9 +144,9 @@ export function getHourlyConfig(): HourlyConfig {
   const hourlyContextModeRaw = strEnv("HOURLY_CONTEXT_MODE", "none");
   if (!CONTEXT_MODES.includes(hourlyContextModeRaw as ContextMode)) {
     throw new Error(
-      `HOURLY_CONTEXT_MODE must be one of ${
-        JSON.stringify(CONTEXT_MODES)
-      }, got ${JSON.stringify(hourlyContextModeRaw)}`,
+      `HOURLY_CONTEXT_MODE must be one of ${JSON.stringify(CONTEXT_MODES)}, got ${
+        JSON.stringify(hourlyContextModeRaw)
+      }`,
     );
   }
   const hourlyContextMode = hourlyContextModeRaw as ContextMode;

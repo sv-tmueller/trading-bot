@@ -11,8 +11,8 @@
 import {
   type Bar,
   type ContextMode,
-  type PatternName,
   PATTERN_DIRECTIONS,
+  type PatternName,
   scanCandles,
 } from "./candlestick.ts";
 
