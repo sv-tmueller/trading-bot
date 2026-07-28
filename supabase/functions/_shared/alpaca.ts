@@ -2,7 +2,7 @@
 // call the guard first so a forgotten mock fails fast instead of placing a live
 // order (spec §5, ported #168). Read-only methods are unguarded but cannot place
 // an order.
-import { getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
+import { type AlpacaConfig, getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
 import { requireNumber } from "./num.ts";
 
 // Set .name so the deterministic `error:${err.name}` audit outcomes distinguish
@@ -28,6 +28,12 @@ export class OrderRejectedError extends Error {
     super(message);
     this.status = status;
   }
+}
+// #475 T5 (spec §8.3): thrown by the paper-only guard's Layers A/B. .name is
+// "PaperGuardFailed" (not the class name) so the audit outcome is exactly
+// §9's error:PaperGuardFailed.
+export class PaperGuardFailedError extends Error {
+  override name = "PaperGuardFailed";
 }
 
 export interface Fill {
@@ -56,6 +62,10 @@ export interface AlpacaClient {
   ): Promise<Fill>;
   liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null>;
   cancelAllOrders(): Promise<number>;
+  // #475 T5 (spec §8.3 Layer B): one /v2/account read at pipeline start,
+  // asserting a confirmed paper-account marker. Piggybacks the equity read
+  // so the caller needs only one account read per run.
+  assertPaperAccount(): Promise<{ equity: number }>;
 }
 
 function checkGuard(op: string): void {
@@ -66,14 +76,41 @@ function checkGuard(op: string): void {
   }
 }
 
+// #475 T5 (spec §8.3 Layer A): per-call, no network. Asserts BOTH cfg.paper
+// and the trading base URL match the paper host -- the URL check is
+// load-bearing (it is literally the host about to be called), so a mis-set
+// boolean alone cannot defeat this guard. Exported standalone (not just
+// exercised through createAlpacaClient) so the URL-vs-boolean independence is
+// directly unit-testable.
+export function checkPaperOnly(
+  op: string,
+  cfg: Pick<AlpacaConfig, "paper" | "tradingBaseUrl">,
+): void {
+  if (cfg.paper !== true || cfg.tradingBaseUrl !== "https://paper-api.alpaca.markets") {
+    throw new PaperGuardFailedError(
+      `paper-only guard failed for '${op}': paper=${cfg.paper} tradingBaseUrl=${cfg.tradingBaseUrl}`,
+    );
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createAlpacaClient(): AlpacaClient {
+export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient {
   const cfg = getAlpacaConfig();
+  const paperOnly = opts?.paperOnly ?? false;
   const headers = {
     "APCA-API-KEY-ID": cfg.apiKeyId,
     "APCA-API-SECRET-KEY": cfg.apiSecretKey,
   };
+
+  // #475 T5: called by every mutating helper immediately after checkGuard()
+  // when this client opted into paperOnly -- absent for every existing
+  // call site (daily-check/kill-switch/panic/status construct the client
+  // with no opts), so their behavior is byte-for-byte unchanged.
+  function guardMutation(op: string): void {
+    checkGuard(op);
+    if (paperOnly) checkPaperOnly(op, cfg);
+  }
 
   async function trade(path: string, init?: RequestInit): Promise<Response> {
     return await fetch(`${cfg.tradingBaseUrl}${path}`, {
@@ -140,7 +177,7 @@ export function createAlpacaClient(): AlpacaClient {
     args: { symbol: string; side: "BUY" | "SELL"; qty: number },
     opts?: PollOpts,
   ): Promise<Fill> {
-    checkGuard("placeMarketOrder");
+    guardMutation("placeMarketOrder");
     if (args.side !== "BUY" && args.side !== "SELL") {
       throw new Error(`side must be BUY or SELL, got ${args.side}`);
     }
@@ -248,14 +285,14 @@ export function createAlpacaClient(): AlpacaClient {
   }
 
   async function liquidate(symbol: string, opts?: PollOpts): Promise<Fill | null> {
-    checkGuard("liquidate");
+    guardMutation("liquidate");
     const qty = await getPosition(symbol);
     if (qty <= 0) return null;
     return await placeMarketOrder({ symbol, side: "SELL", qty }, opts);
   }
 
   async function cancelAllOrders(): Promise<number> {
-    checkGuard("cancelAllOrders");
+    guardMutation("cancelAllOrders");
     const res = await trade("/v2/orders", { method: "DELETE" });
     if (res.status === 204) return 0;
     if (!res.ok) throw new AlpacaError(`DELETE orders -> ${res.status}: ${await res.text()}`);
@@ -273,6 +310,26 @@ export function createAlpacaClient(): AlpacaClient {
     return cancelled;
   }
 
+  // #475 T5 (spec §8.3 Layer B): guarded like a mutating call (no live
+  // network from an agent test session), then asserts the paper-only Layer A
+  // checks, then reads /v2/account once. The pinned "PA"-prefixed
+  // account_number marker is [to verify] against a real paper-account
+  // response -- this agent session had no paper credentials to capture one,
+  // so per the spec's own fallback this layer ships fail-closed: it always
+  // refuses to trade rather than proceed on an unverified assumption
+  // (disclosed in the PR). Replace the unconditional throw with the
+  // confirmed marker check once a real response has been captured.
+  async function assertPaperAccount(): Promise<{ equity: number }> {
+    guardMutation("assertPaperAccount");
+    const j = await tradeJson("/v2/account");
+    const equity = requireNumber(j.equity, "account equity");
+    throw new PaperGuardFailedError(
+      `Layer B paper-account marker not yet confirmed against a live /v2/account response ` +
+        `(spec §8.3 [to verify]) -- refusing to trade (fail-closed); ` +
+        `account_number=${JSON.stringify(j.account_number ?? null)}, equity=${equity}`,
+    );
+  }
+
   return {
     getClock,
     getCalendar,
@@ -281,5 +338,6 @@ export function createAlpacaClient(): AlpacaClient {
     placeMarketOrder,
     liquidate,
     cancelAllOrders,
+    assertPaperAccount,
   };
 }

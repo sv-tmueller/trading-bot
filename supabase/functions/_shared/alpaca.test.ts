@@ -3,9 +3,11 @@ import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
   AlpacaError,
   BrokerCallBlockedError,
+  checkPaperOnly,
   createAlpacaClient,
   OrderRejectedError,
   OrderTimeoutError,
+  PaperGuardFailedError,
 } from "./alpaca.ts";
 import { DataError } from "./num.ts";
 
@@ -610,6 +612,139 @@ Deno.test("guard blocks mutating calls without touching the network", async () =
     await assertRejects(() => c.liquidate("UPRO"), BrokerCallBlockedError);
     await assertRejects(() => c.cancelAllOrders(), BrokerCallBlockedError);
     assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #475 T5: paper-only guard, Layers A and B (spec §8.3)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkPaperOnly: passes when paper=true and tradingBaseUrl is the paper host", () => {
+  checkPaperOnly("test-op", {
+    paper: true,
+    tradingBaseUrl: "https://paper-api.alpaca.markets",
+  });
+});
+
+Deno.test("checkPaperOnly: throws PaperGuardFailedError when paper=false", () => {
+  try {
+    checkPaperOnly("test-op", { paper: false, tradingBaseUrl: "https://api.alpaca.markets" });
+    throw new Error("expected checkPaperOnly to throw");
+  } catch (e) {
+    assertEquals(e instanceof PaperGuardFailedError, true);
+  }
+});
+
+// The URL check is load-bearing (spec §8.3): even if `paper` were somehow
+// true, a non-paper trading host must still fail closed -- a mis-set boolean
+// alone cannot defeat this guard.
+Deno.test("checkPaperOnly: throws PaperGuardFailedError on a non-paper URL even with paper=true", () => {
+  try {
+    checkPaperOnly("test-op", { paper: true, tradingBaseUrl: "https://api.alpaca.markets" });
+    throw new Error("expected checkPaperOnly to throw");
+  } catch (e) {
+    assertEquals(e instanceof PaperGuardFailedError, true);
+  }
+});
+
+Deno.test("createAlpacaClient(): default client has no paper check (existing callers untouched)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false"); // live config -- daily-check/kill-switch/panic shape
+  liftBrokerGuard();
+  const restore = stubFetch((i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    const c = createAlpacaClient();
+    // cancelAllOrders reaches the network (no PaperGuardFailedError) -- the
+    // default client (no opts) never opts into the paper-only layer.
+    assertEquals(await c.cancelAllOrders(), 0);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): throws PaperGuardFailedError when ALPACA_PAPER=false", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.cancelAllOrders(), PaperGuardFailedError);
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): checkGuard still fires first (precedence preserved)", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false"); // would also fail the paper check
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    // BrokerCallBlockedError must win over PaperGuardFailedError.
+    await assertRejects(() => c.cancelAllOrders(), BrokerCallBlockedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("createAlpacaClient({paperOnly:true}): placeMarketOrder honors the paper-only guard too", async () => {
+  setKeys();
+  Deno.env.set("ALPACA_PAPER", "false");
+  liftBrokerGuard();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(
+      () => c.placeMarketOrder({ symbol: "SPY", side: "BUY", qty: 1 }),
+      PaperGuardFailedError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Layer B: the paper-account marker [to verify] could not be confirmed
+// against a live /v2/account response in this agent session (no paper
+// credentials present) -- ships fail-closed per the spec's own fallback.
+Deno.test("assertPaperAccount: fails closed (marker unconfirmed) even on a paper-configured client", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "PA000", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("assertPaperAccount: checkGuard fires first under CLAUDE_AGENT_NO_BROKER", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ account_number: "PA000" })));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), BrokerCallBlockedError);
   } finally {
     restore();
     clearKeys();
