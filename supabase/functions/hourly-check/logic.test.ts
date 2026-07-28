@@ -972,3 +972,179 @@ Deno.test("step 20: all three post-fill groups fail -> notes enumerate all three
   const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
   assertEquals(notes, "failed=[kill_switch_clear,insert_trade,journal] order=bracket1");
 });
+
+// ---------------------------------------------------------------------------
+// #480 T3: reconciliation-side recovery of pending-entry hourly_scans rows
+// (T1's post-fill degraded window, closed on the NEXT scan). Pending row
+// signature: decision IN ('LONG','SHORT') AND entry_order_id IS NULL.
+// ---------------------------------------------------------------------------
+
+function pendingScanRow(over: Partial<HourlyScanRow> = {}): HourlyScanRow {
+  return {
+    symbol: "SPY",
+    bar_ts: "2026-07-26T14:00:00Z",
+    decision: "LONG",
+    skip_reason: null,
+    detectors_fired: ["hammer"],
+    context_mode: "none",
+    entry_ref_price: 550,
+    stop_price: 547,
+    target_price: 554,
+    risk_per_share: 3,
+    equity_usd: 100000,
+    qty: 18,
+    entry_order_id: null,
+    ...over,
+  };
+}
+
+Deno.test("recovery: double-fault replay -- pending LONG row + unjournaled entry BUY fill -> exactly one insertTrade (hourly_long_entry) with the fill's qty/price/time, plus one upsertHourlyScan with entryOrderId set", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = (_symbol, _sinceIso) => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = (_symbol, _sinceIso) =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12); // still open at the broker
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // resting legs -- not naked
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.trades[0].reason, "hourly_long_entry");
+  assertEquals(rec.trades[0].qty, 12);
+  assertEquals(rec.trades[0].fillPrice, 549.5);
+  assertEquals(rec.trades[0].fillTime, "2026-07-26T15:20:00Z");
+  const recoveredScan = rec.scans.find((s) => s.barTs === pending.bar_ts);
+  assertEquals(recoveredScan?.entryOrderId, "recovered1");
+});
+
+Deno.test("recovery: SHORT twin -- pending SHORT row + unjournaled entry SELL fill -> insertTrade reason hourly_short_entry", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "SHORT" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered2",
+        side: "SELL",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(-12);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.trades[0].reason, "hourly_short_entry");
+  assertEquals(rec.trades[0].side, "SELL");
+  const recoveredScan = rec.scans.find((s) => s.barTs === pending.bar_ts);
+  assertEquals(recoveredScan?.entryOrderId, "recovered2");
+});
+
+Deno.test("recovery: partial-fault replay -- trades row already exists, provenance null -> no duplicate insertTrade, entry_order_id restored", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  const existingTrade: TradeRow = {
+    symbol: "SPY",
+    side: "BUY",
+    qty: 12,
+    fill_price: 549.5,
+    fill_time: "2026-07-26T15:20:00Z",
+    reason: "hourly_long_entry",
+    broker_order_id: "recovered1",
+  };
+  deps.db.getTradesSince = () => Promise.resolve([existingTrade]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(rec.trades.length, 0); // no duplicate insertTrade
+  const recoveredScan = rec.scans.find((s) => s.barTs === pending.bar_ts);
+  assertEquals(recoveredScan?.entryOrderId, "recovered1");
+});
+
+Deno.test("recovery: no matching fill -> pending row untouched", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () => Promise.resolve([] as ClosedOrderFill[]);
+  deps.config.hourlyMaxEntriesPerDay = 0; // keep the main pipeline's own entry from muddying the assertion
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:max_entries_reached");
+  assertEquals(rec.trades.length, 0);
+  assertEquals(rec.scans.some((s) => s.barTs === pending.bar_ts), false);
+});
+
+Deno.test("recovery: fast path -- no pending rows -> recovery makes zero listFilledOrdersSince calls", async () => {
+  const { deps } = buildDeps();
+  let calls = 0;
+  deps.alpaca.listFilledOrdersSince = (_symbol, _sinceIso) => {
+    calls++;
+    return Promise.resolve([] as ClosedOrderFill[]);
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(calls, 0);
+});
+
+Deno.test("recovery: same-run knock-on -- after adoption entryConsideredOpen is true, the naked-position branch re-legs from the restored provenance -> success:legs_replaced", async () => {
+  const { deps } = buildDeps();
+  const pending = pendingScanRow({
+    bar_ts: "2026-07-26T14:00:00Z",
+    decision: "LONG",
+    stop_price: 547,
+    target_price: 554,
+    qty: 12,
+  });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12); // open, no resting legs -- naked
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve([] as string[]);
+  deps.db.getHourlyScanByEntryOrderId = (_symbol, orderId) =>
+    Promise.resolve(
+      orderId === "recovered1" ? { ...pending, entry_order_id: "recovered1" } : null,
+    );
+  let relegArgs: unknown = null;
+  deps.alpaca.placeOcoExitPair = (args) => {
+    relegArgs = args;
+    return Promise.resolve({ orderId: "oco-releg" });
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:legs_replaced");
+  assertEquals(relegArgs, {
+    symbol: "SPY",
+    side: "SELL",
+    qty: 12,
+    takeProfitPrice: 554,
+    stopLossPrice: 547,
+  });
+});

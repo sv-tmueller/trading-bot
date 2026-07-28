@@ -281,7 +281,92 @@ async function reconcile(
   // Bounded lookback: a position can never span more than a few sessions
   // given the flatten-scan rule closes everything by session end.
   const lookbackIso = new Date(deps.now().getTime() - 5 * 24 * HOUR_MS).toISOString();
+
+  // Trades snapshot fetched once; recovery (step 0 below) augments this array
+  // in-memory on adoption instead of triggering a second DB read (#480 T3).
   const allSymbolTrades = (await db.getTradesSince(lookbackIso)).filter((t) => t.symbol === symbol);
+
+  // 0. Recovery (#480 T3): closes the residual window T1's bounded retry
+  // cannot fully eliminate. A pre-order journal (logic.ts step 20) commits
+  // decision IN ('LONG','SHORT') with entry_order_id NULL; if every post-fill
+  // write group then exhausted its retries, that row is the exact signature
+  // left behind. Match each such pending row against an unjournaled broker
+  // fill on the matching side inside a [bar_ts+1h, bar_ts+2h) window (the
+  // fill lands roughly an hour after the signal bar closes -- see the spec's
+  // own bar-to-fill timing), adopt the earliest match at most once, and
+  // restore entry_order_id. Idempotent/convergent: a DB failure during
+  // recovery itself just retries next scan. Documented residual: an
+  // unjournaled MANUAL fill on the same side, inside the same window, would
+  // also be adopted here -- out of contract for the paper experiment.
+  //
+  // Deliberately NEVER clears hourly_kill_switch_* here. §5's atomic
+  // clear+enter is a decision-scoped act (this bar's own decision clearing
+  // the flag it just satisfied), not a fill-scoped one a later recovery pass
+  // can safely infer after #474's writer may have re-armed the flag on the
+  // recovered position itself in between; PR #477's round-2 review already
+  // ratified "stale until a later fully-successful opposite-side entry" as
+  // fail-closed, and this recovery step pins that instead of silently
+  // changing it (#480 T5). The clear itself still only ever happens at step
+  // 20, immediately after THAT scan's own successful entry.
+  const pending = await db.getHourlyScansPendingEntry(symbol, lookbackIso);
+  if (pending.length > 0) {
+    const discovered = await alpaca.listFilledOrdersSince(symbol, lookbackIso);
+    const adoptedOrderIds = new Set<string>();
+    for (const row of pending) {
+      const wantSide = row.decision === "LONG" ? "BUY" : "SELL";
+      const barStartMs = new Date(row.bar_ts).getTime();
+      const windowStart = barStartMs + HOUR_MS;
+      const windowEnd = barStartMs + 2 * HOUR_MS;
+      const match = discovered
+        .filter((f) => f.side === wantSide)
+        .filter((f) => !adoptedOrderIds.has(f.orderId))
+        .filter((f) => {
+          const fillMs = new Date(f.fillTime).getTime();
+          return fillMs >= windowStart && fillMs < windowEnd;
+        })
+        .sort((a, b) => a.fillTime.localeCompare(b.fillTime))[0];
+      if (!match) continue;
+      adoptedOrderIds.add(match.orderId);
+      const reason = row.decision === "LONG" ? "hourly_long_entry" : "hourly_short_entry";
+      const alreadyJournaled = allSymbolTrades.some((t) => t.broker_order_id === match.orderId);
+      if (!alreadyJournaled) {
+        await db.insertTrade({
+          symbol,
+          side: match.side,
+          qty: match.qty,
+          fillPrice: match.fillPrice,
+          fillTime: match.fillTime,
+          brokerOrderId: match.orderId,
+          reason,
+        });
+        allSymbolTrades.push({
+          symbol,
+          side: match.side,
+          qty: match.qty,
+          fill_price: match.fillPrice,
+          fill_time: match.fillTime,
+          reason,
+          broker_order_id: match.orderId,
+        });
+      }
+      await db.upsertHourlyScan({
+        symbol: row.symbol,
+        barTs: row.bar_ts,
+        decision: row.decision,
+        skipReason: row.skip_reason,
+        detectorsFired: row.detectors_fired,
+        contextMode: row.context_mode,
+        entryRefPrice: row.entry_ref_price,
+        stopPrice: row.stop_price,
+        targetPrice: row.target_price,
+        riskPerShare: row.risk_per_share,
+        equityUsd: row.equity_usd,
+        qty: row.qty,
+        entryOrderId: match.orderId,
+      });
+    }
+  }
+
   const hourlyTrades = allSymbolTrades.filter(
     (t) => ENTRY_REASONS.includes(t.reason) || EXIT_REASONS.includes(t.reason),
   );
