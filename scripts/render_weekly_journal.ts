@@ -527,3 +527,60 @@ export function computeCumulativeStats(closedTrades: ClosedTradeResult[]): Cumul
     sumR,
   };
 }
+
+// ---------------------------------------------------------------------------
+// T5 -- proposal rule (D5). Structurally caps the review at <=1 proposal:
+// proposeParamChange evaluates a ranked candidate list and returns the FIRST
+// triggered candidate, never more than one. A minimum-sample gate
+// short-circuits below PROPOSAL_MIN_CLOSED_TRADES, rendering an explicit
+// "no proposal permitted" line even when a candidate's statistic would
+// otherwise have fired -- the two §11 constraints, mechanically enforced.
+//
+// These numbers (the sample floor, the hit-rate floor, and the single
+// default candidate) are the operator's to amend -- disclosed as defaults
+// in the PR, same pattern as §11's own 4-week/30-trade stopping rule.
+// ---------------------------------------------------------------------------
+
+export const PROPOSAL_MIN_CLOSED_TRADES = 30;
+export const TARGET_HIT_RATE_FLOOR = 0.25;
+
+export interface ProposalCandidate {
+  name: string;
+  check: (stats: CumulativeStats) => boolean;
+  render: (stats: CumulativeStats) => string;
+}
+
+// §11's own worked example: break-even at a 2:1 bracket is 33.3%, so a 25%
+// floor is comfortably below break-even before it fires.
+export const DEFAULT_PROPOSAL_CANDIDATES: ProposalCandidate[] = [
+  {
+    name: "target_hit_rate_floor",
+    check: (s) => s.targetHitRate !== null && s.targetHitRate < TARGET_HIT_RATE_FLOOR,
+    render: (s) =>
+      `§7 HOURLY_BRACKET_R_MULTIPLE: 2 -> 3 (target hit rate ${
+        ((s.targetHitRate ?? 0) * 100).toFixed(1)
+      }% over N=${s.closedTradeCount} trades, below the ${
+        (TARGET_HIT_RATE_FLOOR * 100).toFixed(0)
+      }% floor)`,
+  },
+];
+
+export type ProposalOutcome =
+  | { gated: true; reason: string }
+  | { gated: false; proposal: string | null };
+
+export function proposeParamChange(
+  cumulative: CumulativeStats,
+  candidates: ProposalCandidate[] = DEFAULT_PROPOSAL_CANDIDATES,
+): ProposalOutcome {
+  if (cumulative.closedTradeCount < PROPOSAL_MIN_CLOSED_TRADES) {
+    return {
+      gated: true,
+      reason: `no proposal permitted (N=${cumulative.closedTradeCount} < ${PROPOSAL_MIN_CLOSED_TRADES})`,
+    };
+  }
+  for (const c of candidates) {
+    if (c.check(cumulative)) return { gated: false, proposal: c.render(cumulative) };
+  }
+  return { gated: false, proposal: null };
+}

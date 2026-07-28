@@ -10,10 +10,14 @@ import {
   type ClosedTradeResult,
   computeCumulativeStats,
   computeWeeklyAggregates,
+  type CumulativeStats,
+  DEFAULT_PROPOSAL_CANDIDATES,
   pairHourlyTrades,
   parseArgs,
   parseWeekLabel,
   previousCompletedWeek,
+  PROPOSAL_MIN_CLOSED_TRADES,
+  proposeParamChange,
   weekWindowUtc,
 } from "./render_weekly_journal.ts";
 
@@ -439,4 +443,63 @@ Deno.test("computeCumulativeStats: zero closed trades -> all rates null, not NaN
     meanR: null,
     sumR: null,
   });
+});
+
+// ---------------------------------------------------------------------------
+// T5 -- proposal rule (spec §11's two constraints, mechanically enforced)
+// ---------------------------------------------------------------------------
+
+function stats(over: Partial<CumulativeStats>): CumulativeStats {
+  return {
+    closedTradeCount: 40,
+    winRate: 0.3,
+    targetHitRate: 0.08,
+    meanR: -0.1,
+    sumR: -4,
+    ...over,
+  };
+}
+
+Deno.test("proposeParamChange: below the minimum sample -> gated, even if the statistic breaches", () => {
+  const result = proposeParamChange(stats({ closedTradeCount: 10, targetHitRate: 0.05 }));
+  assertEquals(result, {
+    gated: true,
+    reason: `no proposal permitted (N=10 < ${PROPOSAL_MIN_CLOSED_TRADES})`,
+  });
+});
+
+Deno.test("proposeParamChange: at N=30 with hit rate 0.24 -> exactly one proposal naming the parameter", () => {
+  const result = proposeParamChange(stats({ closedTradeCount: 30, targetHitRate: 0.24 }));
+  assertEquals(result.gated, false);
+  if (result.gated) throw new Error("unreachable");
+  assertEquals(result.proposal !== null, true);
+  assertEquals(result.proposal!.includes("HOURLY_BRACKET_R_MULTIPLE"), true);
+  assertEquals(result.proposal!.includes("N=30"), true);
+  assertEquals(result.proposal!.includes("24"), true);
+});
+
+Deno.test("proposeParamChange: hit rate 0.30 (above the floor) -> no proposal", () => {
+  const result = proposeParamChange(stats({ closedTradeCount: 30, targetHitRate: 0.30 }));
+  assertEquals(result, { gated: false, proposal: null });
+});
+
+Deno.test("proposeParamChange: at most one proposal -- first-hit-wins over a two-candidate list", () => {
+  const candidates = [
+    {
+      name: "always_fires",
+      check: () => true,
+      render: () => "candidate A fired",
+    },
+    {
+      name: "also_would_fire",
+      check: () => true,
+      render: () => "candidate B fired",
+    },
+  ];
+  const result = proposeParamChange(stats({ closedTradeCount: 40 }), candidates);
+  assertEquals(result, { gated: false, proposal: "candidate A fired" });
+});
+
+Deno.test("DEFAULT_PROPOSAL_CANDIDATES: exactly one default candidate (D5, size:M trim point)", () => {
+  assertEquals(DEFAULT_PROPOSAL_CANDIDATES.length, 1);
 });
