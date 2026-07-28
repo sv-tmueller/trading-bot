@@ -119,6 +119,9 @@ export interface HourlyCheckDeps {
       entryOrderId: string | null;
     }) => Promise<void>;
     getHourlyScanByEntryOrderId: (symbol: string, orderId: string) => Promise<HourlyScanRow | null>;
+    // #480 T2: pending-entry scans (decision LONG/SHORT, entry_order_id NULL)
+    // consumed by reconcile()'s recovery step.
+    getHourlyScansPendingEntry: (symbol: string, sinceIso: string) => Promise<HourlyScanRow[]>;
     claimBar: (scriptName: string, barTs: string) => Promise<boolean>;
     insertTrade: (p: {
       symbol: string;

@@ -127,6 +127,7 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
       },
       getHourlyScanByEntryOrderId: (_symbol, _orderId) =>
         Promise.resolve(null as HourlyScanRow | null),
+      getHourlyScansPendingEntry: (_symbol, _sinceIso) => Promise.resolve([] as HourlyScanRow[]),
       claimBar: (_scriptName, barTs) => {
         rec.claimCalls.push(barTs);
         return Promise.resolve(true);

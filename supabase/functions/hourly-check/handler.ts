@@ -13,6 +13,7 @@ import {
   claimBar,
   getConfig,
   getHourlyScanByEntryOrderId,
+  getHourlyScansPendingEntry,
   getTradesSince,
   insertAuditLog,
   insertTrade,
@@ -53,6 +54,8 @@ function buildDeps(): HourlyCheckDeps {
       upsertHourlyScan: (p) => upsertHourlyScan(sb, p),
       getHourlyScanByEntryOrderId: (symbol, orderId) =>
         getHourlyScanByEntryOrderId(sb, symbol, orderId),
+      getHourlyScansPendingEntry: (symbol, sinceIso) =>
+        getHourlyScansPendingEntry(sb, symbol, sinceIso),
       claimBar: (scriptName, barTs) => claimBar(sb, scriptName, barTs),
       insertTrade: (p) => insertTrade(sb, p),
       insertAuditLog: (p) => insertAuditLog(sb, p),
