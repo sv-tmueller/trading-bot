@@ -53,6 +53,7 @@ deno task test:db
 
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
+supabase functions deploy hourly-check                # JWT-verified; dev/paper rollout only, see docs/runbooks/hourly-bot-rollout.md
 supabase functions deploy panic --no-verify-jwt       # auth = x-panic-token header
 supabase functions deploy status --no-verify-jwt      # auth = x-status-token header (read-only, no writes)
 supabase db push                                      # applies migrations 0001-0007 (schema + cron + vault fn grants)
