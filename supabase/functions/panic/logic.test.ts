@@ -4,14 +4,17 @@ import { type PanicDeps, runPanic } from "./logic.ts";
 function makeDeps(
   over: Partial<PanicDeps> = {},
 ): { deps: PanicDeps; calls: Record<string, unknown> } {
-  const calls: Record<string, unknown> = {};
+  const calls: Record<string, unknown> = { insertTradeCalls: [] };
   const defaultAlpaca: PanicDeps["alpaca"] = {
     cancelAllOrders: () => {
       calls.cancel = true;
       return Promise.resolve(3);
     },
-    liquidate: () => {
-      calls.liquidate = true;
+    // #474 D1/§8.2: side-aware + symbol-aware default -- one long position in
+    // UPRO, matching the pre-retrofit default (liquidate() -> qty 99).
+    getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    closePosition: (symbol: string) => {
+      calls.closePosition = symbol;
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
     },
   };
@@ -22,6 +25,7 @@ function makeDeps(
     },
     insertTrade: (p) => {
       calls.insertTrade = p;
+      (calls.insertTradeCalls as unknown[]).push(p);
       return Promise.resolve(1);
     },
     insertAuditLog: () => Promise.resolve(5),
@@ -81,11 +85,12 @@ Deno.test("cancel-orders cancels and reports count", async () => {
   assertEquals(r.result, "cancelled 3 orders");
 });
 
-Deno.test("liquidate sells + writes panic_cli trade", async () => {
+Deno.test("liquidate sells a long position + writes panic_cli trade", async () => {
   const { deps, calls } = makeDeps();
   const r = await runPanic(deps, "liquidate");
-  assertEquals(calls.liquidate, true);
-  assertEquals((calls.insertTrade as { reason: string }).reason, "panic_cli");
+  assertEquals(calls.closePosition, "UPRO");
+  assertEquals((calls.insertTrade as { reason: string; side: string }).reason, "panic_cli");
+  assertEquals((calls.insertTrade as { reason: string; side: string }).side, "SELL");
   assertEquals(r.ok, true);
   assertEquals(r.result.includes("liquidated"), true);
 });
@@ -112,7 +117,7 @@ Deno.test("liquidate with pauseOnLiquidate=false does NOT pause and says so", as
 
 Deno.test("liquidate with no position reports no position and still pauses", async () => {
   const { deps, calls } = makeDeps({
-    alpaca: { liquidate: () => Promise.resolve(null) } as unknown as PanicDeps["alpaca"],
+    alpaca: { getOpenPositions: () => Promise.resolve([]) } as unknown as PanicDeps["alpaca"],
   });
   const r = await runPanic(deps, "liquidate");
   assertEquals(r.ok, true);
@@ -141,12 +146,12 @@ Deno.test("notify failure does not corrupt a successful outcome", async () => {
 });
 
 Deno.test("liquidate broker failure -> ok:false + error audit outcome, no trade", async () => {
-  // liquidate throws; runPanic returns ok:false (which index.ts maps to HTTP 500)
-  // and the audit row outcome is error-prefixed. No trade is recorded because the
-  // throw precedes insertTrade.
+  // getOpenPositions throws; runPanic returns ok:false (which index.ts maps to
+  // HTTP 500) and the audit row outcome is error-prefixed. No trade is recorded
+  // because the throw precedes insertTrade.
   const { deps, calls } = makeDeps({
     alpaca: {
-      liquidate: () => Promise.reject(new Error("alpaca timeout")),
+      getOpenPositions: () => Promise.reject(new Error("alpaca timeout")),
     } as unknown as PanicDeps["alpaca"],
   });
   const r = await runPanic(deps, "liquidate");
@@ -194,4 +199,70 @@ Deno.test("insertAuditLog failure propagates and is not swallowed", async () => 
     } as unknown as PanicDeps["db"],
   });
   await assertRejects(() => runPanic(deps, "pause"), Error, "audit open failed");
+});
+
+// ---------------------------------------------------------------------------
+// #474 T6: side-aware + symbol-aware liquidate (spec §8.2 correction)
+// ---------------------------------------------------------------------------
+
+Deno.test("#474: liquidate covers a short position with a BUY and journals it", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+      closePosition: (symbol: string) => {
+        calls.closePosition = symbol;
+        return Promise.resolve({ orderId: "o2", fillPrice: 520, qty: 30, fillTime: "t" });
+      },
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(calls.closePosition, "SPY");
+  assertEquals((calls.insertTrade as { side: string; reason: string }).side, "BUY");
+  assertEquals((calls.insertTrade as { side: string; reason: string }).reason, "panic_cli");
+  assertEquals(r.ok, true);
+  assertEquals(r.result.includes("covered"), true);
+  assertEquals(r.result.includes("SPY"), true);
+});
+
+Deno.test("#474: liquidate closes every open position, long and short together", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () =>
+        Promise.resolve([{ symbol: "UPRO", qty: 10 }, { symbol: "SPY", qty: -5 }]),
+      closePosition: (symbol: string) => {
+        if (symbol === "UPRO") {
+          return Promise.resolve({ orderId: "o3", fillPrice: 71, qty: 10, fillTime: "t" });
+        }
+        return Promise.resolve({ orderId: "o4", fillPrice: 500, qty: 5, fillTime: "t" });
+      },
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(r.ok, true);
+  assertEquals(r.result.includes("liquidated"), true);
+  assertEquals(r.result.includes("covered"), true);
+  assertEquals((calls.insertTradeCalls as unknown[]).length, 2);
+});
+
+Deno.test("#474: side-aware closePosition throw still yields ok:false + error audit outcome, audit closed in finally", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      closePosition: () => Promise.reject(new Error("alpaca timeout")),
+    } as unknown as PanicDeps["alpaca"],
+  });
+  const r = await runPanic(deps, "liquidate");
+  assertEquals(r.ok, false);
+  assertEquals((calls.audit as { outcome: string }).outcome.startsWith("error:"), true);
+  assertEquals(calls.setConfig, undefined);
+});
+
+Deno.test("#474: liquidate does NOT write the hourly_kill_switch_* keys (not a kill-switch fire)", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as PanicDeps["alpaca"],
+  });
+  await runPanic(deps, "liquidate");
+  // Only the "paused" key is ever set by panic -- no hourly key of any kind.
+  assertEquals(calls.setConfig, ["paused", "true"]);
 });

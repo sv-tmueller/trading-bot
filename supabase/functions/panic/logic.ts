@@ -1,4 +1,4 @@
-import type { Fill } from "../_shared/alpaca.ts";
+import type { Fill, OpenPosition } from "../_shared/alpaca.ts";
 import type { StrategyConfig } from "../_shared/config.ts";
 
 export type PanicAction = "pause" | "resume" | "cancel-orders" | "liquidate";
@@ -8,7 +8,11 @@ export interface PanicDeps {
   now: () => Date;
   alpaca: {
     cancelAllOrders: () => Promise<number>;
-    liquidate: (symbol: string) => Promise<Fill | null>;
+    // #474 D1/§8.2: side-aware + symbol-aware -- panic must be able to flatten
+    // whatever position is actually held (short or long, any symbol), not
+    // just a hardcoded long-only config.botTicker liquidate.
+    getOpenPositions: () => Promise<OpenPosition[]>;
+    closePosition: (symbol: string) => Promise<Fill | null>;
   };
   db: {
     setConfig: (key: string, value: string) => Promise<void>;
@@ -48,7 +52,7 @@ export async function runPanic(
   action: PanicAction,
   opts: PanicOpts = {},
 ): Promise<PanicResult> {
-  const { db, alpaca, config } = deps;
+  const { db, alpaca } = deps;
   const pauseOnLiquidate = opts.pauseOnLiquidate ?? true;
   const iso = (d: Date) => d.toISOString();
   // Audit row is written BEFORE any broker call (recoverable on partial run).
@@ -72,21 +76,29 @@ export async function runPanic(
         break;
       }
       case "liquidate": {
-        const fill = await alpaca.liquidate(config.botTicker);
-        if (fill) {
+        // #474 D1/§8.2: flatten whatever is actually held, side-aware and
+        // symbol-aware -- not a hardcoded long-only config.botTicker
+        // liquidate. This is NOT a kill-switch fire, so it never writes the
+        // hourly_kill_switch_* keys (paused=true is its own gate instead).
+        const positions = await alpaca.getOpenPositions();
+        const parts: string[] = [];
+        for (const position of positions) {
+          const fill = await alpaca.closePosition(position.symbol);
+          if (fill === null) continue;
+          const side: "BUY" | "SELL" = position.qty > 0 ? "SELL" : "BUY";
           await db.insertTrade({
-            symbol: config.botTicker,
-            side: "SELL",
+            symbol: position.symbol,
+            side,
             qty: fill.qty,
             fillPrice: fill.fillPrice,
             fillTime: fill.fillTime,
             brokerOrderId: fill.orderId,
             reason: "panic_cli",
           });
-          result = `liquidated ${fill.qty} ${config.botTicker} @ ${fill.fillPrice}`;
-        } else {
-          result = "no position to liquidate";
+          const verb = position.qty > 0 ? "liquidated" : "covered";
+          parts.push(`${verb} ${fill.qty} ${position.symbol} @ ${fill.fillPrice}`);
         }
+        result = parts.length > 0 ? parts.join("; ") : "no position to liquidate";
         // Finding 13 / #185 option 1: pause AFTER a successful liquidation (a
         // throw above skips this), unless explicitly opted out via pause=false.
         // The result string always says which happened.
