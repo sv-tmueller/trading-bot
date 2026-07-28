@@ -708,7 +708,8 @@ Deno.test({
 });
 
 Deno.test({
-  name: "bar_claims: a different bar_ts the same day is a separate claim (property trade_claims lacks)",
+  name:
+    "bar_claims: a different bar_ts the same day is a separate claim (property trade_claims lacks)",
   ignore: !RUN,
   fn: async () => {
     const sb = localClient();

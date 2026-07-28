@@ -12,6 +12,19 @@ function bars(highs: number[]): DailyBar[] {
   }));
 }
 
+// #474 T5: the short mirror reads daily lows (D5). Only the short-side tests
+// below populate `low` -- the LONG helper above deliberately doesn't, so a
+// mistaken short-path read of an unpopulated `low` throws loudly rather than
+// silently passing.
+function barsWithLows(lows: number[]): DailyBar[] {
+  return lows.map((l, i) => ({
+    date: `2026-05-${String(i + 1).padStart(2, "0")}`,
+    close: l,
+    high: l,
+    low: l,
+  }));
+}
+
 // Non-breaching quote: mid=100, refHigh=100 -> mid/refHigh - 1 = 0 (within threshold).
 // This is the safe default — tests that expect a fire MUST override with a
 // confirming (breaching) quote so the both-breach branch runs, not the catch.
@@ -25,7 +38,7 @@ function breachingQuote(mid: number) {
 function makeDeps(
   over: Partial<KillSwitchDeps> = {},
 ): { deps: KillSwitchDeps; calls: Record<string, unknown> } {
-  const calls: Record<string, unknown> = { upserts: [] };
+  const calls: Record<string, unknown> = { upserts: [], setConfigCalls: [] };
   const defaultMarketdata: KillSwitchDeps["marketdata"] = {
     getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
     getLatestTradePrice: () => Promise.resolve(100),
@@ -39,8 +52,10 @@ function makeDeps(
   };
   const defaultAlpaca: KillSwitchDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
-    getPosition: () => Promise.resolve(99),
-    liquidate: () => {
+    // #474 D1: position-driven -- default single LONG position in botTicker,
+    // matching the pre-retrofit default (getPosition() -> 99).
+    getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    closePosition: () => {
       calls.liquidate = true;
       return Promise.resolve({ orderId: "o1", fillPrice: 70, qty: 99, fillTime: "t" });
     },
@@ -62,6 +77,10 @@ function makeDeps(
     upsertRegimeState: (p) => {
       calls.upsert = p;
       (calls.upserts as unknown[]).push(p);
+      return Promise.resolve();
+    },
+    setConfig: (key, value) => {
+      (calls.setConfigCalls as unknown[]).push({ key, value });
       return Promise.resolve();
     },
     insertTrade: (p) => {
@@ -87,8 +106,9 @@ function makeDeps(
     alpaca: defaultAlpaca,
     db: defaultDb,
     notifications: {
-      notifyKillSwitchFired: () => {
+      notifyKillSwitchFired: (p) => {
         calls.fired = true;
+        calls.firedPayload = p;
         return Promise.resolve();
       },
       notifyBrokerError: () => Promise.resolve(),
@@ -112,7 +132,7 @@ function makeDeps(
 Deno.test("broker flat -> success:no_position (broker is source of truth)", async () => {
   // Gate is now the real broker position (#237), not the DB's current_state.
   const { deps, calls } = makeDeps({
-    alpaca: { getPosition: () => Promise.resolve(0) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: { getOpenPositions: () => Promise.resolve([]) } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "success:no_position");
   assertEquals((calls.audit as { outcome: string }).outcome, "success:no_position");
@@ -138,7 +158,9 @@ Deno.test("DB says CASH but broker holds a position -> desync notified, drawdown
           kill_switch_fired_at: null,
         } as never),
     } as unknown as KillSwitchDeps["db"],
-    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(90), // -10%, within threshold
@@ -170,7 +192,9 @@ Deno.test("DB says CASH but broker holds a position -> protects it + notifies de
           kill_switch_fired_at: null,
         } as never),
     } as unknown as KillSwitchDeps["db"],
-    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // drawdown -0.30, breach
@@ -192,7 +216,9 @@ Deno.test("no regime_state row but broker holds a position -> still protects it 
   // breach still liquidates. daily-check resyncs the DB on its next run.
   const { deps, calls } = makeDeps({
     db: { getLatestRegimeState: () => Promise.resolve(null) } as unknown as KillSwitchDeps["db"],
-    alpaca: { getPosition: () => Promise.resolve(99) } as unknown as KillSwitchDeps["alpaca"],
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
     marketdata: {
       getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
       getLatestTradePrice: () => Promise.resolve(70), // -30%, breach
@@ -264,6 +290,9 @@ Deno.test("breach -> liquidate + success:kill_switch_fired", async () => {
   const upserts = calls.upserts as Array<{ currentState: string }>;
   assertEquals(upserts.length, 2);
   assertEquals(upserts[0].currentState, "LONG");
+  // Legacy fire -> regime_state only, no hourly keys (regression, pairs with
+  // the explicit legacy-vs-hourly test below).
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
 });
 
 Deno.test("implausible ratio (refHigh/lastPrice > 2) -> error:implausible_drawdown, no liquidation", async () => {
@@ -307,7 +336,7 @@ Deno.test("breach but position vanished -> success:no_position_to_liquidate", as
     } as unknown as KillSwitchDeps["marketdata"],
     alpaca: {
       getClock: () => Promise.resolve({ isOpen: true }),
-      liquidate: () => Promise.resolve(null),
+      closePosition: () => Promise.resolve(null),
     } as unknown as KillSwitchDeps["alpaca"],
   });
   assertEquals(await runKillSwitch(deps), "success:no_position_to_liquidate");
@@ -373,8 +402,8 @@ Deno.test("insufficient data (bars < lookback) -> skipped:insufficient_data", as
 });
 
 Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", async () => {
-  // A breach reaches liquidate, which throws AlpacaError. The catch reports the
-  // error and (because it's an AlpacaError) fires notifyBrokerError with the
+  // A breach reaches closePosition, which throws AlpacaError. The catch reports
+  // the error and (because it's an AlpacaError) fires notifyBrokerError with the
   // kill-switch context. Since #242 set .name on AlpacaError, the outcome is
   // "error:AlpacaError".
   let brokerError: { context: string; errorMsg: string } | undefined;
@@ -386,7 +415,7 @@ Deno.test("broker error during liquidate -> error outcome + notifyBrokerError", 
     } as unknown as KillSwitchDeps["marketdata"],
     alpaca: {
       getClock: () => Promise.resolve({ isOpen: true }),
-      liquidate: () => Promise.reject(new AlpacaError("alpaca 500")),
+      closePosition: () => Promise.reject(new AlpacaError("alpaca 500")),
     } as unknown as KillSwitchDeps["alpaca"],
     notifications: {
       notifyKillSwitchFired: () => Promise.resolve(),
@@ -413,7 +442,7 @@ Deno.test("liquidate times out (cancel UNVERIFIED) -> error:OrderTimeoutError + 
     } as unknown as KillSwitchDeps["marketdata"],
     alpaca: {
       getClock: () => Promise.resolve({ isOpen: true }),
-      liquidate: () =>
+      closePosition: () =>
         Promise.reject(
           new OrderTimeoutError(
             "SELL 99 UPRO did not fill within 30000ms; cancel UNVERIFIED — order o1 may still be live (status 'pending_cancel')",
@@ -770,4 +799,239 @@ Deno.test("#334: ratio exactly 2 -> bound passes, confirmation proceeds (boundar
   assertEquals(await runKillSwitch(deps), "skipped:breach_unconfirmed");
   assertEquals(calls.liquidate, undefined);
   assertEquals(calls.claim, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// #474 T5: position-driven redesign (D1) -- legacy-vs-hourly branch split (D2)
+// ---------------------------------------------------------------------------
+
+Deno.test("#474: legacy long botTicker fire writes regime_state and does NOT write hourly keys", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals((calls.upserts as unknown[]).length, 2);
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
+  assertEquals((calls.firedPayload as { side: string }).side, "LONG");
+});
+
+Deno.test("#474: non-botTicker LONG fire writes hourly keys, no regime_state write, no desync", async () => {
+  // A LONG position in a symbol other than config.botTicker (e.g. the hourly
+  // bot's own SPY long) uses the same LONG reference math but is NOT the
+  // legacy persistence path (D2).
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: 50 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals((calls.upserts as unknown[]).length, 0);
+  assertEquals(calls.desync, undefined);
+  const setConfigCalls = calls.setConfigCalls as Array<{ key: string; value: string }>;
+  assertEquals(setConfigCalls.some((c) => c.key === "hourly_kill_switch_active"), true);
+  assertEquals(
+    setConfigCalls.some((c) => c.key === "hourly_kill_switch_side" && c.value === "LONG"),
+    true,
+  );
+  assertEquals(setConfigCalls.some((c) => c.key === "hourly_kill_switch_fired_at"), true);
+  assertEquals((calls.insertTrade as { side: string; reason: string }).side, "SELL");
+  assertEquals((calls.insertTrade as { side: string; reason: string }).reason, "kill_switch");
+  assertEquals((calls.firedPayload as { side: string }).side, "LONG");
+});
+
+// ---------------------------------------------------------------------------
+// #474 T5: short mirror (spec §8.1)
+// ---------------------------------------------------------------------------
+
+Deno.test("#474: short within threshold -> success:within_threshold, no close, no keys written", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(110), // adverse = 110/100-1 = 0.10 < 0.25
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
+});
+
+Deno.test("#474: short breach confirmed on ask -> BUY cover, hourly keys written before insertTrade, fires", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+      closePosition: () => {
+        calls.liquidate = true;
+        return Promise.resolve({ orderId: "o5", fillPrice: 131, qty: 30, fillTime: "t" });
+      },
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse = 0.30, breach
+      getLatestQuote: () => Promise.resolve({ bid: 129, ask: 131, mid: 130 }), // ask adverse 0.31, breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  const order: string[] = [];
+  const originalSetConfig = deps.db.setConfig;
+  deps.db.setConfig = (k, v) => {
+    order.push("setConfig");
+    return originalSetConfig(k, v);
+  };
+  const originalInsertTrade = deps.db.insertTrade;
+  deps.db.insertTrade = (p) => {
+    order.push("insertTrade");
+    return originalInsertTrade(p);
+  };
+
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  assertEquals((calls.insertTrade as { side: string; qty: number; reason: string }).side, "BUY");
+  assertEquals((calls.insertTrade as { side: string; qty: number; reason: string }).qty, 30);
+  assertEquals(
+    (calls.insertTrade as { side: string; qty: number; reason: string }).reason,
+    "kill_switch",
+  );
+  const setConfigCalls = calls.setConfigCalls as Array<{ key: string; value: string }>;
+  assertEquals(setConfigCalls.length, 3);
+  assertEquals(setConfigCalls[0].key, "hourly_kill_switch_active");
+  assertEquals(setConfigCalls[1].key, "hourly_kill_switch_side");
+  assertEquals(setConfigCalls[1].value, "SHORT");
+  assertEquals(setConfigCalls[2].key, "hourly_kill_switch_fired_at");
+  assertEquals(order, ["setConfig", "setConfig", "setConfig", "insertTrade"]);
+  assertEquals((calls.firedPayload as { side: string }).side, "SHORT");
+});
+
+Deno.test("#474: short breach on trade but ask within threshold -> skipped:breach_unconfirmed, no claim", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse 0.30, breach
+      getLatestQuote: () => Promise.resolve({ bid: 109, ask: 111, mid: 110 }), // ask adverse 0.11, no breach
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:breach_unconfirmed");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(calls.claim, undefined);
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
+});
+
+Deno.test("#474: short quote outage -> fail-toward-protection: covers on trade price alone", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse 0.30, breach
+      getLatestQuote: () => Promise.reject(new Error("quote service unavailable")),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  assertEquals(typeof calls.error, "string");
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
+});
+
+Deno.test("#474: short implausible ask (ratio > 2 vs lastPrice) -> fires as unverified, not confirmed", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse 0.30, breach
+      getLatestQuote: () => Promise.resolve({ bid: 1200, ask: 1300, mid: 1250 }), // ratio 1300/130=10 > 2
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+  const notes = String((calls.audit as { notes: string }).notes);
+  assertEquals(notes.includes("confirmation=unverified_quote_outage"), true);
+  assertEquals(notes.includes("confirmation=confirmed"), false);
+});
+
+Deno.test("#474: short reciprocal implausibility guard (lastPrice/refLow > 2) -> error:implausible_drawdown, no cover", async () => {
+  // refLow = 100 (all lows 100), lastPrice = 250 -> ratio 2.5 > 2.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(250),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "error:implausible_drawdown");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals(typeof calls.error, "string");
+});
+
+Deno.test("#474: refLow includes lastPrice -- a fresh low yields adverse 0, cannot fire", async () => {
+  // lows all 110; lastPrice 100 (a new low) -> refLow = min(110,100) = 100,
+  // adverse = 100/100 - 1 = 0.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([110, 110, 110, 110, 110])),
+      getLatestTradePrice: () => Promise.resolve(100),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:within_threshold");
+  assertEquals(calls.liquidate, undefined);
+});
+
+Deno.test("#474: short boundary -- adverse exactly at threshold fires (mirrors the long path's boundary)", async () => {
+  // refLow 100, lastPrice 125 -> adverse = 125/100-1 = 0.25, exactly
+  // killSwitchDrawdownPct. Guard is `adverse < pct` (false at equality) -> fires.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(125),
+      getLatestQuote: () => Promise.resolve({ bid: 124, ask: 125, mid: 124.5 }), // ask adverse exactly 0.25 too
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals(calls.liquidate, true);
+});
+
+Deno.test("#474: claim conflict on the short path -> skipped:duplicate_run, no close", async () => {
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "SPY", qty: -30 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(barsWithLows([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(130), // adverse 0.30, breach
+      getLatestQuote: () => Promise.resolve({ bid: 129, ask: 131, mid: 130 }), // confirmed breach
+    } as unknown as KillSwitchDeps["marketdata"],
+    db: {
+      claimTradeDate: () => Promise.resolve(false),
+    } as unknown as KillSwitchDeps["db"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:duplicate_run");
+  assertEquals(calls.liquidate, undefined);
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
 });

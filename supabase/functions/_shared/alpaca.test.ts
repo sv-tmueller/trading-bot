@@ -660,7 +660,10 @@ Deno.test("closePosition SELLs the full qty for a long position", async () => {
   });
   liftBrokerGuard();
   try {
-    const fill = await createAlpacaClient().closePosition("SPY", { timeoutMs: 1000, intervalMs: 1 });
+    const fill = await createAlpacaClient().closePosition("SPY", {
+      timeoutMs: 1000,
+      intervalMs: 1,
+    });
     assertEquals(placedSide, "sell");
     assertEquals(placedQty, "50");
     assertEquals(fill?.qty, 50);
@@ -695,7 +698,10 @@ Deno.test("closePosition BUYs the absolute qty to cover a short position", async
   });
   liftBrokerGuard();
   try {
-    const fill = await createAlpacaClient().closePosition("SPY", { timeoutMs: 1000, intervalMs: 1 });
+    const fill = await createAlpacaClient().closePosition("SPY", {
+      timeoutMs: 1000,
+      intervalMs: 1,
+    });
     assertEquals(placedSide, "buy");
     assertEquals(placedQty, "30");
     assertEquals(fill?.qty, 30);
