@@ -671,3 +671,66 @@ Deno.test({
     assertEquals(afterDelete.some((r) => r.id === row.id), false);
   },
 });
+
+// ---------------------------------------------------------------------------
+// #474 T1: bar_claims (0011) -- the hourly bot's bar-level concurrency guard,
+// the property trade_claims' date-granularity PK cannot express: two claims
+// on the same trading day, keyed on different bar timestamps, must both
+// succeed. This package ships no consumer helper (D6) -- inserts go straight
+// through the client, mirroring how the migration itself is tested.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "bar_claims: first insert wins, same (script_name, bar_ts) conflicts with 23505",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const barTs = "2030-01-02T14:00:00Z";
+    await sb.from("bar_claims").delete().eq("script_name", "bar-claims-test").eq(
+      "bar_ts",
+      barTs,
+    );
+    const first = await sb.from("bar_claims").insert({
+      script_name: "bar-claims-test",
+      bar_ts: barTs,
+    });
+    assertEquals(first.error, null);
+    const second = await sb.from("bar_claims").insert({
+      script_name: "bar-claims-test",
+      bar_ts: barTs,
+    });
+    assertEquals(second.error?.code, "23505");
+    await sb.from("bar_claims").delete().eq("script_name", "bar-claims-test").eq(
+      "bar_ts",
+      barTs,
+    );
+  },
+});
+
+Deno.test({
+  name: "bar_claims: a different bar_ts the same day is a separate claim (property trade_claims lacks)",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const barTs1 = "2030-01-03T14:00:00Z";
+    const barTs2 = "2030-01-03T15:00:00Z";
+    await sb.from("bar_claims").delete().eq("script_name", "bar-claims-test").in(
+      "bar_ts",
+      [barTs1, barTs2],
+    );
+    const first = await sb.from("bar_claims").insert({
+      script_name: "bar-claims-test",
+      bar_ts: barTs1,
+    });
+    const secondSameDayDifferentBar = await sb.from("bar_claims").insert({
+      script_name: "bar-claims-test",
+      bar_ts: barTs2,
+    });
+    assertEquals(first.error, null);
+    assertEquals(secondSameDayDifferentBar.error, null);
+    await sb.from("bar_claims").delete().eq("script_name", "bar-claims-test").in(
+      "bar_ts",
+      [barTs1, barTs2],
+    );
+  },
+});
