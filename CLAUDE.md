@@ -208,8 +208,8 @@ Edge Function, SQLite -> Supabase Postgres, `.env` -> `supabase secrets` / `bot_
 relax a single one of these guarantees.
 
 - **One decision rule.** The bot trades on exactly one signal: the composite hourly
-  candlestick decision `decideHourly` (`supabase/functions/_shared/hourly_signal.ts` or
-  equivalent — Batch 2 names the module), sitting on P3's frozen 14-detector registry
+  candlestick decision `decideHourly` (`supabase/functions/_shared/hourly_signal.ts`),
+  sitting on P3's frozen 14-detector registry
   (`_shared/candlestick.ts`), with its tie-break and cooldown rules frozen together as a
   single configuration. Do not add a second decision rule (a sentiment overlay, a second
   scanner, a parallel strategy) without a fresh brainstorm and design spec — the
@@ -240,7 +240,15 @@ relax a single one of these guarantees.
   spec cited above for the finding this corrects.
 - **Engineer subagents must never execute against the live broker.** Unchanged mechanism
   (`CLAUDE_AGENT_NO_BROKER`, `checkGuard()` on every mutating Alpaca helper including the new
-  bracket-order and short-side helpers this bot adds).
+  bracket-order and short-side helpers this bot adds). _Rationale: 2026-05-06 incident #149 —
+  six SIMPLE-class market BUY orders for AMD ×4, GOOG, MSFT were submitted from an Engineer
+  worktree at 05:56-05:57 UTC, draining buying power from $99k to $2,239 and leaving positions
+  that would have filled unprotected at market open if not surgically cancelled. Re-materialised
+  ~30 minutes after issue #168 was filed when a QA subagent's `pytest` reached live broker via an
+  unmocked path and submitted 5×100 AMD parent BUYs (500-share, $-101k margin position; recovered
+  via panic CLI). The production cron path was unaffected in both incidents; the gap was on the
+  agent-test side and is now closed by the mechanical guard plus the docs/skill rule (defense-in-
+  depth)._
 
 Development decisions that affect the safety stack or trading logic are recorded as ADRs in `docs/decisions/`. Weekly trading outcomes and observations are recorded in `docs/trading-journal/`.
 
