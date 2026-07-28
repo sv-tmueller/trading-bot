@@ -584,3 +584,273 @@ export function proposeParamChange(
   }
   return { gated: false, proposal: null };
 }
+
+// ---------------------------------------------------------------------------
+// T6 -- renderer (pure). renderJournal is a straight function of its input;
+// it never reads a clock (D4 -- "No Date.now() in rendered content; the only
+// as-of-run value is the trial-count read, labelled in the footer").
+// ---------------------------------------------------------------------------
+
+export interface RenderData {
+  weekLabel: string;
+  title: string;
+  agg: WeeklyAggregates;
+  closedTradesInWeek: ClosedTradeResult[];
+  openEntries: TradeRow[];
+  orphanExitsInWeek: TradeRow[];
+  manualInterventionsInWeek: TradeRow[];
+  cumulative: CumulativeStats;
+  proposal: ProposalOutcome;
+  trialCount: number;
+}
+
+function fmtMoney(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtPct(n: number | null): string {
+  return n === null ? "n/a" : `${(n * 100).toFixed(1)}%`;
+}
+
+function fmtR(n: number | null): string {
+  return n === null ? "n/a" : n.toFixed(2);
+}
+
+function table(header: string[], rows: string[][]): string {
+  const headerLine = `| ${header.join(" | ")} |`;
+  const sepLine = `|${header.map(() => "---").join("|")}|`;
+  const rowLines = rows.map((r) => `| ${r.join(" | ")} |`);
+  return [headerLine, sepLine, ...rowLines].join("\n");
+}
+
+function renderIsQuietWeek(data: RenderData): boolean {
+  return data.agg.scansInWeek === 0 &&
+    data.closedTradesInWeek.length === 0 &&
+    data.openEntries.length === 0 &&
+    data.orphanExitsInWeek.length === 0 &&
+    data.manualInterventionsInWeek.length === 0 &&
+    Object.keys(data.agg.auditOutcomeCounts).length === 0;
+}
+
+function renderProposalSection(proposal: ProposalOutcome): string {
+  if (proposal.gated) return proposal.reason;
+  return proposal.proposal ?? "No proposal triggered this week.";
+}
+
+function renderCumulativeSection(cumulative: CumulativeStats): string {
+  return [
+    `- Closed trades (N): ${cumulative.closedTradeCount}`,
+    `- Win rate: ${fmtPct(cumulative.winRate)}`,
+    `- Target-hit rate: ${fmtPct(cumulative.targetHitRate)}`,
+    `- Mean R: ${fmtR(cumulative.meanR)}`,
+    `- Sum R: ${fmtR(cumulative.sumR)}`,
+  ].join("\n");
+}
+
+function renderFooter(trialCount: number): string {
+  return `**Trial counter (as of this run):** \`hourly_param_trial_count\` = ${trialCount}`;
+}
+
+/**
+ * Renders the full hourly-era journal entry as markdown. Fixed section set
+ * (D7): detector firing rates, decisions, entries/exits, open positions,
+ * manual interventions, gate-skip distribution (two sources: bar-level
+ * `hourly_scans.skip_reason` and run-level `audit_log` outcomes -- disclosed
+ * separately since they answer different questions), equity vs the -15%
+ * floor, cumulative stats, the PROPOSAL_RULE result, and an empty
+ * "Notes (operator)" section for the human to fill in.
+ *
+ * An all-quiet week (no scans, no trades, no audit rows) renders the
+ * journal README's brief style instead of a page of empty tables.
+ */
+export function renderJournal(data: RenderData): string {
+  const { agg } = data;
+
+  if (renderIsQuietWeek(data)) {
+    return [
+      `# ${data.title}`,
+      "",
+      "No scans recorded and no trades filed this week -- the bot appears to have been paused " +
+        "or not deployed for the full week. See `bot_config.paused` and `audit_log` for the reason.",
+      "",
+      "---",
+      "",
+      "## Cumulative stats (since experiment start)",
+      "",
+      renderCumulativeSection(data.cumulative),
+      "",
+      "## Proposal (PROPOSAL_RULE)",
+      "",
+      renderProposalSection(data.proposal),
+      "",
+      "## Notes (operator)",
+      "",
+      "_None yet._",
+      "",
+      "---",
+      "",
+      renderFooter(data.trialCount),
+      "",
+    ].join("\n");
+  }
+
+  const detectorTable = agg.detectorRates.length > 0
+    ? table(
+      ["Detector", "Fired", "Scanned", "Rate"],
+      agg.detectorRates.map((d) => [d.name, String(d.fired), String(d.scanned), fmtPct(d.rate)]),
+    )
+    : "_No scans recorded this week._";
+
+  const closedTable = data.closedTradesInWeek.length > 0
+    ? table(
+      ["Symbol", "Side", "Entry fill", "Exit fill", "Qty", "R", "Holding (bars)", "Exit reason"],
+      data.closedTradesInWeek.map((t) => [
+        t.symbol,
+        t.side,
+        fmtMoney(t.entryFillPrice),
+        fmtMoney(t.exitFillPrice),
+        String(t.qty),
+        t.rMultiple !== null ? fmtR(t.rMultiple) : `n/a (${t.rMultipleNaReason})`,
+        String(t.holdingBars),
+        t.exitReason,
+      ]),
+    )
+    : "_No closed trades this week._";
+
+  const openTable = data.openEntries.length > 0
+    ? table(
+      ["Symbol", "Side", "Entry fill", "Entry time", "Broker order id"],
+      data.openEntries.map((t) => [
+        t.symbol,
+        t.reason === "hourly_short_entry" ? "SHORT" : "LONG",
+        fmtMoney(t.fill_price),
+        t.fill_time,
+        t.broker_order_id,
+      ]),
+    )
+    : "_None._";
+
+  const orphanTable = data.orphanExitsInWeek.length > 0
+    ? table(
+      ["Symbol", "Fill price", "Fill time", "Reason", "Broker order id"],
+      data.orphanExitsInWeek.map((t) => [
+        t.symbol,
+        fmtMoney(t.fill_price),
+        t.fill_time,
+        t.reason,
+        t.broker_order_id,
+      ]),
+    )
+    : "_None._";
+
+  const manualTable = data.manualInterventionsInWeek.length > 0
+    ? table(
+      ["Symbol", "Side", "Fill price", "Fill time", "Broker order id"],
+      data.manualInterventionsInWeek.map((t) => [
+        t.symbol,
+        t.side,
+        fmtMoney(t.fill_price),
+        t.fill_time,
+        t.broker_order_id,
+      ]),
+    )
+    : "_None._";
+
+  const skipReasonEntries = Object.entries(agg.skipReasonCounts).sort(([a], [b]) => a.localeCompare(b));
+  const skipTable = skipReasonEntries.length > 0
+    ? table(["Skip reason", "Count"], skipReasonEntries.map(([k, v]) => [k, String(v)]))
+    : "_No skips this week._";
+
+  const auditEntries = Object.entries(agg.auditOutcomeCounts).sort(([a], [b]) => a.localeCompare(b));
+  const auditTable = auditEntries.length > 0
+    ? table(["Outcome", "Count"], auditEntries.map(([k, v]) => [k, String(v)]))
+    : "_No hourly-check audit_log rows this week._";
+
+  const autoPausedLine = agg.autoPausedTimestamps.length > 0
+    ? agg.autoPausedTimestamps.join(", ")
+    : "_None._";
+
+  return [
+    `# ${data.title}`,
+    "",
+    "---",
+    "",
+    "## Detector firing rates",
+    "",
+    detectorTable,
+    "",
+    "---",
+    "",
+    "## Decisions",
+    "",
+    `- LONG: ${agg.decisionCounts.LONG}`,
+    `- SHORT: ${agg.decisionCounts.SHORT}`,
+    `- SKIP: ${agg.decisionCounts.SKIP}`,
+    "",
+    "---",
+    "",
+    "## Entries & exits (closed this week)",
+    "",
+    closedTable,
+    "",
+    "## Open positions at week end",
+    "",
+    openTable,
+    "",
+    "## Orphan exits (no matching queued entry)",
+    "",
+    orphanTable,
+    "",
+    "## Manual interventions (`panic_cli`)",
+    "",
+    manualTable,
+    "",
+    "---",
+    "",
+    "## Gate-skip distribution",
+    "",
+    "Two sources (sub-plan's disclosed two-source gate-skip distribution): bar-level skips " +
+      "from `hourly_scans.skip_reason`, and run-level exits from `audit_log` " +
+      "(`script_name='hourly-check'`) -- a bar can be scanned and skipped without the run " +
+      "itself being a gate exit, and vice versa.",
+    "",
+    "### Bar-level (`hourly_scans.skip_reason`)",
+    "",
+    skipTable,
+    "",
+    "### Run-level (`audit_log.outcome`)",
+    "",
+    auditTable,
+    "",
+    "---",
+    "",
+    "## Equity vs the -15% floor",
+    "",
+    `- First: $${fmtMoney(agg.equity.first ?? 0)}`,
+    `- Min: $${fmtMoney(agg.equity.min ?? 0)}`,
+    `- Last: $${fmtMoney(agg.equity.last ?? 0)}`,
+    `- Floor baseline (\`hourly_experiment_start_equity\`): $${fmtMoney(agg.equity.floorBaseline)}`,
+    `- Floor price (-15%): $${fmtMoney(agg.equity.floorPrice)}`,
+    `- Breached this week: ${agg.equity.breached ? "yes" : "no"}`,
+    `- Auto-paused events (\`success:auto_paused\`): ${autoPausedLine}`,
+    "",
+    "---",
+    "",
+    "## Cumulative stats (since experiment start)",
+    "",
+    renderCumulativeSection(data.cumulative),
+    "",
+    "## Proposal (PROPOSAL_RULE)",
+    "",
+    renderProposalSection(data.proposal),
+    "",
+    "## Notes (operator)",
+    "",
+    "_None yet._",
+    "",
+    "---",
+    "",
+    renderFooter(data.trialCount),
+    "",
+  ].join("\n");
+}

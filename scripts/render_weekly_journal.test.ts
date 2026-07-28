@@ -18,6 +18,8 @@ import {
   previousCompletedWeek,
   PROPOSAL_MIN_CLOSED_TRADES,
   proposeParamChange,
+  type RenderData,
+  renderJournal,
   weekWindowUtc,
 } from "./render_weekly_journal.ts";
 
@@ -502,4 +504,155 @@ Deno.test("proposeParamChange: at most one proposal -- first-hit-wins over a two
 
 Deno.test("DEFAULT_PROPOSAL_CANDIDATES: exactly one default candidate (D5, size:M trim point)", () => {
   assertEquals(DEFAULT_PROPOSAL_CANDIDATES.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// T6 -- renderer
+// ---------------------------------------------------------------------------
+
+function buildFixtureRenderData(): RenderData {
+  const win = weekWindowUtc(2026, 31);
+  const scanA = scan({
+    bar_ts: "2026-07-27T14:00:00Z",
+    decision: "LONG",
+    skip_reason: null,
+    detectors_fired: ["bullish_marubozu"],
+    equity_usd: 100000,
+    entry_order_id: "o1",
+    risk_per_share: 2.25,
+  });
+  const scanB = scan({
+    bar_ts: "2026-07-28T14:00:00Z",
+    decision: "SKIP",
+    skip_reason: "signal_conflict",
+    detectors_fired: [],
+    equity_usd: 100500,
+    entry_order_id: null,
+  });
+  const scans = [scanA, scanB];
+
+  const entry = trade({
+    reason: "hourly_long_entry",
+    broker_order_id: "o1",
+    fill_price: 550,
+    fill_time: "2026-07-27T14:05:00Z",
+  });
+  const exit = trade({
+    reason: "hourly_bracket_exit",
+    broker_order_id: "o2",
+    fill_price: 554.5,
+    fill_time: "2026-07-27T16:05:00Z",
+  });
+  const pairing = pairHourlyTrades([entry, exit], scans);
+
+  const auditRows = [
+    auditRow({ started_at: "2026-07-27T14:00:00Z", outcome: "success" }),
+    auditRow({ started_at: "2026-07-28T14:00:00Z", outcome: "success:no_action" }),
+  ];
+
+  const agg = computeWeeklyAggregates(scans, auditRows, 100000);
+
+  // Pad to N=30 with losing bracket-exit trades so the cumulative sample
+  // clears PROPOSAL_MIN_CLOSED_TRADES and the target-hit rate (1/30) falls
+  // below the default floor -- exercises the "proposal fires" render path.
+  const padded = Array.from({ length: 29 }, (_, i) =>
+    closedTrade({
+      entryOrderId: `pad-entry-${i}`,
+      exitOrderId: `pad-exit-${i}`,
+      rMultiple: -1,
+      exitReason: "hourly_bracket_exit",
+    }));
+  const cumulative = computeCumulativeStats([...pairing.closedTrades, ...padded]);
+  const proposal = proposeParamChange(cumulative);
+
+  return {
+    weekLabel: "2026-W31",
+    title: win.title,
+    agg,
+    closedTradesInWeek: pairing.closedTrades,
+    openEntries: pairing.openEntries,
+    orphanExitsInWeek: pairing.orphanExits,
+    manualInterventionsInWeek: pairing.manualInterventions,
+    cumulative,
+    proposal,
+    trialCount: 2,
+  };
+}
+
+// Golden full-document assertion (T6), captured from the fixture above and
+// reviewed by hand against the fixed section set (D7). Locks in the exact
+// rendered format as a regression guard.
+const GOLDEN_RENDER =
+  "# Week 2026-W31 (Mon 27 Jul -- Fri 31 Jul 2026)\n\n---\n\n## Detector firing rates\n\n" +
+  "| Detector | Fired | Scanned | Rate |\n|---|---|---|---|\n" +
+  "| bullish_marubozu | 1 | 2 | 50.0% |\n\n---\n\n## Decisions\n\n- LONG: 1\n- SHORT: 0\n" +
+  "- SKIP: 1\n\n---\n\n## Entries & exits (closed this week)\n\n" +
+  "| Symbol | Side | Entry fill | Exit fill | Qty | R | Holding (bars) | Exit reason |\n" +
+  "|---|---|---|---|---|---|---|---|\n" +
+  "| SPY | LONG | 550.00 | 554.50 | 10 | 2.00 | 2 | hourly_bracket_exit |\n\n" +
+  "## Open positions at week end\n\n_None._\n\n" +
+  "## Orphan exits (no matching queued entry)\n\n_None._\n\n" +
+  "## Manual interventions (`panic_cli`)\n\n_None._\n\n---\n\n## Gate-skip distribution\n\n" +
+  "Two sources (sub-plan's disclosed two-source gate-skip distribution): bar-level skips " +
+  "from `hourly_scans.skip_reason`, and run-level exits from `audit_log` " +
+  "(`script_name='hourly-check'`) -- a bar can be scanned and skipped without the run " +
+  "itself being a gate exit, and vice versa.\n\n" +
+  "### Bar-level (`hourly_scans.skip_reason`)\n\n| Skip reason | Count |\n|---|---|\n" +
+  "| signal_conflict | 1 |\n\n### Run-level (`audit_log.outcome`)\n\n" +
+  "| Outcome | Count |\n|---|---|\n| success | 1 |\n| success:no_action | 1 |\n\n---\n\n" +
+  "## Equity vs the -15% floor\n\n- First: $100,000.00\n- Min: $100,000.00\n" +
+  "- Last: $100,500.00\n- Floor baseline (`hourly_experiment_start_equity`): $100,000.00\n" +
+  "- Floor price (-15%): $85,000.00\n- Breached this week: no\n" +
+  "- Auto-paused events (`success:auto_paused`): _None._\n\n---\n\n" +
+  "## Cumulative stats (since experiment start)\n\n- Closed trades (N): 30\n" +
+  "- Win rate: 3.3%\n- Target-hit rate: 3.3%\n- Mean R: -0.90\n- Sum R: -27.00\n\n" +
+  "## Proposal (PROPOSAL_RULE)\n\n" +
+  "§7 HOURLY_BRACKET_R_MULTIPLE: 2 -> 3 (target hit rate 3.3% over N=30 trades, " +
+  "below the 25% floor)\n\n## Notes (operator)\n\n_None yet._\n\n---\n\n" +
+  "**Trial counter (as of this run):** `hourly_param_trial_count` = 2\n";
+
+Deno.test("renderJournal: golden full-document render from a mixed-activity fixture", () => {
+  const data = buildFixtureRenderData();
+  assertEquals(renderJournal(data), GOLDEN_RENDER);
+});
+
+Deno.test("renderJournal: determinism -- two calls on the same input are byte-identical", () => {
+  const data = buildFixtureRenderData();
+  assertEquals(renderJournal(data), renderJournal(data));
+});
+
+Deno.test("renderJournal: below the proposal's minimum sample renders the gated line, not a proposal", () => {
+  const data = buildFixtureRenderData();
+  const gatedCumulative = computeCumulativeStats(data.closedTradesInWeek); // N=1, well under 30
+  const gatedData: RenderData = {
+    ...data,
+    cumulative: gatedCumulative,
+    proposal: proposeParamChange(gatedCumulative),
+  };
+  const rendered = renderJournal(gatedData);
+  assertEquals(rendered.includes("no proposal permitted (N=1 < 30)"), true);
+  assertEquals(rendered.includes("HOURLY_BRACKET_R_MULTIPLE"), false);
+});
+
+Deno.test("renderJournal: an all-quiet week renders the README's brief style, not empty tables", () => {
+  const win = weekWindowUtc(2026, 32);
+  const agg = computeWeeklyAggregates([], [], 100000);
+  const cumulative = computeCumulativeStats([]);
+  const data: RenderData = {
+    weekLabel: "2026-W32",
+    title: win.title,
+    agg,
+    closedTradesInWeek: [],
+    openEntries: [],
+    orphanExitsInWeek: [],
+    manualInterventionsInWeek: [],
+    cumulative,
+    proposal: proposeParamChange(cumulative),
+    trialCount: 2,
+  };
+  const rendered = renderJournal(data);
+  assertEquals(rendered.includes("## Detector firing rates"), false);
+  assertEquals(rendered.includes("paused or not deployed for the full week"), true);
+  assertEquals(rendered.includes("## Cumulative stats (since experiment start)"), true);
+  assertEquals(rendered.includes("## Notes (operator)"), true);
 });
