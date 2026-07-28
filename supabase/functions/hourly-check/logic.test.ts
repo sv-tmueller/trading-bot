@@ -89,6 +89,15 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     ["hourly_experiment_start_equity", "100000"],
   ]);
 
+  // #480 T4: getTradesSince defaults to reading this array, and the default
+  // insertTrade appends to it -- so a trade the pipeline inserts mid-run
+  // (e.g. reconcile()'s recovery step, or exit-fill discovery) is visible to
+  // a LATER getTradesSince call in the same run (gate 13/14's own lookback
+  // read) without any test needing to hand-wire the two together. Starts
+  // empty, matching every existing test's prior (constant-[]) expectation;
+  // only tests that don't override getTradesSince/insertTrade observe it.
+  const tradesDb: TradeRow[] = [];
+
   const deps: HourlyCheckDeps = {
     config: { ...BASE_CONFIG },
     now: () => new Date(nowIso),
@@ -120,7 +129,7 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
         rec.configSets.push([key, value]);
         return Promise.resolve();
       },
-      getTradesSince: (_sinceIso) => Promise.resolve([] as TradeRow[]),
+      getTradesSince: (_sinceIso) => Promise.resolve([...tradesDb]),
       upsertHourlyScan: (p) => {
         rec.scans.push(p);
         return Promise.resolve();
@@ -134,6 +143,15 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
       },
       insertTrade: (p) => {
         rec.trades.push(p);
+        tradesDb.push({
+          symbol: p.symbol,
+          side: p.side,
+          qty: p.qty,
+          fill_price: p.fillPrice,
+          fill_time: p.fillTime,
+          reason: p.reason,
+          broker_order_id: p.brokerOrderId,
+        });
         return Promise.resolve(rec.trades.length);
       },
       insertAuditLog: (_p) => Promise.resolve(1),
@@ -1147,4 +1165,59 @@ Deno.test("recovery: same-run knock-on -- after adoption entryConsideredOpen is 
     takeProfitPrice: 554,
     stopLossPrice: 547,
   });
+});
+
+// ---------------------------------------------------------------------------
+// #480 T4: cooldown/day-cap correctness after recovery (end-to-end pipeline
+// tests). Requires buildDeps' getTradesSince to be stateful, backed by the
+// same array default insertTrade writes to, so a trade recovery inserts
+// mid-run is visible to gate 13/14's own (separate) getTradesSince read --
+// a harness extension, noted in the PR.
+// ---------------------------------------------------------------------------
+
+Deno.test("recovery + gate 14: an adopted entry counts toward today's entry cap -> skipped:max_entries_reached", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-27T09:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-27T10:15:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(0); // already flat at the broker
+  deps.config.hourlyMaxEntriesPerDay = 1; // the adopted entry alone fills the cap
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:max_entries_reached");
+  assertEquals(rec.trades.length, 1); // just the recovered entry -- no fresh entry placed
+  assertEquals(rec.trades[0].reason, "hourly_long_entry");
+});
+
+Deno.test("recovery + gate 13: adopted entry + discovered bracket exit in the same pass -> cooldown fires against the exit's fill_time -> skipped:cooldown", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-27T09:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-27T10:15:00Z",
+      },
+      // After the new candidate bar (14:00) -- cooldown must fire against it.
+      { orderId: "exit1", side: "SELL", qty: 12, fillPrice: 552, fillTime: "2026-07-27T14:15:00Z" },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(0); // already flat -- the exit already happened at the broker
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:cooldown");
+  assertEquals(
+    rec.trades.some((t) => t.reason === "hourly_bracket_exit" && t.brokerOrderId === "exit1"),
+    true,
+  );
 });
