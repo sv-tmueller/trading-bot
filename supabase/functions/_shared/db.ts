@@ -533,25 +533,6 @@ export async function upsertHourlyScan(sb: SupabaseClient, p: {
   if (error) throw new Error(`upsertHourlyScan: ${error.message}`);
 }
 
-// Naked-position geometry provenance (spec §7 finding 3): looks up the
-// hourly_scans row that produced an open position's entry, keyed on the
-// entry's bar_ts, so a missing re-leg can be re-placed against the recorded
-// stop/target rather than guessed.
-export async function getHourlyScanByBar(
-  sb: SupabaseClient,
-  symbol: string,
-  barTs: string,
-): Promise<HourlyScanRow | null> {
-  const { data, error } = await sb
-    .from("hourly_scans")
-    .select("*")
-    .eq("symbol", symbol)
-    .eq("bar_ts", barTs)
-    .maybeSingle();
-  if (error) throw new Error(`getHourlyScanByBar: ${error.message}`);
-  return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
-}
-
 // #475 T11: the `trades` table has no bar_ts column (§9 keeps bar_ts scoped
 // to hourly_scans), so the naked-position provenance lookup (spec §7 finding
 // 3, "keyed on the entry's bar_ts") is instead keyed on the entry's broker

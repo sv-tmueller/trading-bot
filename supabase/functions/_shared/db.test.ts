@@ -12,7 +12,6 @@ import {
   getConfig,
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
-  getHourlyScanByBar,
   getHourlyScanByEntryOrderId,
   getLastTrade,
   getLatestAuditForScript,
@@ -888,7 +887,8 @@ Deno.test("getHourlyScanByEntryOrderId: filters by symbol + entry_order_id", asy
 });
 
 Deno.test({
-  name: "hourly_scans: upsert + getHourlyScanByBar roundtrip (ON CONFLICT replaces same bar)",
+  name:
+    "hourly_scans: upsert + getHourlyScanByEntryOrderId roundtrip (ON CONFLICT replaces same bar)",
   ignore: !RUN,
   fn: async () => {
     const sb = localClient();
@@ -926,7 +926,8 @@ Deno.test({
       qty: 18,
       entryOrderId: "o2",
     });
-    const row = await getHourlyScanByBar(sb, "SPY", "2030-01-02T14:00:00Z");
+    const row = await getHourlyScanByEntryOrderId(sb, "SPY", "o2");
+    assertEquals(row?.bar_ts, "2030-01-02T14:00:00Z");
     assertEquals(row?.entry_order_id, "o2");
     assertEquals(row?.qty, 18);
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").eq(
