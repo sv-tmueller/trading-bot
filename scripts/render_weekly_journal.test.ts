@@ -5,8 +5,11 @@
 // never imports _shared/alpaca.ts, so the guard is inert here (defense in
 // depth only, per the repo's Architectural invariants).
 import { assertEquals, assertThrows } from "@std/assert";
-import type { HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
+import type { AuditLogRow, HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
 import {
+  type ClosedTradeResult,
+  computeCumulativeStats,
+  computeWeeklyAggregates,
   pairHourlyTrades,
   parseArgs,
   parseWeekLabel,
@@ -319,4 +322,121 @@ Deno.test("pairHourlyTrades: sequential FIFO pairing across multiple entries for
   assertEquals(result.openEntries.length, 1);
   // FIFO: e1 (earliest) pairs with the only exit; e2 stays open.
   assertEquals(result.openEntries[0].broker_order_id, "e2");
+});
+
+// ---------------------------------------------------------------------------
+// T4 -- aggregation
+// ---------------------------------------------------------------------------
+
+function auditRow(over: Partial<AuditLogRow>): AuditLogRow {
+  return {
+    script_name: "hourly-check",
+    started_at: "2026-07-27T14:00:00Z",
+    finished_at: "2026-07-27T14:00:05Z",
+    outcome: "success",
+    notes: null,
+    ...over,
+  };
+}
+
+Deno.test("computeWeeklyAggregates: detector rates, decisions, skips, audit outcomes, equity vs floor", () => {
+  const scanA = scan({
+    bar_ts: "2026-07-27T14:00:00Z",
+    decision: "LONG",
+    skip_reason: null,
+    detectors_fired: ["bullish_marubozu"],
+    equity_usd: 100000,
+  });
+  const scanB = scan({
+    bar_ts: "2026-07-27T15:00:00Z",
+    decision: "SKIP",
+    skip_reason: "signal_conflict",
+    detectors_fired: ["bullish_marubozu", "hammer"],
+    equity_usd: 95000,
+  });
+  const scanC = scan({
+    bar_ts: "2026-07-27T16:00:00Z",
+    decision: "SKIP",
+    skip_reason: "size_too_small",
+    detectors_fired: [],
+    equity_usd: 84000,
+  });
+  const auditRows = [
+    auditRow({ started_at: "2026-07-27T14:00:00Z", outcome: "success" }),
+    auditRow({ started_at: "2026-07-27T16:00:00Z", outcome: "success:auto_paused" }),
+  ];
+
+  // Passed out of order to prove the aggregator sorts by bar_ts itself.
+  const agg = computeWeeklyAggregates([scanC, scanA, scanB], auditRows, 100000);
+
+  assertEquals(agg.scansInWeek, 3);
+  assertEquals(agg.detectorRates, [
+    { name: "bullish_marubozu", fired: 2, scanned: 3, rate: 2 / 3 },
+    { name: "hammer", fired: 1, scanned: 3, rate: 1 / 3 },
+  ]);
+  assertEquals(agg.decisionCounts, { LONG: 1, SHORT: 0, SKIP: 2 });
+  assertEquals(agg.skipReasonCounts, { signal_conflict: 1, size_too_small: 1 });
+  assertEquals(agg.auditOutcomeCounts, { success: 1, "success:auto_paused": 1 });
+  assertEquals(agg.autoPausedTimestamps, ["2026-07-27T16:00:00Z"]);
+  assertEquals(agg.equity.first, 100000);
+  assertEquals(agg.equity.last, 84000);
+  assertEquals(agg.equity.min, 84000);
+  assertEquals(agg.equity.floorBaseline, 100000);
+  assertEquals(agg.equity.floorPrice, 85000);
+  assertEquals(agg.equity.breached, true);
+});
+
+Deno.test("computeWeeklyAggregates: an all-quiet week (no scans, no audit rows) still returns zeros", () => {
+  const agg = computeWeeklyAggregates([], [], 100000);
+  assertEquals(agg.scansInWeek, 0);
+  assertEquals(agg.detectorRates, []);
+  assertEquals(agg.decisionCounts, { LONG: 0, SHORT: 0, SKIP: 0 });
+  assertEquals(agg.equity.first, null);
+  assertEquals(agg.equity.min, null);
+  assertEquals(agg.equity.last, null);
+  assertEquals(agg.equity.breached, false);
+});
+
+function closedTrade(over: Partial<ClosedTradeResult>): ClosedTradeResult {
+  return {
+    symbol: "SPY",
+    side: "LONG",
+    entryFillPrice: 550,
+    entryFillTime: "2026-07-27T14:05:00Z",
+    entryOrderId: "e",
+    exitFillPrice: 554.5,
+    exitFillTime: "2026-07-27T16:05:00Z",
+    exitOrderId: "x",
+    exitReason: "hourly_bracket_exit",
+    qty: 10,
+    holdingBars: 2,
+    rMultiple: 2,
+    ...over,
+  };
+}
+
+Deno.test("computeCumulativeStats: win rate, target-hit rate, mean/sum R over a mixed sample", () => {
+  const trades: ClosedTradeResult[] = [
+    closedTrade({ rMultiple: 2, exitReason: "hourly_bracket_exit" }), // win + target hit
+    closedTrade({ rMultiple: -1, exitReason: "hourly_bracket_exit" }), // loss
+    closedTrade({ rMultiple: null, rMultipleNaReason: "missing scan row for entry e3" }), // n/a
+    closedTrade({ rMultiple: 0.5, exitReason: "hourly_session_close_exit" }), // win, not a target hit
+  ];
+  const stats = computeCumulativeStats(trades);
+  assertEquals(stats.closedTradeCount, 4);
+  assertEquals(stats.winRate, 0.5); // 2 winners / 4 total
+  assertEquals(stats.targetHitRate, 0.25); // 1 bracket-exit win / 4 total
+  assertEquals(stats.sumR, 1.5);
+  assertEquals(stats.meanR, 0.5); // 1.5 / 3 trades with a known R
+});
+
+Deno.test("computeCumulativeStats: zero closed trades -> all rates null, not NaN", () => {
+  const stats = computeCumulativeStats([]);
+  assertEquals(stats, {
+    closedTradeCount: 0,
+    winRate: null,
+    targetHitRate: null,
+    meanR: null,
+    sumR: null,
+  });
 });

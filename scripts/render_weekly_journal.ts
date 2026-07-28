@@ -384,3 +384,146 @@ export function pairHourlyTrades(trades: TradeRow[], scans: HourlyScanRow[]): Pa
 
   return { closedTrades, openEntries, orphanExits, manualInterventions };
 }
+
+// ---------------------------------------------------------------------------
+// T4 -- aggregation (pure). Per-detector firing counts/rates over scanned
+// bars, decision/skip/audit-outcome distributions, and equity vs the -15%
+// floor -- all restricted to the caller's already-windowed inputs (D4: the
+// week window is enforced by the orchestration layer, T7).
+// ---------------------------------------------------------------------------
+
+// Mirrors supabase/functions/hourly-check/logic.ts's own EQUITY_FLOOR_PCT
+// (spec §11's hard floor). Duplicated rather than imported: hourly-check is
+// an Edge Function module, outside this script's allowed _shared surface
+// (db.ts / supabase_client.ts / num.ts only). Kept in sync manually; a
+// mismatch here would only affect this report's rendered text, never the
+// live floor enforcement in hourly-check itself.
+const EQUITY_FLOOR_PCT = 0.15;
+
+export interface DetectorRate {
+  name: string;
+  fired: number;
+  scanned: number;
+  rate: number;
+}
+
+export interface WeeklyEquity {
+  first: number | null;
+  min: number | null;
+  last: number | null;
+  floorBaseline: number;
+  floorPrice: number;
+  breached: boolean;
+}
+
+export interface WeeklyAggregates {
+  scansInWeek: number;
+  detectorRates: DetectorRate[];
+  decisionCounts: { LONG: number; SHORT: number; SKIP: number };
+  skipReasonCounts: Record<string, number>;
+  auditOutcomeCounts: Record<string, number>;
+  autoPausedTimestamps: string[];
+  equity: WeeklyEquity;
+}
+
+export function computeWeeklyAggregates(
+  scansInWeek: HourlyScanRow[],
+  auditRowsInWeek: AuditLogRow[],
+  floorBaseline: number,
+): WeeklyAggregates {
+  const scans = [...scansInWeek].sort((a, b) => a.bar_ts.localeCompare(b.bar_ts));
+
+  const firedCounts = new Map<string, number>();
+  const decisionCounts = { LONG: 0, SHORT: 0, SKIP: 0 };
+  const skipReasonCounts: Record<string, number> = {};
+  for (const s of scans) {
+    decisionCounts[s.decision]++;
+    for (const name of s.detectors_fired) {
+      firedCounts.set(name, (firedCounts.get(name) ?? 0) + 1);
+    }
+    if (s.decision === "SKIP") {
+      const reason = s.skip_reason ?? "unspecified";
+      skipReasonCounts[reason] = (skipReasonCounts[reason] ?? 0) + 1;
+    }
+  }
+  const detectorRates: DetectorRate[] = [...firedCounts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, fired]) => ({ name, fired, scanned: scans.length, rate: fired / scans.length }));
+
+  const auditOutcomeCounts: Record<string, number> = {};
+  const autoPausedTimestamps: string[] = [];
+  for (const row of auditRowsInWeek) {
+    const outcome = row.outcome ?? "unfinished";
+    auditOutcomeCounts[outcome] = (auditOutcomeCounts[outcome] ?? 0) + 1;
+    if (row.outcome === "success:auto_paused") autoPausedTimestamps.push(row.started_at);
+  }
+
+  const equities = scans.map((s) => s.equity_usd);
+  const floorPrice = floorBaseline * (1 - EQUITY_FLOOR_PCT);
+  const equity: WeeklyEquity = {
+    first: equities.length > 0 ? equities[0] : null,
+    min: equities.length > 0 ? Math.min(...equities) : null,
+    last: equities.length > 0 ? equities[equities.length - 1] : null,
+    floorBaseline,
+    floorPrice,
+    breached: equities.some((e) => e <= floorPrice),
+  };
+
+  return {
+    scansInWeek: scans.length,
+    detectorRates,
+    decisionCounts,
+    skipReasonCounts,
+    auditOutcomeCounts,
+    autoPausedTimestamps,
+    equity,
+  };
+}
+
+export interface CumulativeStats {
+  closedTradeCount: number;
+  winRate: number | null;
+  targetHitRate: number | null;
+  meanR: number | null;
+  sumR: number | null;
+}
+
+/**
+ * Cumulative [experiment start, weekEnd) stats over ALL closed trades
+ * (T7 passes the full pairing result, not just this week's). A trade with
+ * a degraded (n/a) R still counts toward `closedTradeCount` -- the sample
+ * size the PROPOSAL_RULE's minimum-sample gate cares about -- but is
+ * excluded from the win/target-hit numerators and the mean/sum R, so a
+ * missing-data trade can never be silently counted as a win.
+ *
+ * "Target hit" is this script's own operational definition, disclosed in
+ * the PR: a closed trade whose exit was `hourly_bracket_exit` (the bracket's
+ * take-profit or stop-loss leg, as opposed to a forced session-close/
+ * kill-switch exit) AND whose R is positive -- i.e. the take-profit leg
+ * specifically filled, not the stop. `trades`/`hourly_scans` don't record
+ * which bracket leg filled directly, so this R-sign proxy is the closest
+ * derivable signal.
+ */
+export function computeCumulativeStats(closedTrades: ClosedTradeResult[]): CumulativeStats {
+  const n = closedTrades.length;
+  if (n === 0) {
+    return { closedTradeCount: 0, winRate: null, targetHitRate: null, meanR: null, sumR: null };
+  }
+  const withR = closedTrades.filter((t): t is ClosedTradeResult & { rMultiple: number } =>
+    t.rMultiple !== null
+  );
+  const winners = withR.filter((t) => t.rMultiple > 0).length;
+  const targetHits = closedTrades.filter(
+    (t) => t.exitReason === "hourly_bracket_exit" && t.rMultiple !== null && t.rMultiple > 0,
+  ).length;
+  const sumR = withR.length > 0 ? withR.reduce((s, t) => s + t.rMultiple, 0) : null;
+  const meanR = withR.length > 0 && sumR !== null ? sumR / withR.length : null;
+
+  return {
+    closedTradeCount: n,
+    winRate: winners / n,
+    targetHitRate: targetHits / n,
+    meanR,
+    sumR,
+  };
+}
