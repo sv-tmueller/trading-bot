@@ -606,7 +606,7 @@ export const DEFAULT_PROPOSAL_CANDIDATES: ProposalCandidate[] = [
         ((s.targetHitRate ?? 0) * 100).toFixed(1)
       }% over N=${s.closedTradeCount} trades, below the ${
         (TARGET_HIT_RATE_FLOOR * 100).toFixed(0)
-      }% floor)`,
+      }% floor; minimum sample N>=${PROPOSAL_MIN_CLOSED_TRADES})`,
   },
 ];
 
@@ -697,6 +697,10 @@ function renderCumulativeSection(cumulative: CumulativeStats): string {
     `- Target-hit rate: ${fmtPct(cumulative.targetHitRate)}`,
     `- Mean R: ${fmtR(cumulative.meanR)}`,
     `- Sum R: ${fmtR(cumulative.sumR)}`,
+    "",
+    "Target-hit is a proxy (`hourly_bracket_exit` exit reason AND R > 0 -- the schema does not " +
+    "record which bracket leg filled), and both rates divide by a denominator that includes " +
+    "R-unavailable trades, so both are floors, not point estimates.",
   ].join("\n");
 }
 
@@ -833,6 +837,10 @@ export function renderJournal(data: RenderData): string {
     "---",
     "",
     "## Detector firing rates",
+    "",
+    "Only detectors that fired at least once this week are listed; a detector's absence means it " +
+    "did not fire this week, not that it was retired -- see `_shared/candlestick.ts` for the " +
+    "canonical registry.",
     "",
     detectorTable,
     "",

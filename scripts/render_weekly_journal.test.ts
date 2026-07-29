@@ -532,6 +532,9 @@ Deno.test("proposeParamChange: at N=30 with hit rate 0.24 -> exactly one proposa
   assertEquals(result.proposal!.includes("HOURLY_BRACKET_R_MULTIPLE"), true);
   assertEquals(result.proposal!.includes("N=30"), true);
   assertEquals(result.proposal!.includes("24"), true);
+  // finding 7: a fired proposal must also state the minimum sample the rule
+  // itself requires (spec §11), not just the N actually observed.
+  assertEquals(result.proposal!.includes(`minimum sample N>=${PROPOSAL_MIN_CLOSED_TRADES}`), true);
 });
 
 Deno.test("proposeParamChange: hit rate 0.30 (above the floor) -> no proposal", () => {
@@ -637,6 +640,9 @@ function buildFixtureRenderData(): RenderData {
 // rendered format as a regression guard.
 const GOLDEN_RENDER =
   "# Week 2026-W31 (Mon 27 Jul -- Fri 31 Jul 2026)\n\n---\n\n## Detector firing rates\n\n" +
+  "Only detectors that fired at least once this week are listed; a detector's absence means " +
+  "it did not fire this week, not that it was retired -- see `_shared/candlestick.ts` for " +
+  "the canonical registry.\n\n" +
   "| Detector | Fired | Scanned | Rate |\n|---|---|---|---|\n" +
   "| bullish_marubozu | 1 | 2 | 50.0% |\n\n---\n\n## Decisions\n\n- LONG: 1\n- SHORT: 0\n" +
   "- SKIP: 1\n\n---\n\n## Entries & exits (closed this week)\n\n" +
@@ -659,10 +665,36 @@ const GOLDEN_RENDER =
   "- Auto-paused events (`success:auto_paused`): _None._\n\n---\n\n" +
   "## Cumulative stats (since experiment start)\n\n- Closed trades (N): 30\n" +
   "- Win rate: 3.3%\n- Target-hit rate: 3.3%\n- Mean R: -0.90\n- Sum R: -27.00\n\n" +
+  "Target-hit is a proxy (`hourly_bracket_exit` exit reason AND R > 0 -- the schema does " +
+  "not record which bracket leg filled), and both rates divide by a denominator that " +
+  "includes R-unavailable trades, so both are floors, not point estimates.\n\n" +
   "## Proposal (PROPOSAL_RULE)\n\n" +
   "§7 HOURLY_BRACKET_R_MULTIPLE: 2 -> 3 (target hit rate 3.3% over N=30 trades, " +
-  "below the 25% floor)\n\n## Notes (operator)\n\n_None yet._\n\n---\n\n" +
+  "below the 25% floor; minimum sample N>=30)\n\n## Notes (operator)\n\n_None yet._\n\n---\n\n" +
   "**Trial counter (as of this run):** `hourly_param_trial_count` = 2\n";
+
+Deno.test("renderJournal: cumulative stats section discloses the target-hit proxy + floor-not-point-estimate methodology (finding 2)", () => {
+  const data = buildFixtureRenderData();
+  const rendered = renderJournal(data);
+  assertEquals(
+    rendered.includes(
+      "Target-hit is a proxy (`hourly_bracket_exit` exit reason AND R > 0",
+    ),
+    true,
+  );
+  assertEquals(rendered.includes("floors, not point estimates"), true);
+});
+
+Deno.test("renderJournal: detector section discloses that only fired detectors are listed (finding 6)", () => {
+  const data = buildFixtureRenderData();
+  const rendered = renderJournal(data);
+  assertEquals(
+    rendered.includes(
+      "Only detectors that fired at least once this week are listed",
+    ),
+    true,
+  );
+});
 
 Deno.test("renderJournal: golden full-document render from a mixed-activity fixture", () => {
   const data = buildFixtureRenderData();
