@@ -555,6 +555,34 @@ export async function getHourlyScanByEntryOrderId(
   return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
 }
 
+// #480 T2: pending-entry scan lookup, consumed by logic.ts reconcile()'s
+// recovery step. `decision IN ('LONG','SHORT') AND entry_order_id IS NULL` is
+// the exact signature the pre-order journal (logic.ts step 20) leaves behind
+// when every post-fill write group then exhausts its retries (T1) -- the
+// #480 failure window. Round-1 finding 9 (PR #477) removed the dead
+// getHourlyScanByBar helper (a bar-oriented read with no consumer); this one
+// deliberately reintroduces a bar-oriented read because it has a wired
+// consumer. .limit(50) is a defensive cap: the 5-day reconcile lookback at
+// hourly cadence cannot plausibly produce anywhere near that many pending
+// rows without the recovery step itself having long since caught up.
+export async function getHourlyScansPendingEntry(
+  sb: SupabaseClient,
+  symbol: string,
+  sinceIso: string,
+): Promise<HourlyScanRow[]> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .eq("symbol", symbol)
+    .in("decision", ["LONG", "SHORT"])
+    .is("entry_order_id", null)
+    .gte("bar_ts", sinceIso)
+    .order("bar_ts", { ascending: true })
+    .limit(50);
+  if (error) throw new Error(`getHourlyScansPendingEntry: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
+}
+
 // Bar-level concurrency guard (spec §8.4), mirroring claimTradeDate exactly
 // but keyed on (script_name, bar_ts) instead of (script_name, trade_date) --
 // an hourly bot placing multiple entries/day cannot be expressed at date
