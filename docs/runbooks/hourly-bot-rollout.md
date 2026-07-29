@@ -344,22 +344,17 @@ bar (`completed` keeps bars where `bar.timestamp + 1h <= now`, `logic.ts:629`) i
 `15:00Z` bar — its `[15:00Z, 16:00Z)` span has fully elapsed, while the `16:00Z` bar has
 not — so the candidate is `15:00Z`, not `14:00Z`, and `staleMinutes = (now - barEnd) /
 60000` (`logic.ts:684`) = `(16:07 - 16:00) = 7 < 10` — a scan that can place an order.
-**For that reason, merge outside RTH (before 13:00 UTC or after 21:00 UTC on a weekday,
+**For that reason, merge outside RTH (before 13:00 UTC or after 21:08 UTC on a weekday,
 or on a weekend) is not merely a recommendation here — it is the stated procedure**, so
 the first scan against this migration is a deliberately-observed one (§10), not
-whatever happens to be firing when CI finishes the push (see the note below on the one
-edge of that window worth knowing about). The bot scans SPY hourly on the Alpaca
+whatever happens to be firing when CI finishes the push. The window's upper bound is
+`21:08` rather than `21:00` because the schedule's last firing of any weekday is
+`21:07`; merging after `21:08` therefore leaves no firing behind it until the next
+weekday's `13:07`. The bot scans SPY hourly on the Alpaca
 **paper** account and can place a bracket order the first time every one of its own
 gates (paper-account guard, staleness, partial-bar, signal, sizing) passes. There is no
 further human step between merge and that first live scan — the gate list below is the
 only thing standing between "reviewed" and "trading."
-
-A merge at or after `21:05` UTC still sits inside the `13-21` cron window, so the
-`21:07` firing (two minutes later) still happens — it is just guaranteed to resolve
-`skipped:market_closed` under both EDT and EST session bounds, since RTH ends by
-`20:00Z` (EDT) or `21:00Z` (EST) at the latest. That firing is in fact the fastest way
-to observe §10's first-firing check deliberately, not a hazard — but don't be
-surprised by a scan two minutes after a late merge.
 
 **Merge gates — all eight checked off on #479 as of 2026-07-29 (T10's close):**
 
