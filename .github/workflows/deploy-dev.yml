@@ -57,7 +57,7 @@ jobs:
       # New function + old cron is fail-closed (clock gate / stale guard);
       # new cron + old function could trade on a partial bar during RTH.
       - name: Deploy functions (JWT-verified)
-        run: supabase functions deploy daily-check kill-switch --project-ref "$PROJECT_REF"
+        run: supabase functions deploy daily-check kill-switch hourly-check --project-ref "$PROJECT_REF"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
