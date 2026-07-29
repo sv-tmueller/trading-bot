@@ -920,6 +920,72 @@ Deno.test("assertPaperAccount: checkGuard fires first under CLAUDE_AGENT_NO_BROK
   }
 });
 
+// #479 T3: a missing account_number must throw the same as an unconfirmed
+// marker -- there is no representable "trust it anyway" branch. Retained
+// (not ignored): this is already true of today's unconditional throw and
+// must stay true once the real marker check replaces it.
+Deno.test("assertPaperAccount: throws when account_number is missing entirely", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: "100000" })));
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// #479 T3: a non-string account_number (wrong type from the broker) must
+// also throw, not be coerced/truthy-checked into passing.
+Deno.test("assertPaperAccount: throws when account_number is a non-string type", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: 12345, equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// #479 T3 (spec §8.3 Layer B pin, gated on the T1 capture handoff posted on
+// #479): this test documents the TARGET behavior once a real /v2/account
+// response has been captured and the marker confirmed -- it is written
+// against the spec's own hypothesis (§8.3: "the commonly-cited marker is an
+// account_number prefixed PA"), not a confirmed fact. Run un-ignored during
+// development: it fails against today's unconditional-throw
+// assertPaperAccount() (true red), which is the point -- it proves this test
+// exercises real behavior, not a tautology. It ships IGNORED because the
+// capture evidence has not returned yet (see the "Capture evidence: paper API
+// shapes (T1)" comment gate on #479); a follow-up change implements the real
+// marker check against the confirmed shape and un-ignores this test. AC:
+// pending-operator until then.
+Deno.test({
+  name:
+    "assertPaperAccount: [PENDING #479 T1 capture] a confirmed paper marker resolves to {equity}",
+  ignore: true,
+  fn: async () => {
+    setKeys();
+    liftBrokerGuard();
+    const restore = stubFetch(() =>
+      Promise.resolve(jsonResponse({ account_number: "PA3898644933991234", equity: "100000" }))
+    );
+    try {
+      const c = createAlpacaClient({ paperOnly: true });
+      assertEquals(await c.assertPaperAccount(), { equity: 100000 });
+    } finally {
+      restore();
+      clearKeys();
+    }
+  },
+});
+
 // ---------------------------------------------------------------------------
 // #475 T6: order helpers (spec §7) -- placeBracketOrder, placeOcoExitPair,
 // cancelOrder, getAssetShortability.

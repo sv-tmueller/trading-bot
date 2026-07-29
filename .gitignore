@@ -39,3 +39,8 @@ supabase/.branches/
 # Exported live trading history (#403) — CSVs from scripts/export_live_history.sh,
 # consumed by backtest/run_live_divergence.py. Account data; never committed.
 /live_export/
+
+# Local Alpaca paper-account API capture config (#479 T2) — ALPACA_API_KEY/
+# ALPACA_SECRET_KEY for scripts/capture_alpaca_shapes.sh's four read-only
+# GETs. Paper keys only; never committed.
+.env.capture
