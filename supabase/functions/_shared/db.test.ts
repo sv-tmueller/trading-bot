@@ -13,6 +13,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getHourlyScanByEntryOrderId,
+  getHourlyScansPendingEntry,
   getLastTrade,
   getLatestAuditForScript,
   getLatestEquitySnapshot,
@@ -934,6 +935,155 @@ Deno.test({
       "bar_ts",
       "2030-01-02T14:00:00Z",
     );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #480 T2: getHourlyScansPendingEntry -- pending-entry scan lookup consumed by
+// the reconciliation recovery step (logic.ts reconcile()). Round-1 finding 9
+// removed the dead getHourlyScanByBar helper (a bar-oriented read with no
+// consumer); this one deliberately reintroduces a bar-oriented read because
+// it has a wired consumer.
+// ---------------------------------------------------------------------------
+
+function pendingEntryBuilder(
+  response: { data: unknown[] | null; error: { message: string } | null },
+) {
+  const calls: {
+    eq?: [string, unknown];
+    in?: [string, unknown[]];
+    is?: [string, unknown];
+    gte?: [string, unknown];
+    order?: [string, unknown];
+  } = {};
+  // deno-lint-ignore no-explicit-any
+  const builder: any = {
+    select: () => builder,
+    eq: (col: string, val: unknown) => {
+      calls.eq = [col, val];
+      return builder;
+    },
+    in: (col: string, vals: unknown[]) => {
+      calls.in = [col, vals];
+      return builder;
+    },
+    is: (col: string, val: unknown) => {
+      calls.is = [col, val];
+      return builder;
+    },
+    gte: (col: string, val: unknown) => {
+      calls.gte = [col, val];
+      return builder;
+    },
+    order: (col: string, opts: unknown) => {
+      calls.order = [col, opts];
+      return builder;
+    },
+    limit: () => Promise.resolve(response),
+  };
+  return { calls, sb: { from: () => builder } };
+}
+
+Deno.test("getHourlyScansPendingEntry: selects LONG/SHORT rows with entry_order_id IS NULL, ascending bar_ts, since the cutoff", async () => {
+  const { calls, sb } = pendingEntryBuilder({
+    data: [
+      {
+        symbol: "SPY",
+        bar_ts: "2026-07-27T14:00:00Z",
+        decision: "LONG",
+        skip_reason: null,
+        detectors_fired: ["hammer"],
+        context_mode: "none",
+        entry_ref_price: "550.1000",
+        stop_price: "547.7500",
+        target_price: "554.5500",
+        risk_per_share: "2.3500",
+        equity_usd: "100000.0000",
+        qty: "18",
+        entry_order_id: null,
+      },
+    ],
+    error: null,
+  });
+  // deno-lint-ignore no-explicit-any
+  const rows = await getHourlyScansPendingEntry(sb as any, "SPY", "2026-07-22T00:00:00Z");
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].bar_ts, "2026-07-27T14:00:00Z");
+  assertEquals(rows[0].entry_order_id, null);
+  assertEquals(calls.eq, ["symbol", "SPY"]);
+  assertEquals(calls.in, ["decision", ["LONG", "SHORT"]]);
+  assertEquals(calls.is, ["entry_order_id", null]);
+  assertEquals(calls.gte, ["bar_ts", "2026-07-22T00:00:00Z"]);
+  assertEquals(calls.order, ["bar_ts", { ascending: true }]);
+});
+
+Deno.test("getHourlyScansPendingEntry: throws on a DB error", async () => {
+  const { sb } = pendingEntryBuilder({ data: null, error: { message: "boom" } });
+  await assertRejects(
+    // deno-lint-ignore no-explicit-any
+    () => getHourlyScansPendingEntry(sb as any, "SPY", "2026-07-22T00:00:00Z"),
+    Error,
+    "getHourlyScansPendingEntry",
+  );
+});
+
+Deno.test({
+  name:
+    "getHourlyScansPendingEntry: real-Postgres round trip -- only LONG/SHORT rows with a null entry_order_id, ascending bar_ts",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const barTsPending = "2030-01-03T15:00:00Z";
+    const barTsJournaled = "2030-01-03T14:00:00Z";
+    const barTsSkip = "2030-01-03T16:00:00Z";
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      barTsPending,
+      barTsJournaled,
+      barTsSkip,
+    ]);
+    const base = {
+      symbol: "SPY",
+      skipReason: null,
+      detectorsFired: [],
+      contextMode: "none",
+      entryRefPrice: 550,
+      stopPrice: 547,
+      targetPrice: 554,
+      riskPerShare: 3,
+      equityUsd: 100000,
+      qty: 18,
+    };
+    await upsertHourlyScan(sb, {
+      ...base,
+      barTs: barTsPending,
+      decision: "LONG",
+      entryOrderId: null,
+    });
+    await upsertHourlyScan(sb, {
+      ...base,
+      barTs: barTsJournaled,
+      decision: "LONG",
+      entryOrderId: "o1",
+    });
+    await upsertHourlyScan(sb, {
+      ...base,
+      barTs: barTsSkip,
+      decision: "SKIP",
+      skipReason: "no_detectors_fired",
+      entryRefPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      riskPerShare: null,
+      qty: 0,
+      entryOrderId: null,
+    });
+    const rows = await getHourlyScansPendingEntry(sb, "SPY", "2030-01-01T00:00:00Z");
+    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [barTsPending]);
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      barTsPending,
+      barTsJournaled,
+      barTsSkip,
+    ]);
   },
 });
 

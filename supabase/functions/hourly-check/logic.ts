@@ -32,6 +32,48 @@ const EXIT_REASONS: string[] = [
   "hourly_kill_switch",
 ];
 
+// #480 T1: step 20's post-fill writes (kill-switch clears -> insertTrade ->
+// provenance journal) used to abort on the first throw, leaving a filled
+// entry with no trades row and no entry_order_id (PR #477 round-2 review
+// finding 2 + corollary). POST_FILL_WRITE_ATTEMPTS bounds an immediate
+// (no-sleep) retry per write group; a group's exhaustion degrades the run's
+// outcome instead of throwing, so the remaining groups still get their own
+// attempt. Not a config setting -- fixed, like EQUITY_FLOOR_PCT above.
+const POST_FILL_WRITE_ATTEMPTS = 3;
+
+/**
+ * Retries `fn` up to POST_FILL_WRITE_ATTEMPTS times (no backoff -- these are
+ * fast, independent DB writes, not broker calls). Returns true once `fn`
+ * resolves; false (after a `console.warn`) once every attempt has thrown.
+ *
+ * Accepted residual (should-fix round 1 finding 4): the `insert_trade`
+ * group is the one non-idempotent retried write -- `trades` has no unique
+ * index on broker_order_id -- so a response failure after a commit (or two
+ * concurrent runs racing, since recovery runs ahead of claimBar) can retry
+ * into a duplicate row for the same fill. This is fail-closed for gate 14's
+ * day cap (an extra counted entry only makes the cap stricter) and inert
+ * for gate 13's cooldown (keyed off the latest fill_time, unaffected by a
+ * duplicate), but it does duplicate a row in the ledger #481 renders. No
+ * schema change ships in this package; a unique index on broker_order_id is
+ * the follow-up fix.
+ */
+async function tryPostFillWrite(label: string, fn: () => Promise<unknown>): Promise<boolean> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= POST_FILL_WRITE_ATTEMPTS; attempt++) {
+    try {
+      await fn();
+      return true;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  console.warn(
+    `hourly-check: post-fill write '${label}' failed after ${POST_FILL_WRITE_ATTEMPTS} ` +
+      `attempts: ${String((lastErr as Error)?.message ?? lastErr)}`,
+  );
+  return false;
+}
+
 export interface HourlyCheckDeps {
   config: HourlyConfig;
   now: () => Date;
@@ -88,6 +130,9 @@ export interface HourlyCheckDeps {
       entryOrderId: string | null;
     }) => Promise<void>;
     getHourlyScanByEntryOrderId: (symbol: string, orderId: string) => Promise<HourlyScanRow | null>;
+    // #480 T2: pending-entry scans (decision LONG/SHORT, entry_order_id NULL)
+    // consumed by reconcile()'s recovery step.
+    getHourlyScansPendingEntry: (symbol: string, sinceIso: string) => Promise<HourlyScanRow[]>;
     claimBar: (scriptName: string, barTs: string) => Promise<boolean>;
     insertTrade: (p: {
       symbol: string;
@@ -247,7 +292,139 @@ async function reconcile(
   // Bounded lookback: a position can never span more than a few sessions
   // given the flatten-scan rule closes everything by session end.
   const lookbackIso = new Date(deps.now().getTime() - 5 * 24 * HOUR_MS).toISOString();
+
+  // Trades snapshot fetched once; recovery (step 0 below) augments this array
+  // in-memory on adoption instead of triggering a second DB read (#480 T3).
   const allSymbolTrades = (await db.getTradesSince(lookbackIso)).filter((t) => t.symbol === symbol);
+
+  // Memoized broker read (nit 7): both the recovery step below and the
+  // exit-fill discovery step further down query the SAME window
+  // (`lookbackIso`); when recovery's adoption makes entryConsideredOpen true
+  // in this same run, exit-fill discovery would otherwise issue an
+  // identical second broker read.
+  let discoveredFillsPromise: Promise<ClosedOrderFill[]> | null = null;
+  const getDiscoveredFills = (): Promise<ClosedOrderFill[]> => {
+    if (!discoveredFillsPromise) {
+      discoveredFillsPromise = alpaca.listFilledOrdersSince(symbol, lookbackIso);
+    }
+    return discoveredFillsPromise;
+  };
+
+  // 0. Recovery (#480 T3): closes the residual window T1's bounded retry
+  // cannot fully eliminate. A pre-order journal (logic.ts step 20) commits
+  // decision IN ('LONG','SHORT') with entry_order_id NULL; if every post-fill
+  // write group then exhausted its retries, that row is the exact signature
+  // left behind. Match each such pending row against a broker fill that is
+  // (a) on the matching side, (b) inside a [bar_ts+1h, bar_ts+2h) window
+  // (the fill lands roughly an hour after the signal bar closes -- see the
+  // spec's own bar-to-fill timing; should-fix finding 5 -- this window is
+  // deliberately generous relative to the ~bar+1h07m real fill time under
+  // the pinned cron minute, and is only INFORMALLY coupled to
+  // HOURLY_STALENESS_TOLERANCE_MIN (validated up to 60): raising that
+  // tolerance beyond roughly 50 minutes requires revisiting this window.
+  // Deriving the window from the tolerance was considered and rejected --
+  // at the default tolerance of 10 it would leave about three minutes of
+  // slack and start excluding real fills; a recovery window must fail wide
+  // (disclosed residual below), never narrow (silent non-recovery)), and
+  // (c) either unjournaled OR already journaled under THIS row's own entry
+  // reason (must-fix round 1 finding 2 -- a fill journaled under an EXIT
+  // reason must never be adopted as entry provenance; the "journaled under
+  // its own reason" half keeps a partial-fault replay working, where the
+  // insert_trade group already landed the row before the journal group
+  // failed). Adopt the earliest eligible match at most once, and restore
+  // entry_order_id. Idempotent/convergent: a DB failure during recovery
+  // itself just retries next scan (should-fix finding 3 -- the whole step is
+  // additionally wrapped below so a bookkeeping-only throw here can never
+  // abort the scan ahead of this function's protection duties). Documented
+  // residual (nit 6): any other same-side fill on the symbol not placed by
+  // this bar's own entry path (manual, another tool, ...) inside the same
+  // window would also be adopted here -- out of contract for the paper
+  // experiment.
+  //
+  // Deliberately NEVER clears hourly_kill_switch_* here. §5's atomic
+  // clear+enter is a decision-scoped act (this bar's own decision clearing
+  // the flag it just satisfied), not a fill-scoped one a later recovery pass
+  // can safely infer after #474's writer may have re-armed the flag on the
+  // recovered position itself in between; PR #477's round-2 review already
+  // ratified "stale until a later fully-successful opposite-side entry" as
+  // fail-closed, and this recovery step pins that instead of silently
+  // changing it (#480 T5). The clear itself still only ever happens at step
+  // 20, immediately after THAT scan's own successful entry.
+  try {
+    const pending = await db.getHourlyScansPendingEntry(symbol, lookbackIso);
+    if (pending.length > 0) {
+      const discovered = await getDiscoveredFills();
+      const adoptedOrderIds = new Set<string>();
+      for (const row of pending) {
+        const wantSide = row.decision === "LONG" ? "BUY" : "SELL";
+        const reason = row.decision === "LONG" ? "hourly_long_entry" : "hourly_short_entry";
+        const barStartMs = new Date(row.bar_ts).getTime();
+        const windowStart = barStartMs + HOUR_MS;
+        const windowEnd = barStartMs + 2 * HOUR_MS;
+        const match = discovered
+          .filter((f) => f.side === wantSide)
+          .filter((f) => !adoptedOrderIds.has(f.orderId))
+          .filter((f) => {
+            const fillMs = new Date(f.fillTime).getTime();
+            return fillMs >= windowStart && fillMs < windowEnd;
+          })
+          .filter((f) => {
+            const existing = allSymbolTrades.find((t) => t.broker_order_id === f.orderId);
+            return existing === undefined || existing.reason === reason;
+          })
+          .sort((a, b) => a.fillTime.localeCompare(b.fillTime))[0];
+        if (!match) continue;
+        adoptedOrderIds.add(match.orderId);
+        const alreadyJournaled = allSymbolTrades.some((t) => t.broker_order_id === match.orderId);
+        if (!alreadyJournaled) {
+          await db.insertTrade({
+            symbol,
+            side: match.side,
+            qty: match.qty,
+            fillPrice: match.fillPrice,
+            fillTime: match.fillTime,
+            brokerOrderId: match.orderId,
+            reason,
+          });
+          allSymbolTrades.push({
+            symbol,
+            side: match.side,
+            qty: match.qty,
+            fill_price: match.fillPrice,
+            fill_time: match.fillTime,
+            reason,
+            broker_order_id: match.orderId,
+          });
+        }
+        await db.upsertHourlyScan({
+          symbol: row.symbol,
+          barTs: row.bar_ts,
+          decision: row.decision,
+          skipReason: row.skip_reason,
+          detectorsFired: row.detectors_fired,
+          contextMode: row.context_mode,
+          entryRefPrice: row.entry_ref_price,
+          stopPrice: row.stop_price,
+          targetPrice: row.target_price,
+          riskPerShare: row.risk_per_share,
+          equityUsd: row.equity_usd,
+          qty: row.qty,
+          entryOrderId: match.orderId,
+        });
+      }
+    }
+  } catch (e) {
+    // Should-fix round 1 finding 3: recovery is a bookkeeping convenience,
+    // not a protection duty -- it must never abort the scan ahead of the
+    // naked-position rule and the flatten close-out below. Recovery is
+    // convergent, so swallowing here just means the next scan retries.
+    console.warn(
+      `hourly-check: recovery step failed, skipping this scan (will retry next scan): ${
+        String((e as Error)?.message ?? e)
+      }`,
+    );
+  }
+
   const hourlyTrades = allSymbolTrades.filter(
     (t) => ENTRY_REASONS.includes(t.reason) || EXIT_REASONS.includes(t.reason),
   );
@@ -267,7 +444,7 @@ async function reconcile(
   // against ALL journaled trades for the symbol (should-fix finding 5:
   // regardless of reason, so a panic_cli fill is never re-journaled here).
   if (entryConsideredOpen && lastEntry) {
-    const discovered = await alpaca.listFilledOrdersSince(symbol, lookbackIso);
+    const discovered = await getDiscoveredFills();
     for (const f of discovered) {
       if (f.orderId === lastEntry.broker_order_id) continue; // the entry itself
       if (allSymbolTrades.some((t) => t.broker_order_id === f.orderId)) continue; // already recorded
@@ -413,6 +590,16 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // Every outcome from here on is routed through `done()` so a
     // superseding reconciliation outcome (success:legs_replaced) always
     // wins over the run's ordinary outcome, per spec §7 finding 3.
+    //
+    // Nit 8 (determinism on the failure path): if `supersede` were ever set
+    // AND step 20 below degraded, `actual` would become the supersede
+    // outcome while `notes` still carries the degraded-group enumeration --
+    // outcome and notes could then disagree. Practically unreachable today:
+    // a supersede requires reconcile() to find a naked, re-leggable position
+    // at the TOP of this same run, which means gate 12 (position_open) skips
+    // this run out before step 20 ever executes. Pre-existing mechanism, not
+    // touched by this package -- noted because determinism on the failure
+    // path is an acceptance criterion.
     const done = async (outcome: string, notes?: string): Promise<string> => {
       const actual = supersede ?? outcome;
       await finish(actual, notes);
@@ -724,6 +911,16 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       reason = "hourly_short_entry";
     }
 
+    // 20b. Post-fill writes (#480 T1): three independent groups, each bounded-
+    // retried via tryPostFillWrite -- a group's exhaustion no longer aborts
+    // the remaining groups (PR #477 round-2 review finding 2 + corollary).
+    // Fixed order for both execution and the degraded-outcome notes below:
+    // kill_switch_clear, insert_trade, journal. A reconciliation-side
+    // recovery step (T3) closes the residual window this can't fully cover
+    // on its own (a group that exhausts all attempts still leaves the DB
+    // write undone until the next scan's recovery pass).
+    const failedGroups: string[] = [];
+
     // Atomic clear+enter (spec §5; lead ruling, fix round 1 finding 4): the
     // three hourly_kill_switch_* keys clear only now that the entry order has
     // actually been placed and filled -- never earlier, so a scan that later
@@ -731,34 +928,70 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // the flag untouched. "" matches bot_config.value's NOT NULL column (the
     // only representable "cleared" string; #474's writer never clears these
     // keys itself, so there is no other precedent to diverge from -- nit 12).
+    // All three writes are one retried unit, key order active -> side ->
+    // fired_at, so a partial clear (if the group is abandoned mid-retry by a
+    // crash rather than a caught error) leaves the flag fully inert.
     if (shouldClearKillSwitch) {
-      await db.setConfig("hourly_kill_switch_active", "false");
-      await db.setConfig("hourly_kill_switch_side", "");
-      await db.setConfig("hourly_kill_switch_fired_at", "");
+      const clearOk = await tryPostFillWrite("kill_switch_clear", async () => {
+        await db.setConfig("hourly_kill_switch_active", "false");
+        await db.setConfig("hourly_kill_switch_side", "");
+        await db.setConfig("hourly_kill_switch_fired_at", "");
+      });
+      if (!clearOk) failedGroups.push("kill_switch_clear");
     }
 
-    await db.insertTrade({
-      symbol,
-      side: action === "LONG" ? "BUY" : "SELL",
-      qty: fill.qty,
-      fillPrice: fill.fillPrice,
-      fillTime: fill.fillTime,
-      brokerOrderId: fill.orderId,
-      reason,
-    });
+    const insertOk = await tryPostFillWrite("insert_trade", () =>
+      db.insertTrade({
+        symbol,
+        side: action === "LONG" ? "BUY" : "SELL",
+        qty: fill.qty,
+        fillPrice: fill.fillPrice,
+        fillTime: fill.fillTime,
+        brokerOrderId: fill.orderId,
+        reason,
+      }));
+    if (!insertOk) failedGroups.push("insert_trade");
 
-    await journal({
-      finalDecision: action,
-      finalSkipReason: null,
-      qty: sizing.qty,
-      entryRefPrice: entryRef,
-      stopPrice,
-      targetPrice,
-      riskPerShare: sizing.stopDistance,
-      entryOrderId: fill.orderId,
-    });
+    // Must-fix round 1 finding 1: the journal group stamps entry_order_id on
+    // the hourly_scans row -- only run it once the trades row has actually
+    // landed. Stamping entry_order_id on a row with no trades row would
+    // destroy the exact signature recovery (T3) depends on
+    // (decision IN ('LONG','SHORT') AND entry_order_id IS NULL), leaving the
+    // scan permanently unrecoverable: entryConsideredOpen would read false
+    // (no lastEntry), so exit-leg discovery never runs, the day cap
+    // undercounts, cooldown never fires, and a later leg loss flattens at
+    // market instead of re-legging (no lastEntry to read provenance from).
+    // Skipping the stamp costs nothing -- entry_order_id's only reader is
+    // reached via lastEntry, which does not exist in that state. Still
+    // recorded in failedGroups (without being attempted) so the notes
+    // enumeration stays deterministic regardless of whether insert_trade
+    // failed on its own or journal would also have failed independently.
+    if (insertOk) {
+      const journalOk = await tryPostFillWrite("journal", () =>
+        journal({
+          finalDecision: action,
+          finalSkipReason: null,
+          qty: sizing.qty,
+          entryRefPrice: entryRef,
+          stopPrice,
+          targetPrice,
+          riskPerShare: sizing.stopDistance,
+          entryOrderId: fill.orderId,
+        }));
+      if (!journalOk) failedGroups.push("journal");
+    } else {
+      failedGroups.push("journal");
+    }
 
-    return await done("success");
+    if (failedGroups.length === 0) {
+      return await done("success");
+    }
+    // The broker_order_id is the forensic breadcrumb: it lets a human (or the
+    // T3 recovery step) locate the fill that a degraded write left dangling.
+    return await done(
+      "success:journal_degraded",
+      `failed=[${failedGroups.join(",")}] order=${fill.orderId}`,
+    );
   } catch (e) {
     const err = e as Error;
     if (err instanceof AlpacaError) {
