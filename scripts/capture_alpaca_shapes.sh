@@ -62,6 +62,11 @@ if [ -z "${ALPACA_API_KEY:-}" ] || [ -z "${ALPACA_SECRET_KEY:-}" ]; then
   exit 1
 fi
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required (sanitization depends on it) -- aborting before any network call" >&2
+  exit 1
+fi
+
 PASS_COUNT=0
 FAIL_COUNT=0
 
