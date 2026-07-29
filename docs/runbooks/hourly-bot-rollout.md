@@ -32,10 +32,10 @@ lead-ratified rulings on #478).
   on their next slot — plus write `trades`/`audit_log`/`hourly_scans` rows into the
   live paper journal #481's aggregator reads. See #485 for the follow-up that hardens
   this mechanically; until it lands this is a procedural rule only.
-- This PR (PR-A) ships **no cron activation**. `0012_hourly_scans.sql`'s
+- PR-A (#484) shipped **no cron activation**. `0012_hourly_scans.sql`'s
   `hourly-check` cron block is fully commented out (no `cron.job` row of any kind);
-  `0013` (this PR) only retires daily-check's entry crons. Activation is `0014`, a
-  separate PR-B (§9), merged last, behind eight checked gates (§9).
+  `0013` (also PR-A, #484) only retires daily-check's entry crons. Activation is
+  `0014`, a separate PR-B (§9), merged last, behind eight checked gates (§9).
 
 ## §2 Already-done ledger
 
@@ -49,7 +49,7 @@ lead-ratified rulings on #478).
 | `hourly-check` wired into `deploy-dev.yml`'s JWT-verified deploy step | Still pending — blocked on the workflow OAuth scope (see PR #484's Deviation section). **Consequence while pending:** every merge touching `hourly-check` or its shared dependencies requires a fresh manual route-(c) redeploy (row above) to stay current — CI does not do this automatically until this hunk lands, which is why the route-(c) freshness hazard exists at all | `.github/workflows/deploy-dev.yml`; hunk staged, not applied — see §3 |
 | `0013_retire_daily_check_cron.sql` | Done, merged (#479 T6), **and confirmed applied** — `deploy-dev.yml`'s "Apply migrations" step succeeded on the push run for commit `d08a25d` (the PR-A/#484 merge commit), unscheduling `daily-check-1337`/`daily-check-1437` on `qdaxxsuicyiscdvsdowc` | see §6's precondition; the "Capture evidence" comment on #479 (2026-07-29) |
 | Capture evidence (T1): four read-only paper API shape captures | Done — 4/4 PASS, 0/4 FAIL | §12 appendix; "Capture evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on #479 |
-| Layer-B paper-account marker pin (spec §8.3) | **Capture done** (row above); **the pin itself is implemented in PR #489, not yet merged** — on `main` today, `assertPaperAccount()` still ships with its pre-pin unconditional fail-closed throw. Do not treat Layer B as enforced against the real marker until #489 merges | §12 appendix; PR #489 |
+| Layer-B paper-account marker pin (spec §8.3) | **Capture done** (row above). **Enforced against the real marker from PR #489's merge commit onward** — every `alpaca.ts` before that commit (including PR-A's, #484) carries the pre-pin unconditional fail-closed throw; every commit from #489's merge forward carries the confirmed-`"PA"`-prefix check. To find out which one a given deployed build has, check that build's commit against #489's merge commit — the same check as the route-(c) drift-warning row above — rather than assuming from this row's age | §12 appendix; PR #489 |
 | §4 secrets set on `qdaxxsuicyiscdvsdowc` (incl. `HOURLY_SHORTS_ENABLED=false`, `HOURLY_BOT_PAPER_ONLY=true`) | Done | "Capture evidence" comment on #479 (2026-07-29) |
 | §5 baseline (`hourly_experiment_start_equity`) | Done — `1017330.61`, after correcting a silent `insert ... on conflict do nothing` no-op that had initially left a stale pre-existing `100000.00` row in place (a wrong baseline parses fine and is invisible, unlike a missing one; follow-up filed) | "Capture evidence" comment on #479 (2026-07-29) |
 | Residual-position check (§5 precondition: no leftover UPRO position) | Done — `GET /v2/positions` returned `[]`, consistent with the 2026-07-27 operator liquidation | #465; "Capture evidence" comment on #479 (2026-07-29) |
@@ -61,15 +61,16 @@ cited above.
 
 ## §3 Deploy order
 
-`0013` ships in this PR and applies automatically to `qdaxxsuicyiscdvsdowc` on merge,
-via `deploy-dev.yml`'s existing order. **The `hourly-check` function deploy wiring
-does NOT ship in this PR.** The intended one-line hunk to
-`.github/workflows/deploy-dev.yml` could not be pushed from the PR-A session (the
-repo credential lacks the GitHub `workflow` OAuth scope; see PR #484's Deviation
-section) — `deploy-dev.yml` in the merged tree is byte-identical to `origin/main` and
-still deploys `daily-check kill-switch` only. Do not assume CI has deployed
-`hourly-check` on the strength of this PR merging; confirm it via the explicit gate
-in §9 before relying on it.
+`0013` shipped in PR-A (#484) and applied automatically to `qdaxxsuicyiscdvsdowc` on
+merge, via `deploy-dev.yml`'s existing order — confirmed by the `d08a25d` push run's
+"Apply migrations" step (§2, the `0013_retire_daily_check_cron.sql` row). **The
+`hourly-check` function deploy wiring did NOT ship in PR-A.** The intended one-line
+hunk to `.github/workflows/deploy-dev.yml` could not be pushed from the PR-A session
+(the repo credential lacks the GitHub `workflow` OAuth scope; see PR #484's Deviation
+section) — `deploy-dev.yml` on `origin/main` today is still byte-identical to that
+merged tree and still deploys `daily-check kill-switch` only. Do not assume CI has
+deployed `hourly-check` on the strength of any single PR (PR-A or #489) merging;
+confirm it via the explicit gate in §9 before relying on it.
 
 **Manual step required (operator action, does not happen automatically on merge):**
 apply the following hunk to `.github/workflows/deploy-dev.yml` by one of:
@@ -205,16 +206,22 @@ this point on).
 
 ## §7 Layer-B live smoke (T9)
 
-**Dependency, stated plainly:** this smoke test is only meaningful **after** the
-Layer-B pin has merged **and** the deployed `hourly-check` function has been rebuilt
-from that merge. The T1 capture (§12 appendix) is done, but the pin itself — the code
-change to `assertPaperAccount()` — is PR #489, **not yet merged as of this writing**;
-PR-A (#484) shipped only the pre-pin unconditional fail-closed throw, which is what
-both `main` and the currently-deployed function (route (c), built from `3afdaa9`, §2)
-still carry. Running the smoke test now will legitimately return
-`error:PaperGuardFailed` instead of the outcome below. That is expected, not a bug
-report; it means "come back after #489 merges and `hourly-check` is redeployed," not
-"something is broken."
+**Dependency, stated plainly:** this smoke test is only meaningful once the
+**deployed** `hourly-check` build postdates the Layer-B pin's merge (PR #489). The T1
+capture (§12 appendix) is done, but Layer B is enforced against the real marker only
+from #489's merge commit forward — every build before it (including PR-A's, #484)
+carries the pre-pin unconditional fail-closed throw. **Check the deployed function's
+build against #489's merge commit before running this** (the same check as §2's
+route-(c) drift-warning row) — don't assume either way from the date you're reading
+this runbook.
+
+- If the deployed build **predates** #489's merge: `error:PaperGuardFailed` is
+  expected here, not a bug report. It means "redeploy `hourly-check` from a build
+  that includes #489, then re-run this smoke test," not "something is broken."
+- If the deployed build **postdates** #489's merge and this still returns
+  `error:PaperGuardFailed`: that is a genuine Layer-B failure and an **incident** —
+  report it with the response body and the `audit_log` row, do not dismiss it as
+  the pre-merge case above.
 
 **Run outside RTH only.** The server-side function has no `CLAUDE_AGENT_NO_BROKER`
 (that guard only protects in-process/agent-spawned calls) — during RTH this curl is a

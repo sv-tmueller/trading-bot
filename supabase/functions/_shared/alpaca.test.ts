@@ -885,6 +885,47 @@ Deno.test("assertPaperAccount: fails closed on a non-PA account_number prefix", 
   }
 });
 
+// Reviewer round 1 finding 3 (nit): the suite pinned the discriminator with
+// one wholly-non-PA negative (above) and the positive, but nothing pinned
+// prefix ANCHORING specifically -- a regression to `.includes("PA")` instead
+// of `.startsWith("PA")` would pass every other test in this file while
+// silently accepting a live-style account number that merely contains "PA"
+// partway through. Locks in the anchoring behavior the tester verified via an
+// out-of-suite probe.
+Deno.test("assertPaperAccount: fails closed when account_number contains PA but does not start with it", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "XPA000000", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Reviewer round 1 finding 3 (nit): pins case sensitivity -- a regression to
+// a case-insensitive compare would pass every other test in this file while
+// silently accepting a lowercase "pa"-prefixed account number. Locks in the
+// case-sensitive behavior the tester verified via an out-of-suite probe.
+Deno.test("assertPaperAccount: fails closed on a lowercase 'pa' prefix (case-sensitive match)", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "pa123456", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 // Nit 11 (fix round 1): the raw account_number must never appear in the
 // failure message -- only a marker-prefix-masked form is diagnostically
 // useful, and this message can end up in logs/notifications. Uses a
