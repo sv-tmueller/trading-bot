@@ -52,6 +52,14 @@ export function parseWeekLabel(label: string): WeekId {
       `malformed week label, week out of range 01-53: ${JSON.stringify(label)}`,
     );
   }
+  const weeksInYear = isoWeeksInYear(isoYear);
+  if (isoWeek > weeksInYear) {
+    throw new WeekLabelError(
+      `malformed week label, ${isoYear} has only ${weeksInYear} ISO weeks: ${
+        JSON.stringify(label)
+      }`,
+    );
+  }
   return { isoYear, isoWeek };
 }
 
@@ -156,6 +164,16 @@ function isoWeekOfUtcDate(d: Date): WeekId {
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   const isoWeek = Math.ceil(((date.getTime() - yearStart.getTime()) / MS_PER_DAY + 1) / 7);
   return { isoYear: date.getUTCFullYear(), isoWeek };
+}
+
+/**
+ * The number of ISO weeks (52 or 53) in `isoYear` (finding 9, PR #482 fix
+ * round 1). 28 December always falls in that ISO year's last week by
+ * construction (ISO 8601's "the week containing the year's first Thursday"
+ * rule), so its ISO week number is the answer.
+ */
+function isoWeeksInYear(isoYear: number): number {
+  return isoWeekOfUtcDate(new Date(Date.UTC(isoYear, 11, 28))).isoWeek;
 }
 
 /**

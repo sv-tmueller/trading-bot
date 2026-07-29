@@ -82,6 +82,19 @@ Deno.test("parseWeekLabel: rejects a week number out of range", () => {
   assertThrows(() => parseWeekLabel("2026-W54"), Error, "week label");
 });
 
+Deno.test("parseWeekLabel: rejects W53 for an ISO year that only has 52 weeks (finding 9)", () => {
+  // 2025-01-01 is a Wednesday in a non-leap year -- 2025 has 52 ISO weeks.
+  // Without this guard, --week 2025-W53 silently rendered 2026-W01's window
+  // under a 2025-W53 filename.
+  assertThrows(() => parseWeekLabel("2025-W53"), Error, "52 ISO weeks");
+});
+
+Deno.test("parseWeekLabel: accepts W53 for an ISO year that genuinely has 53 weeks", () => {
+  // 2026-01-01 is a Thursday -- 2026 genuinely has 53 ISO weeks (hand-verified
+  // by the tester in PR #482 round 1).
+  assertEquals(parseWeekLabel("2026-W53"), { isoYear: 2026, isoWeek: 53 });
+});
+
 Deno.test("weekWindowUtc: a known mid-year EDT week", () => {
   // 2026-W31: Mon 27 Jul -- Fri 31 Jul 2026, matching docs/trading-journal/2026-W31.md's
   // own title. EDT (UTC-4): Monday 00:00 ET == 04:00 UTC.
