@@ -1,15 +1,24 @@
 -- Activate the hourly-check cron (#479 T11, PR-B). This is the one migration
--- that turns the hourly bot on: from the next weekday 13:07 UTC slot, this
--- job posts to hourly-check every hour during 13-21 UTC, Mon-Fri, and the
--- function can place a real (paper) bracket order once its own gates pass.
+-- that turns the hourly bot on: from the next :07 of any hour in the 13-21
+-- UTC window, Mon-Fri (within the hour if this migration applies during that
+-- window, not specifically the next day's 13:07 -- see the runbook's §9/§10
+-- correction), this job posts to hourly-check every hour, and the function
+-- can place a real (paper) bracket order once its own gates pass.
 --
 -- Uncomments the block 0012_hourly_scans.sql shipped fully commented out
 -- (decision C3's fallback -- no cron.job row of any kind existed until this
--- migration). Reproduced verbatim from that commented block; only the
--- surrounding do-block guard is new, added to match 0004_cron_idempotent.sql's
--- guarded unschedule-then-schedule pattern, so re-running this migration
--- (e.g. a second `supabase db push` with no changes) is a no-op rather than
--- an error on a job name that already exists.
+-- migration). The job name, schedule, URL expression, headers and body are
+-- reproduced verbatim from that commented block. Two things differ, both
+-- deliberately, so an auditor diffing the two blocks does not mistake either
+-- for a discrepancy: the dollar-quote delimiter is `$$` here instead of the
+-- source block's `$cron$` (cosmetic, no nested `$$` in the body to collide
+-- with); and 0012's trailing `update cron.job set active = false ...` line is
+-- not reproduced -- this migration activates the job, so shipping it
+-- pre-disabled would defeat the point. The surrounding do-block guard is new,
+-- added to match 0004_cron_idempotent.sql's guarded unschedule-then-schedule
+-- pattern, so re-running this migration (e.g. a second `supabase db push`
+-- with no changes) is a no-op rather than an error on a job name that
+-- already exists.
 --
 -- Minute :07 -- why it is correct, not merely "not on the kill-switch's */5
 -- grid":
