@@ -589,15 +589,15 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     return cancelled;
   }
 
-  // #475 T5 (spec §8.3 Layer B): guarded like a mutating call (no live
-  // network from an agent test session), then asserts the paper-only Layer A
-  // checks, then reads /v2/account once. The pinned "PA"-prefixed
-  // account_number marker is [to verify] against a real paper-account
-  // response -- this agent session had no paper credentials to capture one,
-  // so per the spec's own fallback this layer ships fail-closed: it always
-  // refuses to trade rather than proceed on an unverified assumption
-  // (disclosed in the PR). Replace the unconditional throw with the
-  // confirmed marker check once a real response has been captured.
+  // #475 T5 / #479 T3 (spec §8.3 Layer B): guarded like a mutating call (no
+  // live network from an agent test session), then asserts the paper-only
+  // Layer A checks, then reads /v2/account once. The pinned marker -- a
+  // string account_number starting with "PA" -- is confirmed against a real
+  // paper-account response captured by the operator (see the "Capture
+  // evidence — four read-only paper GETs (T1), operator-run 2026-07-29"
+  // comment on #479: account_number came back "PA****", sanitized to its
+  // 2-char prefix). Fail-closed is retained: missing, non-string, or
+  // non-"PA"-prefixed account_number still throws PaperGuardFailedError.
   async function assertPaperAccount(): Promise<{ equity: number }> {
     guardMutation("assertPaperAccount");
     const j = await tradeJson("/v2/account");
@@ -610,11 +610,14 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
     const maskedAccountNumber = rawAccountNumber === null
       ? null
       : rawAccountNumber.slice(0, 2) + "*".repeat(Math.max(rawAccountNumber.length - 2, 0));
-    throw new PaperGuardFailedError(
-      `Layer B paper-account marker not yet confirmed against a live /v2/account response ` +
-        `(spec §8.3 [to verify]) -- refusing to trade (fail-closed); ` +
-        `account_number=${JSON.stringify(maskedAccountNumber)}, equity=${equity}`,
-    );
+    if (rawAccountNumber === null || !rawAccountNumber.startsWith("PA")) {
+      throw new PaperGuardFailedError(
+        `Layer B paper-account marker check failed (spec §8.3, pinned from the #479 T1 capture: ` +
+          `account_number must be a string starting with "PA") -- refusing to trade (fail-closed); ` +
+          `account_number=${JSON.stringify(maskedAccountNumber)}, equity=${equity}`,
+      );
+    }
+    return { equity };
   }
 
   return {

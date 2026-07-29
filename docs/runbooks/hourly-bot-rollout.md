@@ -12,9 +12,11 @@ lead-ratified rulings on #478).
   runbook-driven decision (`docs/runbooks/mvp2-deploy-and-decommission.md`) that has
   never happened for either bot.
 - **`HOURLY_SHORTS_ENABLED=false` is non-negotiable for this rollout.** The
-  `/v2/assets/SPY` shortability fields are not yet confirmed against a live response
-  (§12 appendix); shorts stay disabled until that capture lands and a follow-up change
-  flips the flag deliberately. Do not set this to `true` as part of this runbook.
+  `/v2/assets/SPY` shortability fields **are confirmed** against a live paper response
+  (§12 appendix, row 4 — `shortable: true`, `easy_to_borrow: true` for SPY itself), so
+  this is **not** a capability gap; the flag stays `false` as the batch's own standing
+  decision, independent of SPY being shortable. Do not set this to `true` as part of
+  this runbook.
 - **`bot_config.paused` starts `true`** (repo-facts baseline, #479) and must stay
   `true` until migration `0013_retire_daily_check_cron.sql` has been applied — see the
   red-letter precondition in §6. Resuming before 0013 re-arms the retired daily-check
@@ -30,10 +32,10 @@ lead-ratified rulings on #478).
   on their next slot — plus write `trades`/`audit_log`/`hourly_scans` rows into the
   live paper journal #481's aggregator reads. See #485 for the follow-up that hardens
   this mechanically; until it lands this is a procedural rule only.
-- This PR (PR-A) ships **no cron activation**. `0012_hourly_scans.sql`'s
+- PR-A (#484) shipped **no cron activation**. `0012_hourly_scans.sql`'s
   `hourly-check` cron block is fully commented out (no `cron.job` row of any kind);
-  `0013` (this PR) only retires daily-check's entry crons. Activation is `0014`, a
-  separate PR-B (§9), merged last, behind eight checked gates (§9).
+  `0013` (also PR-A, #484) only retires daily-check's entry crons. Activation is
+  `0014`, a separate PR-B (§9), merged last, behind eight checked gates (§9).
 
 ## §2 Already-done ledger
 
@@ -43,27 +45,32 @@ lead-ratified rulings on #478).
 | Design spec + ADR (hourly-candlestick bot) | Done | #466/#471 |
 | 14-detector candlestick port (`_shared/candlestick.ts`) | Done | #467/#470 |
 | Short-side safety-stack retrofit (kill-switch mirror, side-aware panic, `bar_claims`) | Done, merged, **deployed to dev** | #474/#476; CI run [30390432349](https://github.com/sv-tmueller/trading-bot/actions/runs/30390432349) (`deploy` job, "Apply migrations" step green) applied `0011_bar_claims.sql` to `qdaxxsuicyiscdvsdowc` |
-| `hourly-check` Edge Function (signal wiring, bracket orders, paper guard) | Code: Done, merged (#475/#477). Deployment: **Pending — blocked on the same workflow OAuth scope as row 47** (see PR #484's Deviation section) | #475/#477 for the code; CI run [30396497143](https://github.com/sv-tmueller/trading-bot/actions/runs/30396497143) (`deploy` job, "Apply migrations" step green) applied `0012_hourly_scans.sql` to `qdaxxsuicyiscdvsdowc` — that run's "Deploy functions" step ran `daily-check kill-switch` only, not `hourly-check` (§3) |
-| `hourly-check` wired into `deploy-dev.yml`'s JWT-verified deploy step | Pending — blocked on the workflow OAuth scope (see PR #484's Deviation section) | `.github/workflows/deploy-dev.yml`; hunk staged, not applied — see §3 |
-| `0013_retire_daily_check_cron.sql` | Done (this PR, #479 T6) | see §6's precondition |
-| Layer-B paper-guard marker pin | **Pending operator capture** | §12 appendix; `assertPaperAccount()` ships with its fail-closed throw intact |
+| `hourly-check` Edge Function (signal wiring, bracket orders, paper guard) | Code: Done, merged (#475/#477). Deployment: **Done, via manual route (c)** — `supabase functions deploy hourly-check` on 2026-07-29, present on `qdaxxsuicyiscdvsdowc` as version 1, `ACTIVE`, `verify_jwt: true`, built from local tree at commit `3afdaa9`. **Drift warning (route-(c) freshness hazard, PR #484's amended gate 2):** this snapshot is current only until the next merge touching `hourly-check` or its shared dependencies — **including this very PR** (#489, which changes `_shared/alpaca.ts`'s `assertPaperAccount()`). Re-run the route-(c) deploy after #489 merges; do not treat "present" as "current" without checking the merge time of the most recent touching PR against the deployed version, per the amended gate | #475/#477 for the code; the "Capture evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on #479 for the deploy fact; CI run [30396497143](https://github.com/sv-tmueller/trading-bot/actions/runs/30396497143) (`deploy` job, "Apply migrations" step green) applied `0012_hourly_scans.sql` to `qdaxxsuicyiscdvsdowc` — that run's "Deploy functions" step ran `daily-check kill-switch` only, not `hourly-check` (§3) |
+| `hourly-check` wired into `deploy-dev.yml`'s JWT-verified deploy step | Still pending — blocked on the workflow OAuth scope (see PR #484's Deviation section). **Consequence while pending:** every merge touching `hourly-check` or its shared dependencies requires a fresh manual route-(c) redeploy (row above) to stay current — CI does not do this automatically until this hunk lands, which is why the route-(c) freshness hazard exists at all | `.github/workflows/deploy-dev.yml`; hunk staged, not applied — see §3 |
+| `0013_retire_daily_check_cron.sql` | Done, merged (#479 T6), **and confirmed applied** — `deploy-dev.yml`'s "Apply migrations" step succeeded on the push run for commit `d08a25d` (the PR-A/#484 merge commit), unscheduling `daily-check-1337`/`daily-check-1437` on `qdaxxsuicyiscdvsdowc` | see §6's precondition; the "Capture evidence" comment on #479 (2026-07-29) |
+| Capture evidence (T1): four read-only paper API shape captures | Done — 4/4 PASS, 0/4 FAIL | §12 appendix; "Capture evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on #479 |
+| Layer-B paper-account marker pin (spec §8.3) | **Capture done** (row above). **Enforced against the real marker from PR #489's merge commit onward** — every `alpaca.ts` before that commit (including PR-A's, #484) carries the pre-pin unconditional fail-closed throw; every commit from #489's merge forward carries the confirmed-`"PA"`-prefix check. To find out which one a given deployed build has, check that build's commit against #489's merge commit — the same check as the route-(c) drift-warning row above — rather than assuming from this row's age | §12 appendix; PR #489 |
+| §4 secrets set on `qdaxxsuicyiscdvsdowc` (incl. `HOURLY_SHORTS_ENABLED=false`, `HOURLY_BOT_PAPER_ONLY=true`) | Done | "Capture evidence" comment on #479 (2026-07-29) |
+| §5 baseline (`hourly_experiment_start_equity`) | Done — `1017330.61`, after correcting a silent `insert ... on conflict do nothing` no-op that had initially left a stale pre-existing `100000.00` row in place (a wrong baseline parses fine and is invisible, unlike a missing one; follow-up filed) | "Capture evidence" comment on #479 (2026-07-29) |
+| Residual-position check (§5 precondition: no leftover UPRO position) | Done — `GET /v2/positions` returned `[]`, consistent with the 2026-07-27 operator liquidation | #465; "Capture evidence" comment on #479 (2026-07-29) |
 
 Both CI runs above are the `push`-event runs immediately following each PR's merge
 commit — the `deploy` job's `Apply migrations` step succeeding is exactly T8(a)'s "DDL
-applies" evidence for `0011`/`0012`; `0013` gets the equivalent evidence recorded on
-#479 once this PR merges (the next `push`-to-`main` run's `Apply migrations` step).
+applies" evidence for `0011`/`0012`; `0013`'s equivalent evidence is the `d08a25d` run
+cited above.
 
 ## §3 Deploy order
 
-`0013` ships in this PR and applies automatically to `qdaxxsuicyiscdvsdowc` on merge,
-via `deploy-dev.yml`'s existing order. **The `hourly-check` function deploy wiring
-does NOT ship in this PR.** The intended one-line hunk to
-`.github/workflows/deploy-dev.yml` could not be pushed from the PR-A session (the
-repo credential lacks the GitHub `workflow` OAuth scope; see PR #484's Deviation
-section) — `deploy-dev.yml` in the merged tree is byte-identical to `origin/main` and
-still deploys `daily-check kill-switch` only. Do not assume CI has deployed
-`hourly-check` on the strength of this PR merging; confirm it via the explicit gate
-in §9 before relying on it.
+`0013` shipped in PR-A (#484) and applied automatically to `qdaxxsuicyiscdvsdowc` on
+merge, via `deploy-dev.yml`'s existing order — confirmed by the `d08a25d` push run's
+"Apply migrations" step (§2, the `0013_retire_daily_check_cron.sql` row). **The
+`hourly-check` function deploy wiring did NOT ship in PR-A.** The intended one-line
+hunk to `.github/workflows/deploy-dev.yml` could not be pushed from the PR-A session
+(the repo credential lacks the GitHub `workflow` OAuth scope; see PR #484's Deviation
+section) — `deploy-dev.yml` on `origin/main` today is still byte-identical to that
+merged tree and still deploys `daily-check kill-switch` only. Do not assume CI has
+deployed `hourly-check` on the strength of any single PR (PR-A or #489) merging;
+confirm it via the explicit gate in §9 before relying on it.
 
 **Manual step required (operator action, does not happen automatically on merge):**
 apply the following hunk to `.github/workflows/deploy-dev.yml` by one of:
@@ -144,7 +151,7 @@ any of these is out of range (fail-closed, not merely undocumented).
 (a leftover from the retired daily-check bot) — check `GET /v2/positions` for a
 `UPRO` entry, or the `status` digest's `alpaca.position` field. After `0013` applies,
 the retired daily-check bot has no scheduled exit path for that position (this is
-intentional — kill-switch drawdown is the retained coverage, §11), so a residual
+intentional — kill-switch drawdown is the retained coverage, §6), so a residual
 position matters here twice over: it consumes buying power the hourly bot's sizing
 reads through account equity, and it folds directly into the baseline below — a UPRO
 drawdown alone could then trip the hourly bot's −15% auto-pause floor with no hourly
@@ -165,7 +172,7 @@ on conflict (key) do nothing;  -- refuses to overwrite an existing baseline
 
 Verify: `select value from bot_config where key = 'hourly_experiment_start_equity';`
 returns the value just set (or the original one, if this was accidentally re-run).
-A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:428`,
+A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:613-617`,
 `error:DataError`) — this step is not optional before the first scan that could trade.
 
 ## §6 Resume — 0013-first precondition (red letter)
@@ -199,12 +206,22 @@ this point on).
 
 ## §7 Layer-B live smoke (T9)
 
-**Dependency, stated plainly:** this smoke test is only meaningful **after** the
-Layer-B pin (§12 appendix) has been merged from real capture evidence. This PR (PR-A)
-ships `assertPaperAccount()` with its fail-closed throw **intact** (§12) — running the
-smoke test before the pin lands will legitimately return `error:PaperGuardFailed`
-instead of the outcome below. That is expected, not a bug report; it means "come back
-after the Layer-B pin PR merges," not "something is broken."
+**Dependency, stated plainly:** this smoke test is only meaningful once the
+**deployed** `hourly-check` build postdates the Layer-B pin's merge (PR #489). The T1
+capture (§12 appendix) is done, but Layer B is enforced against the real marker only
+from #489's merge commit forward — every build before it (including PR-A's, #484)
+carries the pre-pin unconditional fail-closed throw. **Check the deployed function's
+build against #489's merge commit before running this** (the same check as §2's
+route-(c) drift-warning row) — don't assume either way from the date you're reading
+this runbook.
+
+- If the deployed build **predates** #489's merge: `error:PaperGuardFailed` is
+  expected here, not a bug report. It means "redeploy `hourly-check` from a build
+  that includes #489, then re-run this smoke test," not "something is broken."
+- If the deployed build **postdates** #489's merge and this still returns
+  `error:PaperGuardFailed`: that is a genuine Layer-B failure and an **incident** —
+  report it with the response body and the `audit_log` row, do not dismiss it as
+  the pre-merge case above.
 
 **Run outside RTH only.** The server-side function has no `CLAUDE_AGENT_NO_BROKER`
 (that guard only protects in-process/agent-spawned calls) — during RTH this curl is a
@@ -241,7 +258,7 @@ curl -sS "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=1Hour&feed=ie
   -H "APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY" | jq '.bars[] | {t, o, h, l, c}'
 ```
 
-Four checks against the shipped `isBarPartial()` (`supabase/functions/hourly-check/logic.ts:153-164`):
+Four checks against the shipped `isBarPartial()` (`supabase/functions/hourly-check/logic.ts:198-209`):
 
 1. **Interior bars are top-of-hour UTC.** Every bar's `t` except the session-open/close
    edges lands exactly on `:00:00Z`.
@@ -269,7 +286,7 @@ runbook documents its gate list so the checklist lives in one place:
 
 **Merge gates — ALL must be checked off on #479 before PR-B merges:**
 
-1. PR-A (this PR) merged, CI green.
+1. PR-A (#484) merged, CI green.
 2. **`hourly-check` deployed and confirmed present in the dev project's function
    list** (`supabase functions list --project-ref qdaxxsuicyiscdvsdowc`, or the
    Dashboard's Edge Functions page). This gate stays **permanently** — even once the
@@ -278,8 +295,8 @@ runbook documents its gate list so the checklist lives in one place:
    confirms it.
 3. #480 (post-fill journaling failure window: bounded retry + reconciliation
    recovery) merged and deployed.
-4. Layer-B pin merged from a real capture (§12 appendix) — not the fail-closed
-   placeholder this PR ships.
+4. Layer-B pin merged from a real capture (§12 appendix) — PR #489, not PR-A (#484)'s
+   pre-pin fail-closed placeholder.
 5. T9 evidence (§7) posted on #479, outcome `skipped:market_closed`.
 6. T10 evidence (§8) posted on #479, inequality holds with the observed latency.
 7. §4's secrets set on `qdaxxsuicyiscdvsdowc`.
@@ -323,23 +340,37 @@ Any point in this rollout can be unwound without code changes:
   `select cron.unschedule('hourly-check');` in the SQL editor, or a follow-up guarded
   migration mirroring `0013`'s pattern. Function code and deployed Edge Function are
   untouched either way — this is schedule-only, same as `0013`.
-- **Before `0014` exists** (this PR's state), there is nothing to unschedule — the
-  cron block ships fully commented out, so "rollback" is simply not merging PR-B.
+- **Before `0014` exists** (current state — PR-B is not yet created), there is nothing
+  to unschedule — the cron block ships fully commented out, so "rollback" is simply
+  not merging PR-B.
 
 ## §12 Appendix — captures, citations, and what each pins
 
-**Capture status: pending operator.** No `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` was
-present in this agent session (`env | grep ALPACA` empty) — see the "Capture evidence:
-paper API shapes (T1)" handoff comment on #479 and `scripts/capture_alpaca_shapes.sh`
-(this PR). Once evidence returns, this appendix should be updated with the sanitized
-capture output and this table's "Confirmed?" column flipped.
+**Capture status: returned.** See the "Capture evidence — four read-only paper GETs
+(T1), operator-run 2026-07-29" comment on #479 — `scripts/capture_alpaca_shapes.sh`
+run against `paper-api.alpaca.markets` (hardcoded, non-overridable), **4/4 PASS, 0/4
+FAIL**. Sanitized output (account `id` dropped, `account_number` masked to its 2-char
+prefix):
+
+```json
+// GET /v2/clock
+{ "timestamp": "2026-07-29T05:27:57.818080188-04:00", "is_open": false,
+  "next_open": "2026-07-29T09:30:00-04:00", "next_close": "2026-07-29T16:00:00-04:00" }
+// GET /v2/account
+{ "account_number": "PA****", "status": "ACTIVE", "equity": "1017330.61", "currency": "USD" }
+// GET /v2/calendar?start=2026-07-29&end=2026-08-05
+[ { "close": "16:00", "date": "2026-07-29", "open": "09:30",
+    "session_close": "2000", "session_open": "0400", "settlement_date": "2026-07-30" }, ... ]
+// GET /v2/assets/SPY
+{ "symbol": "SPY", "tradable": true, "shortable": true, "easy_to_borrow": true, "fractionable": true }
+```
 
 | # | `[to verify]` item | Code it pins | Confirmed? |
 |---|---|---|---|
-| 1 | `/v2/clock` `next_close` field | `supabase/functions/_shared/alpaca.ts`'s `getClock()` (`nextClose`, used by the session-close flatten mechanic) | No — parses via `requireNumber`/`Date.parse`; missing/unparseable is already a hard error regardless |
-| 2 | `/v2/account` paper-account marker | `supabase/functions/_shared/alpaca.ts`'s `assertPaperAccount()` (Layer B, spec §8.3) | **No — ships with the fail-closed throw intact** (see the ignored positive test in `alpaca.test.ts`, gated on this capture) |
-| 3 | `/v2/calendar` `open`/`close` HH:MM fields | `supabase/functions/_shared/marketdata.ts`'s `getCalendarSessions()` | No — missing/unparseable `open`/`close` is already a hard error (`DataError`) regardless |
-| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | No — `HOURLY_SHORTS_ENABLED=false` (§4) is the fail-closed override until confirmed |
+| 1 | `/v2/clock` `next_close` field | `supabase/functions/_shared/alpaca.ts`'s `getClock()` (`nextClose`, used by the session-close flatten mechanic) | **Yes** — `next_close` present, RFC3339-with-offset, parses via `requireNumber`/`Date.parse` as coded; no change needed |
+| 2 | `/v2/account` paper-account marker | `supabase/functions/_shared/alpaca.ts`'s `assertPaperAccount()` (Layer B, spec §8.3) | **Yes — pinned.** The marker is a string `account_number` starting with `"PA"`; `assertPaperAccount()`'s unconditional throw was replaced with this check (#479 T3, `alpaca.ts`/`alpaca.test.ts` only). Fail-closed retained: missing, non-string, or non-`"PA"`-prefixed `account_number` still throws `PaperGuardFailedError` with the raw number masked to its prefix |
+| 3 | `/v2/calendar` `open`/`close` HH:MM fields | `supabase/functions/_shared/marketdata.ts`'s `getCalendarSessions()` | **Yes** — response carries both `open`/`close` (`"HH:MM"`, as read) and a differently-formatted `session_open`/`session_close` (`"HHMM"`, no colon, for extended hours); `getCalendarSessions` reads only `e.open`/`e.close` and `etHHMMToUtcMs` splits on `":"`, so the no-colon extended-hours fields are never touched. No code change needed |
+| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | **Yes** — field names confirmed; SPY itself is shortable (`shortable: true`, `easy_to_borrow: true`), so the §1 fallback (shorts disabled) was never needed on capability grounds. `HOURLY_SHORTS_ENABLED=false` (§1/§4) remains the standing rollout constraint regardless |
 | 5 | Bracket-on-short support | `hourly-check/logic.ts`'s SHORT-entry path (OCO fallback) | **Resolved by docs citation, not a live capture** — see #479's T4 comment: current published Alpaca docs (`docs.alpaca.markets/docs/orders-at-alpaca`, `docs.alpaca.markets/reference/postorder`) document no restriction against `order_class: "bracket"` + `side: "sell"`, but the decision (sub-plan-ratified) is to keep the OCO fallback regardless this package; switching to a single bracket call for shorts is a follow-up, size:S, only after a live paper capture independently corroborates the docs reading |
 | 6 | Bracket entry `time_in_force` | `placeBracketOrder`/`placeMarketOrder` (both default `"day"`) | **Resolved by docs citation** — same #479 T4 comment: Alpaca's docs state bracket/OCO `time_in_force` "must be `day` or `gtc`"; `"day"` (already used everywhere in this repo) is valid, no code change needed |
 

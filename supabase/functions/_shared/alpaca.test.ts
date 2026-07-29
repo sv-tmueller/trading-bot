@@ -864,14 +864,58 @@ Deno.test("createAlpacaClient({paperOnly:true}): placeMarketOrder honors the pap
   }
 });
 
-// Layer B: the paper-account marker [to verify] could not be confirmed
-// against a live /v2/account response in this agent session (no paper
-// credentials present) -- ships fail-closed per the spec's own fallback.
-Deno.test("assertPaperAccount: fails closed (marker unconfirmed) even on a paper-configured client", async () => {
+// #479 T3: the pin is "account_number is a string starting with PA" (see the
+// "Capture evidence — four read-only paper GETs (T1)" comment on #479, capture
+// #2 -- a real paper /v2/account response returned account_number:"PA****").
+// A live-style account number (no PA prefix) must still fail closed --
+// previously this test exercised the pre-pin unconditional throw; it now
+// exercises the same fail-closed outcome for the specific "wrong prefix" case.
+Deno.test("assertPaperAccount: fails closed on a non-PA account_number prefix", async () => {
   setKeys();
   liftBrokerGuard();
   const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ account_number: "PA000", equity: "100000" }))
+    Promise.resolve(jsonResponse({ account_number: "XA000000", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Reviewer round 1 finding 3 (nit): the suite pinned the discriminator with
+// one wholly-non-PA negative (above) and the positive, but nothing pinned
+// prefix ANCHORING specifically -- a regression to `.includes("PA")` instead
+// of `.startsWith("PA")` would pass every other test in this file while
+// silently accepting a live-style account number that merely contains "PA"
+// partway through. Locks in the anchoring behavior the tester verified via an
+// out-of-suite probe.
+Deno.test("assertPaperAccount: fails closed when account_number contains PA but does not start with it", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "XPA000000", equity: "100000" }))
+  );
+  try {
+    const c = createAlpacaClient({ paperOnly: true });
+    await assertRejects(() => c.assertPaperAccount(), PaperGuardFailedError);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// Reviewer round 1 finding 3 (nit): pins case sensitivity -- a regression to
+// a case-insensitive compare would pass every other test in this file while
+// silently accepting a lowercase "pa"-prefixed account number. Locks in the
+// case-sensitive behavior the tester verified via an out-of-suite probe.
+Deno.test("assertPaperAccount: fails closed on a lowercase 'pa' prefix (case-sensitive match)", async () => {
+  setKeys();
+  liftBrokerGuard();
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ account_number: "pa123456", equity: "100000" }))
   );
   try {
     const c = createAlpacaClient({ paperOnly: true });
@@ -884,12 +928,14 @@ Deno.test("assertPaperAccount: fails closed (marker unconfirmed) even on a paper
 
 // Nit 11 (fix round 1): the raw account_number must never appear in the
 // failure message -- only a marker-prefix-masked form is diagnostically
-// useful, and this message can end up in logs/notifications.
+// useful, and this message can end up in logs/notifications. Uses a
+// non-PA-prefixed number (so the pinned check still throws) to exercise the
+// failure-message path.
 Deno.test("assertPaperAccount: masks the raw account_number in the failure message (marker prefix only)", async () => {
   setKeys();
   liftBrokerGuard();
   const restore = stubFetch(() =>
-    Promise.resolve(jsonResponse({ account_number: "PA3898644933991234", equity: "100000" }))
+    Promise.resolve(jsonResponse({ account_number: "XA3898644933991234", equity: "100000" }))
   );
   try {
     const c = createAlpacaClient({ paperOnly: true });
@@ -899,8 +945,8 @@ Deno.test("assertPaperAccount: masks the raw account_number in the failure messa
     } catch (e) {
       message = (e as Error).message;
     }
-    assertEquals(message.includes("PA3898644933991234"), false);
-    assertEquals(message.includes("PA"), true); // marker prefix retained
+    assertEquals(message.includes("XA3898644933991234"), false);
+    assertEquals(message.includes("XA"), true); // marker prefix retained
   } finally {
     restore();
     clearKeys();
@@ -954,37 +1000,36 @@ Deno.test("assertPaperAccount: throws when account_number is a non-string type",
   }
 });
 
-// #479 T3 (spec §8.3 Layer B pin, gated on the T1 capture handoff posted on
-// #479): this test documents the TARGET behavior once a real /v2/account
-// response has been captured and the marker confirmed -- it is written
-// against the spec's own hypothesis (§8.3: "the commonly-cited marker is an
-// account_number prefixed PA"), not a confirmed fact. Run un-ignored during
-// development: it fails against today's unconditional-throw
-// assertPaperAccount() (true red), which is the point -- it proves this test
-// exercises real behavior, not a tautology. It ships IGNORED because the
-// capture evidence has not returned yet (see the "Capture evidence: paper API
-// shapes (T1)" comment gate on #479); a follow-up change implements the real
-// marker check against the confirmed shape and un-ignores this test. AC:
-// pending-operator until then.
-Deno.test({
-  name:
-    "assertPaperAccount: [PENDING #479 T1 capture] a confirmed paper marker resolves to {equity}",
-  ignore: true,
-  fn: async () => {
+// #479 T3 (spec §8.3 Layer B pin): the "Capture evidence — four read-only
+// paper GETs (T1), operator-run 2026-07-29" comment on #479 returned a real
+// paper /v2/account response of {account_number:"PA****", status:"ACTIVE",
+// equity:"1017330.61", currency:"USD"} (account_number sanitized to its
+// 2-char prefix by the capture script) -- the PA prefix is now a confirmed
+// marker, not a hypothesis. Un-ignored: this is the real captured shape.
+Deno.test(
+  "assertPaperAccount: a PA-prefixed account_number (#479 T1 capture) resolves to {equity}",
+  async () => {
     setKeys();
     liftBrokerGuard();
     const restore = stubFetch(() =>
-      Promise.resolve(jsonResponse({ account_number: "PA3898644933991234", equity: "100000" }))
+      Promise.resolve(
+        jsonResponse({
+          account_number: "PA****",
+          status: "ACTIVE",
+          equity: "1017330.61",
+          currency: "USD",
+        }),
+      )
     );
     try {
       const c = createAlpacaClient({ paperOnly: true });
-      assertEquals(await c.assertPaperAccount(), { equity: 100000 });
+      assertEquals(await c.assertPaperAccount(), { equity: 1017330.61 });
     } finally {
       restore();
       clearKeys();
     }
   },
-});
+);
 
 // ---------------------------------------------------------------------------
 // #475 T6: order helpers (spec §7) -- placeBracketOrder, placeOcoExitPair,
