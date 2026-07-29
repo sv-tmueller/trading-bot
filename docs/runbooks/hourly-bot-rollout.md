@@ -62,7 +62,7 @@ lead-ratified rulings on #478).
 | §6 resume (`bot_config.paused` -> `'false'`) | Done, 2026-07-29, after `0013` was confirmed applied per its ledger row above (the red-letter precondition) | "T9 evidence: Layer-B live smoke" comment on #479, "supporting state" block |
 | T9 (§7 Layer-B live smoke) | Done — outcome `skipped:market_closed`, proving Layer A + Layer B both passed on the real paper account before the clock gate | "T9 evidence: Layer-B live smoke" comment on #479; §9 gate 5 |
 | T10 (§8 bar alignment, spec §4's activation gate) | Done — all four checks PASS; observed feed latency <= 1 min, so `7 + 1 = 8 < 10` holds with two minutes of headroom; pinned minute `:07` needed no change | "T10 evidence: bar alignment" comment on #479; §9 gate 6 |
-| T8(b) (gated `RUN_DB_TESTS` roundtrips against a real, local Postgres) | Done — all 13 migrations (0001-0013) apply cleanly; 41/43 roundtrip tests pass after granting local `service_role` privileges (a local-stack-only gap, not a production one); the 2 failures are characterized `bar_ts` string-format test-assertion defects with no production-path impact (follow-up filed) — not a §9 gate, but a prerequisite this rollout satisfied before `0014` | "T8(b) evidence" comment on #479 |
+| T8(b) (gated `RUN_DB_TESTS` roundtrips against a real, local Postgres) | Done — all 13 migrations (0001-0013) apply cleanly; 41/43 roundtrip tests pass (no grant was needed on CLI 2.110.0 — the original claim that a `grant all ... to service_role` step was required on a bare local stack did not reproduce on a second run and has been retracted, #479/#491); the 2 failures are characterized `bar_ts` string-format test-assertion defects with no production-path impact (follow-up filed) — not a §9 gate, but a prerequisite this rollout satisfied before `0014` | "T8(b) evidence" comment on #479 |
 | §9 merge gates (all eight) | **All closed** as of the T10 evidence comment (2026-07-29) | §9; "T9 evidence" and "T10 evidence" comments on #479 |
 
 Both CI runs above are the `push`-event runs immediately following each PR's merge
@@ -118,9 +118,11 @@ Once applied (by whichever route), the deploy order is:
    fails closed; no cron trigger means the deployed function is inert until `0014`).
 2. `panic` (`--no-verify-jwt`, `x-panic-token` auth).
 3. `status` (`--no-verify-jwt`, `x-status-token` auth, read-only).
-4. `supabase db push` — applies `0013` (retires daily-check's entry crons; leaves
-   `hourly_scans`/`bar_claims`/`trades` schema from `0011`/`0012` untouched, since
-   those already applied on the #474/#475 merges).
+4. `supabase db push` — applies any pending migrations (`0013` here, retiring
+   daily-check's entry crons; `0014` from PR-B's merge onward, arming the
+   `hourly-check` cron — see §9). `hourly_scans`/`bar_claims`/`trades` schema from
+   `0011`/`0012` is untouched by either, since those already applied on the
+   #474/#475 merges.
 
 Confirm the deploy actually landed — do not rely on the assumption that CI redeployed
 it — using the §9 gate ("hourly-check deployed and confirmed present **and current**
@@ -337,16 +339,27 @@ db push` on every push to `main`, which applies `0014` and creates a live `cron.
 row named `hourly-check`, schedule `7 13-21 * * 1-5`. **The first live scan is the
 next `:07` of any hour in that 13-21 UTC window, Mon-Fri — within the hour if merged
 during that window, not "the next day's 13:07."** A weekday merge at, say, 15:30 UTC
-produces a live scan 37 minutes later whose candidate is the completed `14:00Z` bar
-at `staleMinutes = 7 < 10` — a scan that can place an order. **For that reason, merge
-outside RTH (before 13:00 UTC or after 21:00 UTC on a weekday, or on a weekend) is not
-merely a recommendation here — it is the stated procedure**, so the first scan
-against this migration is a deliberately-observed one (§10), not whatever happens to
-be firing when CI finishes the push. The bot scans SPY hourly on the Alpaca **paper**
-account and can place a bracket order the first time every one of its own gates
-(paper-account guard, staleness, partial-bar, signal, sizing) passes. There is no
-further human step between merge and that first live scan — the gate list below is
-the only thing standing between "reviewed" and "trading."
+produces a live scan 37 minutes later at 16:07Z. At that moment the newest **completed**
+bar (`completed` keeps bars where `bar.timestamp + 1h <= now`, `logic.ts:629`) is the
+`15:00Z` bar — its `[15:00Z, 16:00Z)` span has fully elapsed, while the `16:00Z` bar has
+not — so the candidate is `15:00Z`, not `14:00Z`, and `staleMinutes = (now - barEnd) /
+60000` (`logic.ts:684`) = `(16:07 - 16:00) = 7 < 10` — a scan that can place an order.
+**For that reason, merge outside RTH (before 13:00 UTC or after 21:00 UTC on a weekday,
+or on a weekend) is not merely a recommendation here — it is the stated procedure**, so
+the first scan against this migration is a deliberately-observed one (§10), not
+whatever happens to be firing when CI finishes the push (see the note below on the one
+edge of that window worth knowing about). The bot scans SPY hourly on the Alpaca
+**paper** account and can place a bracket order the first time every one of its own
+gates (paper-account guard, staleness, partial-bar, signal, sizing) passes. There is no
+further human step between merge and that first live scan — the gate list below is the
+only thing standing between "reviewed" and "trading."
+
+A merge at or after `21:05` UTC still sits inside the `13-21` cron window, so the
+`21:07` firing (two minutes later) still happens — it is just guaranteed to resolve
+`skipped:market_closed` under both EDT and EST session bounds, since RTH ends by
+`20:00Z` (EDT) or `21:00Z` (EST) at the latest. That firing is in fact the fastest way
+to observe §10's first-firing check deliberately, not a hazard — but don't be
+surprised by a scan two minutes after a late merge.
 
 **Merge gates — all eight checked off on #479 as of 2026-07-29 (T10's close):**
 
@@ -455,9 +468,18 @@ live and the first scan has fired, confirm:
 - A second consecutive `skipped:partial_bar` inside one session (a session-bounds or
   timezone fault, not a stub — the first one per session is expected and correct).
 - Any nonzero SPY position surviving past the `19:07Z` (EDT) flatten scan — the
-  day-scoped (`time_in_force: "day"`) bracket legs are cancelled by the broker at the
-  close, so a position still open after that scan is unmanaged overnight.
+  day-scoped (`time_in_force: "day"`) bracket legs are **assumed** (standard Alpaca
+  day-order behavior, not yet observed on this account — see the first-session check
+  below) to be cancelled by the broker at the close, so a position still open after
+  that scan is unmanaged overnight regardless of whether that assumption holds.
 - An order whose notional materially exceeds 10% of equity (`SIZING_NOTIONAL_CAP_PCT`).
+
+**First-session check (new, round 2):** on the first morning after a session that
+held a position, confirm no resting legs survived from the prior session — query
+`listOpenOrderIds(SPY)` (or check the Alpaca paper-account orders page) and expect
+zero open orders left over from the previous day. This is the live confirmation that
+the day-`time_in_force` cancellation assumption above actually holds on this account;
+until it's been observed at least once, treat the assumption as unverified.
 
 **Roll back with `panic?action=liquidate` first if a position is open, `pause` if
 flat, then `select cron.unschedule('hourly-check');`** — see §11 for the full
@@ -492,16 +514,22 @@ Any point in this rollout can be unwound without code changes:
   returns before `reconcile()` (`logic.ts:566`, ahead of the reconciliation call at
   `:583`), so pausing with a position open also disables the session-close flatten
   scan (`:520-542`, armed at `:580`), the naked-position re-leg, and #480's recovery
-  pass — none of which run once the pipeline exits at the pause check. Bracket legs
-  are `time_in_force: "day"` (`alpaca.ts:391`) and are cancelled by the broker at the
-  close; `KILL_SWITCH_DRAWDOWN_PCT` defaults to 25% off a 30-day rolling high and will
-  not fire on a same-day SPY move. **Net effect: pausing mid-session with an open
-  position leaves that position unmanaged and unhedged overnight**, until the next
-  session's first RTH scan re-legs it (or until an operator manually flattens it
-  first). The identical consequence applies to a `success:auto_paused` floor trip
-  (`logic.ts:622`) — it pauses the bot the same way, with a position open or not.
-  **If a position may be open, use `action=liquidate` below, or a manual flatten, not
-  `pause` alone.**
+  pass — none of which run once the pipeline exits at the pause check, on **every**
+  invocation while `paused` stays true, this session's or any later one's. Bracket
+  legs are `time_in_force: "day"` (`alpaca.ts:391`); Alpaca's own day-order semantics
+  cancel unfilled `day` legs at the session close, but **this is an assumption, not
+  yet observed on this account** — nothing in this repo tests it, live or otherwise
+  (see the first-session check in §10). `KILL_SWITCH_DRAWDOWN_PCT` defaults to 25%
+  off a 30-day rolling high and will not fire on a same-day SPY move. **Net effect:
+  pausing mid-session with an open position leaves that position unmanaged and
+  unhedged overnight, and it stays that way — while `paused` is `true`, nothing
+  re-legs it, in this session or any subsequent one.** Recovery requires an operator:
+  either `action=resume` (after which the next RTH scan's `reconcile()` re-legs it)
+  or a manual flatten. The identical consequence applies to a `success:auto_paused`
+  floor trip (`logic.ts:622`) — it pauses the bot the same way, with a position open
+  or not, and is machine-initiated so it never self-clears; the same two recovery
+  paths apply. **If a position may be open, use `action=liquidate` below, or a
+  manual flatten, not `pause` alone.**
 - **Flatten the current position (broker call, RTH only):**
   `curl -i -X POST ".../panic?action=liquidate" -H "x-panic-token: $PANIC_TOKEN"` —
   side-aware and symbol-aware (#474/#476), so this correctly covers a short or closes
