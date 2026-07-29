@@ -693,7 +693,9 @@ Deno.test("renderJournal: audit rows present but zero hourly_scans rows renders 
   // of the week) -- this escapes renderIsQuietWeek (which requires empty
   // audit counts) and must not fabricate $0.00 from genuine nulls.
   const win = weekWindowUtc(2026, 31);
-  const auditRows = [auditRow({ started_at: "2026-07-27T14:00:00Z", outcome: "skipped:trading_paused" })];
+  const auditRows = [
+    auditRow({ started_at: "2026-07-27T14:00:00Z", outcome: "skipped:trading_paused" }),
+  ];
   const agg = computeWeeklyAggregates([], auditRows, 100000);
   const cumulative = computeCumulativeStats([]);
   const data: RenderData = {
@@ -848,4 +850,60 @@ Deno.test("runWeeklyReview: bump mode with no prior trial-count key starts from 
   const summary = await runWeeklyReview(deps, { mode: "bump", ref: "#481" });
   assertEquals(summary, { mode: "bump", oldCount: 0, newCount: 1, ref: "#481" });
   assertEquals(configStore.get("hourly_param_trial_count"), "1");
+});
+
+Deno.test("runWeeklyReview (render mode): +00:00-formatted PostgREST timestamps respect exact window boundaries (findings 4/5)", async () => {
+  // PostgREST returns timestamps with a `+00:00` offset suffix rather than
+  // `.000Z`. Comparing those raw strings against `toISOString()` bounds is
+  // wrong at an exact bound because '+' (0x2B) sorts before '.' (0x2E) --
+  // this inverts *both* boundary senses: a row exactly at the inclusive
+  // start looks excluded, and a row exactly at the exclusive end looks
+  // included. Only Date.parse-based epoch comparison gets all four rows
+  // right.
+  const win = weekWindowUtc(2026, 31);
+  // Decisions are deliberately distinct per row so the rendered counts pin
+  // *which* rows were kept, not just how many -- a naive row count can stay
+  // accidentally correct even when the wrong two of four rows are kept (the
+  // start-inversion and end-inversion bugs cancel out in a bare count).
+  const justBeforeStart = scan({ bar_ts: "2026-07-27T03:59:59+00:00", decision: "SKIP" }); // excluded either way
+  const exactlyAtStart = scan({
+    bar_ts: win.startIso.replace(".000Z", "+00:00"),
+    decision: "LONG",
+  }); // inclusive bound -> must be included
+  const exactlyAtEnd = scan({
+    bar_ts: win.endIsoExclusive.replace(".000Z", "+00:00"),
+    decision: "SHORT",
+  }); // exclusive bound -> must be excluded
+  const inside = scan({ bar_ts: "2026-07-28T12:00:00+00:00", decision: "LONG" }); // included
+
+  const { deps } = buildTestDeps();
+  deps.db.getScansUntil = (_untilIso: string) =>
+    Promise.resolve([justBeforeStart, exactlyAtStart, exactlyAtEnd, inside]);
+
+  const summary = await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
+  if (summary.mode !== "render") throw new Error("unreachable");
+  // Correct set kept is {exactlyAtStart, inside} -- both LONG. A buggy
+  // string-boundary comparison instead keeps {exactlyAtEnd, inside} (1
+  // LONG, 1 SHORT), so this distinguishes the fix even though both variants
+  // keep exactly 2 rows.
+  assertEquals(summary.markdown.includes("- LONG: 2"), true);
+  assertEquals(summary.markdown.includes("- SHORT: 0"), true);
+  assertEquals(summary.markdown.includes("- SKIP: 0"), true);
+});
+
+Deno.test("runWeeklyReview (render mode): getHourlyTradesUntil receives the already-fetched scans (finding 10)", async () => {
+  // The symbol used to scope panic_cli trades is derived from the same
+  // scans getScansUntil already fetched -- deps.db.getHourlyTradesUntil
+  // must receive them rather than the caller re-fetching hourly_scans a
+  // second time just to derive it.
+  const { deps } = buildTestDeps();
+  const providedScans = [scan({ bar_ts: "2026-07-27T14:00:00Z" })];
+  let capturedScans: HourlyScanRow[] | undefined;
+  deps.db.getScansUntil = (_untilIso: string) => Promise.resolve(providedScans);
+  deps.db.getHourlyTradesUntil = (_untilIso: string, scansArg: HourlyScanRow[]) => {
+    capturedScans = scansArg;
+    return Promise.resolve([]);
+  };
+  await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
+  assertEquals(capturedScans, providedScans);
 });

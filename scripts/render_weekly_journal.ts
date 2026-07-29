@@ -888,7 +888,9 @@ export function renderJournal(data: RenderData): string {
     `- Last: ${fmtMoneyOrNa(agg.equity.last)}`,
     `- Floor baseline (\`hourly_experiment_start_equity\`): $${fmtMoney(agg.equity.floorBaseline)}`,
     `- Floor price (-15%): $${fmtMoney(agg.equity.floorPrice)}`,
-    `- Breached this week: ${agg.equity.first === null ? "n/a" : (agg.equity.breached ? "yes" : "no")}`,
+    `- Breached this week: ${
+      agg.equity.first === null ? "n/a" : (agg.equity.breached ? "yes" : "no")
+    }`,
     `- Auto-paused events (\`success:auto_paused\`): ${autoPausedLine}`,
     "",
     "---",
@@ -930,7 +932,13 @@ export interface WeeklyReviewDeps {
   now: () => Date;
   db: {
     getScansUntil: (untilIsoExclusive: string) => Promise<HourlyScanRow[]>;
-    getHourlyTradesUntil: (untilIsoExclusive: string) => Promise<TradeRow[]>;
+    // Takes the scans already fetched by getScansUntil above (same window)
+    // so the traded symbol can be derived without a second hourly_scans
+    // select (finding 10, PR #482 fix round 1).
+    getHourlyTradesUntil: (
+      untilIsoExclusive: string,
+      scansInWindow: HourlyScanRow[],
+    ) => Promise<TradeRow[]>;
     getAuditOutcomesUntil: (untilIsoExclusive: string) => Promise<AuditLogRow[]>;
     getConfig: (key: string) => Promise<string | null>;
     setConfig: (key: string, value: string) => Promise<void>;
@@ -958,8 +966,15 @@ export interface BumpSummary {
   ref: string;
 }
 
-function withinWindow(iso: string, win: WeekWindow): boolean {
-  return iso >= win.startIso && iso < win.endIsoExclusive;
+// PostgREST returns timestamps with a `+00:00` offset suffix rather than
+// `.000Z`; comparing those raw ISO strings against toISOString() bounds is
+// wrong at an exact bound because '+' (0x2B) sorts before '.' (0x2E) in
+// ASCII, inverting both boundary senses (finding 4, PR #482 fix round 1).
+// Comparing parsed epoch milliseconds against precomputed bounds is correct
+// regardless of the source string's offset formatting.
+function withinWindow(iso: string, bounds: { startMs: number; endMsExclusive: number }): boolean {
+  const t = Date.parse(iso);
+  return t >= bounds.startMs && t < bounds.endMsExclusive;
 }
 
 async function runBumpMode(deps: WeeklyReviewDeps, ref: string): Promise<BumpSummary> {
@@ -1006,20 +1021,30 @@ async function runRenderMode(
   // Every read is bounded above by the window's end (D4) -- re-running this
   // report weeks later reproduces the identical file.
   const allScans = await deps.db.getScansUntil(win.endIsoExclusive);
-  const allTrades = await deps.db.getHourlyTradesUntil(win.endIsoExclusive);
+  // Reuses `allScans` (already fetched above) to derive the traded symbol,
+  // instead of re-issuing the full hourly_scans select a second time just
+  // for that (finding 10, PR #482 fix round 1) -- see the main() adapter
+  // wiring below.
+  const allTrades = await deps.db.getHourlyTradesUntil(win.endIsoExclusive, allScans);
   const allAuditRows = await deps.db.getAuditOutcomesUntil(win.endIsoExclusive);
 
-  const scansInWeek = allScans.filter((s) => withinWindow(s.bar_ts, win));
-  const auditRowsInWeek = allAuditRows.filter((r) => withinWindow(r.started_at, win));
+  const winBounds = {
+    startMs: Date.parse(win.startIso),
+    endMsExclusive: Date.parse(win.endIsoExclusive),
+  };
+  const scansInWeek = allScans.filter((s) => withinWindow(s.bar_ts, winBounds));
+  const auditRowsInWeek = allAuditRows.filter((r) => withinWindow(r.started_at, winBounds));
 
   // Pairing runs over the FULL history up to week end (not just this week's
   // trades), so a position opened last week and closed this week pairs
   // correctly, and "open at week end" reflects true end-of-week state.
   const pairing = pairHourlyTrades(allTrades, allScans);
-  const closedTradesInWeek = pairing.closedTrades.filter((t) => withinWindow(t.exitFillTime, win));
-  const orphanExitsInWeek = pairing.orphanExits.filter((t) => withinWindow(t.fill_time, win));
+  const closedTradesInWeek = pairing.closedTrades.filter((t) =>
+    withinWindow(t.exitFillTime, winBounds)
+  );
+  const orphanExitsInWeek = pairing.orphanExits.filter((t) => withinWindow(t.fill_time, winBounds));
   const manualInterventionsInWeek = pairing.manualInterventions.filter((t) =>
-    withinWindow(t.fill_time, win)
+    withinWindow(t.fill_time, winBounds)
   );
 
   const agg = computeWeeklyAggregates(scansInWeek, auditRowsInWeek, floorBaseline);
@@ -1214,8 +1239,7 @@ async function main(): Promise<void> {
       now: () => new Date(),
       db: {
         getScansUntil: (untilIso) => getScansUntilAdapter(sb, untilIso),
-        getHourlyTradesUntil: async (untilIso) => {
-          const scans = await getScansUntilAdapter(sb, untilIso);
+        getHourlyTradesUntil: (untilIso, scans) => {
           return getHourlyTradesUntilAdapter(sb, untilIso, deriveSymbol(scans));
         },
         getAuditOutcomesUntil: (untilIso) => getAuditOutcomesUntilAdapter(sb, untilIso),
