@@ -1097,6 +1097,29 @@ const SCANS_ROW_CAP = 20000;
 const TRADES_ROW_CAP = 5000;
 const AUDIT_ROW_CAP = 20000;
 
+export class RowCapBreachedError extends Error {
+  override name = "RowCapBreachedError";
+}
+
+/**
+ * Every windowed adapter read below orders ascending and caps with a plain
+ * `.limit()` (finding 12, PR #482 fix round 1) -- unlike `_shared/db.ts`'s
+ * paginated `getAuditLogSince`, these are single-page reads, so a breach
+ * can't be paged around; it must throw instead of silently truncating.
+ * Ascending order means a breach drops the NEWEST rows (the ones nearest
+ * the target week), which would render an empty-looking week rather than an
+ * obviously-wrong one -- the reverse of `getAuditLogSince`'s own `desc`
+ * pagination, but the same throw-on-breach precedent.
+ */
+export function assertRowCapNotBreached(rowCount: number, cap: number, label: string): void {
+  if (rowCount >= cap) {
+    throw new RowCapBreachedError(
+      `${label}: hit the ${cap}-row cap -- ascending order means the newest rows may have been ` +
+        "silently dropped, which would render an empty-looking week; investigate before retrying",
+    );
+  }
+}
+
 export async function getScansUntilAdapter(
   sb: SupabaseClient,
   untilIsoExclusive: string,
@@ -1108,7 +1131,9 @@ export async function getScansUntilAdapter(
     .order("bar_ts", { ascending: true })
     .limit(SCANS_ROW_CAP);
   if (error) throw new Error(`getScansUntil: ${error.message}`);
-  return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  assertRowCapNotBreached(rows.length, SCANS_ROW_CAP, "getScansUntilAdapter");
+  return rows.map(coerceHourlyScanRow);
 }
 
 // hourly_* reasons are unique to this bot's own trades. `panic_cli` is
@@ -1137,6 +1162,8 @@ export async function getHourlyTradesUntilAdapter(
     .order("fill_time", { ascending: true })
     .limit(TRADES_ROW_CAP);
   if (hourlyError) throw new Error(`getHourlyTradesUntil: ${hourlyError.message}`);
+  const hourlyDataRows = (hourlyRows ?? []) as Record<string, unknown>[];
+  assertRowCapNotBreached(hourlyDataRows.length, TRADES_ROW_CAP, "getHourlyTradesUntilAdapter");
 
   const { data: panicRows, error: panicError } = await sb
     .from("trades")
@@ -1147,10 +1174,16 @@ export async function getHourlyTradesUntilAdapter(
     .order("fill_time", { ascending: true })
     .limit(TRADES_ROW_CAP);
   if (panicError) throw new Error(`getHourlyTradesUntil (panic_cli): ${panicError.message}`);
+  const panicDataRows = (panicRows ?? []) as Record<string, unknown>[];
+  assertRowCapNotBreached(
+    panicDataRows.length,
+    TRADES_ROW_CAP,
+    "getHourlyTradesUntilAdapter (panic_cli)",
+  );
 
   return [
-    ...((hourlyRows ?? []) as Record<string, unknown>[]).map(coerceTradeRow),
-    ...((panicRows ?? []) as Record<string, unknown>[]).map(coerceTradeRow),
+    ...hourlyDataRows.map(coerceTradeRow),
+    ...panicDataRows.map(coerceTradeRow),
   ];
 }
 
@@ -1166,7 +1199,9 @@ export async function getAuditOutcomesUntilAdapter(
     .order("started_at", { ascending: true })
     .limit(AUDIT_ROW_CAP);
   if (error) throw new Error(`getAuditOutcomesUntil: ${error.message}`);
-  return (data ?? []) as AuditLogRow[];
+  const rows = (data ?? []) as AuditLogRow[];
+  assertRowCapNotBreached(rows.length, AUDIT_ROW_CAP, "getAuditOutcomesUntilAdapter");
+  return rows;
 }
 
 async function getConfigAdapter(sb: SupabaseClient, key: string): Promise<string | null> {
@@ -1209,7 +1244,7 @@ function usage(): string {
     "Render mode (default):",
     "  --week YYYY-Www     ISO week to render (default: the previous completed week)",
     "  --out PATH          output path (default: docs/trading-journal/<week>.md)",
-    "  --force              overwrite an existing journal file (refused by default)",
+    "  --force             overwrite an existing journal file (refused by default)",
     "",
     "Trial-counter mode (the only DB write this script ever makes):",
     "  --record-accepted-bump --ref <ADR-path-or-issue>",

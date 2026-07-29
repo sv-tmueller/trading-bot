@@ -7,6 +7,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { AuditLogRow, HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
 import {
+  assertRowCapNotBreached,
   type ClosedTradeResult,
   computeCumulativeStats,
   computeWeeklyAggregates,
@@ -22,6 +23,7 @@ import {
   proposeParamChange,
   type RenderData,
   renderJournal,
+  RowCapBreachedError,
   runWeeklyReview,
   type WeeklyReviewDeps,
   weekWindowUtc,
@@ -938,4 +940,27 @@ Deno.test("runWeeklyReview (render mode): getHourlyTradesUntil receives the alre
   };
   await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
   assertEquals(capturedScans, providedScans);
+});
+
+// ---------------------------------------------------------------------------
+// Real-adapter row cap guard (finding 12). The adapters themselves are
+// untested per the backfill precedent (they need a real SupabaseClient), but
+// the throw-on-breach logic they all share is a small pure function, unit
+// tested directly here.
+// ---------------------------------------------------------------------------
+
+Deno.test("assertRowCapNotBreached: throws when a windowed read comes back exactly at the cap (finding 12)", () => {
+  // Ascending order (bar_ts/fill_time/started_at asc) means a silently
+  // truncated page drops the NEWEST rows and renders an empty-looking
+  // week -- _shared/db.ts's getAuditLogSince precedent throws rather than
+  // truncate for the same reason.
+  assertThrows(
+    () => assertRowCapNotBreached(20000, 20000, "getScansUntil"),
+    RowCapBreachedError,
+    "20000",
+  );
+});
+
+Deno.test("assertRowCapNotBreached: does not throw below the cap", () => {
+  assertRowCapNotBreached(19999, 20000, "getScansUntil");
 });
