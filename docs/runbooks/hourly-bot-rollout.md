@@ -12,9 +12,11 @@ lead-ratified rulings on #478).
   runbook-driven decision (`docs/runbooks/mvp2-deploy-and-decommission.md`) that has
   never happened for either bot.
 - **`HOURLY_SHORTS_ENABLED=false` is non-negotiable for this rollout.** The
-  `/v2/assets/SPY` shortability fields are not yet confirmed against a live response
-  (§12 appendix); shorts stay disabled until that capture lands and a follow-up change
-  flips the flag deliberately. Do not set this to `true` as part of this runbook.
+  `/v2/assets/SPY` shortability fields **are confirmed** against a live paper response
+  (§12 appendix, row 4 — `shortable: true`, `easy_to_borrow: true` for SPY itself), so
+  this is **not** a capability gap; the flag stays `false` as the batch's own standing
+  decision, independent of SPY being shortable. Do not set this to `true` as part of
+  this runbook.
 - **`bot_config.paused` starts `true`** (repo-facts baseline, #479) and must stay
   `true` until migration `0013_retire_daily_check_cron.sql` has been applied — see the
   red-letter precondition in §6. Resuming before 0013 re-arms the retired daily-check
@@ -148,7 +150,7 @@ any of these is out of range (fail-closed, not merely undocumented).
 (a leftover from the retired daily-check bot) — check `GET /v2/positions` for a
 `UPRO` entry, or the `status` digest's `alpaca.position` field. After `0013` applies,
 the retired daily-check bot has no scheduled exit path for that position (this is
-intentional — kill-switch drawdown is the retained coverage, §11), so a residual
+intentional — kill-switch drawdown is the retained coverage, §6), so a residual
 position matters here twice over: it consumes buying power the hourly bot's sizing
 reads through account equity, and it folds directly into the baseline below — a UPRO
 drawdown alone could then trip the hourly bot's −15% auto-pause floor with no hourly
@@ -169,7 +171,7 @@ on conflict (key) do nothing;  -- refuses to overwrite an existing baseline
 
 Verify: `select value from bot_config where key = 'hourly_experiment_start_equity';`
 returns the value just set (or the original one, if this was accidentally re-run).
-A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:428`,
+A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:613-617`,
 `error:DataError`) — this step is not optional before the first scan that could trade.
 
 ## §6 Resume — 0013-first precondition (red letter)
@@ -204,11 +206,15 @@ this point on).
 ## §7 Layer-B live smoke (T9)
 
 **Dependency, stated plainly:** this smoke test is only meaningful **after** the
-Layer-B pin (§12 appendix) has been merged from real capture evidence. This PR (PR-A)
-ships `assertPaperAccount()` with its fail-closed throw **intact** (§12) — running the
-smoke test before the pin lands will legitimately return `error:PaperGuardFailed`
-instead of the outcome below. That is expected, not a bug report; it means "come back
-after the Layer-B pin PR merges," not "something is broken."
+Layer-B pin has merged **and** the deployed `hourly-check` function has been rebuilt
+from that merge. The T1 capture (§12 appendix) is done, but the pin itself — the code
+change to `assertPaperAccount()` — is PR #489, **not yet merged as of this writing**;
+PR-A (#484) shipped only the pre-pin unconditional fail-closed throw, which is what
+both `main` and the currently-deployed function (route (c), built from `3afdaa9`, §2)
+still carry. Running the smoke test now will legitimately return
+`error:PaperGuardFailed` instead of the outcome below. That is expected, not a bug
+report; it means "come back after #489 merges and `hourly-check` is redeployed," not
+"something is broken."
 
 **Run outside RTH only.** The server-side function has no `CLAUDE_AGENT_NO_BROKER`
 (that guard only protects in-process/agent-spawned calls) — during RTH this curl is a
@@ -245,7 +251,7 @@ curl -sS "https://data.alpaca.markets/v2/stocks/SPY/bars?timeframe=1Hour&feed=ie
   -H "APCA-API-SECRET-KEY: $ALPACA_SECRET_KEY" | jq '.bars[] | {t, o, h, l, c}'
 ```
 
-Four checks against the shipped `isBarPartial()` (`supabase/functions/hourly-check/logic.ts:153-164`):
+Four checks against the shipped `isBarPartial()` (`supabase/functions/hourly-check/logic.ts:198-209`):
 
 1. **Interior bars are top-of-hour UTC.** Every bar's `t` except the session-open/close
    edges lands exactly on `:00:00Z`.
@@ -273,7 +279,7 @@ runbook documents its gate list so the checklist lives in one place:
 
 **Merge gates — ALL must be checked off on #479 before PR-B merges:**
 
-1. PR-A (this PR) merged, CI green.
+1. PR-A (#484) merged, CI green.
 2. **`hourly-check` deployed and confirmed present in the dev project's function
    list** (`supabase functions list --project-ref qdaxxsuicyiscdvsdowc`, or the
    Dashboard's Edge Functions page). This gate stays **permanently** — even once the
@@ -282,8 +288,8 @@ runbook documents its gate list so the checklist lives in one place:
    confirms it.
 3. #480 (post-fill journaling failure window: bounded retry + reconciliation
    recovery) merged and deployed.
-4. Layer-B pin merged from a real capture (§12 appendix) — not the fail-closed
-   placeholder this PR ships.
+4. Layer-B pin merged from a real capture (§12 appendix) — PR #489, not PR-A (#484)'s
+   pre-pin fail-closed placeholder.
 5. T9 evidence (§7) posted on #479, outcome `skipped:market_closed`.
 6. T10 evidence (§8) posted on #479, inequality holds with the observed latency.
 7. §4's secrets set on `qdaxxsuicyiscdvsdowc`.
@@ -327,8 +333,9 @@ Any point in this rollout can be unwound without code changes:
   `select cron.unschedule('hourly-check');` in the SQL editor, or a follow-up guarded
   migration mirroring `0013`'s pattern. Function code and deployed Edge Function are
   untouched either way — this is schedule-only, same as `0013`.
-- **Before `0014` exists** (this PR's state), there is nothing to unschedule — the
-  cron block ships fully commented out, so "rollback" is simply not merging PR-B.
+- **Before `0014` exists** (current state — PR-B is not yet created), there is nothing
+  to unschedule — the cron block ships fully commented out, so "rollback" is simply
+  not merging PR-B.
 
 ## §12 Appendix — captures, citations, and what each pins
 
@@ -356,7 +363,7 @@ prefix):
 | 1 | `/v2/clock` `next_close` field | `supabase/functions/_shared/alpaca.ts`'s `getClock()` (`nextClose`, used by the session-close flatten mechanic) | **Yes** — `next_close` present, RFC3339-with-offset, parses via `requireNumber`/`Date.parse` as coded; no change needed |
 | 2 | `/v2/account` paper-account marker | `supabase/functions/_shared/alpaca.ts`'s `assertPaperAccount()` (Layer B, spec §8.3) | **Yes — pinned.** The marker is a string `account_number` starting with `"PA"`; `assertPaperAccount()`'s unconditional throw was replaced with this check (#479 T3, `alpaca.ts`/`alpaca.test.ts` only). Fail-closed retained: missing, non-string, or non-`"PA"`-prefixed `account_number` still throws `PaperGuardFailedError` with the raw number masked to its prefix |
 | 3 | `/v2/calendar` `open`/`close` HH:MM fields | `supabase/functions/_shared/marketdata.ts`'s `getCalendarSessions()` | **Yes** — response carries both `open`/`close` (`"HH:MM"`, as read) and a differently-formatted `session_open`/`session_close` (`"HHMM"`, no colon, for extended hours); `getCalendarSessions` reads only `e.open`/`e.close` and `etHHMMToUtcMs` splits on `":"`, so the no-colon extended-hours fields are never touched. No code change needed |
-| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | **Yes** — field names confirmed; SPY itself is shortable (`shortable: true`, `easy_to_borrow: true`), so the §7 fallback (shorts disabled) was never needed on capability grounds. `HOURLY_SHORTS_ENABLED=false` (§4) remains the standing rollout constraint regardless |
+| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | **Yes** — field names confirmed; SPY itself is shortable (`shortable: true`, `easy_to_borrow: true`), so the §1 fallback (shorts disabled) was never needed on capability grounds. `HOURLY_SHORTS_ENABLED=false` (§1/§4) remains the standing rollout constraint regardless |
 | 5 | Bracket-on-short support | `hourly-check/logic.ts`'s SHORT-entry path (OCO fallback) | **Resolved by docs citation, not a live capture** — see #479's T4 comment: current published Alpaca docs (`docs.alpaca.markets/docs/orders-at-alpaca`, `docs.alpaca.markets/reference/postorder`) document no restriction against `order_class: "bracket"` + `side: "sell"`, but the decision (sub-plan-ratified) is to keep the OCO fallback regardless this package; switching to a single bracket call for shorts is a follow-up, size:S, only after a live paper capture independently corroborates the docs reading |
 | 6 | Bracket entry `time_in_force` | `placeBracketOrder`/`placeMarketOrder` (both default `"day"`) | **Resolved by docs citation** — same #479 T4 comment: Alpaca's docs state bracket/OCO `time_in_force` "must be `day` or `gtc`"; `"day"` (already used everywhere in this repo) is valid, no code change needed |
 
