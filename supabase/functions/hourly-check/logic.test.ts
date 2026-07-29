@@ -787,6 +787,39 @@ Deno.test("flatten scan: cancels resting legs before closing the position, journ
   assertEquals(rec.trades.some((t) => t.reason === "hourly_session_close_exit"), true);
 });
 
+Deno.test("recovery: a throwing getHourlyScansPendingEntry does not abort the scan -- the flatten close-out still runs (should-fix finding 3)", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.getClock = () =>
+    Promise.resolve({ isOpen: true, nextClose: new Date("2026-07-27T15:37:00Z").getTime() }); // <=1h away -> flatten scan
+  deps.alpaca.getPosition = () => Promise.resolve(18); // open long
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // legs resting -- not naked
+  deps.alpaca.placeMarketOrder = (_args) => Promise.resolve(fill({ orderId: "flatten1", qty: 18 }));
+  deps.db.getHourlyScansPendingEntry = (_symbol, _sinceIso) => {
+    throw new Error("db down");
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:session_close_flatten_only");
+  assertEquals(rec.cancelledOrderIds, ["leg-tp", "leg-sl"]);
+  assertEquals(rec.trades.some((t) => t.reason === "hourly_session_close_exit"), true);
+});
+
+Deno.test("recovery: a throwing listFilledOrdersSince during recovery does not abort the scan -- the flatten close-out still runs (should-fix finding 3)", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.getClock = () =>
+    Promise.resolve({ isOpen: true, nextClose: new Date("2026-07-27T15:37:00Z").getTime() }); // <=1h away -> flatten scan
+  deps.alpaca.getPosition = () => Promise.resolve(18); // open long
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // legs resting -- not naked
+  deps.alpaca.placeMarketOrder = (_args) => Promise.resolve(fill({ orderId: "flatten1", qty: 18 }));
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pendingScanRow()]);
+  deps.alpaca.listFilledOrdersSince = () => {
+    throw new Error("broker down");
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:session_close_flatten_only");
+  assertEquals(rec.cancelledOrderIds, ["leg-tp", "leg-sl"]);
+  assertEquals(rec.trades.some((t) => t.reason === "hourly_session_close_exit"), true);
+});
+
 Deno.test("duplicate claim never touches the hourly_scans row (winner already wrote it)", async () => {
   const { deps, rec } = buildDeps();
   let calls = 0;
@@ -906,23 +939,75 @@ Deno.test("reconciliation: a panic_cli fill on the symbol is not re-journaled as
 // post-fill writes (PR #477 round-2 review finding 2 + corollary).
 // ---------------------------------------------------------------------------
 
-Deno.test("step 20: insertTrade fails all attempts -> success:journal_degraded; notes carry the label + order id; the entryOrderId journal update is still attempted", async () => {
+Deno.test("step 20: insertTrade fails all attempts -> success:journal_degraded; the journal group is skipped (not attempted), so entry_order_id stays NULL and the row keeps matching the recovery signature (must-fix round 1 finding 1)", async () => {
   const { deps, rec } = buildDeps();
   let insertCalls = 0;
+  let journalPostOrderCalls = 0;
+  const realUpsert = deps.db.upsertHourlyScan;
   deps.db.insertTrade = (_p) => {
     insertCalls++;
     return Promise.reject(new Error("db down"));
+  };
+  deps.db.upsertHourlyScan = (p) => {
+    if (p.entryOrderId !== null) journalPostOrderCalls++;
+    return realUpsert(p);
   };
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "success:journal_degraded");
   assertEquals(insertCalls, 3); // POST_FILL_WRITE_ATTEMPTS
   assertEquals(rec.trades.length, 0);
+  assertEquals(journalPostOrderCalls, 0); // journal group never attempted -- no trades row landed
   const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
-  assertEquals(notes, "failed=[insert_trade] order=bracket1");
-  // journal called twice regardless: pre-order (entryOrderId null), then the
-  // post-order update -- insertTrade's exhaustion never blocks it.
-  assertEquals(rec.scans.length, 2);
-  assertEquals(rec.scans[1].entryOrderId, "bracket1");
+  assertEquals(notes, "failed=[insert_trade,journal] order=bracket1");
+  // Only the pre-order journal ran; entry_order_id stays NULL, preserving
+  // the recovery signature (decision IN ('LONG','SHORT') AND entry_order_id
+  // IS NULL) T3's recovery step depends on.
+  assertEquals(rec.scans.length, 1);
+  assertEquals(rec.scans[0].entryOrderId, null);
+});
+
+Deno.test("recovery: an insert_trade-only fault leaves the scan row pending; the next scan's recovery adopts it (must-fix round 1 finding 1)", async () => {
+  const { deps, rec } = buildDeps();
+  deps.db.insertTrade = (_p) => Promise.reject(new Error("db down"));
+  deps.alpaca.placeBracketOrder = (_args) =>
+    Promise.resolve(fill({ orderId: "bracket1", fillTime: "2026-07-27T15:05:00Z" }));
+
+  const outcome1 = await runHourlyCheck(deps);
+  assertEquals(outcome1, "success:journal_degraded");
+  assertEquals(rec.trades.length, 0);
+  assertEquals(rec.scans[rec.scans.length - 1].entryOrderId, null);
+
+  // --- Run 2: recovery adopts the pending row left by run 1. bar_ts is
+  // BAR1's timestamp (14:00Z); the fill (15:05Z) sits inside the recovery
+  // window [bar_ts+1h, bar_ts+2h) = [15:00Z, 16:00Z).
+  deps.db.insertTrade = (p) => {
+    rec.trades.push(p);
+    return Promise.resolve(rec.trades.length);
+  };
+  deps.db.getHourlyScansPendingEntry = () =>
+    Promise.resolve([pendingScanRow({ bar_ts: BAR1.timestamp, decision: "LONG" })]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "bracket1",
+        side: "BUY",
+        qty: 18,
+        fillPrice: 550,
+        fillTime: "2026-07-27T15:05:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(18); // still open at the broker
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // resting -- not naked
+  deps.config.hourlyMaxEntriesPerDay = 0; // keep run 2's own decision from muddying the assertion
+
+  const outcome2 = await runHourlyCheck(deps);
+  assertEquals(typeof outcome2, "string");
+  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.trades[0].brokerOrderId, "bracket1");
+  const recoveredScan = rec.scans.find((s) =>
+    s.barTs === BAR1.timestamp && s.entryOrderId === "bracket1"
+  );
+  assertEquals(recoveredScan?.entryOrderId, "bracket1");
 });
 
 Deno.test("step 20: insertTrade throws once then succeeds -> success, exactly 2 insertTrade calls", async () => {
@@ -965,7 +1050,7 @@ Deno.test("step 20: kill-switch clear-group fails every attempt while insertTrad
   assertEquals(notes, "failed=[kill_switch_clear] order=bracket1");
 });
 
-Deno.test("step 20: all three post-fill groups fail -> notes enumerate all three labels in fixed order", async () => {
+Deno.test("step 20: all three post-fill groups fail -> notes enumerate all three labels in fixed order (journal is skipped once insert_trade fails, not independently attempted -- must-fix round 1 finding 1)", async () => {
   const { deps, rec } = buildDeps();
   deps.db.getConfig = (key) => {
     if (key === "hourly_kill_switch_active") return Promise.resolve("true");
@@ -978,17 +1063,31 @@ Deno.test("step 20: all three post-fill groups fail -> notes enumerate all three
     return Promise.resolve();
   };
   deps.db.insertTrade = (_p) => Promise.reject(new Error("boom"));
+  let postOrderJournalCalls = 0;
   const realUpsert = deps.db.upsertHourlyScan;
   deps.db.upsertHourlyScan = (p) => {
-    // Only the post-order journal (entryOrderId set) belongs to the retried
-    // group -- the pre-order journal must still succeed normally.
+    if (p.entryOrderId !== null) postOrderJournalCalls++;
+    return realUpsert(p);
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:journal_degraded");
+  assertEquals(postOrderJournalCalls, 0); // journal group never attempted -- insert_trade already failed
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes, "failed=[kill_switch_clear,insert_trade,journal] order=bracket1");
+});
+
+Deno.test("step 20: journal group fails alone (insertTrade succeeds) -> success:journal_degraded, trades row present, notes=[journal]", async () => {
+  const { deps, rec } = buildDeps();
+  const realUpsert = deps.db.upsertHourlyScan;
+  deps.db.upsertHourlyScan = (p) => {
     if (p.entryOrderId !== null) return Promise.reject(new Error("boom"));
     return realUpsert(p);
   };
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "success:journal_degraded");
+  assertEquals(rec.trades.length, 1);
   const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
-  assertEquals(notes, "failed=[kill_switch_clear,insert_trade,journal] order=bracket1");
+  assertEquals(notes, "failed=[journal] order=bracket1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1200,37 @@ Deno.test("recovery: partial-fault replay -- trades row already exists, provenan
   assertEquals(recoveredScan?.entryOrderId, "recovered1");
 });
 
+Deno.test("recovery: a fill already journaled under an EXIT reason is not adopted as entry provenance, even same-side and in-window (must-fix round 1 finding 2)", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "SHORT" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  const exitJournaledFill: TradeRow = {
+    symbol: "SPY",
+    side: "SELL",
+    qty: 5,
+    fill_price: 551,
+    fill_time: "2026-07-26T15:10:00Z", // inside [bar_ts+1h, bar_ts+2h)
+    reason: "hourly_session_close_exit",
+    broker_order_id: "exit-already-journaled",
+  };
+  deps.db.getTradesSince = () => Promise.resolve([exitJournaledFill]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "exit-already-journaled",
+        side: "SELL",
+        qty: 5,
+        fillPrice: 551,
+        fillTime: "2026-07-26T15:10:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.config.hourlyMaxEntriesPerDay = 0; // keep this run's own decision from muddying the assertion
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:max_entries_reached");
+  assertEquals(rec.trades.length, 0); // no new insertTrade
+  assertEquals(rec.scans.some((s) => s.barTs === pending.bar_ts), false); // row stays pending, untouched
+});
+
 Deno.test("recovery: no matching fill -> pending row untouched", async () => {
   const { deps, rec } = buildDeps();
   const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "LONG" });
@@ -1165,6 +1295,30 @@ Deno.test("recovery: same-run knock-on -- after adoption entryConsideredOpen is 
     takeProfitPrice: 554,
     stopLossPrice: 547,
   });
+});
+
+Deno.test("recovery: an adoption's discovered-fills read is reused by exit-fill discovery -- exactly one listFilledOrdersSince call (nit 7)", async () => {
+  const { deps } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: "2026-07-26T14:00:00Z", decision: "LONG" });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  let calls = 0;
+  deps.alpaca.listFilledOrdersSince = () => {
+    calls++;
+    return Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  };
+  deps.alpaca.getPosition = () => Promise.resolve(12); // still open -- feeds exit-fill discovery too
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // resting -- not naked
+  deps.config.hourlyMaxEntriesPerDay = 0; // keep this run's own decision out of the way
+  await runHourlyCheck(deps);
+  assertEquals(calls, 1);
 });
 
 // ---------------------------------------------------------------------------
