@@ -328,18 +328,31 @@ Any point in this rollout can be unwound without code changes:
 
 ## §12 Appendix — captures, citations, and what each pins
 
-**Capture status: pending operator.** No `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` was
-present in this agent session (`env | grep ALPACA` empty) — see the "Capture evidence:
-paper API shapes (T1)" handoff comment on #479 and `scripts/capture_alpaca_shapes.sh`
-(this PR). Once evidence returns, this appendix should be updated with the sanitized
-capture output and this table's "Confirmed?" column flipped.
+**Capture status: returned.** See the "Capture evidence — four read-only paper GETs
+(T1), operator-run 2026-07-29" comment on #479 — `scripts/capture_alpaca_shapes.sh`
+run against `paper-api.alpaca.markets` (hardcoded, non-overridable), **4/4 PASS, 0/4
+FAIL**. Sanitized output (account `id` dropped, `account_number` masked to its 2-char
+prefix):
+
+```json
+// GET /v2/clock
+{ "timestamp": "2026-07-29T05:27:57.818080188-04:00", "is_open": false,
+  "next_open": "2026-07-29T09:30:00-04:00", "next_close": "2026-07-29T16:00:00-04:00" }
+// GET /v2/account
+{ "account_number": "PA****", "status": "ACTIVE", "equity": "1017330.61", "currency": "USD" }
+// GET /v2/calendar?start=2026-07-29&end=2026-08-05
+[ { "close": "16:00", "date": "2026-07-29", "open": "09:30",
+    "session_close": "2000", "session_open": "0400", "settlement_date": "2026-07-30" }, ... ]
+// GET /v2/assets/SPY
+{ "symbol": "SPY", "tradable": true, "shortable": true, "easy_to_borrow": true, "fractionable": true }
+```
 
 | # | `[to verify]` item | Code it pins | Confirmed? |
 |---|---|---|---|
-| 1 | `/v2/clock` `next_close` field | `supabase/functions/_shared/alpaca.ts`'s `getClock()` (`nextClose`, used by the session-close flatten mechanic) | No — parses via `requireNumber`/`Date.parse`; missing/unparseable is already a hard error regardless |
-| 2 | `/v2/account` paper-account marker | `supabase/functions/_shared/alpaca.ts`'s `assertPaperAccount()` (Layer B, spec §8.3) | **No — ships with the fail-closed throw intact** (see the ignored positive test in `alpaca.test.ts`, gated on this capture) |
-| 3 | `/v2/calendar` `open`/`close` HH:MM fields | `supabase/functions/_shared/marketdata.ts`'s `getCalendarSessions()` | No — missing/unparseable `open`/`close` is already a hard error (`DataError`) regardless |
-| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | No — `HOURLY_SHORTS_ENABLED=false` (§4) is the fail-closed override until confirmed |
+| 1 | `/v2/clock` `next_close` field | `supabase/functions/_shared/alpaca.ts`'s `getClock()` (`nextClose`, used by the session-close flatten mechanic) | **Yes** — `next_close` present, RFC3339-with-offset, parses via `requireNumber`/`Date.parse` as coded; no change needed |
+| 2 | `/v2/account` paper-account marker | `supabase/functions/_shared/alpaca.ts`'s `assertPaperAccount()` (Layer B, spec §8.3) | **Yes — pinned.** The marker is a string `account_number` starting with `"PA"`; `assertPaperAccount()`'s unconditional throw was replaced with this check (#479 T3, `alpaca.ts`/`alpaca.test.ts` only). Fail-closed retained: missing, non-string, or non-`"PA"`-prefixed `account_number` still throws `PaperGuardFailedError` with the raw number masked to its prefix |
+| 3 | `/v2/calendar` `open`/`close` HH:MM fields | `supabase/functions/_shared/marketdata.ts`'s `getCalendarSessions()` | **Yes** — response carries both `open`/`close` (`"HH:MM"`, as read) and a differently-formatted `session_open`/`session_close` (`"HHMM"`, no colon, for extended hours); `getCalendarSessions` reads only `e.open`/`e.close` and `etHHMMToUtcMs` splits on `":"`, so the no-colon extended-hours fields are never touched. No code change needed |
+| 4 | `/v2/assets/SPY` `shortable`/`easy_to_borrow` fields | `supabase/functions/_shared/alpaca.ts`'s `getAssetShortability()` | **Yes** — field names confirmed; SPY itself is shortable (`shortable: true`, `easy_to_borrow: true`), so the §7 fallback (shorts disabled) was never needed on capability grounds. `HOURLY_SHORTS_ENABLED=false` (§4) remains the standing rollout constraint regardless |
 | 5 | Bracket-on-short support | `hourly-check/logic.ts`'s SHORT-entry path (OCO fallback) | **Resolved by docs citation, not a live capture** — see #479's T4 comment: current published Alpaca docs (`docs.alpaca.markets/docs/orders-at-alpaca`, `docs.alpaca.markets/reference/postorder`) document no restriction against `order_class: "bracket"` + `side: "sell"`, but the decision (sub-plan-ratified) is to keep the OCO fallback regardless this package; switching to a single bracket call for shorts is a follow-up, size:S, only after a live paper capture independently corroborates the docs reading |
 | 6 | Bracket entry `time_in_force` | `placeBracketOrder`/`placeMarketOrder` (both default `"day"`) | **Resolved by docs citation** — same #479 T4 comment: Alpaca's docs state bracket/OCO `time_in_force` "must be `day` or `gtc`"; `"day"` (already used everywhere in this repo) is valid, no code change needed |
 
