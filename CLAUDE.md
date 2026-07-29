@@ -67,6 +67,11 @@ curl -i -X POST "https://<ref>.supabase.co/functions/v1/panic?action=pause" -H "
 bash scripts/status.sh   # renders the JSON digest from .env.status via curl + jq
 #   or directly: curl -s ".../functions/v1/status" -H "x-status-token: <token>" | jq .
 
+# Weekly-review journal (read-only, operator-run script — no cron, no Edge Function;
+# see docs/runbooks/weekly-review.md)
+deno run --allow-env --allow-net --allow-write=docs/trading-journal \
+  --env-file=.env.weekly scripts/render_weekly_journal.ts [--week YYYY-Www] [--force]
+
 # Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5
 ```

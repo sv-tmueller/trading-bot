@@ -20,7 +20,11 @@ Write the entry after the Friday US market close so the full week's data is avai
 
 ## File contract
 
-One Markdown file per ISO trading week. Use `TEMPLATE.md` as the starting point.
+One Markdown file per ISO trading week. Use `TEMPLATE.md` as the starting point for the daily
+regime bot's entries (superseded by the hourly candlestick bot as of P1, #465). Hourly-era entries
+are instead rendered by `scripts/render_weekly_journal.ts` (#481) -- see
+`docs/runbooks/weekly-review.md` for the invocation. Either way, an existing entry is never
+overwritten silently.
 
 ## Naming and location
 
@@ -30,4 +34,6 @@ One Markdown file per ISO trading week. Use `TEMPLATE.md` as the starting point.
 
 ## Existing entries
 
-_None yet — the journal opens with the first week the bot trades live._
+See the files in this directory (`2026-W25.md` was the first live week; `2026-W31.md` records the
+daily regime bot's deprecation). This line is intentionally not an exhaustive index — the
+filesystem listing is the source of truth.

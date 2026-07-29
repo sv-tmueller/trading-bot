@@ -44,3 +44,7 @@ supabase/.branches/
 # ALPACA_SECRET_KEY for scripts/capture_alpaca_shapes.sh's four read-only
 # GETs. Paper keys only; never committed.
 .env.capture
+
+# Local weekly-review config (#481) — Supabase service-role creds for
+# scripts/render_weekly_journal.ts; see .env.weekly.example
+.env.weekly
