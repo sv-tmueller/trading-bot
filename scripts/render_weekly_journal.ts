@@ -605,7 +605,6 @@ export function proposeParamChange(
 // ---------------------------------------------------------------------------
 
 export interface RenderData {
-  weekLabel: string;
   title: string;
   agg: WeeklyAggregates;
   closedTradesInWeek: ClosedTradeResult[];
@@ -619,6 +618,14 @@ export interface RenderData {
 
 function fmtMoney(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Null-aware money formatting, mirroring fmtPct's null -> "n/a" convention
+// (finding 1, PR #482 fix round 1): a week with audit rows but zero
+// hourly_scans rows carries genuine nulls for first/min/last equity -- never
+// coerce those to $0.00.
+function fmtMoneyOrNa(n: number | null): string {
+  return n === null ? "n/a (no scans this week)" : `$${fmtMoney(n)}`;
 }
 
 function fmtPct(n: number | null): string {
@@ -843,12 +850,12 @@ export function renderJournal(data: RenderData): string {
     "",
     "## Equity vs the -15% floor",
     "",
-    `- First: $${fmtMoney(agg.equity.first ?? 0)}`,
-    `- Min: $${fmtMoney(agg.equity.min ?? 0)}`,
-    `- Last: $${fmtMoney(agg.equity.last ?? 0)}`,
+    `- First: ${fmtMoneyOrNa(agg.equity.first)}`,
+    `- Min: ${fmtMoneyOrNa(agg.equity.min)}`,
+    `- Last: ${fmtMoneyOrNa(agg.equity.last)}`,
     `- Floor baseline (\`hourly_experiment_start_equity\`): $${fmtMoney(agg.equity.floorBaseline)}`,
     `- Floor price (-15%): $${fmtMoney(agg.equity.floorPrice)}`,
-    `- Breached this week: ${agg.equity.breached ? "yes" : "no"}`,
+    `- Breached this week: ${agg.equity.first === null ? "n/a" : (agg.equity.breached ? "yes" : "no")}`,
     `- Auto-paused events (\`success:auto_paused\`): ${autoPausedLine}`,
     "",
     "---",
@@ -987,7 +994,6 @@ async function runRenderMode(
   const proposal = proposeParamChange(cumulative);
 
   const markdown = renderJournal({
-    weekLabel,
     title: win.title,
     agg,
     closedTradesInWeek,

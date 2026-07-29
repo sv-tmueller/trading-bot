@@ -582,7 +582,6 @@ function buildFixtureRenderData(): RenderData {
   const proposal = proposeParamChange(cumulative);
 
   return {
-    weekLabel: "2026-W31",
     title: win.title,
     agg,
     closedTradesInWeek: pairing.closedTrades,
@@ -650,12 +649,39 @@ Deno.test("renderJournal: below the proposal's minimum sample renders the gated 
   assertEquals(rendered.includes("HOURLY_BRACKET_R_MULTIPLE"), false);
 });
 
+Deno.test("renderJournal: audit rows present but zero hourly_scans rows renders n/a equity, not $0.00", () => {
+  // Reproduces the post-auto-pause week: hourly-check kept running (audit
+  // rows exist) but no bars were scanned (e.g. paused before the first scan
+  // of the week) -- this escapes renderIsQuietWeek (which requires empty
+  // audit counts) and must not fabricate $0.00 from genuine nulls.
+  const win = weekWindowUtc(2026, 31);
+  const auditRows = [auditRow({ started_at: "2026-07-27T14:00:00Z", outcome: "skipped:trading_paused" })];
+  const agg = computeWeeklyAggregates([], auditRows, 100000);
+  const cumulative = computeCumulativeStats([]);
+  const data: RenderData = {
+    title: win.title,
+    agg,
+    closedTradesInWeek: [],
+    openEntries: [],
+    orphanExitsInWeek: [],
+    manualInterventionsInWeek: [],
+    cumulative,
+    proposal: proposeParamChange(cumulative),
+    trialCount: 0,
+  };
+  const rendered = renderJournal(data);
+  assertEquals(rendered.includes("$0.00"), false);
+  assertEquals(rendered.includes("- First: n/a (no scans this week)"), true);
+  assertEquals(rendered.includes("- Min: n/a (no scans this week)"), true);
+  assertEquals(rendered.includes("- Last: n/a (no scans this week)"), true);
+  assertEquals(rendered.includes("- Breached this week: n/a"), true);
+});
+
 Deno.test("renderJournal: an all-quiet week renders the README's brief style, not empty tables", () => {
   const win = weekWindowUtc(2026, 32);
   const agg = computeWeeklyAggregates([], [], 100000);
   const cumulative = computeCumulativeStats([]);
   const data: RenderData = {
-    weekLabel: "2026-W32",
     title: win.title,
     agg,
     closedTradesInWeek: [],
