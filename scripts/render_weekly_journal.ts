@@ -159,13 +159,28 @@ function isoWeekOfUtcDate(d: Date): WeekId {
 }
 
 /**
- * The default `--week` target: the ISO week immediately before the one
- * containing `now`, resolved here (main()'s only clock read) so the render
- * layer below never sees a clock (D4). Subtracting a flat 7 calendar days
- * from `now`'s UTC date and taking *that* date's ISO week is exact because
- * ISO weeks are 7-day-aligned -- it also handles ISO-year rollovers for free.
+ * The default `--week` target: the most recent FULLY-ELAPSED Mon-Sat ET
+ * window as of `now`, resolved here (main()'s only clock read) so the
+ * render layer below never sees a clock (D4).
+ *
+ * The ISO week containing `now`'s UTC calendar date runs Mon-Sun, which is a
+ * superset of the trading window's Mon-Sat ET span -- so if `now` has
+ * already reached that week's Saturday-00:00-ET window end (i.e. `now` is
+ * Saturday or Sunday ET), the containing week itself is the most recently
+ * elapsed one (finding 3, PR #482 fix round 1: a flat 7-day subtraction
+ * under-counts by exactly one week on and after the Saturday a week ends,
+ * leaving the review loop permanently a week behind the runbook's "run it on
+ * or after the Saturday" cadence). Otherwise the containing week hasn't
+ * ended yet, so step back a flat 7 calendar days (exact, since ISO weeks are
+ * 7-day-aligned) to the previous ISO week -- this also handles ISO-year
+ * rollovers for free.
  */
 export function previousCompletedWeek(now: Date): WeekId {
+  const containing = isoWeekOfUtcDate(now);
+  const containingWindow = weekWindowUtc(containing.isoYear, containing.isoWeek);
+  if (now.getTime() >= Date.parse(containingWindow.endIsoExclusive)) {
+    return containing;
+  }
   const sevenDaysAgo = new Date(now.getTime() - 7 * MS_PER_DAY);
   return isoWeekOfUtcDate(sevenDaysAgo);
 }

@@ -135,6 +135,31 @@ Deno.test("previousCompletedWeek: crosses an ISO-year boundary correctly", () =>
   assertEquals(result, { isoYear: 2026, isoWeek: 1 });
 });
 
+Deno.test("previousCompletedWeek: running on the Saturday a week ends renders THAT week, not the one before (finding 3)", () => {
+  // now = Sat 1 Aug 2026, 12:00 UTC -- well after 2026-W31's Saturday 00:00
+  // ET window end (04:00 UTC). A flat 7-day subtraction would land on Sat 25
+  // Jul (still W30), one week behind the runbook's "on or after the
+  // Saturday" cadence. The correctly-elapsed week is W31 itself.
+  const result = previousCompletedWeek(new Date("2026-08-01T12:00:00Z"));
+  assertEquals(result, { isoYear: 2026, isoWeek: 31 });
+});
+
+Deno.test("previousCompletedWeek: just before the Saturday 00:00 ET boundary, the week has not elapsed yet", () => {
+  // 2026-W31's window ends at 2026-08-01T04:00:00.000Z (Sat 00:00 ET). One
+  // millisecond before that instant, the week is not yet fully elapsed --
+  // the previous completed week is still W30.
+  const win = weekWindowUtc(2026, 31);
+  const justBefore = new Date(Date.parse(win.endIsoExclusive) - 1);
+  const result = previousCompletedWeek(justBefore);
+  assertEquals(result, { isoYear: 2026, isoWeek: 30 });
+});
+
+Deno.test("previousCompletedWeek: exactly at the Saturday 00:00 ET boundary, the week counts as elapsed", () => {
+  const win = weekWindowUtc(2026, 31);
+  const result = previousCompletedWeek(new Date(win.endIsoExclusive));
+  assertEquals(result, { isoYear: 2026, isoWeek: 31 });
+});
+
 // ---------------------------------------------------------------------------
 // T2 -- arg parsing
 // ---------------------------------------------------------------------------
