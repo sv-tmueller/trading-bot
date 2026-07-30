@@ -20,7 +20,11 @@ lead-ratified rulings on #478).
 - **`bot_config.paused` starts `true`** (repo-facts baseline, #479) and must stay
   `true` until migration `0013_retire_daily_check_cron.sql` has been applied — see the
   red-letter precondition in §6. Resuming before 0013 re-arms the retired daily-check
-  bot's entry crons on the same paper account.
+  bot's entry crons on the same paper account. **For this rollout, §6's resume has
+  already happened** (`paused = 'false'` since 2026-07-29, confirmed in the "T9
+  evidence" comment on #479 — see §2) — the rule above stays in this banner because it
+  is the standing precondition for any future re-pause/resume cycle, not because the
+  flag is still `true` today.
 - **Never run `deno task test:db` / `RUN_DB_TESTS=1 deno task test:db` against the
   dev project (`qdaxxsuicyiscdvsdowc`).** `supabase/functions/_shared/db.test.ts`
   builds its client from `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, which only
@@ -35,7 +39,9 @@ lead-ratified rulings on #478).
 - PR-A (#484) shipped **no cron activation**. `0012_hourly_scans.sql`'s
   `hourly-check` cron block is fully commented out (no `cron.job` row of any kind);
   `0013` (also PR-A, #484) only retires daily-check's entry crons. Activation is
-  `0014`, a separate PR-B (§9), merged last, behind eight checked gates (§9).
+  `0014`, a separate PR-B, merged behind eight checked gates — all eight now closed
+  (§9) — and merging it is what makes the schedule live; see §9's header for what
+  "merging this" means operationally.
 
 ## §2 Already-done ledger
 
@@ -45,7 +51,7 @@ lead-ratified rulings on #478).
 | Design spec + ADR (hourly-candlestick bot) | Done | #466/#471 |
 | 14-detector candlestick port (`_shared/candlestick.ts`) | Done | #467/#470 |
 | Short-side safety-stack retrofit (kill-switch mirror, side-aware panic, `bar_claims`) | Done, merged, **deployed to dev** | #474/#476; CI run [30390432349](https://github.com/sv-tmueller/trading-bot/actions/runs/30390432349) (`deploy` job, "Apply migrations" step green) applied `0011_bar_claims.sql` to `qdaxxsuicyiscdvsdowc` |
-| `hourly-check` Edge Function (signal wiring, bracket orders, paper guard) | Code: Done, merged (#475/#477). Deployment: **Done, via manual route (c)** — `supabase functions deploy hourly-check` on 2026-07-29, present on `qdaxxsuicyiscdvsdowc` as version 1, `ACTIVE`, `verify_jwt: true`, built from local tree at commit `3afdaa9`. **Drift warning (route-(c) freshness hazard, PR #484's amended gate 2):** this snapshot is current only until the next merge touching `hourly-check` or its shared dependencies — **including this very PR** (#489, which changes `_shared/alpaca.ts`'s `assertPaperAccount()`). Re-run the route-(c) deploy after #489 merges; do not treat "present" as "current" without checking the merge time of the most recent touching PR against the deployed version, per the amended gate | #475/#477 for the code; the "Capture evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on #479 for the deploy fact; CI run [30396497143](https://github.com/sv-tmueller/trading-bot/actions/runs/30396497143) (`deploy` job, "Apply migrations" step green) applied `0012_hourly_scans.sql` to `qdaxxsuicyiscdvsdowc` — that run's "Deploy functions" step ran `daily-check kill-switch` only, not `hourly-check` (§3) |
+| `hourly-check` Edge Function (signal wiring, bracket orders, paper guard) | Code: Done, merged (#475/#477, plus #480/#483's post-fill recovery fix and #489's Layer-B pin). Deployment: **Done, via manual route (c), and re-confirmed current** — first deployed 2026-07-29 as version 1 (`3afdaa9`); the T9 evidence gate then caught that version 2 (`2026-07-29T08:48:32Z`) still predated #489's merge (`2026-07-29T10:56:02Z`), so it was redeployed again from `main` at `6cf3daf` — **version 3, `deployed_at 2026-07-29T11:21:51Z`, now current against every merge up to and including #489**. **Drift warning (route-(c) freshness hazard, PR #484's amended gate 2) stays permanent, not resolved by this row:** any PR merging after `2026-07-29T11:21:51Z` that touches `hourly-check` or its shared dependencies makes this row stale again until the next redeploy — check the merge time of the most recent touching PR against the deployed version before relying on "present" as "current," every time, not just once | #475/#477 for the code; the "Capture evidence" and "T9 evidence: Layer-B live smoke" comments on #479 for the deploy history; CI run [30396497143](https://github.com/sv-tmueller/trading-bot/actions/runs/30396497143) (`deploy` job, "Apply migrations" step green) applied `0012_hourly_scans.sql` to `qdaxxsuicyiscdvsdowc` — that run's "Deploy functions" step ran `daily-check kill-switch` only, not `hourly-check` (§3) |
 | `hourly-check` wired into `deploy-dev.yml`'s JWT-verified deploy step | Still pending — blocked on the workflow OAuth scope (see PR #484's Deviation section). **Consequence while pending:** every merge touching `hourly-check` or its shared dependencies requires a fresh manual route-(c) redeploy (row above) to stay current — CI does not do this automatically until this hunk lands, which is why the route-(c) freshness hazard exists at all | `.github/workflows/deploy-dev.yml`; hunk staged, not applied — see §3 |
 | `0013_retire_daily_check_cron.sql` | Done, merged (#479 T6), **and confirmed applied** — `deploy-dev.yml`'s "Apply migrations" step succeeded on the push run for commit `d08a25d` (the PR-A/#484 merge commit), unscheduling `daily-check-1337`/`daily-check-1437` on `qdaxxsuicyiscdvsdowc` | see §6's precondition; the "Capture evidence" comment on #479 (2026-07-29) |
 | Capture evidence (T1): four read-only paper API shape captures | Done — 4/4 PASS, 0/4 FAIL | §12 appendix; "Capture evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on #479 |
@@ -53,6 +59,11 @@ lead-ratified rulings on #478).
 | §4 secrets set on `qdaxxsuicyiscdvsdowc` (incl. `HOURLY_SHORTS_ENABLED=false`, `HOURLY_BOT_PAPER_ONLY=true`) | Done | "Capture evidence" comment on #479 (2026-07-29) |
 | §5 baseline (`hourly_experiment_start_equity`) | Done — `1017330.61`, after correcting a silent `insert ... on conflict do nothing` no-op that had initially left a stale pre-existing `100000.00` row in place (a wrong baseline parses fine and is invisible, unlike a missing one; follow-up filed) | "Capture evidence" comment on #479 (2026-07-29) |
 | Residual-position check (§5 precondition: no leftover UPRO position) | Done — `GET /v2/positions` returned `[]`, consistent with the 2026-07-27 operator liquidation | #465; "Capture evidence" comment on #479 (2026-07-29) |
+| §6 resume (`bot_config.paused` -> `'false'`) | Done, 2026-07-29, after `0013` was confirmed applied per its ledger row above (the red-letter precondition) | "T9 evidence: Layer-B live smoke" comment on #479, "supporting state" block |
+| T9 (§7 Layer-B live smoke) | Done — outcome `skipped:market_closed`, proving Layer A + Layer B both passed on the real paper account before the clock gate | "T9 evidence: Layer-B live smoke" comment on #479; §9 gate 5 |
+| T10 (§8 bar alignment, spec §4's activation gate) | Done — all four checks PASS; observed feed latency <= 1 min, so `7 + 1 = 8 < 10` holds with two minutes of headroom; pinned minute `:07` needed no change | "T10 evidence: bar alignment" comment on #479; §9 gate 6 |
+| T8(b) (gated `RUN_DB_TESTS` roundtrips against a real, local Postgres) | Done — all 13 migrations (0001-0013) apply cleanly; 41/43 roundtrip tests pass (no grant was needed on CLI 2.110.0 — the original claim that a `grant all ... to service_role` step was required on a bare local stack did not reproduce on a second run and has been retracted, #479/#491); the 2 failures are characterized `bar_ts` string-format test-assertion defects with no production-path impact (follow-up filed) — not a §9 gate, but a prerequisite this rollout satisfied before `0014` | "T8(b) evidence" comment on #479 |
+| §9 merge gates (all eight) | **All closed** as of the T10 evidence comment (2026-07-29) | §9; "T9 evidence" and "T10 evidence" comments on #479 |
 
 Both CI runs above are the `push`-event runs immediately following each PR's merge
 commit — the `deploy` job's `Apply migrations` step succeeding is exactly T8(a)'s "DDL
@@ -107,13 +118,17 @@ Once applied (by whichever route), the deploy order is:
    fails closed; no cron trigger means the deployed function is inert until `0014`).
 2. `panic` (`--no-verify-jwt`, `x-panic-token` auth).
 3. `status` (`--no-verify-jwt`, `x-status-token` auth, read-only).
-4. `supabase db push` — applies `0013` (retires daily-check's entry crons; leaves
-   `hourly_scans`/`bar_claims`/`trades` schema from `0011`/`0012` untouched, since
-   those already applied on the #474/#475 merges).
+4. `supabase db push` — applies any pending migrations (`0013` here, retiring
+   daily-check's entry crons; `0014` from PR-B's merge onward, arming the
+   `hourly-check` cron — see §9). `hourly_scans`/`bar_claims`/`trades` schema from
+   `0011`/`0012` is untouched by either, since those already applied on the
+   #474/#475 merges.
 
 Confirm the deploy actually landed — do not rely on the assumption that CI redeployed
-it — using the §9 gate ("hourly-check deployed and confirmed present in the dev
-project's function list") before the operator steps that follow, starting at §4.
+it — using the §9 gate ("hourly-check deployed and confirmed present **and current**
+in the dev project's function list") before the operator steps that follow, starting
+at §4. The "and current" half of that gate is not decorative — it is exactly what
+caught the stale version-2 deploy documented in §2/§9.
 
 ## §4 Secrets
 
@@ -170,8 +185,26 @@ values ('hourly_experiment_start_equity', '<PASTE THE /v2/account EQUITY HERE>')
 on conflict (key) do nothing;  -- refuses to overwrite an existing baseline
 ```
 
+**`do nothing` is silent on an existing row — this is exactly the mechanism that
+produced the wrong `100000.00` baseline during this rollout's own ops window (§2):**
+the `insert` appeared to succeed with no error, but a pre-existing row meant the
+value pasted above was silently discarded. **Do not trust the insert alone — compare
+the value read back against the equity you just read from `/v2/account` before
+proceeding:**
+
+```sql
+select value from bot_config where key = 'hourly_experiment_start_equity';
+```
+
+If the returned value does not match the equity you read in this step, **stop** —
+the baseline is stale from a previous run, not the one you intended to set, and must
+be corrected with an explicit `update` (not another `insert ... on conflict do
+nothing`) before continuing. See #488 for the follow-up that makes a wrong (as
+opposed to missing) baseline visible instead of silent.
+
 Verify: `select value from bot_config where key = 'hourly_experiment_start_equity';`
-returns the value just set (or the original one, if this was accidentally re-run).
+returns the value just set (or the original one, if this was accidentally re-run —
+per the check above, confirm which case this is before proceeding).
 A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:613-617`,
 `error:DataError`) — this step is not optional before the first scan that could trade.
 
@@ -202,9 +235,19 @@ curl -i -X POST "https://qdaxxsuicyiscdvsdowc.supabase.co/functions/v1/panic?act
 `kill-switch`'s cron is unaffected by either the resume or `0013` — it keeps running
 every 5 minutes, 13-21 UTC, Mon-Fri, protecting any position either bot holds,
 including a residual daily-check position if §5 found one (its only exit path from
-this point on).
+this point on). **This is a real but distant backstop for the hourly bot, not its
+primary protection** — `KILL_SWITCH_DRAWDOWN_PCT` defaults to 25% off a 30-day rolling
+high, near-inert for a same-day SPY move; the hourly bot's real protection is its own
+per-trade bracket stop and the session-close flatten scan (§9's "merging this PR
+activates the bot" and §11's rollback both assume this ordering).
 
 ## §7 Layer-B live smoke (T9)
+
+**Status for this rollout: done.** Run 2026-07-29 outside RTH, outcome
+`skipped:market_closed` — see the "T9 evidence: Layer-B live smoke" comment on #479
+and §2/§9's gate 5. The procedure below stays in the runbook for any future
+re-arming (e.g. after a rollback and re-resume) — it is not a step still waiting to
+happen for the current rollout.
 
 **Dependency, stated plainly:** this smoke test is only meaningful once the
 **deployed** `hourly-check` build postdates the Layer-B pin's merge (PR #489). The T1
@@ -249,6 +292,13 @@ limit 1;
 
 ## §8 Bar-alignment (T10, spec §4 — THE activation gate)
 
+**Status for this rollout: done.** Run 2026-07-29 during live RTH — all four checks
+PASS, observed feed latency <= 1 minute, `7 + 1 = 8 < 10` holds with two minutes of
+headroom. See the "T10 evidence: bar alignment" comment on #479 and §2/§9's gate 6;
+`0014` ships the pinned minute `:07` unchanged as a result. The procedure below is
+retained for reference (e.g. if a future minute change per §4's own rule ever needs
+re-verification) — it is not outstanding for this rollout.
+
 Read-only, no order surface. Run during a live RTH session, at approximately `HH:08`
 (minutes past the hour), so at least one bar is old enough to inspect its boundaries:
 
@@ -276,73 +326,218 @@ Record this as its own evidence comment on #479 (per T10); PR-B (`0014`) links i
 re-verifies the minute pin against the observed latency before choosing the cron
 schedule.
 
-## §9 Activation (PR-B, `0014` — NOT built in this PR)
+## §9 Activation (PR-B, `0014`)
 
 `0014_hourly_check_cron_activation.sql` uncomments the `hourly-check` schedule that
-`0012` left commented out (candidate minute `:07`, i.e. `7 13-21 * * 1-5`, per the
-spec's inequality in §8 above — re-verify against §8's observed latency before
-merging). PR-B is **out of scope for this PR** and must not be created here; this
-runbook documents its gate list so the checklist lives in one place:
+`0012` left commented out, at minute `:07` (`7 13-21 * * 1-5`) — re-verified against
+§8's live-measured latency (T10), not merely the spec's candidate value. This
+runbook's own diff, alongside `0014`, **is** PR-B; it is no longer out of scope for
+any PR — the checklist below lives in one place either way.
 
-**Merge gates — ALL must be checked off on #479 before PR-B merges:**
+**Merging this PR activates the bot.** `deploy-dev.yml`'s `deploy` job runs `supabase
+db push` on every push to `main`, which applies `0014` and creates a live `cron.job`
+row named `hourly-check`, schedule `7 13-21 * * 1-5`. **The first live scan is the
+next `:07` of any hour in that 13-21 UTC window, Mon-Fri — within the hour if merged
+during that window, not "the next day's 13:07."** A weekday merge at, say, 15:30 UTC
+produces a live scan 37 minutes later at 16:07Z. At that moment the newest **completed**
+bar (`completed` keeps bars where `bar.timestamp + 1h <= now`, `logic.ts:629`) is the
+`15:00Z` bar — its `[15:00Z, 16:00Z)` span has fully elapsed, while the `16:00Z` bar has
+not — so the candidate is `15:00Z`, not `14:00Z`, and `staleMinutes = (now - barEnd) /
+60000` (`logic.ts:684`) = `(16:07 - 16:00) = 7 < 10` — a scan that can place an order.
+**For that reason, merge outside RTH (before 13:00 UTC or after 21:08 UTC on a weekday,
+or on a weekend) is not merely a recommendation here — it is the stated procedure**, so
+the first scan against this migration is a deliberately-observed one (§10), not
+whatever happens to be firing when CI finishes the push. The window's upper bound is
+`21:08` rather than `21:00` because the schedule's last firing of any weekday is
+`21:07`; merging after `21:08` therefore leaves no firing behind it until the next
+weekday's `13:07`. The bot scans SPY hourly on the Alpaca
+**paper** account and can place a bracket order the first time every one of its own
+gates (paper-account guard, staleness, partial-bar, signal, sizing) passes. There is no
+further human step between merge and that first live scan — the gate list below is the
+only thing standing between "reviewed" and "trading."
 
-1. PR-A (#484) merged, CI green.
-2. **`hourly-check` deployed and confirmed present in the dev project's function
-   list** (`supabase functions list --project-ref qdaxxsuicyiscdvsdowc`, or the
-   Dashboard's Edge Functions page). This gate stays **permanently** — even once the
-   §3 hunk lands on `main` and CI starts deploying `hourly-check` automatically,
-   "CI should have deployed it" is an assumption; this gate is the check that
-   confirms it.
+**Merge gates — all eight checked off on #479 as of 2026-07-29 (T10's close):**
+
+1. PR-A (#484) merged, CI green. **Closed** — #484.
+2. **`hourly-check` deployed and confirmed present *and current* in the dev
+   project's function list** (`supabase functions list --project-ref
+   qdaxxsuicyiscdvsdowc`, or the Dashboard's Edge Functions page). **Closed** —
+   redeployed to version 3 (`deployed_at 2026-07-29T11:21:51Z`), postdating #489's
+   merge (`2026-07-29T10:56:02Z`); see the "T9 evidence: Layer-B live smoke" comment
+   on #479, which also documents this gate catching a stale version-2 deploy first.
+   This gate stays **permanently re-checkable** — even once the §3 hunk lands on
+   `main` and CI starts deploying `hourly-check` automatically, "CI should have
+   deployed it" is an assumption; this gate is the check that confirms it. **Before
+   merging this PR specifically**, re-confirm no PR touching `hourly-check` or its
+   shared dependencies has merged since version 3's `2026-07-29T11:21:51Z` — if one
+   has, redeploy (route (c) or CI, whichever applies) before relying on this gate
+   again.
 3. #480 (post-fill journaling failure window: bounded retry + reconciliation
-   recovery) merged and deployed.
-4. Layer-B pin merged from a real capture (§12 appendix) — PR #489, not PR-A (#484)'s
-   pre-pin fail-closed placeholder.
-5. T9 evidence (§7) posted on #479, outcome `skipped:market_closed`.
+   recovery) merged and deployed. **Closed** — included in the version-3 redeploy
+   (gate 2).
+4. Layer-B pin merged from a real capture (§12 appendix). **Closed** — PR #489, not
+   PR-A (#484)'s pre-pin fail-closed placeholder.
+5. T9 evidence (§7) posted on #479, outcome `skipped:market_closed`. **Closed** —
+   see the "T9 evidence: Layer-B live smoke" comment on #479.
 6. T10 evidence (§8) posted on #479, inequality holds with the observed latency.
-7. §4's secrets set on `qdaxxsuicyiscdvsdowc`.
+   **Closed** — see the "T10 evidence: bar alignment" comment on #479 (observed feed
+   latency <= 1 minute; `7 + 1 = 8 < 10`, two minutes of headroom; the pinned minute
+   `:07` needed no change).
+7. §4's secrets set on `qdaxxsuicyiscdvsdowc`, in particular
+   `HOURLY_SHORTS_ENABLED=false`. **Closed, but on operator attestation, not
+   mechanical proof** — `HOURLY_SHORTS_ENABLED` **defaults to `"true"`**
+   (`config.ts:154`) if the secret is ever unset, unlike `HOURLY_BOT_PAPER_ONLY`,
+   whose being-set is mechanically proven by T9's `skipped:market_closed` outcome
+   (that outcome is only reachable past the config read). Nothing in the evidence
+   chain mechanically proves `HOURLY_SHORTS_ENABLED`'s current value the same way.
+   The lead re-asserted `HOURLY_SHORTS_ENABLED=false` on 2026-07-29 (recorded on
+   #479, "Capture evidence" comment) — that re-assertion, not the original secrets
+   set, is this gate's evidence. #493 tracks fixing the fail-open default so a
+   future unset secret cannot silently re-enable shorts; see the "Capture
+   evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on
+   #479 for the original set, and §10's stop-signal list for the live check this
+   gate cannot replace (a `hourly_scans` row with `decision = 'SHORT'` is an
+   immediate stop-and-roll-back regardless of what this gate says).
 8. §5's baseline row present (residual-position check recorded); `bot_config.paused
-   = 'false'` confirmed (§6).
+   = 'false'` confirmed (§6). **Closed** — baseline `1017330.61`, no residual
+   position, resume confirmed in the "T9 evidence" comment's "supporting state"
+   block on #479.
 
-Merge outside RTH recommended. After merge, verify: `select jobname, schedule, active
-from cron.job where jobname = 'hourly-check';` returns exactly one active row.
+T8(b)'s gated `RUN_DB_TESTS` roundtrips are not a §9 gate but were also completed
+against a local stack (never `qdaxxsuicyiscdvsdowc`) — see the "T8(b) evidence"
+comment on #479: 41/43 pass, the 2 failures are characterized test-assertion defects
+with no production-path impact (follow-up filed), not a schema or migration defect.
+
+Merge outside RTH (stated procedure, not a recommendation — see above). After merge,
+verify: `select jobname, schedule, active from cron.job where jobname =
+'hourly-check';` returns exactly one active row.
 
 ## §10 First-scan verification checklist (T12)
 
-Run once `0014` is live and the first scan has fired:
+Run this immediately after `0014` merges and deploys. **The first `hourly-check`
+firing is the next `:07` of any hour in the `13-21` UTC window, Mon-Fri — within the
+hour if merged during that window** (schedule `7 13-21 * * 1-5`), not specifically
+`13:07`. §9's merge-outside-RTH procedure exists precisely so this first firing is a
+deliberately-observed `skipped:market_closed` or the deliberately-observed first RTH
+scan, not an unplanned mid-session scan racing the merge. This is an operator task: it
+reads live `audit_log`/`hourly_scans`/`cron.job`/`net._http_response` rows on
+`qdaxxsuicyiscdvsdowc`, which an agent session has no credentials for. Once `0014` is
+live and the first scan has fired, confirm:
 
 - [ ] First-of-session scan resolves `skipped:partial_bar`, **not**
   `skipped:stale_data` — live proof of the §4 guard-precedence ordering
-  (`hourly-check/logic.ts`'s gate ladder).
+  (`hourly-check/logic.ts`'s gate ladder). Exactly one `partial_bar` per session is
+  correct (the session-open stub); a second consecutive one inside the same session is
+  not (see the stop-and-roll-back list below).
 - [ ] A `hourly_scans` row exists for the scanned bar (including SKIP rows — §9's
   "one row per scan, including skips" contract).
 - [ ] `select jobname, active from cron.job where jobname = 'hourly-check';` shows
-  `active = true`.
-- [ ] No `error:*` outcomes in `audit_log` for `script_name = 'hourly-check'`.
+  `active = true`, exactly one row.
 - [ ] `select * from net._http_response order by created desc limit 20;` is clean
   (no cron -> function HTTP failures — a wrong project ref makes cron fire silent
   no-ops, the same failure mode documented in the daily-check runbook).
 - [ ] Watch one full RTH session end-to-end. File any anomaly as a **new issue**
   (systematic-debugging triage) — do not hot-fix inside this rollout.
 
+**Stop signals in `audit_log.outcome` for `script_name = 'hourly-check'` — not just
+`error:*`:**
+
+- Any `error:*` outcome.
+- `success:journal_degraded` (`logic.ts:992`) — a filled paper entry whose `trades`
+  row or `entry_order_id` never landed; degrades the day cap, cooldown, and re-leg
+  provenance for later scans even though the scan itself "succeeded." Follow-up #486
+  tracks surfacing this more visibly; until then, treat every occurrence as a stop
+  signal here.
+- `success:auto_paused` (`logic.ts:622`) — the -15% equity floor tripped. Same
+  unmanaged-position consequence as an operator-initiated pause with a position
+  open (§11) — check for an open position before assuming this is inert.
+- `success:legs_replaced` — not a stop signal by itself (it is the safety stack's own
+  re-leg mechanism working as designed), but **investigate**: it means a naked
+  position was found and re-legged, which should not happen in ordinary operation.
+
+**Stop and roll back immediately on any of:**
+
+- A `hourly_scans` row with `decision = 'SHORT'` — shorts must stay disabled for this
+  rollout (§9 gate 7); see #493 for the fail-open default this guards against.
+- `success:journal_degraded` or `error:naked_position_flattened`.
+- A second consecutive `skipped:partial_bar` inside one session (a session-bounds or
+  timezone fault, not a stub — the first one per session is expected and correct).
+- Any nonzero SPY position surviving past the `19:07Z` (EDT) flatten scan — the
+  day-scoped (`time_in_force: "day"`) bracket legs are **assumed** (standard Alpaca
+  day-order behavior, not yet observed on this account — see the first-session check
+  below) to be cancelled by the broker at the close, so a position still open after
+  that scan is unmanaged overnight regardless of whether that assumption holds.
+- An order whose notional materially exceeds 10% of equity (`SIZING_NOTIONAL_CAP_PCT`).
+
+**First-session check (new, round 2):** on the first morning after a session that
+held a position, confirm no resting legs survived from the prior session — query
+`listOpenOrderIds(SPY)` (or check the Alpaca paper-account orders page) and expect
+zero open orders left over from the previous day. This is the live confirmation that
+the day-`time_in_force` cancellation assumption above actually holds on this account;
+until it's been observed at least once, treat the assumption as unverified.
+
+**Roll back with `panic?action=liquidate` first if a position is open, `pause` if
+flat, then `select cron.unschedule('hourly-check');`** — see §11 for the full
+procedure and the token-verification precondition.
+
 ## §11 Rollback
+
+**Pre-merge precondition: verify `$PANIC_TOKEN` before relying on either curl below.**
+The token was rotated this session, and #479's evidence chain has no panic round trip
+recorded since the rotation (§6's resume predates it). Before merging this PR, run:
+
+```bash
+curl -i -X POST "https://qdaxxsuicyiscdvsdowc.supabase.co/functions/v1/panic?action=pause" \
+  -H "x-panic-token: $PANIC_TOKEN"
+curl -i -X POST "https://qdaxxsuicyiscdvsdowc.supabase.co/functions/v1/panic?action=resume" \
+  -H "x-panic-token: $PANIC_TOKEN"
+```
+
+and record both HTTP 200s on #479. This is a `bot_config`-only round trip (no broker
+call either direction — `pause`/`resume` never reach Alpaca), so it is safe to run at
+any time, RTH or not, and leaves `bot_config.paused` back at `'false'` afterward
+(confirm this — do not leave the bot paused by accident). The independent
+`cron.unschedule` lever below does **not** depend on this token; it is the fallback if
+the token itself is the thing that has gone wrong.
 
 Any point in this rollout can be unwound without code changes:
 
 - **Pause new entries (fast, reversible, no broker call):**
   `curl -i -X POST ".../panic?action=pause" -H "x-panic-token: $PANIC_TOKEN"` →
   `bot_config.paused = 'true'`; `hourly-check` exits `skipped:trading_paused` before
-  contacting Alpaca on its next scan.
+  contacting Alpaca on its next scan. **Sufficient only when the bot is flat.** Pause
+  returns before `reconcile()` (`logic.ts:566`, ahead of the reconciliation call at
+  `:583`), so pausing with a position open also disables the session-close flatten
+  scan (`:520-542`, armed at `:580`), the naked-position re-leg, and #480's recovery
+  pass — none of which run once the pipeline exits at the pause check, on **every**
+  invocation while `paused` stays true, this session's or any later one's. Bracket
+  legs are `time_in_force: "day"` (`alpaca.ts:391`); Alpaca's own day-order semantics
+  cancel unfilled `day` legs at the session close, but **this is an assumption, not
+  yet observed on this account** — nothing in this repo tests it, live or otherwise
+  (see the first-session check in §10). `KILL_SWITCH_DRAWDOWN_PCT` defaults to 25%
+  off a 30-day rolling high and will not fire on a same-day SPY move. **Net effect:
+  pausing mid-session with an open position leaves that position unmanaged and
+  unhedged overnight, and it stays that way — while `paused` is `true`, nothing
+  re-legs it, in this session or any subsequent one.** Recovery requires an operator:
+  either `action=resume` (after which the next RTH scan's `reconcile()` re-legs it)
+  or a manual flatten. The identical consequence applies to a `success:auto_paused`
+  floor trip (`logic.ts:622`) — it pauses the bot the same way, with a position open
+  or not, and is machine-initiated so it never self-clears; the same two recovery
+  paths apply. **If a position may be open, use `action=liquidate` below, or a
+  manual flatten, not `pause` alone.**
 - **Flatten the current position (broker call, RTH only):**
   `curl -i -X POST ".../panic?action=liquidate" -H "x-panic-token: $PANIC_TOKEN"` —
   side-aware and symbol-aware (#474/#476), so this correctly covers a short or closes
-  a long in SPY; also sets `paused=true`.
+  a long in SPY; also sets `paused=true`. **This is the correct lever whenever a
+  position might be open** — pause alone is not (see above).
 - **Stop the cron entirely (post-`0014` only):**
   `select cron.unschedule('hourly-check');` in the SQL editor, or a follow-up guarded
   migration mirroring `0013`'s pattern. Function code and deployed Edge Function are
-  untouched either way — this is schedule-only, same as `0013`.
-- **Before `0014` exists** (current state — PR-B is not yet created), there is nothing
-  to unschedule — the cron block ships fully commented out, so "rollback" is simply
-  not merging PR-B.
+  untouched either way — this is schedule-only, same as `0013`. Does not depend on
+  `$PANIC_TOKEN`.
+- **Before `0014` merges:** there is nothing to unschedule yet — the cron block ships
+  fully commented out until this migration lands, so "rollback" before that point is
+  simply not merging this PR.
 
 ## §12 Appendix — captures, citations, and what each pins
 
