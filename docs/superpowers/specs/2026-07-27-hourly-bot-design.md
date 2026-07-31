@@ -487,6 +487,10 @@ cent). Quantization is now part of the frozen geometry:
 - Changing R or the buffer still requires a spec revision (§11). This amendment changes
   neither; nearest-cent quantization has expected shift 0 and a half-cent bound, far below
   the slippage floor of the market entry leg.
+- `placeBracketOrder` / `placeOcoExitPair` **validate** the serialized price and throw
+  `SubPennyPriceError` rather than rounding it themselves — silent rounding at the wire
+  would desync the broker's prices from the journal. The class extends `AlpacaError`, so
+  the outcome alerts (§9); the check runs after the `CLAUDE_AGENT_NO_BROKER` guard.
 
 **Both directions.** A `LONG` decision buys with a stop below and a target above; a `SHORT`
 decision sells short with a stop above and a target below. `[to verify]` — Batch 2 must
@@ -840,8 +844,10 @@ following the existing `success` / `success:*` / `skipped:*` / `error:*` vocabul
 - `skipped:duplicate_run` (the new bar-level claim, §8.4, conflicted).
 - `error:AlpacaError`, `error:OrderTimeoutError`, `error:OrderRejectedError`,
   `error:BrokerCallBlockedError`, `error:PaperGuardFailed` (§8.3's new named error),
-  `error:naked_position_flattened` (§7, finding 3 — the position-without-legs rule could not
-  re-place legs and flattened instead) — the existing `error:${err.name}` pattern.
+  `error:SubPennyPriceError` (#494 — an order leg price is not a whole-cent multiple, or
+  does not serialize as a plain decimal; the class extends `AlpacaError`, so this outcome
+  alerts), `error:naked_position_flattened` (§7, finding 3 — the position-without-legs rule
+  could not re-place legs and flattened instead) — the existing `error:${err.name}` pattern.
 
 ### New claim table — `bar_claims`
 

@@ -7,9 +7,8 @@
 // payload) are just as corrupting, so require a finite number. Fail loud
 // instead.
 //
-// Outbound (roundToCents): a computed price is a raw float, and Alpaca rejects
-// any equity price above $1 that is not a $0.01 multiple (#494). Quantize
-// before it reaches the wire.
+// Outbound (roundToCents): quantize a computed price before it reaches the
+// wire. Rationale in that function's own doc comment.
 
 export class DataError extends Error {
   override name = "DataError";
@@ -28,13 +27,18 @@ export function requireNumber(val: unknown, field: string): number {
 }
 
 /**
- * Quantizes an outbound price to whole cents (#494).
+ * Quantizes an outbound price to whole cents. Canonical rationale for #494;
+ * every other site that quantizes or validates a price points here.
  *
- * The contract is a SERIALIZATION contract, because the defect it fixes is a
- * serialization defect: `String(roundToCents(v))` renders at most two decimals
- * with no float artifact. A numeric-only contract would still admit
- * 745.05000000000007, which Alpaca rejects with a 422 the same way it rejected
- * the raw 745.0495000000001.
+ * Alpaca rejects any equity price above $1 that is not a $0.01 multiple (HTTP
+ * 422, code 42210000), which blocked every entry the hourly bot attempted on
+ * 2026-07-30. The contract is a SERIALIZATION contract, because the defect is
+ * a serialization defect: `String(roundToCents(v))` renders at most two
+ * decimals with no float artifact, for any finite `v` below 1e21 (every price
+ * magnitude this bot can produce). Above that, `String` switches to exponent
+ * notation and the claim does not hold; callers sending to the wire validate
+ * the serialized form separately. Precision loss at large magnitude yields
+ * FEWER decimals, never more, so it is not a failure mode here.
  *
  * Nearest cent, no directional bias: expected shift 0, max half a cent, which
  * is far below the slippage floor of the market entry leg. Tie direction is

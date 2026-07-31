@@ -218,11 +218,10 @@ export interface BracketGeometry {
  * buffer (long: low - buffer; short: high + buffer); target is
  * entry +/- R * stopDistance, R frozen at HOURLY_BRACKET_R_MULTIPLE.
  *
- * Both prices are quantized to whole cents (#494): Alpaca rejects any equity
- * price above $1 that is not a $0.01 multiple, and quantizing here rather than
- * at the send site keeps the journaled hourly_scans geometry identical to what
- * the broker holds, which is what the re-leg path and the weekly review's R
- * denominator both read back.
+ * Both prices are quantized to whole cents (roundToCents, #494). Quantizing
+ * here rather than at the send site keeps the journaled hourly_scans geometry
+ * identical to what the broker holds, which the re-leg path and the weekly
+ * review's R denominator both read back.
  *
  * The ORDERING is load-bearing: the stop is rounded first and stopDistance is
  * recomputed from the ROUNDED stop, so the target derives from the number that

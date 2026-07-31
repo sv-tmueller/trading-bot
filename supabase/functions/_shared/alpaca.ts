@@ -3,7 +3,7 @@
 // order (spec §5, ported #168). Read-only methods are unguarded but cannot place
 // an order.
 import { type AlpacaConfig, getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
-import { requireNumber, roundToCents } from "./num.ts";
+import { requireNumber } from "./num.ts";
 
 // Set .name so the deterministic `error:${err.name}` audit outcomes distinguish
 // broker errors (e.g. error:AlpacaError) instead of collapsing to error:Error.
@@ -35,20 +35,27 @@ export class OrderRejectedError extends Error {
 export class PaperGuardFailedError extends Error {
   override name = "PaperGuardFailed";
 }
-// #494: an order leg priced off a whole-cent boundary. Alpaca rejects those
-// with a 422 (code 42210000), so this converts a production rejection into a
-// local failure. Validate, never round: rounding here would silently desync
-// the broker's prices from the geometry hourly_scans recorded, and that
-// journal is what the re-leg path and the weekly review's R denominator read.
-export class SubPennyPriceError extends Error {
+// #494: an order leg price Alpaca cannot accept (rationale: roundToCents in
+// num.ts). Extends AlpacaError, like OrderTimeoutError above and unlike
+// PaperGuardFailedError, because it replaces a broker 422 that DID reach
+// Discord via the callers' `instanceof AlpacaError -> notifyBrokerError`
+// catch, and that alert is how #494 was found at all. A silent audit row
+// would make the next recurrence invisible.
+export class SubPennyPriceError extends AlpacaError {
   override name = "SubPennyPriceError";
 }
 
-// Whole-cent check stated the same way as roundToCents' contract: a value is
-// acceptable exactly when quantizing it changes nothing, which is exactly when
-// String(value) renders at most two decimals.
+// Matched against String(price), because that is what the order bodies below
+// put on the wire: this rejects sub-penny values AND magnitudes that serialize
+// in exponent notation. Deliberately independent of roundToCents, so a
+// quantizer regression cannot propagate silently into the check guarding it.
+const WHOLE_CENT_PRICE = /^-?\d+(\.\d{1,2})?$/;
+
 function requireWholeCentPrice(value: number, field: string): void {
-  if (!Number.isFinite(value) || roundToCents(value, field) !== value) {
+  if (!Number.isFinite(value)) {
+    throw new SubPennyPriceError(`${field} must be a finite price, got ${String(value)}`);
+  }
+  if (!WHOLE_CENT_PRICE.test(String(value))) {
     throw new SubPennyPriceError(
       `${field} must be a whole-cent price, got ${String(value)}`,
     );

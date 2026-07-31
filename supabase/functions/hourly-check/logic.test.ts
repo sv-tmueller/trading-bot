@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import type { ClosedOrderFill, Fill } from "../_shared/alpaca.ts";
+import { type ClosedOrderFill, type Fill, SubPennyPriceError } from "../_shared/alpaca.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
 import { coerceHourlyScanRow, type HourlyScanRow, type TradeRow } from "../_shared/db.ts";
 import { decideHourly } from "../_shared/hourly_signal.ts";
@@ -301,13 +301,7 @@ Deno.test("computeSizing: wide stop + low equity -> qty=0 (size_too_small, not a
 });
 
 // ---------------------------------------------------------------------------
-// #494 group B: bracket geometry is quantized to whole cents, stop first
-//
-// Alpaca rejects any equity price above $1 that is not a $0.01 multiple
-// (422, code 42210000). The contract is a SERIALIZATION contract, so every
-// price assertion below checks String(...) as well as numeric equality:
-// numeric equality alone still admits 745.05000000000007, which 422s.
-//
+// #494 group B: bracket geometry is quantized to whole cents, stop first.
 // The bar shape is the 2026-07-30 live session: a bar range on 2 decimals
 // times the 0.05 buffer yields a 4-decimal stop, and the target's x2 then
 // lands on a tenth of a cent.
@@ -323,6 +317,8 @@ const LIVE_ENTRY_REF = 745.02;
 const CENT_CLEAN = /^-?\d+(\.\d{1,2})?$/;
 
 Deno.test("B7 computeBracketGeometry: every returned price serializes to at most two decimals", () => {
+  // The serialization contract, which the exact-literal cases below cannot
+  // express on their own.
   const cases: Array<[{ high: number; low: number }, number]> = [
     [LIVE_BAR, LIVE_ENTRY_REF],
     [{ high: 745.80, low: 744.30 }, 745.00],
@@ -350,17 +346,13 @@ Deno.test("B7 computeBracketGeometry: every returned price serializes to at most
 Deno.test("B8 computeBracketGeometry: the live 2026-07-30 LONG bar -> 744.21 / 746.64, not 744.2075 / 746.645", () => {
   const geom = computeBracketGeometry("LONG", LIVE_BAR, LIVE_ENTRY_REF, GEOM_CFG);
   assertEquals(geom.stopPrice, 744.21);
-  assertEquals(String(geom.stopPrice), "744.21");
   assertEquals(geom.targetPrice, 746.64);
-  assertEquals(String(geom.targetPrice), "746.64");
 });
 
 Deno.test("B9 computeBracketGeometry: the SHORT mirror of the same bar is quantized too", () => {
   const geom = computeBracketGeometry("SHORT", LIVE_BAR, LIVE_ENTRY_REF, GEOM_CFG);
   assertEquals(geom.stopPrice, 745.8);
-  assertEquals(String(geom.stopPrice), "745.8");
   assertEquals(geom.targetPrice, 743.46);
-  assertEquals(String(geom.targetPrice), "743.46");
 });
 
 Deno.test("B10 computeBracketGeometry: the target is derived from the ROUNDED stop (746.56, not 746.55)", () => {
@@ -371,9 +363,7 @@ Deno.test("B10 computeBracketGeometry: the target is derived from the ROUNDED st
   // exactly 2x the wire risk (see B11), which is why the ordering is frozen.
   const geom = computeBracketGeometry("LONG", { high: 745.80, low: 744.30 }, 745.00, GEOM_CFG);
   assertEquals(geom.stopPrice, 744.22);
-  assertEquals(String(geom.stopPrice), "744.22");
   assertEquals(geom.targetPrice, 746.56);
-  assertEquals(String(geom.targetPrice), "746.56");
 });
 
 Deno.test("B11 computeBracketGeometry: wire R holds in the numbers the broker receives", () => {
@@ -866,8 +856,7 @@ Deno.test("gate 20: SHORT entry uses the plain-entry + OCO fallback (bracket-on-
 
 // ---------------------------------------------------------------------------
 // #494 group C: the quantized prices reach the wire, the journal, and the
-// re-leg path. Same live 2026-07-30 bar shape as group B, wired through the
-// whole pipeline instead of the pure function.
+// re-leg path. Same bar shape as group B, through the whole pipeline.
 // ---------------------------------------------------------------------------
 
 // Same wick/body proportions as BAR1 (a clean bullish_marubozu), scaled to the
@@ -906,9 +895,6 @@ Deno.test("C13 entry path: placeBracketOrder receives whole-cent prices for the 
   const wire = sent as unknown as { takeProfitPrice: number; stopLossPrice: number };
   assertEquals(wire.stopLossPrice, 744.21);
   assertEquals(wire.takeProfitPrice, 746.64);
-  // The serialized body is what Alpaca actually validated and rejected.
-  assertEquals(String(wire.stopLossPrice), "744.21");
-  assertEquals(String(wire.takeProfitPrice), "746.64");
 });
 
 Deno.test("C14 journal: hourly_scans stop_price / target_price are whole cents on both writes", async () => {
@@ -919,8 +905,6 @@ Deno.test("C14 journal: hourly_scans stop_price / target_price are whole cents o
   for (const scan of rec.scans) {
     assertEquals(scan.stopPrice, 744.21);
     assertEquals(scan.targetPrice, 746.64);
-    assertEquals(String(scan.stopPrice), "744.21");
-    assertEquals(String(scan.targetPrice), "746.64");
   }
 });
 
@@ -989,9 +973,29 @@ Deno.test("C16 journal: entry_ref_price and risk_per_share are deliberately NOT 
   assertEquals(await runHourlyCheck(deps), "success");
   const scan = rec.scans[1];
   assertEquals(scan.entryRefPrice, entryRef);
-  assertEquals(String(scan.entryRefPrice), "745.0234");
   assertEquals(scan.riskPerShare, entryRef - 744.21);
-  assertEquals(String(scan.stopPrice), "744.21");
+  assertEquals(scan.stopPrice, 744.21);
+});
+
+Deno.test("a sub-penny rejection on the entry path still ALERTS (#494 review finding 1)", async () => {
+  // The Alpaca 422 this check replaces raised notifyBrokerError, and that
+  // alert is how #494 was found at all. SubPennyPriceError therefore extends
+  // AlpacaError so logic.ts's `instanceof AlpacaError` catch keeps firing --
+  // a silent audit row would make the next recurrence invisible.
+  const { deps, rec } = buildLiveDeps();
+  deps.alpaca.placeBracketOrder = () => {
+    throw new SubPennyPriceError("takeProfitPrice must be a whole-cent price, got 746.173");
+  };
+  let alerted: { context: string; errorMsg: string } | null = null;
+  deps.notifications.notifyBrokerError = (p) => {
+    alerted = p;
+    return Promise.resolve();
+  };
+  assertEquals(await runHourlyCheck(deps), "error:SubPennyPriceError");
+  assertEquals(lastOutcome(rec), "error:SubPennyPriceError");
+  const sent = alerted as unknown as { context: string; errorMsg: string } | null;
+  assertEquals(sent?.context, "hourly-check");
+  assertEquals(sent?.errorMsg.includes("whole-cent"), true);
 });
 
 // ---------------------------------------------------------------------------

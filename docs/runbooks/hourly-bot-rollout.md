@@ -454,6 +454,13 @@ live and the first scan has fired, confirm:
 - `success:legs_replaced` — not a stop signal by itself (it is the safety stack's own
   re-leg mechanism working as designed), but **investigate**: it means a naked
   position was found and re-legged, which should not happen in ordinary operation.
+- `error:SubPennyPriceError` (#494) — an order leg price was not a whole-cent
+  multiple, so `alpaca.ts` refused to submit it. Nothing was placed (the check runs
+  before the POST), so there is no orphaned leg, but **every entry stays blocked
+  until it is fixed**: this is the local-failure form of the Alpaca 422 that blocked
+  every entry on 2026-07-30. The class extends `AlpacaError`, so it also raises a
+  Discord alert. Expect the price in the message; file a new issue rather than
+  hot-fixing the geometry here.
 
 **Stop and roll back immediately on any of:**
 

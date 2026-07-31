@@ -31,19 +31,13 @@ Deno.test("requireNumber rejects NaN and non-finite values", () => {
 
 // ---------------------------------------------------------------------------
 // #494 group A: roundToCents -- the outbound half of the numeric boundary.
-//
-// Alpaca rejects any equity price above $1 that is not a $0.01 multiple with
-// a 422 (code 42210000). The contract is stated in SERIALIZATION terms
-// because the defect is a serialization defect: String(output) must render at
-// most two decimals with no float artifact. A numeric-only contract would
-// admit 745.05000000000007, which still 422s.
+// Contract and rationale live in the function's doc comment.
 // ---------------------------------------------------------------------------
 
 Deno.test("A1 roundToCents: the 2026-07-30 rejection 745.0495000000001 -> 745.05", () => {
   // Live literal from the 16:07Z take_profit.limit_price rejection: float
   // noise AND sub-penny at the same time.
   assertEquals(roundToCents(745.0495000000001), 745.05);
-  assertEquals(String(roundToCents(745.0495000000001)), "745.05");
 });
 
 Deno.test("A2 roundToCents: the 2026-07-30 rejection 746.173 -> 746.17", () => {
@@ -51,20 +45,19 @@ Deno.test("A2 roundToCents: the 2026-07-30 rejection 746.173 -> 746.17", () => {
   // rejection) has no float representation artifact at all: it is a clean
   // three-decimal number, i.e. genuinely a tenth of a cent. A fix that only
   // de-noises the float representation passes A1 and still gets a 422 here.
-  // This case is what pins the requirement to quantization rather than
-  // de-noising.
+  // This case is what pins the requirement to quantization, not de-noising.
   assertEquals(roundToCents(746.173), 746.17);
-  assertEquals(String(roundToCents(746.173)), "746.17");
 });
 
-Deno.test("A3 roundToCents: penny-exact inputs pass through and stay penny-exact", () => {
+Deno.test("A3 roundToCents: penny-exact inputs pass through unchanged", () => {
   for (const v of [744.21, 746.64, 547.75, 554.5, 550, 0.05, 0]) {
     assertEquals(roundToCents(v), v);
-    assertEquals(String(roundToCents(v)), String(v));
   }
 });
 
 Deno.test("A4 roundToCents: output always serializes to at most two decimals", () => {
+  // The serialization contract itself, which the per-value numeric assertions
+  // above cannot express.
   const CENT_CLEAN = /^-?\d+(\.\d{1,2})?$/;
   for (let i = 0; i < 2000; i++) {
     // Geometry-shaped values: a 4-decimal stop times an R multiple is exactly
