@@ -455,12 +455,15 @@ live and the first scan has fired, confirm:
   re-leg mechanism working as designed), but **investigate**: it means a naked
   position was found and re-legged, which should not happen in ordinary operation.
 - `error:SubPennyPriceError` (#494) — an order leg price was not a whole-cent
-  multiple, so `alpaca.ts` refused to submit it. Nothing was placed (the check runs
-  before the POST), so there is no orphaned leg, but **every entry stays blocked
-  until it is fixed**: this is the local-failure form of the Alpaca 422 that blocked
-  every entry on 2026-07-30. The class extends `AlpacaError`, so it also raises a
-  Discord alert. Expect the price in the message; file a new issue rather than
-  hot-fixing the geometry here.
+  multiple, so `alpaca.ts` refused to submit it. **Check for an open position before
+  assuming nothing was placed.** On the LONG path the check runs before the single
+  bracket POST, so nothing reached the broker and there is no orphaned leg. On the
+  SHORT path the market entry is placed first and the OCO exit pair second
+  (`logic.ts:917-918`), so this error can leave a filled position with no protective
+  legs. Either way **every entry stays blocked until it is fixed**: this is the
+  local-failure form of the Alpaca 422 that blocked every entry on 2026-07-30. The
+  class extends `AlpacaError`, so it also raises a Discord alert. Expect the price in
+  the message; file a new issue rather than hot-fixing the geometry here.
 
 **Stop and roll back immediately on any of:**
 
