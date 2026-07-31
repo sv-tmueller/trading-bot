@@ -35,6 +35,32 @@ export class OrderRejectedError extends Error {
 export class PaperGuardFailedError extends Error {
   override name = "PaperGuardFailed";
 }
+// #494: an order leg price Alpaca cannot accept (rationale: roundToCents in
+// num.ts). Extends AlpacaError, like OrderTimeoutError above and unlike
+// PaperGuardFailedError, because it replaces a broker 422 that DID reach
+// Discord via the callers' `instanceof AlpacaError -> notifyBrokerError`
+// catch, and that alert is how #494 was found at all. A silent audit row
+// would make the next recurrence invisible.
+export class SubPennyPriceError extends AlpacaError {
+  override name = "SubPennyPriceError";
+}
+
+// Matched against String(price), because that is what the order bodies below
+// put on the wire: this rejects sub-penny values AND magnitudes that serialize
+// in exponent notation. Deliberately independent of roundToCents, so a
+// quantizer regression cannot propagate silently into the check guarding it.
+const WHOLE_CENT_PRICE = /^-?\d+(\.\d{1,2})?$/;
+
+function requireWholeCentPrice(value: number, field: string): void {
+  if (!Number.isFinite(value)) {
+    throw new SubPennyPriceError(`${field} must be a finite price, got ${String(value)}`);
+  }
+  if (!WHOLE_CENT_PRICE.test(String(value))) {
+    throw new SubPennyPriceError(
+      `${field} must be a whole-cent price, got ${String(value)}`,
+    );
+  }
+}
 
 export interface Fill {
   orderId: string;
@@ -379,6 +405,8 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       throw new Error(`side must be BUY or SELL, got ${args.side}`);
     }
     if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+    requireWholeCentPrice(args.takeProfitPrice, "takeProfitPrice");
+    requireWholeCentPrice(args.stopLossPrice, "stopLossPrice");
 
     const created = await tradeJson("/v2/orders", {
       method: "POST",
@@ -418,6 +446,8 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       throw new Error(`side must be BUY or SELL, got ${args.side}`);
     }
     if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+    requireWholeCentPrice(args.takeProfitPrice, "takeProfitPrice");
+    requireWholeCentPrice(args.stopLossPrice, "stopLossPrice");
 
     const created = await tradeJson("/v2/orders", {
       method: "POST",

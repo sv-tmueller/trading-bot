@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { DataError, requireNumber } from "./num.ts";
+import { DataError, requireNumber, roundToCents } from "./num.ts";
 
 Deno.test("requireNumber accepts finite numbers and numeric strings", () => {
   assertEquals(requireNumber(42, "x"), 42);
@@ -27,4 +27,63 @@ Deno.test("requireNumber rejects NaN and non-finite values", () => {
   assertThrows(() => requireNumber(Infinity, "x"), DataError, "finite");
   assertThrows(() => requireNumber(-Infinity, "x"), DataError, "finite");
   assertThrows(() => requireNumber("1e999", "x"), DataError, "finite"); // overflows to Infinity
+});
+
+// ---------------------------------------------------------------------------
+// #494 group A: roundToCents -- the outbound half of the numeric boundary.
+// Contract and rationale live in the function's doc comment.
+// ---------------------------------------------------------------------------
+
+Deno.test("A1 roundToCents: the 2026-07-30 rejection 745.0495000000001 -> 745.05", () => {
+  // Live literal from the 16:07Z take_profit.limit_price rejection: float
+  // noise AND sub-penny at the same time.
+  assertEquals(roundToCents(745.0495000000001), 745.05);
+});
+
+Deno.test("A2 roundToCents: the 2026-07-30 rejection 746.173 -> 746.17", () => {
+  // KEEP THIS CASE. It is not redundant with A1. 746.173 (the 17:07Z
+  // rejection) has no float representation artifact at all: it is a clean
+  // three-decimal number, i.e. genuinely a tenth of a cent. A fix that only
+  // de-noises the float representation passes A1 and still gets a 422 here.
+  // This case is what pins the requirement to quantization, not de-noising.
+  assertEquals(roundToCents(746.173), 746.17);
+});
+
+Deno.test("A3 roundToCents: penny-exact inputs pass through unchanged", () => {
+  for (const v of [744.21, 746.64, 547.75, 554.5, 550, 0.05, 0]) {
+    assertEquals(roundToCents(v), v);
+  }
+});
+
+Deno.test("A4 roundToCents: output always serializes to at most two decimals", () => {
+  // The serialization contract itself, which the per-value numeric assertions
+  // above cannot express.
+  const CENT_CLEAN = /^-?\d+(\.\d{1,2})?$/;
+  for (let i = 0; i < 2000; i++) {
+    // Geometry-shaped values: a 4-decimal stop times an R multiple is exactly
+    // the arithmetic that produced the rejected prices.
+    const raw = 744 + i * 0.0007 + 2 * (i * 0.00013);
+    const out = roundToCents(raw, "sweep");
+    assertEquals(CENT_CLEAN.test(String(out)), true, `${raw} -> ${String(out)}`);
+  }
+});
+
+Deno.test("A5 roundToCents: half-cent tie direction is pinned by test, not promised", () => {
+  // Implementation-defined (Math.round(v * 100) / 100). Pinned so a future
+  // change of helper is a deliberate, visible decision.
+  assertEquals(roundToCents(745.005), 745.01); // exact tie -> away from zero
+  assertEquals(roundToCents(1.005), 1); // the decimal literal is below the tie in binary
+  assertEquals(roundToCents(2.675), 2.68);
+});
+
+Deno.test("A6 roundToCents: NaN, non-finite and non-number input throw DataError", () => {
+  // Never degrade to 0, and never quietly parse a string the way requireNumber
+  // does -- this helper is the outbound direction, so its input has already
+  // crossed the boundary and must already be a finite number.
+  assertThrows(() => roundToCents(NaN, "stop_price"), DataError, "stop_price");
+  assertThrows(() => roundToCents(Infinity, "target_price"), DataError, "target_price");
+  assertThrows(() => roundToCents(-Infinity, "target_price"), DataError, "target_price");
+  assertThrows(() => roundToCents("745.05" as unknown as number, "stop_price"), DataError);
+  assertThrows(() => roundToCents(null as unknown as number, "stop_price"), DataError);
+  assertThrows(() => roundToCents(undefined as unknown as number, "stop_price"), DataError);
 });

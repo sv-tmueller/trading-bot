@@ -467,6 +467,31 @@ stop that gets grazed by the next bar's noise) without materially widening `stop
 Changing it in-flight is forbidden by the same rule as R=2 and every other frozen v1
 parameter (§11) — a change requires a spec revision.
 
+**Amendment 2026-07-31 (#494) — both bracket prices are quantized to whole cents, stop
+first.** Found live on the first RTH session after the cron activated: Alpaca rejects any
+equity price above $1 that is not a $0.01 multiple (HTTP 422, code 42210000), and the
+geometry above produces raw floats — `buffer = 0.05 × barRange` on a 2-decimal range yields a
+4-decimal stop, and `R × stopDistance` then lands on a tenth of a cent. Two live rejections:
+`745.0495000000001` (float noise and sub-penny) and `746.173` (exact, genuinely a tenth of a
+cent). Quantization is now part of the frozen geometry:
+
+- `stopPrice = roundToCents(barLow − buffer)` (long) / `roundToCents(barHigh + buffer)`
+  (short), nearest cent, no directional bias.
+- `stopDistance` is then recomputed **from the rounded stop**, and the target is
+  `roundToCents(entry ± R × stopDistance)`. **The ordering is load-bearing**, not cosmetic:
+  it removes the exact half-cent tie class the ×2 creates whenever the bar range ends in
+  `x.x5`, and it keeps wire R exactly R against wire risk, so the journaled `stop_price` and
+  the broker's `stop_price` are the same number.
+- `entry_ref_price` and `risk_per_share` are deliberately **not** quantized: neither goes on
+  the wire, the first is a record of what the bot saw and the second is §11's R denominator.
+- Changing R or the buffer still requires a spec revision (§11). This amendment changes
+  neither; nearest-cent quantization has expected shift 0 and a half-cent bound, far below
+  the slippage floor of the market entry leg.
+- `placeBracketOrder` / `placeOcoExitPair` **validate** the serialized price and throw
+  `SubPennyPriceError` rather than rounding it themselves — silent rounding at the wire
+  would desync the broker's prices from the journal. The class extends `AlpacaError`, so
+  the outcome alerts (§9); the check runs after the `CLAUDE_AGENT_NO_BROKER` guard.
+
 **Both directions.** A `LONG` decision buys with a stop below and a target above; a `SHORT`
 decision sells short with a stop above and a target below. `[to verify]` — Batch 2 must
 confirm, against the live Alpaca API docs, whether `order_class: "bracket"` is accepted on a
@@ -819,8 +844,10 @@ following the existing `success` / `success:*` / `skipped:*` / `error:*` vocabul
 - `skipped:duplicate_run` (the new bar-level claim, §8.4, conflicted).
 - `error:AlpacaError`, `error:OrderTimeoutError`, `error:OrderRejectedError`,
   `error:BrokerCallBlockedError`, `error:PaperGuardFailed` (§8.3's new named error),
-  `error:naked_position_flattened` (§7, finding 3 — the position-without-legs rule could not
-  re-place legs and flattened instead) — the existing `error:${err.name}` pattern.
+  `error:SubPennyPriceError` (#494 — an order leg price is not a whole-cent multiple, or
+  does not serialize as a plain decimal; the class extends `AlpacaError`, so this outcome
+  alerts), `error:naked_position_flattened` (§7, finding 3 — the position-without-legs rule
+  could not re-place legs and flattened instead) — the existing `error:${err.name}` pattern.
 
 ### New claim table — `bar_claims`
 

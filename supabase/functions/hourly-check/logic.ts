@@ -13,7 +13,7 @@ import type { HourlyConfig } from "../_shared/config.ts";
 import type { HourlyScanRow, TradeRow } from "../_shared/db.ts";
 import { decideHourly, type HourlyAction } from "../_shared/hourly_signal.ts";
 import type { CalendarSession, HourlyBar } from "../_shared/marketdata.ts";
-import { DataError, requireNumber } from "../_shared/num.ts";
+import { DataError, requireNumber, roundToCents } from "../_shared/num.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -217,6 +217,19 @@ export interface BracketGeometry {
  * Bracket geometry (spec §7): stop is the signal bar's own extreme plus a
  * buffer (long: low - buffer; short: high + buffer); target is
  * entry +/- R * stopDistance, R frozen at HOURLY_BRACKET_R_MULTIPLE.
+ *
+ * Both prices are quantized to whole cents (roundToCents, #494). Quantizing
+ * here rather than at the send site keeps the journaled hourly_scans geometry
+ * identical to what the broker holds, which the re-leg path and the weekly
+ * review's R denominator both read back.
+ *
+ * The ORDERING is load-bearing: the stop is rounded first and stopDistance is
+ * recomputed from the ROUNDED stop, so the target derives from the number that
+ * actually goes on the wire. buffer = 0.05 * barRange on a 2-decimal range
+ * yields a 4-decimal stop, and the target's x2 then lands on an exact
+ * half-cent whenever the range ends in x.x5; deriving the target from the
+ * rounded stop removes that tie class instead of forcing a tie-break
+ * convention, and keeps wire R exactly R against wire risk.
  */
 export function computeBracketGeometry(
   action: "LONG" | "SHORT",
@@ -226,12 +239,13 @@ export function computeBracketGeometry(
 ): BracketGeometry {
   const barRange = bar.high - bar.low;
   const buffer = cfg.hourlyStopBufferPct * barRange;
-  const stopPrice = action === "LONG" ? bar.low - buffer : bar.high + buffer;
+  const rawStop = action === "LONG" ? bar.low - buffer : bar.high + buffer;
+  const stopPrice = roundToCents(rawStop, "stop_price");
   const stopDistance = Math.abs(entryRef - stopPrice);
-  const targetPrice = action === "LONG"
+  const rawTarget = action === "LONG"
     ? entryRef + cfg.hourlyBracketRMultiple * stopDistance
     : entryRef - cfg.hourlyBracketRMultiple * stopDistance;
-  return { stopPrice, targetPrice };
+  return { stopPrice, targetPrice: roundToCents(rawTarget, "target_price") };
 }
 
 export interface SizingResult {
