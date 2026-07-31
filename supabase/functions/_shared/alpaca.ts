@@ -3,7 +3,7 @@
 // order (spec §5, ported #168). Read-only methods are unguarded but cannot place
 // an order.
 import { type AlpacaConfig, getAlpacaConfig, isClaudeAgentNoBroker } from "./config.ts";
-import { requireNumber } from "./num.ts";
+import { requireNumber, roundToCents } from "./num.ts";
 
 // Set .name so the deterministic `error:${err.name}` audit outcomes distinguish
 // broker errors (e.g. error:AlpacaError) instead of collapsing to error:Error.
@@ -34,6 +34,25 @@ export class OrderRejectedError extends Error {
 // §9's error:PaperGuardFailed.
 export class PaperGuardFailedError extends Error {
   override name = "PaperGuardFailed";
+}
+// #494: an order leg priced off a whole-cent boundary. Alpaca rejects those
+// with a 422 (code 42210000), so this converts a production rejection into a
+// local failure. Validate, never round: rounding here would silently desync
+// the broker's prices from the geometry hourly_scans recorded, and that
+// journal is what the re-leg path and the weekly review's R denominator read.
+export class SubPennyPriceError extends Error {
+  override name = "SubPennyPriceError";
+}
+
+// Whole-cent check stated the same way as roundToCents' contract: a value is
+// acceptable exactly when quantizing it changes nothing, which is exactly when
+// String(value) renders at most two decimals.
+function requireWholeCentPrice(value: number, field: string): void {
+  if (!Number.isFinite(value) || roundToCents(value, field) !== value) {
+    throw new SubPennyPriceError(
+      `${field} must be a whole-cent price, got ${String(value)}`,
+    );
+  }
 }
 
 export interface Fill {
@@ -379,6 +398,8 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       throw new Error(`side must be BUY or SELL, got ${args.side}`);
     }
     if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+    requireWholeCentPrice(args.takeProfitPrice, "takeProfitPrice");
+    requireWholeCentPrice(args.stopLossPrice, "stopLossPrice");
 
     const created = await tradeJson("/v2/orders", {
       method: "POST",
@@ -418,6 +439,8 @@ export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient
       throw new Error(`side must be BUY or SELL, got ${args.side}`);
     }
     if (args.qty <= 0) throw new Error(`qty must be > 0, got ${args.qty}`);
+    requireWholeCentPrice(args.takeProfitPrice, "takeProfitPrice");
+    requireWholeCentPrice(args.stopLossPrice, "stopLossPrice");
 
     const created = await tradeJson("/v2/orders", {
       method: "POST",
