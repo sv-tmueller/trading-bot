@@ -8,6 +8,7 @@ import {
   OrderRejectedError,
   OrderTimeoutError,
   PaperGuardFailedError,
+  SubPennyPriceError,
 } from "./alpaca.ts";
 import { DataError } from "./num.ts";
 
@@ -1199,6 +1200,154 @@ Deno.test("placeOcoExitPair: guarded (BrokerCallBlockedError before any fetch)",
       BrokerCallBlockedError,
     );
     assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #494 group D: validate, do not round, at the wire.
+//
+// Rounding here would silently desync the broker's prices from the geometry
+// the journal recorded. Throwing instead converts any future recurrence of
+// the 422 from a production rejection into a local test failure. The check
+// sits AFTER guardMutation so CLAUDE_AGENT_NO_BROKER still wins.
+// ---------------------------------------------------------------------------
+
+Deno.test("D17 placeBracketOrder: a sub-penny price throws SubPennyPriceError before any fetch", async () => {
+  setKeys();
+  liftBrokerGuard();
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({ id: "b1", status: "accepted" }));
+  });
+  try {
+    // The two live 2026-07-30 rejections, one per leg.
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 746.173,
+          stopLossPrice: 744.21,
+        }),
+      SubPennyPriceError,
+      "takeProfitPrice",
+    );
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 745.0495000000001,
+          stopLossPrice: 744.21,
+        }),
+      SubPennyPriceError,
+      "takeProfitPrice",
+    );
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 746.64,
+          stopLossPrice: 744.2075,
+        }),
+      SubPennyPriceError,
+      "stopLossPrice",
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("D17 placeBracketOrder: the broker guard still wins over the penny check", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeBracketOrder({
+          symbol: "SPY",
+          side: "BUY",
+          qty: 1,
+          takeProfitPrice: 746.173,
+          stopLossPrice: 744.2075,
+        }),
+      BrokerCallBlockedError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("D18 placeOcoExitPair: a sub-penny price throws SubPennyPriceError before any fetch", async () => {
+  setKeys();
+  liftBrokerGuard();
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({ id: "oco1", status: "accepted" }));
+  });
+  try {
+    // The re-leg path reads provenance out of numeric(14,4), so a row written
+    // before this fix still holds a sub-penny stop.
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeOcoExitPair({
+          symbol: "SPY",
+          side: "SELL",
+          qty: 13,
+          takeProfitPrice: 746.645,
+          stopLossPrice: 744.21,
+        }),
+      SubPennyPriceError,
+      "takeProfitPrice",
+    );
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeOcoExitPair({
+          symbol: "SPY",
+          side: "SELL",
+          qty: 13,
+          takeProfitPrice: 746.64,
+          stopLossPrice: 744.2075,
+        }),
+      SubPennyPriceError,
+      "stopLossPrice",
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("D18 placeOcoExitPair: the broker guard still wins over the penny check", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({})));
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeOcoExitPair({
+          symbol: "SPY",
+          side: "SELL",
+          qty: 1,
+          takeProfitPrice: 746.173,
+          stopLossPrice: 744.2075,
+        }),
+      BrokerCallBlockedError,
+    );
   } finally {
     restore();
     clearKeys();

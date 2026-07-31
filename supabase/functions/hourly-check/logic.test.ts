@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import type { ClosedOrderFill, Fill } from "../_shared/alpaca.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
-import type { HourlyScanRow, TradeRow } from "../_shared/db.ts";
+import { coerceHourlyScanRow, type HourlyScanRow, type TradeRow } from "../_shared/db.ts";
 import { decideHourly } from "../_shared/hourly_signal.ts";
 import type { CalendarSession, HourlyBar } from "../_shared/marketdata.ts";
 import {
@@ -298,6 +298,100 @@ Deno.test("computeSizing: wide stop + low equity -> qty=0 (size_too_small, not a
   });
   assertEquals(s.valid, true);
   assertEquals(s.qty, 0);
+});
+
+// ---------------------------------------------------------------------------
+// #494 group B: bracket geometry is quantized to whole cents, stop first
+//
+// Alpaca rejects any equity price above $1 that is not a $0.01 multiple
+// (422, code 42210000). The contract is a SERIALIZATION contract, so every
+// price assertion below checks String(...) as well as numeric equality:
+// numeric equality alone still admits 745.05000000000007, which 422s.
+//
+// The bar shape is the 2026-07-30 live session: a bar range on 2 decimals
+// times the 0.05 buffer yields a 4-decimal stop, and the target's x2 then
+// lands on a tenth of a cent.
+// ---------------------------------------------------------------------------
+
+const GEOM_CFG = { hourlyStopBufferPct: 0.05, hourlyBracketRMultiple: 2 };
+
+/** The live 2026-07-30 bar shape that produced the rejected prices. */
+const LIVE_BAR = { high: 745.73, low: 744.28 };
+const LIVE_ENTRY_REF = 745.02;
+
+/** at most two decimals, no float artifact */
+const CENT_CLEAN = /^-?\d+(\.\d{1,2})?$/;
+
+Deno.test("B7 computeBracketGeometry: every returned price serializes to at most two decimals", () => {
+  const cases: Array<[{ high: number; low: number }, number]> = [
+    [LIVE_BAR, LIVE_ENTRY_REF],
+    [{ high: 745.80, low: 744.30 }, 745.00],
+    [{ high: 100.07, low: 99.93 }, 100.01],
+    [{ high: 12.34, low: 12.11 }, 12.30],
+    [{ high: 553, low: 548 }, 550],
+  ];
+  for (const action of ["LONG", "SHORT"] as const) {
+    for (const [bar, entryRef] of cases) {
+      const geom = computeBracketGeometry(action, bar, entryRef, GEOM_CFG);
+      assertEquals(
+        CENT_CLEAN.test(String(geom.stopPrice)),
+        true,
+        `${action} ${JSON.stringify(bar)} stop -> ${String(geom.stopPrice)}`,
+      );
+      assertEquals(
+        CENT_CLEAN.test(String(geom.targetPrice)),
+        true,
+        `${action} ${JSON.stringify(bar)} target -> ${String(geom.targetPrice)}`,
+      );
+    }
+  }
+});
+
+Deno.test("B8 computeBracketGeometry: the live 2026-07-30 LONG bar -> 744.21 / 746.64, not 744.2075 / 746.645", () => {
+  const geom = computeBracketGeometry("LONG", LIVE_BAR, LIVE_ENTRY_REF, GEOM_CFG);
+  assertEquals(geom.stopPrice, 744.21);
+  assertEquals(String(geom.stopPrice), "744.21");
+  assertEquals(geom.targetPrice, 746.64);
+  assertEquals(String(geom.targetPrice), "746.64");
+});
+
+Deno.test("B9 computeBracketGeometry: the SHORT mirror of the same bar is quantized too", () => {
+  const geom = computeBracketGeometry("SHORT", LIVE_BAR, LIVE_ENTRY_REF, GEOM_CFG);
+  assertEquals(geom.stopPrice, 745.8);
+  assertEquals(String(geom.stopPrice), "745.8");
+  assertEquals(geom.targetPrice, 743.46);
+  assertEquals(String(geom.targetPrice), "743.46");
+});
+
+Deno.test("B10 computeBracketGeometry: the target is derived from the ROUNDED stop (746.56, not 746.55)", () => {
+  // Ordering pin, not a quantization pin. On this bar the raw stop is
+  // 744.2249999999999 and the raw target 746.5500000000002. Rounding the two
+  // independently gives 744.22 / 746.55; rounding the stop first and deriving
+  // the target from it gives 744.22 / 746.56. Only the second keeps wire R at
+  // exactly 2x the wire risk (see B11), which is why the ordering is frozen.
+  const geom = computeBracketGeometry("LONG", { high: 745.80, low: 744.30 }, 745.00, GEOM_CFG);
+  assertEquals(geom.stopPrice, 744.22);
+  assertEquals(String(geom.stopPrice), "744.22");
+  assertEquals(geom.targetPrice, 746.56);
+  assertEquals(String(geom.targetPrice), "746.56");
+});
+
+Deno.test("B11 computeBracketGeometry: wire R holds in the numbers the broker receives", () => {
+  // take_profit - entryRef == R * (entryRef - stop_loss), in whole cents, so
+  // the journal's risk denominator matches what the broker is holding.
+  const entryRef = 745.00;
+  const geom = computeBracketGeometry("LONG", { high: 745.80, low: 744.30 }, entryRef, GEOM_CFG);
+  const cents = (v: number) => Math.round(v * 100);
+  assertEquals(cents(geom.targetPrice - entryRef), 2 * cents(entryRef - geom.stopPrice));
+});
+
+Deno.test("B12 computeBracketGeometry: quantization is a no-op on already-penny geometry (§6 example)", () => {
+  const long = computeBracketGeometry("LONG", { high: 553, low: 548 }, 550, GEOM_CFG);
+  assertEquals(String(long.stopPrice), "547.75");
+  assertEquals(String(long.targetPrice), "554.5");
+  const short = computeBracketGeometry("SHORT", { high: 553, low: 548 }, 550, GEOM_CFG);
+  assertEquals(String(short.stopPrice), "553.25");
+  assertEquals(String(short.targetPrice), "543.5");
 });
 
 // ---------------------------------------------------------------------------
@@ -768,6 +862,136 @@ Deno.test("gate 20: SHORT entry uses the plain-entry + OCO fallback (bracket-on-
   assertEquals(ocoCalled, true);
   assertEquals(rec.trades[0].reason, "hourly_short_entry");
   assertEquals(rec.trades[0].side, "SELL");
+});
+
+// ---------------------------------------------------------------------------
+// #494 group C: the quantized prices reach the wire, the journal, and the
+// re-leg path. Same live 2026-07-30 bar shape as group B, wired through the
+// whole pipeline instead of the pure function.
+// ---------------------------------------------------------------------------
+
+// Same wick/body proportions as BAR1 (a clean bullish_marubozu), scaled to the
+// price level of the 2026-07-30 session so the raw stop lands on 4 decimals.
+const LIVE_BAR0: HourlyBar = {
+  timestamp: "2026-07-27T13:00:00Z",
+  open: 744.30,
+  high: 744.60,
+  low: 744.00,
+  close: 744.30,
+};
+const LIVE_BAR1: HourlyBar = {
+  timestamp: "2026-07-27T14:00:00Z",
+  open: 744.31,
+  high: 745.73,
+  low: 744.28,
+  close: 745.70,
+};
+
+function buildLiveDeps(entryRef = 745.02) {
+  const built = buildDeps();
+  built.deps.marketdata.getHourlyBars = () => Promise.resolve([LIVE_BAR0, LIVE_BAR1]);
+  built.deps.marketdata.getLatestTradePrice = () => Promise.resolve(entryRef);
+  return built;
+}
+
+Deno.test("C13 entry path: placeBracketOrder receives whole-cent prices for the live bar", async () => {
+  const { deps } = buildLiveDeps();
+  let sent: { takeProfitPrice: number; stopLossPrice: number } | null = null;
+  deps.alpaca.placeBracketOrder = (args) => {
+    sent = { takeProfitPrice: args.takeProfitPrice, stopLossPrice: args.stopLossPrice };
+    return Promise.resolve(fill({ orderId: "bracket1" }));
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success");
+  const wire = sent as unknown as { takeProfitPrice: number; stopLossPrice: number };
+  assertEquals(wire.stopLossPrice, 744.21);
+  assertEquals(wire.takeProfitPrice, 746.64);
+  // The serialized body is what Alpaca actually validated and rejected.
+  assertEquals(String(wire.stopLossPrice), "744.21");
+  assertEquals(String(wire.takeProfitPrice), "746.64");
+});
+
+Deno.test("C14 journal: hourly_scans stop_price / target_price are whole cents on both writes", async () => {
+  const { deps, rec } = buildLiveDeps();
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success");
+  assertEquals(rec.scans.length, 2);
+  for (const scan of rec.scans) {
+    assertEquals(scan.stopPrice, 744.21);
+    assertEquals(scan.targetPrice, 746.64);
+    assertEquals(String(scan.stopPrice), "744.21");
+    assertEquals(String(scan.targetPrice), "746.64");
+  }
+});
+
+Deno.test("C15 re-leg path: journaled geometry survives the numeric(14,4) round-trip penny-clean", async () => {
+  // The naked-position rule reads provenance back through PostgREST, which
+  // renders numeric columns as strings. A sub-penny stored value round-trips
+  // sub-penny and gets the OCO pair rejected, which drops the position into
+  // the market-close flatten instead of re-protecting it (#494 scope item 3).
+  const { deps: entryDeps, rec } = buildLiveDeps();
+  assertEquals(await runHourlyCheck(entryDeps), "success");
+  const journaled = rec.scans[1];
+
+  // What Postgres stores in numeric(14,4) and PostgREST hands back.
+  const raw = {
+    symbol: "SPY",
+    bar_ts: "2026-07-27T14:00:00Z",
+    decision: "LONG",
+    skip_reason: null,
+    detectors_fired: ["bullish_marubozu"],
+    context_mode: "none",
+    entry_ref_price: "745.0200",
+    stop_price: journaled.stopPrice?.toFixed(4),
+    target_price: journaled.targetPrice?.toFixed(4),
+    risk_per_share: "0.8100",
+    equity_usd: "100000.00",
+    qty: 13,
+    entry_order_id: "bracket1",
+  };
+  assertEquals(raw.stop_price, "744.2100");
+  assertEquals(raw.target_price, "746.6400");
+
+  const provenance = coerceHourlyScanRow(raw as unknown as Record<string, unknown>);
+
+  const { deps } = buildDeps();
+  deps.alpaca.getPosition = () => Promise.resolve(13);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve([]);
+  deps.db.getTradesSince = () =>
+    Promise.resolve([{
+      symbol: "SPY",
+      side: "BUY",
+      qty: 13,
+      fill_price: 745.02,
+      fill_time: "2026-07-27T14:05:00Z",
+      reason: "hourly_long_entry",
+      broker_order_id: "bracket1",
+    }]);
+  deps.db.getHourlyScanByEntryOrderId = () => Promise.resolve(provenance);
+  let sent: { takeProfitPrice: number; stopLossPrice: number } | null = null;
+  deps.alpaca.placeOcoExitPair = (args) => {
+    sent = { takeProfitPrice: args.takeProfitPrice, stopLossPrice: args.stopLossPrice };
+    return Promise.resolve({ orderId: "oco1" });
+  };
+  assertEquals(await runHourlyCheck(deps), "success:legs_replaced");
+  const wire = sent as unknown as { takeProfitPrice: number; stopLossPrice: number };
+  assertEquals(String(wire.stopLossPrice), "744.21");
+  assertEquals(String(wire.takeProfitPrice), "746.64");
+});
+
+Deno.test("C16 journal: entry_ref_price and risk_per_share are deliberately NOT quantized", async () => {
+  // entry_ref_price is an observation (never on the wire) -- rounding it
+  // falsifies the record of what the bot saw. risk_per_share is the weekly
+  // review's R denominator, also never on the wire. Only the two wire values
+  // are quantized; this pins that so nobody "helpfully" rounds the rest.
+  const entryRef = 745.0234;
+  const { deps, rec } = buildLiveDeps(entryRef);
+  assertEquals(await runHourlyCheck(deps), "success");
+  const scan = rec.scans[1];
+  assertEquals(scan.entryRefPrice, entryRef);
+  assertEquals(String(scan.entryRefPrice), "745.0234");
+  assertEquals(scan.riskPerShare, entryRef - 744.21);
+  assertEquals(String(scan.stopPrice), "744.21");
 });
 
 // ---------------------------------------------------------------------------
