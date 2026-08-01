@@ -25,7 +25,7 @@ lead-ratified rulings on #478).
   evidence" comment on #479 — see §2) — the rule above stays in this banner because it
   is the standing precondition for any future re-pause/resume cycle, not because the
   flag is still `true` today.
-- **`deno task test:db` runs against a local `supabase start` stack only — this is now
+- **`deno task test:db` runs against a local `supabase start` stack only, and this is now
   enforced in code (#485), not just here.** `supabase/functions/_shared/db.test.ts`
   builds its client through `createLocalDbClient()`
   (`supabase/functions/_shared/db_test_guard.ts`), which refuses any `SUPABASE_URL`
@@ -37,7 +37,7 @@ lead-ratified rulings on #478).
   note on why this exists: before the guard, that test wrote `paused='true'` then
   `paused='false'` and never restored it, so pointed at the dev project it would
   silently clear the operational kill switch and, before `0013` had applied, re-arm
-  `daily-check-1337`/`daily-check-1437` on their next slot — plus write
+  `daily-check-1337`/`daily-check-1437` on their next slot, plus write
   `trades`/`audit_log`/`hourly_scans` rows into the live paper journal #481's
   aggregator reads.
 - PR-A (#484) shipped **no cron activation**. `0012_hourly_scans.sql`'s
