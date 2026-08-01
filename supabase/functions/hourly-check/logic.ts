@@ -695,7 +695,7 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     }
     const baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
 
-    // The floor owns everything at or below the baseline, and it runs FIRST
+    // The floor owns everything strictly below the baseline, and it runs FIRST
     // (round-2 finding 1). Below the baseline a drawdown and a wrong-high
     // baseline are indistinguishable on a first scan, and the plausibility
     // check must not pre-empt the floor there: doing so would downgrade the
@@ -714,8 +714,8 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // floor, unlike a missing one. The dangerous direction is a baseline too
     // LOW relative to equity -- the 2026-07-29 case, 100000 against 1017330.61
     // -- because that is where the floor goes inert. So the check runs only
-    // when equity EXCEEDS the baseline; below it, the floor above has already
-    // had its say.
+    // when equity is AT OR ABOVE the baseline; below it, the floor above has
+    // already had its say.
     //
     // The check is one-shot, keyed to the baseline VALUE: BASELINE_VERIFIED_KEY
     // holds the baseline string already checked against this account's equity.
