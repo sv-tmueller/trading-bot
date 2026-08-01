@@ -472,7 +472,85 @@ Deno.test("gate 6: equity <= 85% of baseline -> success:auto_paused, sets bot_co
   deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 }); // < 85000 = 15% down from 100000
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "success:auto_paused");
+  // A real floor breach is a 17.6% baseline/equity deviation, which the
+  // plausibility tolerance (#488) must stay wider than -- otherwise the first
+  // scan after a baseline is set reports a genuine -15% loss as a config
+  // error. The floor, not the plausibility check, owns this run.
+  assertEquals(rec.configSets.filter(([k]) => k === "paused"), [["paused", "true"]]);
+});
+
+// ---------------------------------------------------------------------------
+// #488: a WRONG baseline parses fine and silently moves the floor. The check
+// is one-shot, keyed to the baseline value, so it cannot fire on the
+// legitimate divergence the baseline exists to measure.
+// ---------------------------------------------------------------------------
+
+Deno.test("gate 6: a baseline 10x below equity -> error:DataError before any order (2026-07-29 live values)", async () => {
+  const { deps, rec } = buildDeps();
+  // The exact 2026-07-29 ops-window numbers: `insert ... on conflict do
+  // nothing` silently kept a stale 100000.00 row while equity was 1017330.61,
+  // putting the floor at $85,000 -- a 91.6% loss before it would have fired.
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:DataError");
+  assertEquals(rec.trades, []);
+  assertEquals(rec.scans, []);
+  assertEquals(rec.configSets, []);
+});
+
+Deno.test("gate 6: a 2x-off baseline -> error:DataError (the error class the live one nearly was)", async () => {
+  const { deps } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 200000 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+});
+
+Deno.test("gate 6: a plausible baseline is recorded as verified, so the check is one-shot", async () => {
+  const { deps, rec } = buildDeps();
+  assertEquals(await runHourlyCheck(deps), "success");
+  assertEquals(
+    rec.configSets.filter(([k]) => k === "hourly_experiment_baseline_verified"),
+    [["hourly_experiment_baseline_verified", "100000"]],
+  );
+});
+
+Deno.test("gate 6: once verified, equity 3x above the baseline is legitimate divergence, not an error", async () => {
+  const { deps, rec } = buildDeps();
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "100000");
+  rec.configSets.length = 0;
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 300000 });
+  assertEquals(await runHourlyCheck(deps), "success");
+  // Already verified -> not re-recorded, and the run traded normally.
+  assertEquals(rec.configSets, []);
+  assertEquals(rec.trades.length, 1);
+});
+
+Deno.test("gate 6: once verified, a >20% drawdown is the floor's business, never a plausibility error", async () => {
+  const { deps, rec } = buildDeps();
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "100000");
+  rec.configSets.length = 0;
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 40000 });
+  assertEquals(await runHourlyCheck(deps), "success:auto_paused");
   assertEquals(rec.configSets, [["paused", "true"]]);
+});
+
+Deno.test("gate 6: the verified marker is keyed to the baseline VALUE -- a changed baseline is re-checked", async () => {
+  const { deps } = buildDeps();
+  // A stale marker from an earlier, correct baseline must not vouch for the
+  // 100000 now in force against a 1017330.61 account.
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "1017330.61");
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+});
+
+Deno.test("gate 6: recording the verified marker is bookkeeping -- a failed write warns, the run still trades", async () => {
+  const { deps, rec } = buildDeps();
+  const realSetConfig = deps.db.setConfig;
+  deps.db.setConfig = (key, value) =>
+    key === "hourly_experiment_baseline_verified"
+      ? Promise.reject(new Error("db unavailable"))
+      : realSetConfig(key, value);
+  assertEquals(await runHourlyCheck(deps), "success");
+  assertEquals(rec.trades.length, 1);
 });
 
 Deno.test("gate 7: no completed bars -> skipped:stale_data, audit only (no hourly_scans row -- no candidate bar exists)", async () => {

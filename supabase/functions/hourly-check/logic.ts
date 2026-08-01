@@ -22,6 +22,24 @@ const HOUR_MS = 60 * 60 * 1000;
 // owns via the spec's own merge, same as the 4-week/30-trade checkpoint.
 const EQUITY_FLOOR_PCT = 0.15;
 
+// #488: how far the stored experiment baseline may sit from account equity at
+// the moment it is first checked. A wrong baseline (as opposed to a missing
+// one) parses fine and silently relocates the floor -- the 2026-07-29 ops
+// window left a stale 100000.00 baseline against 1017330.61 of equity, putting
+// the floor at a 91.6% loss.
+//
+// The bounds on this number are both real. It must stay ABOVE the floor's own
+// reach: a genuine -15% breach is a 17.6% baseline/equity deviation
+// (1/0.85 - 1), so a tighter tolerance would report a legitimate first-scan
+// floor breach as a config error. It must stay well BELOW the smallest
+// dangerous error class, a 2x stale value (100% off). 20% sits between them.
+const BASELINE_TOLERANCE_PCT = 0.20;
+
+// Companion bot_config key holding the baseline string that has already been
+// checked against this account's equity. It is what makes the check one-shot
+// rather than continuous -- see assertBaselinePlausible.
+const BASELINE_VERIFIED_KEY = "hourly_experiment_baseline_verified";
+
 // Every reason this package's trades rows can carry. hourly_kill_switch is
 // read (as an exit event, for cooldown/day-cap bookkeeping) but never
 // written here -- the retrofit package (#474) owns writing it.
@@ -206,6 +224,20 @@ export function isBarPartial(
   const sessionCloseMs = etHHMMToUtcMs(session.date, session.close);
   const fullyInside = startMs >= sessionOpenMs && endMs <= sessionCloseMs;
   return !isTopOfHour || !fullyInside;
+}
+
+/**
+ * #488: is `baseline` close enough to `equity` to have plausibly been derived
+ * from this account? Only ever asked at the one moment the answer is knowable
+ * -- the first scan after a baseline is written, when the two are supposed to
+ * be the same number. See BASELINE_TOLERANCE_PCT for both bounds.
+ *
+ * Equity is the denominator, so a zero or negative equity admits no baseline
+ * at all, which is the right answer: a floor cannot be validated against an
+ * account that has none.
+ */
+export function isBaselinePlausible(baseline: number, equity: number): boolean {
+  return Math.abs(baseline - equity) <= equity * BASELINE_TOLERANCE_PCT;
 }
 
 export interface BracketGeometry {
@@ -631,6 +663,48 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       );
     }
     const baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+
+    // #488: a WRONG baseline parses fine here and silently relocates the
+    // floor, unlike a missing one. The check is one-shot, keyed to the
+    // baseline VALUE: BASELINE_VERIFIED_KEY holds the baseline string that has
+    // already been checked against this account's equity.
+    //
+    // That keying is what distinguishes "this baseline was never derived from
+    // this account" from "the account has since drifted". Baseline and equity
+    // are only ever expected to agree at one instant -- the first scan after a
+    // baseline is written. After that, divergence is the whole point of a
+    // baseline and carries no expected bound, so a continuous magnitude check
+    // would false-positive on exactly the outcome the experiment is measuring.
+    // Once the marker matches, this block never runs again.
+    //
+    // Placed before the floor comparison below so a baseline that is wrong
+    // HIGH is reported as the config error it is, rather than masquerading as
+    // a -15% equity loss the account never took. Still after steps 4-5, so
+    // reconciliation's protection duties keep running first.
+    if (baselineRaw !== await db.getConfig(BASELINE_VERIFIED_KEY)) {
+      if (!isBaselinePlausible(baseline, equityAtStart)) {
+        throw new DataError(
+          `bot_config.hourly_experiment_start_equity=${baseline} is implausible against ` +
+            `account equity ${equityAtStart} -- more than ${BASELINE_TOLERANCE_PCT * 100}% ` +
+            `apart, so the -15% floor would sit at ${baseline * (1 - EQUITY_FLOOR_PCT)} ` +
+            `instead of near ${equityAtStart * (1 - EQUITY_FLOOR_PCT)}. Correct the baseline ` +
+            `with an explicit UPDATE (runbook §5); to accept it as intentional, set ` +
+            `bot_config.${BASELINE_VERIFIED_KEY} to the same value.`,
+        );
+      }
+      // Bookkeeping only: the check has already passed for this run, and a
+      // failed write just means it runs again next scan. Degrade rather than
+      // fail an otherwise-good run (same reasoning as tryPostFillWrite).
+      try {
+        await db.setConfig(BASELINE_VERIFIED_KEY, baselineRaw);
+      } catch (e) {
+        console.warn(
+          `hourly-check: could not record ${BASELINE_VERIFIED_KEY}: ` +
+            `${String((e as Error)?.message ?? e)}`,
+        );
+      }
+    }
+
     if (equityAtStart <= baseline * (1 - EQUITY_FLOOR_PCT)) {
       await db.setConfig("paused", "true");
       return await done("success:auto_paused", `equity=${equityAtStart} baseline=${baseline}`);
