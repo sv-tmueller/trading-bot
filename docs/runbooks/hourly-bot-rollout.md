@@ -150,8 +150,9 @@ supabase secrets set \
   HOURLY_BOT_PAPER_ONLY=true
 
 # Batch 3 deploy-time only (not part of this PR): the -15% equity-floor baseline
-# is a bot_config row, not a secret -- set once when the paper experiment begins:
-#   insert into bot_config (key, value) values ('hourly_experiment_start_equity', '<equity>');
+# is a bot_config row, not a secret -- set once when the paper experiment begins.
+# Follow §5, not a bare insert: verifying the stored value against the equity you
+# just read is part of the step, because `on conflict do nothing` can discard it.
 ```
 
 `HOURLY_SHORTS_ENABLED=false` here matches §1's non-negotiable — do not override it
@@ -182,31 +183,82 @@ do nothing` below).
 ```sql
 insert into bot_config (key, value)
 values ('hourly_experiment_start_equity', '<PASTE THE /v2/account EQUITY HERE>')
-on conflict (key) do nothing;  -- refuses to overwrite an existing baseline
+on conflict (key) do nothing   -- refuses to overwrite an existing baseline
+returning value;               -- makes the refusal visible, see below
 ```
 
-**`do nothing` is silent on an existing row — this is exactly the mechanism that
-produced the wrong `100000.00` baseline during this rollout's own ops window (§2):**
-the `insert` appeared to succeed with no error, but a pre-existing row meant the
-value pasted above was silently discarded. **Do not trust the insert alone — compare
-the value read back against the equity you just read from `/v2/account` before
-proceeding:**
+**`on conflict do nothing` is retained deliberately — it is what protects a real
+baseline from being moved mid-experiment — but on its own it is silent about having
+done so, and that silence is exactly what produced the wrong `100000.00` baseline
+during this rollout's own ops window (§2):** the `insert` appeared to succeed with no
+error, but a pre-existing row meant the value pasted above was discarded. `returning
+value` removes the ambiguity. **Read the row count, not just the output:**
+
+| Result | Meaning |
+|---|---|
+| **1 row**, showing the value you pasted | The baseline was set by this statement. Proceed to the verification below. |
+| **0 rows** (`INSERT 0 0`) | **NO-OP.** A baseline already existed and your value was discarded. The stored baseline is *not* the one you just pasted. |
+
+Either way, do not trust the insert alone. **Verify the stored value against the
+equity you just read** — this query compares the two rather than echoing the stored
+value back at you, so a stale baseline cannot look like a success:
 
 ```sql
-select value from bot_config where key = 'hourly_experiment_start_equity';
+-- Paste the SAME /v2/account equity into both placeholders.
+select
+  value                                                       as stored_baseline,
+  <PASTE THE /v2/account EQUITY HERE>                         as equity_just_read,
+  round(
+    abs(value::numeric - <PASTE THE /v2/account EQUITY HERE>)
+      / <PASTE THE /v2/account EQUITY HERE> * 100, 2)         as deviation_pct,
+  case
+    when abs(value::numeric - <PASTE THE /v2/account EQUITY HERE>)
+           <= 0.20 * <PASTE THE /v2/account EQUITY HERE>
+    then 'OK'
+    else 'STOP -- stored baseline does not match the equity just read'
+  end                                                         as verdict
+from bot_config
+where key = 'hourly_experiment_start_equity';
 ```
 
-If the returned value does not match the equity you read in this step, **stop** —
-the baseline is stale from a previous run, not the one you intended to set, and must
-be corrected with an explicit `update` (not another `insert ... on conflict do
-nothing`) before continuing. See #488 for the follow-up that makes a wrong (as
-opposed to missing) baseline visible instead of silent.
+Verify: exactly one row, `verdict = 'OK'`, and `deviation_pct` at or near `0.00` (it
+is only nonzero if equity moved between the `/v2/account` read and this query).
 
-Verify: `select value from bot_config where key = 'hourly_experiment_start_equity';`
-returns the value just set (or the original one, if this was accidentally re-run —
-per the check above, confirm which case this is before proceeding).
-A missing baseline is a **hard error** at scan time (`hourly-check/logic.ts:613-617`,
-`error:DataError`) — this step is not optional before the first scan that could trade.
+If the verdict is `STOP`, or the deviation is anything more than a rounding
+difference, **stop** — the baseline is stale from a previous run, not the one you
+intended to set. Correct it with an explicit `update`, never another `insert ... on
+conflict do nothing`:
+
+```sql
+update bot_config
+set value = '<PASTE THE /v2/account EQUITY HERE>'
+where key = 'hourly_experiment_start_equity';
+-- then re-run the verification query above.
+```
+
+The 20% threshold in the query mirrors the scan-time check below; keep the two in
+step if either changes.
+
+Both failure modes are now caught at scan time as well (#488), so this step is
+belt-and-braces rather than the only line of defence:
+
+- A **missing** baseline is a hard error (`error:DataError`).
+- A **wrong** baseline — more than 20% from account equity — is also a hard error, checked
+  once against live equity before the first scan that could trade, then recorded in
+  `bot_config.hourly_experiment_baseline_verified` so it never fires again on the
+  legitimate divergence the baseline exists to measure. Changing the baseline later
+  re-arms the check for the new value.
+
+Neither is auto-corrected. If a flagged baseline really is intentional, acknowledge it
+explicitly by setting the marker yourself — do not weaken the check:
+
+```sql
+insert into bot_config (key, value)
+values ('hourly_experiment_baseline_verified', '<THE EXACT stored_baseline STRING>')
+on conflict (key) do update set value = excluded.value;
+```
+
+This step is not optional before the first scan that could trade.
 
 ## §6 Resume — 0013-first precondition (red letter)
 
