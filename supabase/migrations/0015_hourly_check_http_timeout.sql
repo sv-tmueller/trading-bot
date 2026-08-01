@@ -76,21 +76,33 @@
 --
 -- 120000 clears that with ~31s of margin. Stated as the falsifiable claim: the
 -- margin survives until sustained per-request latency reaches ~800 ms
--- ((120_000 - 36_000 - 3_100) / 100), roughly eight times the healthy
--- observation. The same arithmetic is why 60000 was rejected during review --
--- its break-even is ~210 ms per request, which a merely stressed broker
--- reaches, so it would have rebuilt this bug's own failure mode at a higher
--- threshold.
+-- ((120_000 - 36_000 - 3_100) / 100). The same arithmetic is why 60000 was
+-- rejected during review -- its break-even is ~210 ms per request, which a
+-- merely stressed broker reaches, so it would have rebuilt this bug's own
+-- failure mode at a higher threshold.
 --
 -- 120000 is also 1/30th of the job's own 3600s period, so the pg_net worker
 -- never holds a wait into the next firing. That is a statement about the
 -- worker's wait, not about the scan: a timeout does not abort the Edge
 -- Function, so a slow scan can still be executing when the next hour fires.
 --
--- A 2-minute wait does not delay the kill-switch job's own posts: pg_net's
--- worker drives its batch through `curl_multi_init` / `curl_multi_add_handle` /
--- `curl_multi_socket_action` (`src/worker.c`), an event loop over concurrent
--- handles, not `curl_easy_perform` one at a time.
+-- Does a 2-minute wait delay the kill-switch job's own posts? No, but not
+-- because pg_net runs everything concurrently. Only requests *already in the
+-- same batch* do: the worker consumes a batch (`consume_request_queue`,
+-- `src/worker.c:320`) and then drives it through a `curl_multi` event loop that
+-- spins `while (running_handles > 0)` (:340-385) before the outer loop can
+-- consume again (:418). A request enqueued after a batch was consumed waits
+-- behind the slowest handle in that batch.
+--
+-- So the separation is a scheduling property, not a pg_net one. hourly-check
+-- fires at :07 and kill-switch at */5 (`0004_cron_idempotent.sql`), so the two
+-- are always in different batches, and the next kill-switch enqueue after a :07
+-- firing is at :10. A 120s wait closes at :09:00, a minute clear.
+--
+-- That yields a hard constraint on any future change here: THIS VALUE MUST STAY
+-- BELOW THE 180s :07-TO-:10 GAP. Past it, a stalled hourly-check batch holds the
+-- kill-switch's post behind it and delays an intraday drawdown check by the
+-- overrun. 120000 leaves 60s of slack against that bound.
 --
 -- If this ever needs revisiting, the remedy is to give `trade()` a per-request
 -- `AbortSignal` (#511) and tighten the poll budgets, or to raise this number in
