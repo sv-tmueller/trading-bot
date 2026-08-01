@@ -155,7 +155,7 @@ export function getHourlyConfig(): HourlyConfig {
   // let a lost or never-set secret arm the short-side path -- the opposite
   // direction from what a safety flag owes. Absent now means shorts off, so
   // enabling them takes an explicit "true" the same way HOURLY_BOT_PAPER_ONLY
-  // does. A value that is present but unparseable still throws.
+  // does.
   const hourlyShortsEnabledRaw = (Deno.env.get("HOURLY_SHORTS_ENABLED") ?? "false").trim()
     .toLowerCase();
   if (hourlyShortsEnabledRaw !== "true" && hourlyShortsEnabledRaw !== "false") {

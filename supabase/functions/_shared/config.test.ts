@@ -385,11 +385,15 @@ Deno.test("getHourlyConfig: HOURLY_SHORTS_ENABLED enables shorts only on an expl
   clearHourlyEnv();
 });
 
-// An empty secret is not an implicit unset: it stays a validation error, so a
-// blank value surfaces as a config failure instead of quietly picking a side.
-Deno.test("getHourlyConfig: rejects an empty HOURLY_SHORTS_ENABLED", () => {
+// A present-but-blank secret is not an implicit unset: it stays a validation
+// error, so it surfaces as a config failure instead of quietly picking a side.
+// The empty-string case is the one broken deploy tooling actually produces, and
+// it is what a `??`-to-`||` slip in the default would silently swallow.
+Deno.test("getHourlyConfig: blank/whitespace-only HOURLY_SHORTS_ENABLED throws", () => {
   clearHourlyEnv();
   Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
   Deno.env.set("HOURLY_SHORTS_ENABLED", "  ");
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
   clearHourlyEnv();

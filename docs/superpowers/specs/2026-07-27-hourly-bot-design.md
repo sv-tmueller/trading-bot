@@ -523,8 +523,8 @@ them. If SPY is not shortable per the confirmed fields, every `SHORT` decision i
 `skipped:not_shortable` rather than attempting an order that would reject — fail-closed, not
 fail-and-retry. **Fallback if the fields cannot be confirmed at all** (endpoint missing,
 fields renamed, or response ambiguous): the failure mode must not be silent — a config flag,
-`HOURLY_SHORTS_ENABLED` (default `false` since #493, §10), must be left at or set to `false` and the reason
-disclosed in the deploy notes/runbook; with shorting disabled this way, every otherwise-
+`HOURLY_SHORTS_ENABLED` (default `false` **[CORRECTED #493]**, §10), must be `false` and the
+reason disclosed in the deploy notes/runbook; with shorting disabled this way, every otherwise-
 `SHORT`-eligible bar still journals `skipped:shorts_disabled` (§9), so the gap is visible in
 the data itself, not only in a runbook note that could go stale or unread.
 
