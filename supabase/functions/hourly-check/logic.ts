@@ -693,7 +693,16 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
           "can evaluate the -15% equity floor (spec §11)",
       );
     }
-    const baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+    // Third way the floor becomes untrustworthy: present but unparseable
+    // ('1,017,330.61', '$1017330.61' -- the fat-fingered paste an account UI
+    // produces). requireNumber throws its own DataError, which would sail past
+    // alertAndFail and leave this path the only silent one of the three.
+    let baseline: number;
+    try {
+      baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+    } catch (e) {
+      throw await alertAndFail(notifications, String((e as Error)?.message ?? e));
+    }
 
     // The floor owns everything strictly below the baseline, and it runs FIRST
     // (round-2 finding 1). Below the baseline a drawdown and a wrong-high

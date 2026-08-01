@@ -241,18 +241,22 @@ two in step if either changes. The `abs()` here is deliberately **symmetric**, w
 scan-time check only looks below equity — this query is the only thing that catches a
 baseline set too high, for the reason given below.
 
-Both failure modes are now caught at scan time as well (#488), so this step is
+All three failure modes are now caught at scan time as well (#488), so this step is
 belt-and-braces rather than the only line of defence:
 
 - A **missing** baseline is a hard error (`error:DataError`).
+- An **unparseable** baseline is a hard error. `bot_config.value` is text, so a paste that
+  carries a thousands separator or a currency symbol (`1,017,330.61`, `$1017330.61`)
+  stores cleanly and only fails when the scan tries to read it as a number.
 - A **wrong** baseline — more than 20% *below* account equity — is also a hard error,
   checked once against live equity before the first scan that could trade, then recorded
   in `bot_config.hourly_experiment_baseline_verified` so it never fires again on the
   legitimate divergence the baseline exists to measure. Changing the baseline later
   re-arms the check for the new value.
 
-Both raise a Discord alert as well as writing the `audit_log` row, so neither depends on
-someone reading the table.
+All three raise a Discord alert as well as writing the `audit_log` row, so none depends on
+someone reading the table. Paste a bare number above — no separators, no currency symbol —
+and the verification query's `value::numeric` cast will itself fail loudly if you did not.
 
 **Why only the *below* direction, and what that leaves to you.** A baseline below equity
 is the dangerous one: it drops the floor away from the account, which is how the

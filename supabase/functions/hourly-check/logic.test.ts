@@ -619,6 +619,24 @@ Deno.test("gate 6: a missing baseline alerts too (same failure class: the floor 
   assertEquals(rec.alerts[0].includes("hourly_experiment_start_equity"), true);
 });
 
+// Round-3: the third way the floor becomes untrustworthy. requireNumber throws
+// its OWN DataError, straight past alertAndFail, so a present-but-unparseable
+// baseline halted trading with an audit_log row and no alert while its two
+// siblings above alerted. Both literals are the fat-fingered paste an account
+// UI produces.
+for (const raw of ["1,017,330.61", "$1017330.61"]) {
+  Deno.test(`gate 6: an unparseable baseline '${raw}' alerts too, not just an audit row`, async () => {
+    const { deps, rec } = buildDeps();
+    deps.db.getConfig = (key) =>
+      Promise.resolve(key === "hourly_experiment_start_equity" ? raw : null);
+    assertEquals(await runHourlyCheck(deps), "error:DataError");
+    assertEquals(rec.trades, []);
+    assertEquals(rec.scans, []);
+    assertEquals(rec.alerts.length, 1);
+    assertEquals(rec.alerts[0].includes(raw), true);
+  });
+}
+
 Deno.test("gate 6: a plausible baseline raises no alert", async () => {
   const { deps, rec } = buildDeps();
   assertEquals(await runHourlyCheck(deps), "success");
