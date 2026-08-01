@@ -245,7 +245,7 @@ Deno.test("getHourlyConfig: defaults when env is unset (except the mandatory pap
   assertEquals(c.hourlyMaxEntriesPerDay, 3);
   assertEquals(c.hourlyStalenessToleranceMin, 10);
   assertEquals(c.hourlyContextMode, "none");
-  assertEquals(c.hourlyShortsEnabled, true);
+  assertEquals(c.hourlyShortsEnabled, false);
   assertEquals(c.hourlyBotPaperOnly, true);
   clearHourlyEnv();
 });
@@ -361,6 +361,36 @@ Deno.test("getHourlyConfig: rejects a non-boolean HOURLY_SHORTS_ENABLED", () => 
   clearHourlyEnv();
   Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
   Deno.env.set("HOURLY_SHORTS_ENABLED", "yes");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
+  clearHourlyEnv();
+});
+
+// HOURLY_SHORTS_ENABLED fails closed (#493): a lost or never-set secret must
+// leave shorts off, so the short-side path cannot be armed by the absence of a
+// value. Enabling requires an explicit "true", mirroring HOURLY_BOT_PAPER_ONLY.
+Deno.test("getHourlyConfig: HOURLY_SHORTS_ENABLED unset disables shorts (fail-closed)", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  assertEquals(getHourlyConfig().hourlyShortsEnabled, false);
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: HOURLY_SHORTS_ENABLED enables shorts only on an explicit true", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "TRUE");
+  assertEquals(getHourlyConfig().hourlyShortsEnabled, true);
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "false");
+  assertEquals(getHourlyConfig().hourlyShortsEnabled, false);
+  clearHourlyEnv();
+});
+
+// An empty secret is not an implicit unset: it stays a validation error, so a
+// blank value surfaces as a config failure instead of quietly picking a side.
+Deno.test("getHourlyConfig: rejects an empty HOURLY_SHORTS_ENABLED", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "  ");
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
   clearHourlyEnv();
 });
