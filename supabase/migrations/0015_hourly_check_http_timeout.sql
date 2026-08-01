@@ -87,6 +87,11 @@
 -- worker's wait, not about the scan: a timeout does not abort the Edge
 -- Function, so a slow scan can still be executing when the next hour fires.
 --
+-- A 2-minute wait does not delay the kill-switch job's own posts: pg_net's
+-- worker drives its batch through `curl_multi_init` / `curl_multi_add_handle` /
+-- `curl_multi_socket_action` (`src/worker.c`), an event loop over concurrent
+-- handles, not `curl_easy_perform` one at a time.
+--
 -- If this ever needs revisiting, the remedy is to give `trade()` a per-request
 -- `AbortSignal` (#511) and tighten the poll budgets, or to raise this number in
 -- a follow-up migration -- never to loosen the runbook's health check so the
