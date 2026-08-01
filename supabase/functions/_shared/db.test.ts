@@ -1154,6 +1154,99 @@ const GUARDED_SKIP = {
   entryOrderId: null,
 };
 
+// ---------------------------------------------------------------------------
+// #487 review finding 1: the builder-level tests above assert that the query
+// builder was CALLED with the guard filters. That is not the same claim as
+// "the filters reach the server", and the difference is the whole package: a
+// regression that evaluated the guard client-side (a read-then-write, or a
+// filter applied in JS after a wider query) would keep every builder-level
+// and real-Postgres assertion green, because sequentially it is
+// indistinguishable. Only the emitted HTTP request separates them.
+//
+// These stub the client at its `fetch` boundary -- a real supabase-js client,
+// real postgrest-js query building, no network -- and assert on the request
+// line itself. `pin` is what a future reader is entitled to assume is covered.
+// ---------------------------------------------------------------------------
+
+interface WireRequest {
+  method: string;
+  url: string;
+  prefer: string;
+  body: string | null;
+}
+
+function wireCapturingClient(bodies: string[] = ["[]", "[]"]) {
+  const requests: WireRequest[] = [];
+  const fetchStub = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : String(input);
+    const method = (input instanceof Request ? input.method : init?.method) ?? "GET";
+    const headers = new Headers(
+      input instanceof Request ? input.headers : (init?.headers ?? {}),
+    );
+    requests.push({
+      method,
+      url,
+      prefer: headers.get("prefer") ?? "",
+      body: typeof init?.body === "string" ? init.body : null,
+    });
+    return Promise.resolve(
+      new Response(bodies[requests.length - 1] ?? "[]", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  const sb = createClient("http://stub.invalid", "stub-service-role-key", {
+    auth: { persistSession: false },
+    global: { fetch: fetchStub as typeof fetch },
+  });
+  return { sb, requests };
+}
+
+Deno.test("upsertHourlyScanUnlessEntered: the guard filter reaches the SERVER -- the emitted PATCH carries decision=eq.SKIP", async () => {
+  const { sb, requests } = wireCapturingClient(["[]", "[]"]); // conflict, then no row updated
+  const written = await upsertHourlyScanUnlessEntered(sb, GUARDED_SKIP);
+  assertEquals(written, false);
+
+  const patches = requests.filter((r) => r.method === "PATCH");
+  assertEquals(patches.length, 1);
+  const query = decodeURIComponent(patches[0].url);
+  assertEquals(query.includes("decision=eq.SKIP"), true);
+  assertEquals(query.includes("symbol=eq.SPY"), true);
+  assertEquals(query.includes("bar_ts=eq.2026-07-27T14:00:00Z"), true);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: never reads before writing -- no GET is emitted (a read-then-write would not be race-free)", async () => {
+  const { sb, requests } = wireCapturingClient(["[]", "[]"]);
+  await upsertHourlyScanUnlessEntered(sb, GUARDED_SKIP);
+  assertEquals(requests.map((r) => r.method), ["POST", "PATCH"]);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: the insert reaches the server as ON CONFLICT DO NOTHING (Prefer: resolution=ignore-duplicates)", async () => {
+  const { sb, requests } = wireCapturingClient(['[{"bar_ts":"2026-07-27T14:00:00Z"}]']);
+  const written = await upsertHourlyScanUnlessEntered(sb, GUARDED_SKIP);
+  assertEquals(written, true);
+  assertEquals(requests.length, 1); // inserted -> statement 2 never runs
+  assertEquals(requests[0].method, "POST");
+  assertEquals(requests[0].prefer.includes("resolution=ignore-duplicates"), true);
+  assertEquals(decodeURIComponent(requests[0].url).includes("on_conflict=symbol,bar_ts"), true);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: a non-SKIP payload does not type-check -- the SKIP-only contract is mechanical, not a comment", () => {
+  type SkipPayload = Parameters<typeof upsertHourlyScanUnlessEntered>[1];
+  const accept = (p: SkipPayload) => p.decision;
+
+  assertEquals(accept(GUARDED_SKIP), "SKIP");
+
+  // A LONG payload inverts the semantics: the guard reads the row's STORED
+  // decision, so this would PRESERVE a stored LONG rather than stamp it.
+  // Entry rows must go through upsertHourlyScan. If this directive ever
+  // reports as unused, the parameter type widened and the contract is back
+  // to being a comment.
+  // @ts-expect-error decision must be "SKIP"
+  accept({ ...GUARDED_SKIP, decision: "LONG" });
+});
+
 Deno.test("upsertHourlyScanUnlessEntered: no row yet -> the ON CONFLICT DO NOTHING insert lands it, no update issued", async () => {
   const { calls, sb } = guardedUpsertBuilder({
     data: [{ bar_ts: GUARDED_SKIP.barTs }],

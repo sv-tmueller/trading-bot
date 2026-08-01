@@ -514,6 +514,15 @@ export interface HourlyScanUpsert {
   entryOrderId: string | null;
 }
 
+/**
+ * #487 review finding 2: the SKIP-journal payload, narrowed so the
+ * "SKIP only" contract of upsertHourlyScanUnlessEntered is enforced by the
+ * type system rather than by a comment. A LONG/SHORT payload would invert
+ * that helper's semantics (see its doc comment), and nothing but this type
+ * stops a future third caller from passing one.
+ */
+export type HourlyScanSkipUpsert = Omit<HourlyScanUpsert, "decision"> & { decision: "SKIP" };
+
 function hourlyScanColumns(p: HourlyScanUpsert): Record<string, unknown> {
   return {
     symbol: p.symbol,
@@ -561,13 +570,15 @@ export async function upsertHourlyScan(sb: SupabaseClient, p: HourlyScanUpsert):
  *      `decision = 'SKIP'` -- the guard. A LONG/SHORT row matches nothing.
  *
  * Returns true when the SKIP row was written (either statement), false when
- * an entered row was preserved. Only ever call this with a SKIP payload:
- * `decision` is what the caller wants stored, and the guard reads the row's
- * CURRENT decision, not the payload's.
+ * an entered row was preserved. The payload is SKIP-only by type
+ * (HourlyScanSkipUpsert): `decision` is what the caller wants STORED, while
+ * the guard reads the row's CURRENT decision, so a LONG payload here would
+ * preserve a stored LONG instead of stamping it. Entry rows go through
+ * upsertHourlyScan.
  */
 export async function upsertHourlyScanUnlessEntered(
   sb: SupabaseClient,
-  p: HourlyScanUpsert,
+  p: HourlyScanSkipUpsert,
 ): Promise<boolean> {
   const row = hourlyScanColumns(p);
   const inserted = await sb
@@ -589,6 +600,12 @@ export async function upsertHourlyScanUnlessEntered(
   if (updated.error) {
     throw new Error(`upsertHourlyScanUnlessEntered: ${updated.error.message}`);
   }
+  // Zero rows updated conflates two causes: the stored decision is LONG/SHORT
+  // (the case this exists for), or the row vanished between the two statements
+  // (nothing deletes hourly_scans, so unreachable in production). The caller's
+  // warn text names only the first. Row integrity does not depend on telling
+  // them apart -- neither statement can overwrite a LONG/SHORT -- so this
+  // affects the return value's precision only.
   return (updated.data ?? []).length > 0;
 }
 
