@@ -236,21 +236,46 @@ where key = 'hourly_experiment_start_equity';
 -- then re-run the verification query above.
 ```
 
-The 20% threshold in the query mirrors the scan-time check below; keep the two in
-step if either changes.
+The 20% threshold matches `BASELINE_TOLERANCE_PCT` in `hourly-check/logic.ts`; keep the
+two in step if either changes. The `abs()` here is deliberately **symmetric**, where the
+scan-time check only looks below equity — this query is the only thing that catches a
+baseline set too high, for the reason given below.
 
 Both failure modes are now caught at scan time as well (#488), so this step is
 belt-and-braces rather than the only line of defence:
 
 - A **missing** baseline is a hard error (`error:DataError`).
-- A **wrong** baseline — more than 20% from account equity — is also a hard error, checked
-  once against live equity before the first scan that could trade, then recorded in
-  `bot_config.hourly_experiment_baseline_verified` so it never fires again on the
+- A **wrong** baseline — more than 20% *below* account equity — is also a hard error,
+  checked once against live equity before the first scan that could trade, then recorded
+  in `bot_config.hourly_experiment_baseline_verified` so it never fires again on the
   legitimate divergence the baseline exists to measure. Changing the baseline later
   re-arms the check for the new value.
 
-Neither is auto-corrected. If a flagged baseline really is intentional, acknowledge it
-explicitly by setting the marker yourself — do not weaken the check:
+Both raise a Discord alert as well as writing the `audit_log` row, so neither depends on
+someone reading the table.
+
+**Why only the *below* direction, and what that leaves to you.** A baseline below equity
+is the dangerous one: it drops the floor away from the account, which is how the
+2026-07-29 value would have allowed a 91.6% loss. A baseline *above* equity moves the
+floor closer, which is conservative, and the floor itself already fires on it — so the
+scan-time check deliberately stays out of that direction. Pre-empting the floor there
+would swap a persistent `bot_config.paused` for a per-scan error (the `status` digest
+would report `paused=false` while the bot sat erroring), and on a first scan a genuine
+drawdown is indistinguishable from a wrong-high baseline, so the error would have
+advised moving the baseline *down* onto the drawn-down equity — erasing the breach.
+
+Two residuals follow, and this step is where they are caught:
+
+1. **A baseline set above current equity by less than 15% is never validated at scan
+   time.** The floor does not fire, and the plausibility check does not run while equity
+   sits below the baseline, so the check stays armed (and dormant) until equity rises
+   past it. The verification query above is the only thing that catches this case.
+2. **The marker is keyed to the baseline value, not to the account.** Pointing the bot at
+   a different paper account whose baseline happens to be byte-identical would skip the
+   check. Account identity is not stored in `bot_config` today.
+
+Neither failure is auto-corrected. If a flagged baseline really is intentional,
+acknowledge it explicitly by setting the marker yourself — do not weaken the check:
 
 ```sql
 insert into bot_config (key, value)

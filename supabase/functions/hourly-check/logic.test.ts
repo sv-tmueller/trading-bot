@@ -11,6 +11,7 @@ import {
   etOffsetMinutes,
   type HourlyCheckDeps,
   isBarPartial,
+  isBaselinePlausible,
   runHourlyCheck,
 } from "./logic.ts";
 
@@ -73,6 +74,7 @@ interface Recorder {
   configSets: Array<[string, string]>;
   cancelledOrderIds: string[];
   claimCalls: string[];
+  alerts: string[];
 }
 
 function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; rec: Recorder } {
@@ -83,6 +85,7 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     configSets: [],
     cancelledOrderIds: [],
     claimCalls: [],
+    alerts: [],
   };
 
   const configStore = new Map<string, string>([
@@ -162,6 +165,10 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     },
     notifications: {
       notifyBrokerError: (_p) => Promise.resolve(),
+      notifyError: (message) => {
+        rec.alerts.push(message);
+        return Promise.resolve();
+      },
     },
   };
 
@@ -472,11 +479,7 @@ Deno.test("gate 6: equity <= 85% of baseline -> success:auto_paused, sets bot_co
   deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 }); // < 85000 = 15% down from 100000
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "success:auto_paused");
-  // A real floor breach is a 17.6% baseline/equity deviation, which the
-  // plausibility tolerance (#488) must stay wider than -- otherwise the first
-  // scan after a baseline is set reports a genuine -15% loss as a config
-  // error. The floor, not the plausibility check, owns this run.
-  assertEquals(rec.configSets.filter(([k]) => k === "paused"), [["paused", "true"]]);
+  assertEquals(rec.configSets, [["paused", "true"]]);
 });
 
 // ---------------------------------------------------------------------------
@@ -503,14 +506,29 @@ Deno.test("gate 6: a baseline 10x below equity -> error:DataError before any ord
   assertEquals(notes.includes("1017330.61"), true);
 });
 
-Deno.test("gate 6: an unverified baseline that is wrong HIGH reads as a config error, not a phantom -15% loss", async () => {
+// Round-2 finding 1. Equity at or below the baseline belongs to the floor
+// alone. A drawdown and a wrong-high baseline are indistinguishable on a first
+// scan, and pre-empting the floor there downgrades the persistent
+// bot_config.paused kill switch to a per-scan error -- status would report
+// paused=false while the bot sits erroring -- and the diagnostic would advise
+// moving the baseline DOWN to the drawn-down equity, erasing the very breach
+// the floor exists to catch.
+Deno.test("gate 6: unverified baseline, equity half of it -> the floor owns the run, paused persists", async () => {
   const { deps, rec } = buildDeps();
-  // Equity half the baseline trips BOTH gates. The plausibility check runs
-  // first on purpose: reporting success:auto_paused here would record a -50%
-  // equity loss the account never took, and hide the real fault.
   deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 50000 });
-  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(await runHourlyCheck(deps), "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+});
+
+Deno.test("gate 6: unverified baseline, equity below it but above the floor -> no check, no marker (stays armed)", async () => {
+  const { deps, rec } = buildDeps();
+  // 90000 against a 100000 baseline: the floor does not fire, and nothing was
+  // validated, so the marker must NOT be recorded. Recording it here would
+  // permanently disarm the check on a baseline never checked against equity.
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 90000 });
+  assertEquals(await runHourlyCheck(deps), "success");
   assertEquals(rec.configSets, []);
+  assertEquals(rec.alerts, []);
 });
 
 Deno.test("gate 6: a 2x-off baseline -> error:DataError (the error class the live one nearly was)", async () => {
@@ -520,6 +538,10 @@ Deno.test("gate 6: a 2x-off baseline -> error:DataError (the error class the liv
 });
 
 Deno.test("gate 6: a plausible baseline is recorded as verified, so the check is one-shot", async () => {
+  // The fixture's equity (100000) is exactly the baseline -- the ideal case, a
+  // baseline set from the equity this scan just read. It must be checked and
+  // recorded, not skipped as "not above the baseline", or the ideal case would
+  // leave the check armed until equity happened to tick up.
   const { deps, rec } = buildDeps();
   assertEquals(await runHourlyCheck(deps), "success");
   assertEquals(
@@ -557,15 +579,76 @@ Deno.test("gate 6: the verified marker is keyed to the baseline VALUE -- a chang
   assertEquals(await runHourlyCheck(deps), "error:DataError");
 });
 
-Deno.test("gate 6: recording the verified marker is bookkeeping -- a failed write warns, the run still trades", async () => {
+// Round-2 finding 2. The marker landing IS the one-shot guarantee: if it does
+// not, the check stays armed and will fire on the legitimate upside divergence
+// the baseline exists to measure. A console.warn leaves no audit_log trace, so
+// the run fails instead. Nothing has been placed at this point, so the cost is
+// one skipped scan.
+Deno.test("gate 6: a marker write that fails -> error:DataError in audit_log, never a silent warn", async () => {
   const { deps, rec } = buildDeps();
   const realSetConfig = deps.db.setConfig;
   deps.db.setConfig = (key, value) =>
     key === "hourly_experiment_baseline_verified"
       ? Promise.reject(new Error("db unavailable"))
       : realSetConfig(key, value);
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.trades, []);
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes.includes("hourly_experiment_baseline_verified"), true);
+  assertEquals(notes.includes("db unavailable"), true);
+});
+
+// Round-2 finding 5. A DataError from this gate raises no Discord alert -- the
+// top-level catch notifies on AlpacaError only -- so detection would rest on
+// someone reading audit_log. Both ways the floor can be untrustworthy get an
+// alert; a wrong baseline is not more urgent than a missing one.
+Deno.test("gate 6: an implausible baseline alerts, not just an audit row", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.alerts.length, 1);
+  assertEquals(rec.alerts[0].includes("100000"), true);
+  assertEquals(rec.alerts[0].includes("1017330.61"), true);
+});
+
+Deno.test("gate 6: a missing baseline alerts too (same failure class: the floor cannot be trusted)", async () => {
+  const { deps, rec } = buildDeps();
+  deps.db.getConfig = (_key) => Promise.resolve(null);
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.alerts.length, 1);
+  assertEquals(rec.alerts[0].includes("hourly_experiment_start_equity"), true);
+});
+
+Deno.test("gate 6: a plausible baseline raises no alert", async () => {
+  const { deps, rec } = buildDeps();
   assertEquals(await runHourlyCheck(deps), "success");
-  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.alerts, []);
+});
+
+// Round-2 nit 6: the tolerance boundary and the denominator were pinned by
+// nothing -- flipping <= to <, or dividing by baseline instead of equity, kept
+// the whole suite green.
+Deno.test("isBaselinePlausible: a baseline exactly at the tolerance edge is still plausible", () => {
+  // 20% of 100000 is 20000, so 120000 is the last accepted baseline.
+  assertEquals(isBaselinePlausible(120000, 100000), true);
+});
+
+Deno.test("isBaselinePlausible: one cent past the edge is not", () => {
+  assertEquals(isBaselinePlausible(120000.01, 100000), false);
+});
+
+Deno.test("isBaselinePlausible: the denominator is equity, not the baseline", () => {
+  // |100000 - 84000| = 16000. Against equity (84000) the allowance is 16800 ->
+  // plausible. Against the baseline (100000) it would be 20000 -> also
+  // plausible, so this pair cannot tell them apart; 83000 can:
+  // allowance 16600 < 17000 -> implausible on equity, plausible on baseline.
+  assertEquals(isBaselinePlausible(100000, 84000), true);
+  assertEquals(isBaselinePlausible(100000, 83000), false);
+});
+
+Deno.test("isBaselinePlausible: zero or negative equity admits no baseline", () => {
+  assertEquals(isBaselinePlausible(100000, 0), false);
+  assertEquals(isBaselinePlausible(100000, -5000), false);
 });
 
 Deno.test("gate 7: no completed bars -> skipped:stale_data, audit only (no hourly_scans row -- no candidate bar exists)", async () => {
