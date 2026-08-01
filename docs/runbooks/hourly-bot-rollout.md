@@ -449,6 +449,14 @@ Once `0014` is live and the first scan has fired, confirm:
 - [ ] Watch one full RTH session end-to-end. File any anomaly as a **new issue**
   (systematic-debugging triage) — do not hot-fix inside this rollout.
 
+**Before reading anything into a missing row:** pg_net writes `net._http_response`
+inside the transaction that drives the whole batch (`insert_response` at
+`src/worker.c:376`, between `StartTransactionCommand` at :302 and
+`CommitTransactionCommand` at :404), so a batch's response rows become visible only
+once its slowest request finishes. Querying mid-flight shows **no row yet**, which is
+not the same as a lost response. With a 120s timeout on this job, wait out the
+in-flight window before concluding anything from an absent row.
+
 **Reading a `timed_out` row in `net._http_response` (#498):** a timeout there means
 the *response record* was lost, not that the scan failed. pg_net timing out does not
 abort the Edge Function, and pg_net does not retry `http_post`, so there is no
@@ -468,11 +476,12 @@ invocation, check `script_name = 'hourly-check'`:
   `getHourlyConfig()` (throws on an out-of-range secret), `getServiceClient()`,
   `createAlpacaClient({ paperOnly: true })` and the insert itself all precede it, so a
   bad secret or a rejected bearer lands here too. Distinguish by the response record:
-  those boot-time failures return fast with a non-2xx status (401 from the auth check,
-  500 from a throw), a wrong project ref never resolves at all, and a **`timed_out` row
-  with no audit row** means the invocation hung before its first write. Only the first
-  two point at the ref/bearer diagnosis the query above exists for; do not reach for it
-  on a timeout, and check the secrets before the project ref on a 500.
+  every one of these fails **without a 2xx and without a timeout** (401 from the auth
+  check, 500 from a throw, and for a wrong project ref either a connection error or an
+  HTTP status depending on whether the ref resolves), whereas a **`timed_out` row with
+  no audit row** means the invocation hung before its first write. The triage split
+  that matters is non-2xx versus timeout: a timeout never points at the ref/bearer
+  diagnosis the query above exists for.
 
 This mattered because `0014` shipped without a `timeout_milliseconds` argument, so
 pg_net's 5000 ms default applied: skip-only scans (0.74-2.6s) stayed clean while the
