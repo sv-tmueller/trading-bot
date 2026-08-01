@@ -5,57 +5,93 @@
 -- flatten that closed the bot's first real position ran 19:07:00.708 ->
 -- 19:07:05.840 = 5.132s in `audit_log`, so its `net._http_response` row records
 -- `timed_out: true` with null content while the function completed normally and
--- closed a 137-share position. pg_net timing out does not abort the Edge
--- Function and pg_net does not retry `http_post`, so this is an observability
--- defect, not a trading risk -- but it inverts on exactly the runs that matter:
--- skip-only scans (0.74-2.6s) stay clean and the scans that place or close
--- orders are the ones that breach 5s.
+-- closed a 137-share position. Skip-only scans (0.74-2.6s) stay clean, so the
+-- runbook's §10 health check false-alarmed on exactly the sessions where the
+-- bot traded.
 --
 -- The job name, schedule, URL expression, headers and body are reproduced
 -- verbatim from 0014 -- the added `timeout_milliseconds` argument is the only
 -- change. In particular the `:07` minute is unchanged: 0014's comment proves it
--- against spec §4's staleness inequality, and re-picking it here is out of
--- scope. The guarded do-block is 0014's, itself matching
--- 0004_cron_idempotent.sql's unschedule-then-schedule pattern, so re-running
--- this migration is a no-op rather than an error on an existing job name.
+-- against spec §4's staleness inequality, and re-picking it is out of scope.
+-- The guarded do-block is 0014's, itself matching 0004_cron_idempotent.sql's
+-- unschedule-then-schedule pattern, so re-running this migration is a no-op
+-- rather than an error on an existing job name.
 --
--- 60000 ms -- why that number, and why not "5.132s plus a bit":
 --
--- The requirement is
---   timeout_milliseconds > worst legitimate http_post elapsed
--- and 5.132s is a lower bound on that worst case, not the ceiling. It is one
--- sample of one flatten, measured from `started_at` (written after cold start
--- and after `insertAuditLog`) to `finished_at`, so it undercounts the elapsed
--- time pg_net sees at both ends. Sizing off it would rebuild the same false
--- alarm at a higher threshold.
+-- What this timeout is actually for
 --
--- The function's own poll budgets bound the worst case structurally instead.
--- On the flatten path (`hourly-check/logic.ts`, "3. Flatten scan") each resting
--- leg gets a verified `cancelOrder`, capped at 3s each by `alpaca.ts`'s
--- `timeoutMs = 3_000` default, and a bracket leaves an OCO pair, so ~6s; the
--- market close that follows is capped at 30s by `pollOrderUntilFilled`'s
--- `timeoutMs = 30_000` default, plus a post-timeout DELETE and one status
--- re-read. Add the scan's fixed overhead -- the 0.74-2.6s measured on
--- skip-only scans covers the clock call, bar fetch and the
--- `hourly_scans`/`trades`/`audit_log` writes -- and the cold start ahead of
--- `started_at`. A slow but entirely legitimate trading scan therefore lands
--- near 41s, roughly eight times the one flatten observed so far. The entry
--- path is strictly cheaper (one 30s-capped bracket entry poll).
+-- Not headroom over a healthy scan. `alpaca.ts`'s `trade()` is a bare `fetch`
+-- with no `AbortSignal` and no per-request timeout, and the poll loops in
+-- `pollOrderUntilFilled` and `cancelOrder` accumulate `waited += intervalMs`,
+-- i.e. **sleep only** -- the `await tradeJson(...)` inside each iteration is not
+-- counted. So the function enforces no wall-clock bound on itself: against a
+-- stalled broker connection a single request can hang indefinitely and the poll
+-- loop never advances past it. That gap is filed as #511 and is deliberately
+-- not fixed here.
 --
--- 60000 clears that ~41s ceiling with ~19s of margin, so a timeout row now
--- means the function exceeded budgets it enforces on itself -- a real anomaly
--- worth investigating rather than a healthy trading session. It stays 1/60th of
--- the job's own 3600s period, so a slow scan can never overlap the next firing,
--- and it fires well before the Edge Function runtime's own wall-clock ceiling,
--- so a genuinely wedged invocation is still detected. It also does not weaken
--- what §10's `net._http_response` query was originally there to catch: a wrong
--- project ref or a bad bearer fails fast on DNS or an HTTP status, never by
--- timeout.
+-- Until #511 lands, this argument is the only bound anywhere in the cron path,
+-- and the only mechanism that will ever surface a stalled invocation as an
+-- observable event. It does not abort the Edge Function (see the 2026-07-31
+-- evidence above); it bounds how long the pg_net worker waits, and therefore
+-- when a stall gets recorded. That is what makes the number load-bearing rather
+-- than cosmetic, and why it has to sit above the slowest *legitimate* scan: too
+-- low and it fires on healthy trading sessions (the 5000 ms defect), too high
+-- and the one stall detector in the path stays silent that much longer.
 --
--- If this ever needs revisiting, the remedy is to tighten the function's poll
--- budgets or raise this number in a follow-up migration -- never to loosen the
--- runbook's health check so the false alarm stops being reported, and never to
--- touch HOURLY_STALENESS_TOLERANCE_MIN, which is a different problem entirely.
+--
+-- 120000 ms -- the derivation
+--
+-- Sizing off the observed 5.132s would be wrong twice over. It is one sample of
+-- one flatten, measured from `started_at` (written after cold start and after
+-- `insertAuditLog`) to `finished_at`, so it undercounts what pg_net sees at both
+-- ends; and it is a *healthy* sample, while the case that matters is a scan
+-- whose polls run to their full budget.
+--
+-- Bound the legitimate worst case from the code instead. Two terms, because the
+-- loops count sleep and network separately:
+--
+--   worst legitimate elapsed = sleep budget + (round trips x per-request cost)
+--
+-- Sleep budget, flatten path (`hourly-check/logic.ts`, "3. Flatten scan"):
+--   2 resting bracket legs x `cancelOrder` (3_000 ms of sleep each)   =  6_000
+--   1 `placeMarketOrder` -> `pollOrderUntilFilled` (30_000 ms sleep)  = 30_000
+--                                                                       ------
+--                                                                       36_000
+--
+-- Round trips over the same path, counted off the loop bounds:
+--   `cancelOrder` = 1 DELETE + 12 GETs (3_000/250), twice            =   26
+--   `placeMarketOrder` = 1 POST + 60 GETs (30_000/500)
+--                        + post-timeout DELETE + 1 status re-read    =   63
+--   `getPosition`, `listOpenOrderIds`, and the gate ladder ahead of
+--   the flatten branch (paper assert, clock, bars, calendar, ...)    ~   11
+--                                                                       ----
+--                                                                      ~ 100
+--
+-- At 500 ms per request -- a stressed-broker allowance, and the stressed case is
+-- precisely the one that runs the polls to their full budget; the healthy
+-- skip-only scans imply well under 300 ms across their handful of requests --
+-- that is 36_000 + 50_000 = 86_000 ms, plus ~8 Postgres round trips for the
+-- `hourly_scans`/`trades`/`audit_log` writes and the cold start ahead of
+-- `started_at`. Call it 89s.
+--
+-- 120000 clears that with ~31s of margin. Stated as the falsifiable claim: the
+-- margin survives until sustained per-request latency reaches ~800 ms
+-- ((120_000 - 36_000 - 3_100) / 100), roughly eight times the healthy
+-- observation. The same arithmetic is why 60000 was rejected during review --
+-- its break-even is ~210 ms per request, which a merely stressed broker
+-- reaches, so it would have rebuilt this bug's own failure mode at a higher
+-- threshold.
+--
+-- 120000 is also 1/30th of the job's own 3600s period, so the pg_net worker
+-- never holds a wait into the next firing. That is a statement about the
+-- worker's wait, not about the scan: a timeout does not abort the Edge
+-- Function, so a slow scan can still be executing when the next hour fires.
+--
+-- If this ever needs revisiting, the remedy is to give `trade()` a per-request
+-- `AbortSignal` (#511) and tighten the poll budgets, or to raise this number in
+-- a follow-up migration -- never to loosen the runbook's health check so the
+-- false alarm stops being reported, and never to touch
+-- HOURLY_STALENESS_TOLERANCE_MIN, which is a different problem entirely.
 
 do $$
 begin
@@ -76,7 +112,7 @@ select cron.schedule(
       'Content-Type', 'application/json'
     ),
     body := '{}'::jsonb,
-    timeout_milliseconds := 60000
+    timeout_milliseconds := 120000
   );
   $$
 );
