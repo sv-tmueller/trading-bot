@@ -11,6 +11,7 @@
 // This file is deliberately not named `*.test.ts` / `*_test.ts` so `deno test`
 // does not collect it; it is imported by db.test.ts and db_test_guard.test.ts.
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { getConfig, setConfig } from "./db.ts";
 
 /** Hostnames that can only ever be a developer's own machine. */
 const LOCAL_HOSTNAMES = new Set([
@@ -80,4 +81,43 @@ export function createLocalDbClient(): SupabaseClient {
   assertLocalSupabaseUrl(url);
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   return createClient(url, key, { auth: { persistSession: false } });
+}
+
+/**
+ * Runs `fn` and puts `bot_config[key]` back exactly as it was found, including
+ * when `fn` throws. A key that did not exist is deleted again rather than left
+ * behind at whatever the test wrote. `bot_config.paused` is the operational
+ * kill switch, so a gated test that mutates it must never be the reason it
+ * ends up cleared.
+ */
+export async function withConfigRestored<T>(
+  sb: SupabaseClient,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prior = await getConfig(sb, key);
+  let result: T;
+  let bodyError: unknown;
+  let bodyFailed = false;
+  try {
+    result = await fn();
+  } catch (e) {
+    bodyError = e;
+    bodyFailed = true;
+  }
+  try {
+    if (prior === null) {
+      const { error } = await sb.from("bot_config").delete().eq("key", key);
+      if (error) throw new Error(`withConfigRestored: delete ${key}: ${error.message}`);
+    } else {
+      await setConfig(sb, key, prior);
+    }
+  } catch (restoreError) {
+    // The body's failure is the diagnostic that matters; a restore that also
+    // failed is reported alongside it rather than replacing it.
+    if (bodyFailed) console.error(`withConfigRestored: failed to restore ${key}`, restoreError);
+    else throw restoreError;
+  }
+  if (bodyFailed) throw bodyError;
+  return result!;
 }

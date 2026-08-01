@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { createClient } from "@supabase/supabase-js";
+import { createLocalDbClient, withConfigRestored } from "./db_test_guard.ts";
 import {
   claimBar,
   coerceEquitySnapshotRow,
@@ -34,12 +34,15 @@ import { DataError } from "./num.ts";
 
 const RUN = Deno.env.get("RUN_DB_TESTS") === "1";
 
+// Every `ignore: !RUN` test below is destructive: it inserts into, updates and
+// deletes from the shared tables the live bot uses. They are local-stack-only
+// by construction -- createLocalDbClient() refuses any SUPABASE_URL host that
+// is not loopback, before a client exists, so exporting the dev project's env
+// cannot silently point them at it (#485). Each of them cleans up the rows it
+// wrote; the bot_config one additionally restores the value it found, because
+// `paused` is the operational kill switch.
 function localClient() {
-  // From `supabase status`: API URL + service_role key. Defaults below match a
-  // standard local stack; override via env if your local ports differ.
-  const url = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
-  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  return createClient(url, key, { auth: { persistSession: false } });
+  return createLocalDbClient();
 }
 
 // ---------------------------------------------------------------------------
@@ -176,10 +179,12 @@ Deno.test({
   ignore: !RUN,
   fn: async () => {
     const sb = localClient();
-    await setConfig(sb, "paused", "true");
-    assertEquals(await getConfig(sb, "paused"), "true");
-    await setConfig(sb, "paused", "false");
-    assertEquals(await getConfig(sb, "paused"), "false");
+    await withConfigRestored(sb, "paused", async () => {
+      await setConfig(sb, "paused", "true");
+      assertEquals(await getConfig(sb, "paused"), "true");
+      await setConfig(sb, "paused", "false");
+      assertEquals(await getConfig(sb, "paused"), "false");
+    });
   },
 });
 

@@ -1,10 +1,12 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   assertLocalSupabaseUrl,
   createLocalDbClient,
   isLocalSupabaseHost,
   RemoteSupabaseHostError,
+  withConfigRestored,
 } from "./db_test_guard.ts";
+import { getConfig, setConfig } from "./db.ts";
 
 Deno.test("isLocalSupabaseHost: loopback names and addresses are local", () => {
   assertEquals(isLocalSupabaseHost("127.0.0.1"), true);
@@ -77,4 +79,110 @@ Deno.test("createLocalDbClient: builds a client for the local stack (no query is
     if (prevKey === undefined) Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
     else Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", prevKey);
   }
+});
+
+// ---------------------------------------------------------------------------
+// withConfigRestored: the gated bot_config roundtrip must leave the flag it
+// found. Exercised here against an in-memory bot_config table (no network),
+// because the roundtrip itself only runs behind RUN_DB_TESTS.
+// ---------------------------------------------------------------------------
+
+function fakeConfigClient(initial: Record<string, string>, opts: { writesFail?: boolean } = {}) {
+  const rows = new Map(Object.entries(initial));
+  const writeError = opts.writesFail ? { message: "bot_config is read-only in this fake" } : null;
+  const reader = (key?: string) => ({
+    select: () => reader(key),
+    eq: (_col: string, val: string) => reader(val),
+    maybeSingle: () =>
+      Promise.resolve({
+        data: key !== undefined && rows.has(key) ? { value: rows.get(key) } : null,
+        error: null,
+      }),
+  });
+  const sb = {
+    from: (table: string) => {
+      if (table !== "bot_config") throw new Error(`unexpected table ${table}`);
+      return {
+        ...reader(),
+        upsert: (row: { key: string; value: string }) => {
+          if (writeError) return Promise.resolve({ error: writeError });
+          rows.set(row.key, row.value);
+          return Promise.resolve({ error: null });
+        },
+        delete: () => ({
+          eq: (_col: string, val: string) => {
+            if (writeError) return Promise.resolve({ error: writeError });
+            rows.delete(val);
+            return Promise.resolve({ error: null });
+          },
+        }),
+      };
+    },
+  };
+  // deno-lint-ignore no-explicit-any
+  return { sb: sb as any, rows };
+}
+
+Deno.test("withConfigRestored: restores the value the body found", async () => {
+  const { sb, rows } = fakeConfigClient({ paused: "true" });
+  await withConfigRestored(sb, "paused", async () => {
+    await setConfig(sb, "paused", "false");
+    assertEquals(await getConfig(sb, "paused"), "false");
+  });
+  assertEquals(rows.get("paused"), "true");
+});
+
+Deno.test("withConfigRestored: restores on a failing body and rethrows", async () => {
+  const { sb, rows } = fakeConfigClient({ paused: "true" });
+  await assertRejects(
+    () =>
+      withConfigRestored(sb, "paused", async () => {
+        await setConfig(sb, "paused", "false");
+        throw new Error("assertion blew up mid-test");
+      }),
+    Error,
+    "assertion blew up mid-test",
+  );
+  assertEquals(rows.get("paused"), "true");
+});
+
+Deno.test("withConfigRestored: no prior row -> the key is deleted again, not left behind", async () => {
+  const { sb, rows } = fakeConfigClient({});
+  await withConfigRestored(sb, "paused", async () => {
+    await setConfig(sb, "paused", "true");
+  });
+  assertEquals(rows.has("paused"), false);
+});
+
+Deno.test("withConfigRestored: returns the body's value", async () => {
+  const { sb } = fakeConfigClient({ paused: "false" });
+  const result = await withConfigRestored(sb, "paused", () => Promise.resolve(42));
+  assertEquals(result, 42);
+});
+
+Deno.test("withConfigRestored: a failing restore does not mask the body's failure", async () => {
+  const { sb } = fakeConfigClient({ paused: "true" }, { writesFail: true });
+  const originalError = console.error;
+  const logged: unknown[][] = [];
+  console.error = (...args: unknown[]) => void logged.push(args);
+  try {
+    await assertRejects(
+      () => withConfigRestored(sb, "paused", () => Promise.reject(new Error("the real failure"))),
+      Error,
+      "the real failure",
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assertEquals(logged.length, 1);
+  assertEquals(String(logged[0][0]).includes("failed to restore paused"), true);
+});
+
+Deno.test("withConfigRestored: a failing restore surfaces when the body succeeded", async () => {
+  const { sb } = fakeConfigClient({ paused: "true" }, { writesFail: true });
+  await assertRejects(
+    () => withConfigRestored(sb, "paused", () => Promise.resolve("ok")),
+    Error,
+    "setConfig",
+  );
 });

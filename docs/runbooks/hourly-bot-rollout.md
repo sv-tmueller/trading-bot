@@ -25,17 +25,21 @@ lead-ratified rulings on #478).
   evidence" comment on #479 — see §2) — the rule above stays in this banner because it
   is the standing precondition for any future re-pause/resume cycle, not because the
   flag is still `true` today.
-- **Never run `deno task test:db` / `RUN_DB_TESTS=1 deno task test:db` against the
-  dev project (`qdaxxsuicyiscdvsdowc`).** `supabase/functions/_shared/db.test.ts`
-  builds its client from `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, which only
-  *default* to the local `supabase start` stack — those two vars must point at the
-  local stack, never at the dev project, whenever `test:db` runs. Its gated
-  `bot_config` test writes `paused='true'` then `paused='false'` and **never restores
-  it**, so pointed at the dev project it would silently clear the operational kill
-  switch and, before `0013` has applied, re-arm `daily-check-1337`/`daily-check-1437`
-  on their next slot — plus write `trades`/`audit_log`/`hourly_scans` rows into the
-  live paper journal #481's aggregator reads. See #485 for the follow-up that hardens
-  this mechanically; until it lands this is a procedural rule only.
+- **`deno task test:db` runs against a local `supabase start` stack only — this is now
+  enforced in code (#485), not just here.** `supabase/functions/_shared/db.test.ts`
+  builds its client through `createLocalDbClient()`
+  (`supabase/functions/_shared/db_test_guard.ts`), which refuses any `SUPABASE_URL`
+  whose host is not loopback (`localhost`, `127.0.0.0/8`, `::1`,
+  `host.docker.internal`, any port) and throws before a client exists, naming the
+  offending host. A shell exported for the dev project (`qdaxxsuicyiscdvsdowc`) now
+  fails the gated suite instead of writing to it. The gated `bot_config` test also
+  restores the `paused` value it found, including when an assertion fails. Historical
+  note on why this exists: before the guard, that test wrote `paused='true'` then
+  `paused='false'` and never restored it, so pointed at the dev project it would
+  silently clear the operational kill switch and, before `0013` had applied, re-arm
+  `daily-check-1337`/`daily-check-1437` on their next slot — plus write
+  `trades`/`audit_log`/`hourly_scans` rows into the live paper journal #481's
+  aggregator reads.
 - PR-A (#484) shipped **no cron activation**. `0012_hourly_scans.sql`'s
   `hourly-check` cron block is fully commented out (no `cron.job` row of any kind);
   `0013` (also PR-A, #484) only retires daily-check's entry crons. Activation is
