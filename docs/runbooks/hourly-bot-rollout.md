@@ -29,11 +29,14 @@ lead-ratified rulings on #478).
   enforced in code (#485), not just here.** `supabase/functions/_shared/db.test.ts`
   builds its client through `createLocalDbClient()`
   (`supabase/functions/_shared/db_test_guard.ts`), which refuses any `SUPABASE_URL`
-  whose host is not loopback (`localhost`, `127.0.0.0/8`, `::1`,
+  whose host is not a local-machine host (`localhost`, `127.0.0.0/8`, `::1`,
   `host.docker.internal`, any port) and throws before a client exists, naming the
-  offending host. A shell exported for the dev project (`qdaxxsuicyiscdvsdowc`) now
-  fails the gated suite instead of writing to it. The gated `bot_config` test also
-  restores the `paused` value it found, including when an assertion fails. Historical
+  offending host; the task's `--allow-net` grant is scoped to the same hosts, so a
+  code-level regression alone still cannot reach a remote project. A shell exported
+  for the dev project (`qdaxxsuicyiscdvsdowc`) now fails the gated suite instead of
+  writing to it. The gated `bot_config` test also restores the `paused` value it
+  found, including when an assertion fails. Note that the other gated tests clean up
+  only on success, so a failing one leaves its rows on the local stack. Historical
   note on why this exists: before the guard, that test wrote `paused='true'` then
   `paused='false'` and never restored it, so pointed at the dev project it would
   silently clear the operational kill switch and, before `0013` had applied, re-arm

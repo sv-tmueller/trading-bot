@@ -1,12 +1,20 @@
-// Test-only guard for the RUN_DB_TESTS-gated integration suite (#485).
+// Test-only safety rails for the RUN_DB_TESTS-gated integration suite (#485).
 //
 // The gated tests write to shared tables (`bot_config`, `trades`, `audit_log`,
 // `regime_state`, `hourly_scans`, ...). They build their client from
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY, which only *default* to the local
 // `supabase start` stack, so an operator who exported those vars for a hosted
 // project (the rollout ops window does exactly that) would silently point a
-// destructive suite at a live paper bot's database. `createLocalDbClient()`
-// refuses any host that is not a loopback stack, before a client exists.
+// destructive suite at a live paper bot's database.
+//
+// Two rails, both mechanical:
+//   - `createLocalDbClient()` refuses any host that is not this machine, before
+//     a client exists, so no query can leave the box.
+//   - `withConfigRestored()` puts a `bot_config` key back the way the test
+//     found it, so a local run cannot leave the operational kill switch
+//     (`paused`) at whatever the test wrote.
+// `db_test_guard.test.ts` additionally scans db.test.ts to prove it still goes
+// through both, since either could be unwired with the suite still green.
 //
 // This file is deliberately not named `*.test.ts` / `*_test.ts` so `deno test`
 // does not collect it; it is imported by db.test.ts and db_test_guard.test.ts.
@@ -26,19 +34,29 @@ const LOCAL_HOSTNAMES = new Set([
 const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 export class RemoteSupabaseHostError extends Error {
-  readonly host: string;
-  constructor(message: string, host: string) {
+  /** The refused hostname, or null when the URL never parsed into one. */
+  readonly host: string | null;
+  constructor(message: string, host: string | null) {
     super(message);
     this.name = "RemoteSupabaseHostError";
     this.host = host;
   }
 }
 
+const ALLOWED_HOSTS_HINT = "localhost, 127.0.0.0/8, ::1, host.docker.internal";
+
 /**
  * Allowlist, not denylist: an unrecognized host is remote by default, so a new
  * hosted project cannot become reachable by omission. The port is intentionally
  * not part of the check - local stacks legitimately move ports, and no hostname
  * in the allowlist can ever resolve to a hosted `<ref>.supabase.co` project.
+ *
+ * Called in isolation this predicate is looser than the entry path: it accepts
+ * out-of-range octets (`127.999.0.1`) and surrounding whitespace, because the
+ * only caller is `assertLocalSupabaseUrl`, where WHATWG `URL` has already
+ * rejected or normalized every such input. Everything it accepts is inside
+ * 127/8 regardless, so the looseness costs nothing - do not tighten the regex
+ * on the strength of an isolated call.
  */
 export function isLocalSupabaseHost(hostname: string): boolean {
   const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
@@ -53,18 +71,23 @@ export function assertLocalSupabaseUrl(url: string): void {
     throw new RemoteSupabaseHostError(
       `RUN_DB_TESTS refused: SUPABASE_URL "${url}" is not a parseable URL, so it cannot be ` +
         `confirmed local. The gated DB tests write to shared tables and may only run against a ` +
-        `local supabase stack (localhost, 127.0.0.0/8, ::1, host.docker.internal).`,
-      url,
+        `local supabase stack (${ALLOWED_HOSTS_HINT}).`,
+      null,
     );
   }
   if (isLocalSupabaseHost(hostname)) return;
+  // 0.0.0.0 is the one near-miss worth naming: it is a wildcard *bind* address
+  // that some stacks print, not a destination, so it stays off the allowlist.
+  const wildcardHint = hostname === "0.0.0.0"
+    ? ` Note that 0.0.0.0 is a wildcard bind address rather than a destination; use 127.0.0.1.`
+    : "";
   throw new RemoteSupabaseHostError(
     `RUN_DB_TESTS refused: SUPABASE_URL host "${hostname}" is not a local supabase stack. ` +
       `The gated DB tests write to shared tables (bot_config.paused, trades, audit_log, ` +
       `regime_state, hourly_scans) and would mutate that project - against a live project they ` +
-      `can clear the operational kill switch. Allowed hosts: localhost, 127.0.0.0/8, ::1, ` +
-      `host.docker.internal (any port). Run \`supabase start\` and point SUPABASE_URL at its ` +
-      `API URL, or unset it to use the http://127.0.0.1:54321 default.`,
+      `can clear the operational kill switch. Allowed hosts: ${ALLOWED_HOSTS_HINT} (any port). ` +
+      `Run \`supabase start\` and point SUPABASE_URL at its API URL, or unset it to use the ` +
+      `http://127.0.0.1:54321 default.${wildcardHint}`,
     hostname,
   );
 }
@@ -90,17 +113,16 @@ export function createLocalDbClient(): SupabaseClient {
  * kill switch, so a gated test that mutates it must never be the reason it
  * ends up cleared.
  */
-export async function withConfigRestored<T>(
+export async function withConfigRestored(
   sb: SupabaseClient,
   key: string,
-  fn: () => Promise<T>,
-): Promise<T> {
+  fn: () => Promise<void>,
+): Promise<void> {
   const prior = await getConfig(sb, key);
-  let result: T;
   let bodyError: unknown;
   let bodyFailed = false;
   try {
-    result = await fn();
+    await fn();
   } catch (e) {
     bodyError = e;
     bodyFailed = true;
@@ -119,5 +141,4 @@ export async function withConfigRestored<T>(
     else throw restoreError;
   }
   if (bodyFailed) throw bodyError;
-  return result!;
 }

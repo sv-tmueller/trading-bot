@@ -8,6 +8,61 @@ import {
 } from "./db_test_guard.ts";
 import { getConfig, setConfig } from "./db.ts";
 
+// ---------------------------------------------------------------------------
+// Coupling scan, in the invariants.test.ts idiom (#485 fix round, finding 1).
+// The tests below prove the helpers behave; these two prove db.test.ts still
+// *uses* them. Without this, inlining `createClient` back into `localClient()`
+// or dropping the `withConfigRestored` wrapper restores the hazard with the
+// whole suite still green.
+//
+// THREAT MODEL: a source-text scan catches the accidental regression (a merge,
+// a revert, a well-meant "simplification"). It is not proof against deliberate
+// evasion, which is the reviewer's job.
+// ---------------------------------------------------------------------------
+
+async function readDbTestSource(): Promise<string> {
+  // decodeURIComponent: url.pathname percent-encodes the path, so a checkout
+  // dir with a space yields "%20", which Deno cannot match against the
+  // --allow-read grant. Same idiom as invariants.test.ts.
+  const path = decodeURIComponent(new URL("./db.test.ts", import.meta.url).pathname);
+  return await Deno.readTextFile(path);
+}
+
+/** The source text of one `Deno.test({ name: ... })` block in db.test.ts. */
+function gatedTestBlock(source: string, name: string): string {
+  const start = source.indexOf(`name: "${name}"`);
+  if (start === -1) throw new Error(`gated test "${name}" not found in db.test.ts`);
+  const next = source.indexOf("Deno.test(", start);
+  return next === -1 ? source.slice(start) : source.slice(start, next);
+}
+
+Deno.test("db.test.ts builds its client through createLocalDbClient, never createClient directly", async () => {
+  const source = await readDbTestSource();
+  assertEquals(
+    /\bcreateClient\s*\(/.test(source),
+    false,
+    "db.test.ts constructs a Supabase client directly, bypassing the local-host guard. " +
+      "Route it through createLocalDbClient() from db_test_guard.ts.",
+  );
+  assertEquals(
+    source.includes("createLocalDbClient()"),
+    true,
+    "db.test.ts no longer calls createLocalDbClient(), so the gated suite is unguarded.",
+  );
+});
+
+Deno.test("db.test.ts's bot_config gated test mutates paused inside withConfigRestored", async () => {
+  const block = gatedTestBlock(await readDbTestSource(), "bot_config get/set");
+  const wrapped = block.indexOf("withConfigRestored(");
+  const firstWrite = block.indexOf("setConfig(");
+  assertEquals(
+    wrapped !== -1 && wrapped < firstWrite,
+    true,
+    "The bot_config gated test writes to bot_config outside withConfigRestored(), so a local " +
+      "run leaves `paused` at whatever the test wrote instead of the value it found.",
+  );
+});
+
 Deno.test("isLocalSupabaseHost: loopback names and addresses are local", () => {
   assertEquals(isLocalSupabaseHost("127.0.0.1"), true);
   assertEquals(isLocalSupabaseHost("127.0.0.2"), true);
@@ -51,6 +106,19 @@ Deno.test("assertLocalSupabaseUrl: a remote URL throws and the message names the
 Deno.test("assertLocalSupabaseUrl: an unparseable URL throws and quotes the offending value", () => {
   const err = assertThrows(() => assertLocalSupabaseUrl("not-a-url"), RemoteSupabaseHostError);
   assertEquals(err.message.includes("not-a-url"), true);
+  // There is no hostname to report when the URL never parsed; `host` says so
+  // rather than carrying the whole string under a field named "host".
+  assertEquals(err.host, null);
+});
+
+Deno.test("assertLocalSupabaseUrl: 0.0.0.0 is refused, and the message points at 127.0.0.1", () => {
+  const err = assertThrows(
+    () => assertLocalSupabaseUrl("http://0.0.0.0:54321"),
+    RemoteSupabaseHostError,
+  );
+  assertEquals(err.host, "0.0.0.0");
+  assertEquals(err.message.includes("0.0.0.0 is a wildcard bind address"), true);
+  assertEquals(err.message.includes("127.0.0.1"), true);
 });
 
 Deno.test("createLocalDbClient: refuses a remote SUPABASE_URL before building a client", () => {
@@ -154,12 +222,6 @@ Deno.test("withConfigRestored: no prior row -> the key is deleted again, not lef
   assertEquals(rows.has("paused"), false);
 });
 
-Deno.test("withConfigRestored: returns the body's value", async () => {
-  const { sb } = fakeConfigClient({ paused: "false" });
-  const result = await withConfigRestored(sb, "paused", () => Promise.resolve(42));
-  assertEquals(result, 42);
-});
-
 Deno.test("withConfigRestored: a failing restore does not mask the body's failure", async () => {
   const { sb } = fakeConfigClient({ paused: "true" }, { writesFail: true });
   const originalError = console.error;
@@ -181,7 +243,7 @@ Deno.test("withConfigRestored: a failing restore does not mask the body's failur
 Deno.test("withConfigRestored: a failing restore surfaces when the body succeeded", async () => {
   const { sb } = fakeConfigClient({ paused: "true" }, { writesFail: true });
   await assertRejects(
-    () => withConfigRestored(sb, "paused", () => Promise.resolve("ok")),
+    () => withConfigRestored(sb, "paused", () => Promise.resolve()),
     Error,
     "setConfig",
   );

@@ -37,10 +37,15 @@ const RUN = Deno.env.get("RUN_DB_TESTS") === "1";
 // Every `ignore: !RUN` test below is destructive: it inserts into, updates and
 // deletes from the shared tables the live bot uses. They are local-stack-only
 // by construction -- createLocalDbClient() refuses any SUPABASE_URL host that
-// is not loopback, before a client exists, so exporting the dev project's env
-// cannot silently point them at it (#485). Each of them cleans up the rows it
-// wrote; the bot_config one additionally restores the value it found, because
-// `paused` is the operational kill switch.
+// is not this machine, before a client exists, so exporting the dev project's
+// env cannot silently point them at it (#485).
+//
+// Each of them cleans up the rows it wrote *on success*: the deletes are the
+// last statement, not a `finally`, so a test that fails an assertion leaves its
+// rows behind on the local stack (observed: the two known #491 timestamp-format
+// failures leave 4 `hourly_scans` rows). The bot_config one is the exception
+// that does restore unconditionally, via withConfigRestored, because `paused`
+// is the operational kill switch.
 function localClient() {
   return createLocalDbClient();
 }
