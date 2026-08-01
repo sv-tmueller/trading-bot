@@ -28,6 +28,7 @@ import {
   updateAuditLog,
   upsertEquitySnapshot,
   upsertHourlyScan,
+  upsertHourlyScanUnlessEntered,
   upsertRegimeState,
 } from "./db.ts";
 import { DataError } from "./num.ts";
@@ -1084,6 +1085,194 @@ Deno.test({
       barTsJournaled,
       barTsSkip,
     ]);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #487: upsertHourlyScanUnlessEntered -- the SKIP-journal compare-and-set.
+// Two atomic statements, no schema change: an ON CONFLICT DO NOTHING insert,
+// then (only when that inserted nothing) an update filtered on
+// decision = 'SKIP'. A LONG/SHORT row matches neither, so it keeps its
+// decision and its entry_order_id.
+// ---------------------------------------------------------------------------
+
+function guardedUpsertBuilder(
+  insertResponse: { data: unknown[] | null; error: { message: string } | null },
+  updateResponse: { data: unknown[] | null; error: { message: string } | null } = {
+    data: [],
+    error: null,
+  },
+) {
+  const calls: {
+    upsert?: { row: Record<string, unknown>; opts: unknown };
+    update?: Record<string, unknown>;
+    eq: Array<[string, unknown]>;
+  } = { eq: [] };
+  // deno-lint-ignore no-explicit-any
+  const updateBuilder: any = {
+    eq: (col: string, val: unknown) => {
+      calls.eq.push([col, val]);
+      return updateBuilder;
+    },
+    select: () => Promise.resolve(updateResponse),
+  };
+  // deno-lint-ignore no-explicit-any
+  const table: any = {
+    upsert: (row: Record<string, unknown>, opts: unknown) => {
+      calls.upsert = { row, opts };
+      return { select: () => Promise.resolve(insertResponse) };
+    },
+    update: (row: Record<string, unknown>) => {
+      calls.update = row;
+      return updateBuilder;
+    },
+  };
+  return {
+    calls,
+    sb: {
+      from: (t: string) => {
+        if (t !== "hourly_scans") throw new Error(`unexpected table ${t}`);
+        return table;
+      },
+    },
+  };
+}
+
+const GUARDED_SKIP = {
+  symbol: "SPY",
+  barTs: "2026-07-27T14:00:00Z",
+  decision: "SKIP" as const,
+  skipReason: "stale_data",
+  detectorsFired: [] as string[],
+  contextMode: "none",
+  entryRefPrice: null,
+  stopPrice: null,
+  targetPrice: null,
+  riskPerShare: null,
+  equityUsd: 100000,
+  qty: 0,
+  entryOrderId: null,
+};
+
+Deno.test("upsertHourlyScanUnlessEntered: no row yet -> the ON CONFLICT DO NOTHING insert lands it, no update issued", async () => {
+  const { calls, sb } = guardedUpsertBuilder({
+    data: [{ bar_ts: GUARDED_SKIP.barTs }],
+    error: null,
+  });
+  // deno-lint-ignore no-explicit-any
+  const written = await upsertHourlyScanUnlessEntered(sb as any, GUARDED_SKIP);
+  assertEquals(written, true);
+  assertEquals(calls.upsert?.opts, { onConflict: "symbol,bar_ts", ignoreDuplicates: true });
+  assertEquals(calls.upsert?.row.decision, "SKIP");
+  assertEquals(calls.upsert?.row.skip_reason, "stale_data");
+  assertEquals(calls.update, undefined);
+  assertEquals(calls.eq, []);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: a row already exists -> the update is filtered on symbol, bar_ts AND decision='SKIP'", async () => {
+  const { calls, sb } = guardedUpsertBuilder(
+    { data: [], error: null }, // conflict -> nothing inserted
+    { data: [{ bar_ts: GUARDED_SKIP.barTs }], error: null }, // the prior row was a SKIP
+  );
+  // deno-lint-ignore no-explicit-any
+  const written = await upsertHourlyScanUnlessEntered(sb as any, GUARDED_SKIP);
+  assertEquals(written, true);
+  assertEquals(calls.update?.decision, "SKIP");
+  assertEquals(calls.eq, [
+    ["symbol", "SPY"],
+    ["bar_ts", "2026-07-27T14:00:00Z"],
+    ["decision", "SKIP"],
+  ]);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: the filtered update matches no row (the stored decision is LONG/SHORT) -> returns false, nothing written", async () => {
+  const { sb } = guardedUpsertBuilder(
+    { data: [], error: null },
+    { data: [], error: null },
+  );
+  // deno-lint-ignore no-explicit-any
+  const written = await upsertHourlyScanUnlessEntered(sb as any, GUARDED_SKIP);
+  assertEquals(written, false);
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: throws on an insert error", async () => {
+  const { sb } = guardedUpsertBuilder({ data: null, error: { message: "boom" } });
+  await assertRejects(
+    // deno-lint-ignore no-explicit-any
+    () => upsertHourlyScanUnlessEntered(sb as any, GUARDED_SKIP),
+    Error,
+    "upsertHourlyScanUnlessEntered",
+  );
+});
+
+Deno.test("upsertHourlyScanUnlessEntered: throws on an update error", async () => {
+  const { sb } = guardedUpsertBuilder(
+    { data: [], error: null },
+    { data: null, error: { message: "boom" } },
+  );
+  await assertRejects(
+    // deno-lint-ignore no-explicit-any
+    () => upsertHourlyScanUnlessEntered(sb as any, GUARDED_SKIP),
+    Error,
+    "upsertHourlyScanUnlessEntered",
+  );
+});
+
+Deno.test({
+  name:
+    "upsertHourlyScanUnlessEntered: real-Postgres round trip -- inserts a fresh bar, refreshes a SKIP row, preserves an entered row",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const barTsFresh = "2030-01-04T14:00:00Z";
+    const barTsSkip = "2030-01-04T15:00:00Z";
+    const barTsEntered = "2030-01-04T16:00:00Z";
+    const bars = [barTsFresh, barTsSkip, barTsEntered];
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", bars);
+    const skipFor = (barTs: string) => ({ ...GUARDED_SKIP, barTs });
+
+    // 1. No row yet -> inserted.
+    assertEquals(await upsertHourlyScanUnlessEntered(sb, skipFor(barTsFresh)), true);
+
+    // 2. A prior SKIP row -> refreshed with the new reason.
+    await upsertHourlyScan(sb, { ...skipFor(barTsSkip), skipReason: "partial_bar" });
+    assertEquals(await upsertHourlyScanUnlessEntered(sb, skipFor(barTsSkip)), true);
+
+    // 3. An entered row -> preserved, decision AND entry_order_id intact.
+    await upsertHourlyScan(sb, {
+      ...skipFor(barTsEntered),
+      decision: "LONG",
+      skipReason: null,
+      detectorsFired: ["hammer"],
+      entryRefPrice: 550,
+      stopPrice: 547,
+      targetPrice: 554,
+      riskPerShare: 3,
+      qty: 18,
+      entryOrderId: "entered1",
+    });
+    assertEquals(await upsertHourlyScanUnlessEntered(sb, skipFor(barTsEntered)), false);
+
+    const { data } = await sb.from("hourly_scans").select("*").eq("symbol", "SPY").in(
+      "bar_ts",
+      bars,
+    );
+    const rows = new Map(
+      ((data ?? []) as Record<string, unknown>[]).map((
+        r,
+      ) => [r.bar_ts as string, coerceHourlyScanRow(r)]),
+    );
+    // PostgREST renders timestamptz as +00:00, so match on the date+time prefix.
+    const at = (barTs: string) =>
+      [...rows.entries()].find(([k]) => k.startsWith(barTs.slice(0, 16)))?.[1];
+    assertEquals(at(barTsFresh)?.decision, "SKIP");
+    assertEquals(at(barTsFresh)?.skip_reason, "stale_data");
+    assertEquals(at(barTsSkip)?.skip_reason, "stale_data");
+    assertEquals(at(barTsEntered)?.decision, "LONG");
+    assertEquals(at(barTsEntered)?.entry_order_id, "entered1");
+    assertEquals(at(barTsEntered)?.qty, 18);
+
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", bars);
   },
 });
 

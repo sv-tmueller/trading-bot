@@ -498,9 +498,7 @@ export function coerceHourlyScanRow(raw: Record<string, unknown>): HourlyScanRow
   };
 }
 
-// Upsert on (symbol, bar_ts): a re-run on the same bar replaces the row
-// idempotently, same regime_state date-PK + onConflict pattern.
-export async function upsertHourlyScan(sb: SupabaseClient, p: {
+export interface HourlyScanUpsert {
   symbol: string;
   barTs: string;
   decision: "LONG" | "SHORT" | "SKIP";
@@ -514,8 +512,10 @@ export async function upsertHourlyScan(sb: SupabaseClient, p: {
   equityUsd: number;
   qty: number;
   entryOrderId: string | null;
-}): Promise<void> {
-  const { error } = await sb.from("hourly_scans").upsert({
+}
+
+function hourlyScanColumns(p: HourlyScanUpsert): Record<string, unknown> {
+  return {
     symbol: p.symbol,
     bar_ts: p.barTs,
     decision: p.decision,
@@ -529,8 +529,67 @@ export async function upsertHourlyScan(sb: SupabaseClient, p: {
     equity_usd: p.equityUsd,
     qty: p.qty,
     entry_order_id: p.entryOrderId,
-  }, { onConflict: "symbol,bar_ts" });
+  };
+}
+
+// Upsert on (symbol, bar_ts): a re-run on the same bar replaces the row
+// idempotently, same regime_state date-PK + onConflict pattern.
+export async function upsertHourlyScan(sb: SupabaseClient, p: HourlyScanUpsert): Promise<void> {
+  const { error } = await sb.from("hourly_scans").upsert(hourlyScanColumns(p), {
+    onConflict: "symbol,bar_ts",
+  });
   if (error) throw new Error(`upsertHourlyScan: ${error.message}`);
+}
+
+/**
+ * #487: the same upsert, but it refuses to downgrade a row that already
+ * records a LONG/SHORT decision. Every SKIP journal in hourly-check's
+ * pipeline lands BEFORE claimBar, so the bar-level claim cannot protect the
+ * row: a re-scan whose candidate is the same bar (a lagging feed at the next
+ * cron slot, or a duplicate invocation stopped at the position-open gate)
+ * would otherwise overwrite decision + entry_order_id and destroy the
+ * provenance the #480 recovery step searches for. The clobbered row does not
+ * even look orphaned afterwards, so #486's report cannot recover it either.
+ *
+ * Two statements, each atomic on its own, so this is race-free without a
+ * migration (a read-then-write in logic.ts would still lose the window where
+ * a concurrent invocation journals its pre-order LONG in between):
+ *
+ *   1. ON CONFLICT DO NOTHING insert (`ignoreDuplicates`), which returns the
+ *      row only when it actually inserted;
+ *   2. only if step 1 inserted nothing, an UPDATE filtered on
+ *      `decision = 'SKIP'` -- the guard. A LONG/SHORT row matches nothing.
+ *
+ * Returns true when the SKIP row was written (either statement), false when
+ * an entered row was preserved. Only ever call this with a SKIP payload:
+ * `decision` is what the caller wants stored, and the guard reads the row's
+ * CURRENT decision, not the payload's.
+ */
+export async function upsertHourlyScanUnlessEntered(
+  sb: SupabaseClient,
+  p: HourlyScanUpsert,
+): Promise<boolean> {
+  const row = hourlyScanColumns(p);
+  const inserted = await sb
+    .from("hourly_scans")
+    .upsert(row, { onConflict: "symbol,bar_ts", ignoreDuplicates: true })
+    .select("bar_ts");
+  if (inserted.error) {
+    throw new Error(`upsertHourlyScanUnlessEntered: ${inserted.error.message}`);
+  }
+  if ((inserted.data ?? []).length > 0) return true;
+
+  const updated = await sb
+    .from("hourly_scans")
+    .update(row)
+    .eq("symbol", p.symbol)
+    .eq("bar_ts", p.barTs)
+    .eq("decision", "SKIP")
+    .select("bar_ts");
+  if (updated.error) {
+    throw new Error(`upsertHourlyScanUnlessEntered: ${updated.error.message}`);
+  }
+  return (updated.data ?? []).length > 0;
 }
 
 // #475 T11: the `trades` table has no bar_ts column (§9 keeps bar_ts scoped

@@ -176,6 +176,15 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
         rec.scanRows.set(scanKey(p.symbol, p.barTs), p);
         return Promise.resolve();
       },
+      // #487: mirrors the real helper's contract -- writes unless the stored
+      // row already records a LONG/SHORT decision, and reports which it did.
+      upsertHourlyScanUnlessEntered: (p) => {
+        rec.scans.push(p);
+        const existing = rec.scanRows.get(scanKey(p.symbol, p.barTs));
+        if (existing && existing.decision !== "SKIP") return Promise.resolve(false);
+        rec.scanRows.set(scanKey(p.symbol, p.barTs), p);
+        return Promise.resolve(true);
+      },
       getHourlyScanByEntryOrderId: (_symbol, _orderId) =>
         Promise.resolve(null as HourlyScanRow | null),
       getHourlyScansPendingEntry: (_symbol, _sinceIso) => Promise.resolve([] as HourlyScanRow[]),
