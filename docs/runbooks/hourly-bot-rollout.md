@@ -433,11 +433,38 @@ live and the first scan has fired, confirm:
   "one row per scan, including skips" contract).
 - [ ] `select jobname, active from cron.job where jobname = 'hourly-check';` shows
   `active = true`, exactly one row.
-- [ ] `select * from net._http_response order by created desc limit 20;` is clean
-  (no cron -> function HTTP failures — a wrong project ref makes cron fire silent
-  no-ops, the same failure mode documented in the daily-check runbook).
+- [ ] `select * from net._http_response order by created desc limit 20;` shows no
+  cron -> function HTTP failures. This query catches a **wrong project ref or a bad
+  bearer** (cron firing silent no-ops, the same failure mode documented in the
+  daily-check runbook), and those fail fast, on DNS or an HTTP status.
+  **`net._http_response` is not the record of whether a scan ran: `audit_log` is.**
+  See the "reading a `timed_out` row" note below before treating a timeout here as a
+  failed scan.
 - [ ] Watch one full RTH session end-to-end. File any anomaly as a **new issue**
   (systematic-debugging triage) — do not hot-fix inside this rollout.
+
+**Reading a `timed_out` row in `net._http_response` (#498):** a timeout there means
+the *response record* was lost, not that the scan failed. pg_net timing out does not
+abort the Edge Function, and pg_net does not retry `http_post`, so there is no
+duplicate-invocation hazard either. `audit_log` is authoritative. For the same
+invocation, check `script_name = 'hourly-check'`:
+
+- `finished_at` populated **and** an `outcome` written -> **the scan completed.** The
+  response record was lost; read the `outcome` (and any `trades` / `hourly_scans` rows)
+  for what actually happened. Not a failure.
+- `finished_at` null -> **this is the real failure signal.** The run died mid-flight
+  (`outcome` is written before exit, so a crashed run leaves a row with no
+  `finished_at`). Investigate, and check for an open position.
+- No `audit_log` row at all for that firing -> the invocation never reached the
+  function. This is the wrong-project-ref / bad-bearer case the query above exists for.
+
+This mattered because `0014` shipped without a `timeout_milliseconds` argument, so
+pg_net's 5000 ms default applied: skip-only scans (0.74-2.6s) stayed clean while the
+scans that placed or closed orders breached 5s, which inverted the check onto exactly
+the sessions where the bot traded (the 2026-07-31 flatten ran 5.132s and closed a
+137-share position). `0015_hourly_check_http_timeout.sql` raises the job's timeout to
+60000 ms, above the function's own worst-case poll budget, so a timeout row is once
+again a real anomaly. Do not respond to one by loosening this check.
 
 **Stop signals in `audit_log.outcome` for `script_name = 'hourly-check'` — not just
 `error:*`:**
