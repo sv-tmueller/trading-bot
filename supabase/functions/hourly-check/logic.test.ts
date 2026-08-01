@@ -496,6 +496,21 @@ Deno.test("gate 6: a baseline 10x below equity -> error:DataError before any ord
   assertEquals(rec.trades, []);
   assertEquals(rec.scans, []);
   assertEquals(rec.configSets, []);
+  // audit_log notes is the only place an operator sees WHY. Both numbers have
+  // to be in it, or the diagnosis is still guesswork.
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes.includes("100000"), true);
+  assertEquals(notes.includes("1017330.61"), true);
+});
+
+Deno.test("gate 6: an unverified baseline that is wrong HIGH reads as a config error, not a phantom -15% loss", async () => {
+  const { deps, rec } = buildDeps();
+  // Equity half the baseline trips BOTH gates. The plausibility check runs
+  // first on purpose: reporting success:auto_paused here would record a -50%
+  // equity loss the account never took, and hide the real fault.
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 50000 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.configSets, []);
 });
 
 Deno.test("gate 6: a 2x-off baseline -> error:DataError (the error class the live one nearly was)", async () => {
