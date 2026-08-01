@@ -113,7 +113,7 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `HOURLY_MAX_ENTRIES_PER_DAY` | `3` | Max new entries per symbol per day (1 - 10) |
 | `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | Minutes past a completed bar's end before it is stale (1 - 60) |
 | `HOURLY_CONTEXT_MODE` | `none` | `none` \| `reversal` \| `continuation` trend-context mask |
-| `HOURLY_SHORTS_ENABLED` | `true` | Fail-closed override for short entries; flipped to `false` if shortability cannot be confirmed |
+| `HOURLY_SHORTS_ENABLED` | `false` | Short entries; fail-closed, so unset means off and only an explicit `true` enables them (#493). A present but unparseable value throws |
 | `HOURLY_BOT_PAPER_ONLY` | — | MUST be `true`; unset or `false` throws — the mechanical paper-only gate (§8.3) |
 
 See `docs/CURRENT_CONFIG.md` for the current deployed values.

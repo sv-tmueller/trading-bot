@@ -384,16 +384,18 @@ only thing standing between "reviewed" and "trading."
    latency <= 1 minute; `7 + 1 = 8 < 10`, two minutes of headroom; the pinned minute
    `:07` needed no change).
 7. §4's secrets set on `qdaxxsuicyiscdvsdowc`, in particular
-   `HOURLY_SHORTS_ENABLED=false`. **Closed, but on operator attestation, not
-   mechanical proof** — `HOURLY_SHORTS_ENABLED` **defaults to `"true"`**
-   (`config.ts:154`) if the secret is ever unset, unlike `HOURLY_BOT_PAPER_ONLY`,
-   whose being-set is mechanically proven by T9's `skipped:market_closed` outcome
-   (that outcome is only reachable past the config read). Nothing in the evidence
-   chain mechanically proves `HOURLY_SHORTS_ENABLED`'s current value the same way.
-   The lead re-asserted `HOURLY_SHORTS_ENABLED=false` on 2026-07-29 (recorded on
-   #479, "Capture evidence" comment) — that re-assertion, not the original secrets
-   set, is this gate's evidence. #493 tracks fixing the fail-open default so a
-   future unset secret cannot silently re-enable shorts; see the "Capture
+   `HOURLY_SHORTS_ENABLED=false`. **Closed on operator attestation; the fail-open
+   default behind the caveat is fixed as of #493.** When this gate was assessed,
+   `HOURLY_SHORTS_ENABLED` **defaulted to `"true"`** if the secret was ever unset,
+   unlike `HOURLY_BOT_PAPER_ONLY`, whose being-set is mechanically proven by T9's
+   `skipped:market_closed` outcome (that outcome is only reachable past the config
+   read). Nothing in the evidence chain proved `HOURLY_SHORTS_ENABLED`'s value the
+   same way, so this gate's evidence is the lead's 2026-07-29 re-assertion of
+   `HOURLY_SHORTS_ENABLED=false` (recorded on #479, "Capture evidence" comment),
+   not the original secrets set. #493 has since flipped the default to `false`
+   (`config.ts`), so a lost or never-set secret leaves shorts off and enabling them
+   takes an explicit `"true"`; the attestation is no longer the only thing standing
+   between an unset secret and an armed short path. See the "Capture
    evidence — four read-only paper GETs (T1), operator-run 2026-07-29" comment on
    #479 for the original set, and §10's stop-signal list for the live check this
    gate cannot replace (a `hourly_scans` row with `decision = 'SHORT'` is an

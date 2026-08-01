@@ -523,7 +523,7 @@ them. If SPY is not shortable per the confirmed fields, every `SHORT` decision i
 `skipped:not_shortable` rather than attempting an order that would reject — fail-closed, not
 fail-and-retry. **Fallback if the fields cannot be confirmed at all** (endpoint missing,
 fields renamed, or response ambiguous): the failure mode must not be silent — a config flag,
-`HOURLY_SHORTS_ENABLED` (default `true`, §10), must be flipped to `false` and the reason
+`HOURLY_SHORTS_ENABLED` (default `false` since #493, §10), must be left at or set to `false` and the reason
 disclosed in the deploy notes/runbook; with shorting disabled this way, every otherwise-
 `SHORT`-eligible bar still journals `skipped:shorts_disabled` (§9), so the gap is visible in
 the data itself, not only in a runbook note that could go stale or unread.
@@ -889,7 +889,7 @@ risk-relevant, an opt-in/default-OFF-style safe default (per the skill's rule 7)
 | `HOURLY_MAX_ENTRIES_PER_DAY` | `3` | `[1, 10]` | N4 cap |
 | `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | `[1, 60]` | minutes past a completed bar's end before the scan treats it as stale; coupled to the cron minute pin (§4, finding 1 — `cronMinuteOffset + expectedFeedLatencyMin` must stay under this value) |
 | `HOURLY_CONTEXT_MODE` | `none` | `{"none","reversal","continuation"}` | §5; masked warm-up applies in all three |
-| `HOURLY_SHORTS_ENABLED` | `true` | boolean | fail-closed override, §7 finding 6 — flipped to `false` (with the reason disclosed) if the `/v2/assets/SPY` shortability fields cannot be confirmed |
+| `HOURLY_SHORTS_ENABLED` | `false` **[CORRECTED #493]** | boolean | fail-closed override, §7 finding 6 — as-shipped this defaulted to `true`, which armed shorts whenever the secret was unset; #493 flipped the default so absent means off and enabling needs an explicit `"true"`. A present but unparseable value still throws |
 | `HOURLY_BOT_PAPER_ONLY` | `true` | must be `true`; throws if unset or `false` for this bot's client (§8.3 Layer A) | the mechanical paper-only gate — not a normal tunable, listed here so it is not missed |
 
 `.env.example` gains a new commented block mirroring the existing `--- Bot strategy
