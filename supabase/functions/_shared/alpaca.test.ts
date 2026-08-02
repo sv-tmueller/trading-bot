@@ -656,6 +656,26 @@ Deno.test("getOpenPositions parses signed qtys (long positive, short negative)",
   }
 });
 
+Deno.test("placeMarketOrder raises BrokerCallBlockedError before any fetch when CLAUDE_AGENT_NO_BROKER is whitespace-padded (#509)", async () => {
+  setKeys();
+  Deno.env.set("CLAUDE_AGENT_NO_BROKER", " 1");
+  let networkHit = false;
+  const restore = stubFetch(() => {
+    networkHit = true;
+    return Promise.resolve(jsonResponse({}));
+  });
+  try {
+    await assertRejects(
+      () => createAlpacaClient().placeMarketOrder({ symbol: "UPRO", side: "BUY", qty: 1 }),
+      BrokerCallBlockedError,
+    );
+    assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 Deno.test("closePosition raises BrokerCallBlockedError before any fetch when CLAUDE_AGENT_NO_BROKER is set", async () => {
   setKeys();
   Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");

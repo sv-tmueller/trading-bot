@@ -164,12 +164,99 @@ Deno.test("getNotifyWebhookUrl ignores the legacy N8N_WEBHOOK_URL name", () => {
   Deno.env.delete("N8N_WEBHOOK_URL");
 });
 
-Deno.test("isClaudeAgentNoBroker reads env fresh", () => {
-  Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
-  assertEquals(isClaudeAgentNoBroker(), false);
-  Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
-  assertEquals(isClaudeAgentNoBroker(), true);
-  Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+// ---------------------------------------------------------------------------
+// isClaudeAgentNoBroker (#509 — fails loud on unrecognised values)
+// ---------------------------------------------------------------------------
+
+Deno.test("isClaudeAgentNoBroker: unset is false", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    assertEquals(isClaudeAgentNoBroker(), false);
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker: blank/whitespace-only is false", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    for (const v of ["", "   "]) {
+      Deno.env.set("CLAUDE_AGENT_NO_BROKER", v);
+      assertEquals(isClaudeAgentNoBroker(), false);
+    }
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker: recognised on-values, incl. case variants, arm the guard", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    for (const v of ["1", "true", "yes", "TRUE", "Yes"]) {
+      Deno.env.set("CLAUDE_AGENT_NO_BROKER", v);
+      assertEquals(isClaudeAgentNoBroker(), true);
+    }
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker: whitespace-padded on-values still arm the guard (core bug)", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    for (const v of [" 1", "1 ", "true\n", "\tyes "]) {
+      Deno.env.set("CLAUDE_AGENT_NO_BROKER", v);
+      assertEquals(isClaudeAgentNoBroker(), true);
+    }
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker: explicit negatives, incl. padded/cased, are false", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    for (const v of ["0", "false", "no", " False "]) {
+      Deno.env.set("CLAUDE_AGENT_NO_BROKER", v);
+      assertEquals(isClaudeAgentNoBroker(), false);
+    }
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker: unrecognised values throw with the var name and offending value", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    for (const v of ["on", "enabled", "y", "armed"]) {
+      Deno.env.set("CLAUDE_AGENT_NO_BROKER", v);
+      assertThrows(() => isClaudeAgentNoBroker(), Error, "CLAUDE_AGENT_NO_BROKER");
+    }
+    Deno.env.set("CLAUDE_AGENT_NO_BROKER", "armed");
+    assertThrows(() => isClaudeAgentNoBroker(), Error, "armed");
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
+});
+
+Deno.test("isClaudeAgentNoBroker reads env fresh (preserves mid-test flip semantics)", () => {
+  const original = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  try {
+    Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    assertEquals(isClaudeAgentNoBroker(), false);
+    Deno.env.set("CLAUDE_AGENT_NO_BROKER", "true");
+    assertEquals(isClaudeAgentNoBroker(), true);
+  } finally {
+    if (original === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
+    else Deno.env.set("CLAUDE_AGENT_NO_BROKER", original);
+  }
 });
 
 // ---------------------------------------------------------------------------
