@@ -182,18 +182,21 @@ export function checkPaperOnly(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createAlpacaClient(opts?: { paperOnly?: boolean }): AlpacaClient {
+export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
   const cfg = getAlpacaConfig();
-  const paperOnly = opts?.paperOnly ?? false;
+  const paperOnly = opts.paperOnly;
   const headers = {
     "APCA-API-KEY-ID": cfg.apiKeyId,
     "APCA-API-SECRET-KEY": cfg.apiSecretKey,
   };
 
   // #475 T5: called by every mutating helper immediately after checkGuard()
-  // when this client opted into paperOnly -- absent for every existing
-  // call site (daily-check/kill-switch/panic/status construct the client
-  // with no opts), so their behavior is byte-for-byte unchanged.
+  // when this client opted into paperOnly. #508: paperOnly is now a required
+  // param, so every call site states its stance explicitly -- hourly-check
+  // passes true; daily-check/kill-switch/panic/status pass false (each with
+  // its own audited why-comment at the call site) -- so their runtime
+  // behavior stays byte-for-byte unchanged from before this param was
+  // required.
   function guardMutation(op: string): void {
     checkGuard(op);
     if (paperOnly) checkPaperOnly(op, cfg);

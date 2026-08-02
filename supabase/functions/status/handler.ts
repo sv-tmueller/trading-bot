@@ -22,7 +22,10 @@ import {
 
 function buildDeps(): StatusDeps {
   const sb = getServiceClient();
-  const alpaca = createAlpacaClient();
+  // #508: explicit opt-out -- status is read-only (no mutating helper is
+  // wired below), stated explicitly here for the scan's benefit rather than
+  // relying on a default.
+  const alpaca = createAlpacaClient({ paperOnly: false });
   return {
     config: getStrategyConfig(),
     now: () => new Date(),
