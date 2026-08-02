@@ -511,8 +511,14 @@ hour if merged during that window** (schedule `7 13-21 * * 1-5`), not specifical
 deliberately-observed `skipped:market_closed` or the deliberately-observed first RTH
 scan, not an unplanned mid-session scan racing the merge. This is an operator task: it
 reads live `audit_log`/`hourly_scans`/`cron.job`/`net._http_response` rows on
-`qdaxxsuicyiscdvsdowc`, which an agent session has no credentials for. Once `0014` is
-live and the first scan has fired, confirm:
+`qdaxxsuicyiscdvsdowc`, which an agent session has no credentials for.
+
+The `net._http_response` item below also assumes `0015_hourly_check_http_timeout.sql`
+(#498) is applied, which re-schedules the same job with an explicit `net.http_post`
+timeout. Against `0014` alone, expect the false alarm that item describes on any scan
+that places or closes an order.
+
+Once `0014` is live and the first scan has fired, confirm:
 
 - [ ] First-of-session scan resolves `skipped:partial_bar`, **not**
   `skipped:stale_data` — live proof of the §4 guard-precedence ordering
@@ -523,11 +529,60 @@ live and the first scan has fired, confirm:
   "one row per scan, including skips" contract).
 - [ ] `select jobname, active from cron.job where jobname = 'hourly-check';` shows
   `active = true`, exactly one row.
-- [ ] `select * from net._http_response order by created desc limit 20;` is clean
-  (no cron -> function HTTP failures — a wrong project ref makes cron fire silent
-  no-ops, the same failure mode documented in the daily-check runbook).
+- [ ] `select * from net._http_response order by created desc limit 20;` shows no
+  cron -> function HTTP failures. This query catches a **wrong project ref or a bad
+  bearer** (cron firing silent no-ops, the same failure mode documented in the
+  daily-check runbook), and those fail fast, on DNS or an HTTP status.
+  **`net._http_response` is not the record of whether a scan ran: `audit_log` is.**
+  See the "reading a `timed_out` row" note below before treating a timeout here as a
+  failed scan.
 - [ ] Watch one full RTH session end-to-end. File any anomaly as a **new issue**
   (systematic-debugging triage) — do not hot-fix inside this rollout.
+
+**Before reading anything into a missing row:** pg_net writes `net._http_response`
+inside the transaction that drives the whole batch (`insert_response` at
+`src/worker.c:376`, between `StartTransactionCommand` at :302 and
+`CommitTransactionCommand` at :404), so a batch's response rows become visible only
+once its slowest request finishes. Querying mid-flight shows **no row yet**, which is
+not the same as a lost response. With a 120s timeout on this job, wait out the
+in-flight window before concluding anything from an absent row.
+
+**Reading a `timed_out` row in `net._http_response` (#498):** a timeout there means
+the *response record* was lost, not that the scan failed. pg_net timing out does not
+abort the Edge Function, and pg_net does not retry `http_post`, so there is no
+duplicate-invocation hazard either. `audit_log` is authoritative. For the same
+invocation, check `script_name = 'hourly-check'`:
+
+- `finished_at` populated **and** an `outcome` written -> **the scan completed.** The
+  response record was lost; read the `outcome` (and any `trades` / `hourly_scans` rows)
+  for what actually happened. Not a failure.
+- `finished_at` null -> **this is the real failure signal.** The run died mid-flight.
+  (`updateAuditLog` in `db.ts` sets `finished_at`, `outcome` and `notes` in one UPDATE,
+  so a crashed run leaves *both* `finished_at` and `outcome` null, not an outcome
+  without a timestamp.) Investigate, and check for an open position.
+- No `audit_log` row at all for that firing -> the invocation never reached the
+  function's **audit insert**. That is broader than "never reached the function":
+  `insertAuditLog` runs early in `runHourlyCheck` but not first. `requireServiceRole`,
+  `getHourlyConfig()` (throws on an out-of-range secret), `getServiceClient()`,
+  `createAlpacaClient({ paperOnly: true })` and the insert itself all precede it, so a
+  bad secret or a rejected bearer lands here too. Distinguish by the response record:
+  every one of these fails **without a 2xx and without a timeout** (401 from the auth
+  check, 500 from a throw, and for a wrong project ref either a connection error or an
+  HTTP status depending on whether the ref resolves), whereas a **`timed_out` row with
+  no audit row** means the invocation hung before its first write. The triage split
+  that matters is non-2xx versus timeout: a timeout never points at the ref/bearer
+  diagnosis the query above exists for.
+
+This mattered because `0014` shipped without a `timeout_milliseconds` argument, so
+pg_net's 5000 ms default applied: skip-only scans (0.74-2.6s) stayed clean while the
+scans that placed or closed orders breached 5s, which inverted the check onto exactly
+the sessions where the bot traded (the 2026-07-31 flatten ran 5.132s and closed a
+137-share position). `0015_hourly_check_http_timeout.sql` raises the job's timeout to
+120000 ms, above the worst legitimate scan derivable from the function's own poll
+budgets, so a timeout row is once again a real anomaly. Treat one as worth
+investigating: because `alpaca.ts`'s `trade()` has no per-request timeout (#511), this
+pg_net timeout is currently the only thing in the cron path that will surface a stalled
+broker connection at all. Do not respond to one by loosening this check.
 
 **Stop signals in `audit_log.outcome` for `script_name = 'hourly-check'` — not just
 `error:*`:**
