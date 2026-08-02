@@ -1,8 +1,12 @@
 // HTTP layer for the hourly-check Edge Function. Mirrors daily-check/handler.ts
 // exactly: auth + pipeline flow is unit-testable without Deno.serve, and the
 // pipeline runner is injectable for the same reason (defaults to the real
-// deps). The only opted-in Alpaca client in the repo -- createAlpacaClient
-// is called with { paperOnly: true } here, and nowhere else (#475 T5/T12).
+// deps). The only Alpaca client in the repo opted into the paper-only guard --
+// createAlpacaClient is called with { paperOnly: true } here, and nowhere
+// else (#475 T5/T12); every other call site now passes the required
+// paperOnly param explicitly as `false` (#508). buildDeps() is exported so
+// handler.test.ts can pin this call site with a behavioral test, on top of
+// the source-text scan in _shared/invariants.test.ts.
 import { type HourlyCheckDeps, runHourlyCheck } from "./logic.ts";
 import { requireServiceRole } from "../_shared/auth.ts";
 import { getHourlyConfig } from "../_shared/config.ts";
@@ -24,7 +28,7 @@ import {
 } from "../_shared/db.ts";
 import { createOutbox } from "../_shared/outbox.ts";
 
-function buildDeps(): HourlyCheckDeps {
+export function buildDeps(): HourlyCheckDeps {
   const sb = getServiceClient();
   const alpaca = createAlpacaClient({ paperOnly: true });
   const outbox = createOutbox(sb);
