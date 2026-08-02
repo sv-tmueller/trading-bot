@@ -67,9 +67,22 @@ function fill(over: Partial<Fill> = {}): Fill {
   };
 }
 
+type ScanUpsert = Parameters<HourlyCheckDeps["db"]["upsertHourlyScan"]>[0];
+
+/** The real table's PK is (symbol, bar_ts); the fake table below keys on it. */
+function scanKey(symbol: string, barTs: string): string {
+  return `${symbol}|${barTs}`;
+}
+
 interface Recorder {
   auditFinishes: Array<{ outcome: string; notes?: string | null }>;
-  scans: Array<Parameters<HourlyCheckDeps["db"]["upsertHourlyScan"]>[0]>;
+  scans: ScanUpsert[];
+  /**
+   * #487: a fake `hourly_scans` TABLE, alongside the `scans` call log. The
+   * call log records every attempted write; this records what the row
+   * actually ends up as, which is what the clobber tests assert on.
+   */
+  scanRows: Map<string, ScanUpsert>;
   trades: Array<Parameters<HourlyCheckDeps["db"]["insertTrade"]>[0]>;
   configSets: Array<[string, string]>;
   cancelledOrderIds: string[];
@@ -77,10 +90,38 @@ interface Recorder {
   alerts: string[];
 }
 
+/** Reads the fake table the way a forensic query would: by (symbol, bar_ts). */
+function scanRow(rec: Recorder, barTs: string, symbol = "SPY"): ScanUpsert | undefined {
+  return rec.scanRows.get(scanKey(symbol, barTs));
+}
+
+/** Seeds the fake table with a row a PREVIOUS run left behind. */
+function seedScanRow(rec: Recorder, over: Partial<ScanUpsert> = {}): ScanUpsert {
+  const row: ScanUpsert = {
+    symbol: "SPY",
+    barTs: BAR1.timestamp,
+    decision: "LONG",
+    skipReason: null,
+    detectorsFired: ["bullish_marubozu"],
+    contextMode: "none",
+    entryRefPrice: 550,
+    stopPrice: 547.75,
+    targetPrice: 554.5,
+    riskPerShare: 2.25,
+    equityUsd: 100000,
+    qty: 18,
+    entryOrderId: "entry1",
+    ...over,
+  };
+  rec.scanRows.set(scanKey(row.symbol, row.barTs), row);
+  return row;
+}
+
 function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; rec: Recorder } {
   const rec: Recorder = {
     auditFinishes: [],
     scans: [],
+    scanRows: new Map<string, ScanUpsert>(),
     trades: [],
     configSets: [],
     cancelledOrderIds: [],
@@ -135,7 +176,17 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
       getTradesSince: (_sinceIso) => Promise.resolve([...tradesDb]),
       upsertHourlyScan: (p) => {
         rec.scans.push(p);
+        rec.scanRows.set(scanKey(p.symbol, p.barTs), p);
         return Promise.resolve();
+      },
+      // #487: mirrors the real helper's contract -- writes unless the stored
+      // row already records a LONG/SHORT decision, and reports which it did.
+      upsertHourlyScanUnlessEntered: (p) => {
+        rec.scans.push(p);
+        const existing = rec.scanRows.get(scanKey(p.symbol, p.barTs));
+        if (existing && existing.decision !== "SKIP") return Promise.resolve(false);
+        rec.scanRows.set(scanKey(p.symbol, p.barTs), p);
+        return Promise.resolve(true);
       },
       getHourlyScanByEntryOrderId: (_symbol, _orderId) =>
         Promise.resolve(null as HourlyScanRow | null),
@@ -1883,4 +1934,142 @@ Deno.test("recovery T5: double-fault leaves hourly_kill_switch_* stale through r
   assertEquals(outcome3, "success");
   assertEquals(configStore.get("hourly_kill_switch_active"), "false");
   assertEquals(configStore.get("hourly_kill_switch_side"), "");
+});
+
+// ---------------------------------------------------------------------------
+// #487: a pre-claim SKIP journal must never downgrade a row that already
+// records a LONG/SHORT decision. Every SKIP write in the pipeline lands
+// BEFORE claimBar, so the bar-level claim cannot protect the row: a re-scan
+// whose candidate is the same bar would overwrite decision + entry_order_id
+// and destroy the provenance #480's recovery searches for (and the row would
+// no longer look orphaned to #486's report either).
+//
+// These assert on the fake TABLE (`scanRow`), not on the call log: the call
+// log records the attempt, and the whole question here is what the row ends
+// up as.
+// ---------------------------------------------------------------------------
+
+Deno.test("#487 route 1 (lagging feed): a stale_data re-scan of an already-entered bar leaves the LONG row and its entry_order_id intact", async () => {
+  // Same candidate bar as the run that entered it (BAR1, 14:00Z), one cron
+  // slot later with the feed still serving that bar: now=15:15Z puts it 15
+  // minutes past its end, beyond the 10-minute tolerance.
+  const { deps, rec } = buildDeps("2026-07-27T15:15:00Z");
+  seedScanRow(rec, { barTs: BAR1.timestamp, decision: "LONG", entryOrderId: "entry1" });
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:stale_data"); // gate ladder unchanged
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "LONG");
+  assertEquals(row?.entryOrderId, "entry1");
+  assertEquals(row?.skipReason, null);
+  assertEquals(row?.qty, 18);
+  assertEquals(row?.stopPrice, 547.75);
+  assertEquals(row?.targetPrice, 554.5);
+});
+
+Deno.test("#487 route 2 (duplicate invocation): a position_open gate skip on an already-entered bar leaves the LONG row and its entry_order_id intact", async () => {
+  const { deps, rec } = buildDeps();
+  seedScanRow(rec, { barTs: BAR1.timestamp, decision: "LONG", entryOrderId: "entry1" });
+  deps.alpaca.getPosition = () => Promise.resolve(18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // not naked
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:position_open"); // gate ladder unchanged
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "LONG");
+  assertEquals(row?.entryOrderId, "entry1");
+});
+
+Deno.test("#487 route 2, SHORT twin: a position_open gate skip leaves a SHORT row's entry_order_id intact", async () => {
+  const { deps, rec } = buildDeps();
+  seedScanRow(rec, { barTs: BAR1.timestamp, decision: "SHORT", entryOrderId: "entry-short" });
+  deps.alpaca.getPosition = () => Promise.resolve(-18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:position_open");
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "SHORT");
+  assertEquals(row?.entryOrderId, "entry-short");
+});
+
+Deno.test("#487: a run that adopts a pending row via recovery cannot clobber its own adoption at a later gate", async () => {
+  // The adopted row's bar IS this run's candidate bar, so the run's own
+  // position_open skip targets the row recovery just restored.
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({ bar_ts: BAR1.timestamp, decision: "LONG" });
+  seedScanRow(rec, { barTs: BAR1.timestamp, decision: "LONG", entryOrderId: null });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered1",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-27T15:05:00Z", // inside [bar_ts+1h, bar_ts+2h)
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:position_open");
+  assertEquals(rec.trades.length, 1); // recovery journaled the fill
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "LONG");
+  assertEquals(row?.entryOrderId, "recovered1"); // the adoption survives its own run
+});
+
+Deno.test("#487: an ordinary no_action SKIP decision on an already-entered bar leaves the row intact", async () => {
+  // Covers the step 11 journal path, not just preDecisionSkip/gateSkip.
+  const { deps, rec } = buildDeps();
+  seedScanRow(rec, { barTs: BAR1.timestamp, decision: "LONG", entryOrderId: "entry1" });
+  deps.marketdata.getHourlyBars = () =>
+    Promise.resolve([
+      BAR0,
+      { timestamp: BAR1.timestamp, open: 550, high: 550.05, low: 549.95, close: 550.02 },
+    ]);
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "success:no_action");
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "LONG");
+  assertEquals(row?.entryOrderId, "entry1");
+});
+
+Deno.test("#487: ordinary SKIP journaling for a bar with no prior entry decision is unchanged", async () => {
+  const { deps, rec } = buildDeps("2026-07-27T15:15:00Z");
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:stale_data");
+  const row = scanRow(rec, BAR1.timestamp);
+  assertEquals(row?.decision, "SKIP");
+  assertEquals(row?.skipReason, "stale_data");
+  assertEquals(row?.entryOrderId, null);
+  assertEquals(row?.qty, 0);
+});
+
+Deno.test("#487: a SKIP that lands on a bar whose PRIOR row is also a SKIP still overwrites it", async () => {
+  // The guard keys on the stored decision, not on the row's existence: a
+  // re-scan that skips for a different reason must still refresh the row.
+  const { deps, rec } = buildDeps("2026-07-27T15:15:00Z");
+  seedScanRow(rec, {
+    barTs: BAR1.timestamp,
+    decision: "SKIP",
+    skipReason: "partial_bar",
+    entryOrderId: null,
+    qty: 0,
+  });
+
+  const outcome = await runHourlyCheck(deps);
+
+  assertEquals(outcome, "skipped:stale_data");
+  assertEquals(scanRow(rec, BAR1.timestamp)?.skipReason, "stale_data");
 });

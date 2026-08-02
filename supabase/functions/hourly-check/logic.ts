@@ -10,7 +10,12 @@
 import { AlpacaError, type ClosedOrderFill, type Fill } from "../_shared/alpaca.ts";
 import { CONTEXT_SMA_WINDOW } from "../_shared/candlestick.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
-import type { HourlyScanRow, TradeRow } from "../_shared/db.ts";
+import type {
+  HourlyScanRow,
+  HourlyScanSkipUpsert,
+  HourlyScanUpsert,
+  TradeRow,
+} from "../_shared/db.ts";
 import { decideHourly, type HourlyAction } from "../_shared/hourly_signal.ts";
 import type { CalendarSession, HourlyBar } from "../_shared/marketdata.ts";
 import { DataError, requireNumber, roundToCents } from "../_shared/num.ts";
@@ -156,21 +161,10 @@ export interface HourlyCheckDeps {
     getConfig: (key: string) => Promise<string | null>;
     setConfig: (key: string, value: string) => Promise<void>;
     getTradesSince: (sinceIso: string) => Promise<TradeRow[]>;
-    upsertHourlyScan: (p: {
-      symbol: string;
-      barTs: string;
-      decision: "LONG" | "SHORT" | "SKIP";
-      skipReason: string | null;
-      detectorsFired: string[];
-      contextMode: string;
-      entryRefPrice: number | null;
-      stopPrice: number | null;
-      targetPrice: number | null;
-      riskPerShare: number | null;
-      equityUsd: number;
-      qty: number;
-      entryOrderId: string | null;
-    }) => Promise<void>;
+    upsertHourlyScan: (p: HourlyScanUpsert) => Promise<void>;
+    // #487: the SKIP-journal write. Refuses to downgrade a row that already
+    // records a LONG/SHORT decision; returns false when it preserved one.
+    upsertHourlyScanUnlessEntered: (p: HourlyScanSkipUpsert) => Promise<boolean>;
     getHourlyScanByEntryOrderId: (symbol: string, orderId: string) => Promise<HourlyScanRow | null>;
     // #480 T2: pending-entry scans (decision LONG/SHORT, entry_order_id NULL)
     // consumed by reconcile()'s recovery step.
@@ -812,13 +806,32 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       throw new DataError(`no calendar session found for ${today} (market reported open)`);
     }
 
+    // #487: every SKIP journal this pipeline writes lands BEFORE claimBar, so
+    // the bar-level claim cannot protect the row -- route them all through the
+    // guarded upsert (why, in full, at upsertHourlyScanUnlessEntered in
+    // _shared/db.ts). Step 20's entry journal and reconcile()'s recovery
+    // upsert deliberately keep the unconditional write: those must be able to
+    // write LONG/SHORT and stamp entry_order_id.
+    //
+    // A preserved row does NOT change the run's outcome -- the gate ladder
+    // reports exactly what it reports today.
+    const journalSkip = async (p: HourlyScanSkipUpsert): Promise<void> => {
+      const written = await db.upsertHourlyScanUnlessEntered(p);
+      if (!written) {
+        console.warn(
+          `hourly-check: SKIP journal (${p.skipReason}) for ${p.symbol} bar_ts=${p.barTs} ` +
+            `preserved an existing entry decision`,
+        );
+      }
+    };
+
     // A gate that skips before decideHourly runs, keyed to the candidate bar
     // (must-fix round 1 finding 2): journal a SKIP row so a partial/stale
     // scan is visible in hourly_scans, not audit_log-only. Detectors are
     // never computed for a scan that skips here, so detectorsFired is empty
     // and the sizing columns stay null ("null unless computed").
     const preDecisionSkip = async (reason: string, notes?: string): Promise<string> => {
-      await db.upsertHourlyScan({
+      await journalSkip({
         symbol,
         barTs: candidate.timestamp,
         decision: "SKIP",
@@ -878,8 +891,8 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       targetPrice: number | null;
       riskPerShare: number | null;
       entryOrderId: string | null;
-    }) =>
-      db.upsertHourlyScan({
+    }) => {
+      const row: HourlyScanUpsert = {
         symbol,
         barTs,
         decision: p.finalDecision,
@@ -893,7 +906,15 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
         equityUsd: equityAtStart,
         qty: p.qty,
         entryOrderId: p.entryOrderId,
-      });
+      };
+      // #487: SKIP rows go through the guard (see journalSkip above); the
+      // entry journal at step 20 is the one write that must overwrite. The
+      // re-stated `decision` is what narrows the row to the guard's
+      // SKIP-only payload type -- TS cannot infer it from p.finalDecision.
+      return p.finalDecision === "SKIP"
+        ? journalSkip({ ...row, decision: "SKIP" })
+        : db.upsertHourlyScan(row);
+    };
 
     // A gate that skips with no geometry ever computed (steps 9-16).
     const gateSkip = async (reason: string): Promise<string> => {

@@ -20,6 +20,7 @@ import {
   setConfig,
   updateAuditLog,
   upsertHourlyScan,
+  upsertHourlyScanUnlessEntered,
 } from "../_shared/db.ts";
 import { createOutbox } from "../_shared/outbox.ts";
 
@@ -52,6 +53,7 @@ function buildDeps(): HourlyCheckDeps {
       setConfig: (key, value) => setConfig(sb, key, value),
       getTradesSince: (sinceIso) => getTradesSince(sb, sinceIso),
       upsertHourlyScan: (p) => upsertHourlyScan(sb, p),
+      upsertHourlyScanUnlessEntered: (p) => upsertHourlyScanUnlessEntered(sb, p),
       getHourlyScanByEntryOrderId: (symbol, orderId) =>
         getHourlyScanByEntryOrderId(sb, symbol, orderId),
       getHourlyScansPendingEntry: (symbol, sinceIso) =>
