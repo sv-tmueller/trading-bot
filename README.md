@@ -160,6 +160,9 @@ curl -s "https://<ref>.supabase.co/functions/v1/status?days=30" -H "x-status-tok
 ```bash
 deno task test       # all TS unit tests (Alpaca + DB mocked; the broker guard fails fast)
 deno task test:db    # DB integration tests — needs a local Postgres (gated behind RUN_DB_TESTS)
+# test:db is destructive and local-only: it refuses any SUPABASE_URL whose host is not a
+# local-machine host (localhost, 127.0.0.0/8, ::1, host.docker.internal), naming the host it
+# refused, and its --allow-net grant is scoped to those hosts as a second layer.
 ```
 
 ## Dashboard
