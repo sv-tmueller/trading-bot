@@ -11,6 +11,7 @@ import {
   etOffsetMinutes,
   type HourlyCheckDeps,
   isBarPartial,
+  isBaselinePlausible,
   runHourlyCheck,
 } from "./logic.ts";
 
@@ -73,6 +74,7 @@ interface Recorder {
   configSets: Array<[string, string]>;
   cancelledOrderIds: string[];
   claimCalls: string[];
+  alerts: string[];
 }
 
 function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; rec: Recorder } {
@@ -83,6 +85,7 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     configSets: [],
     cancelledOrderIds: [],
     claimCalls: [],
+    alerts: [],
   };
 
   const configStore = new Map<string, string>([
@@ -162,6 +165,10 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     },
     notifications: {
       notifyBrokerError: (_p) => Promise.resolve(),
+      notifyError: (message) => {
+        rec.alerts.push(message);
+        return Promise.resolve();
+      },
     },
   };
 
@@ -473,6 +480,193 @@ Deno.test("gate 6: equity <= 85% of baseline -> success:auto_paused, sets bot_co
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "success:auto_paused");
   assertEquals(rec.configSets, [["paused", "true"]]);
+});
+
+// ---------------------------------------------------------------------------
+// #488: a WRONG baseline parses fine and silently moves the floor. The check
+// is one-shot, keyed to the baseline value, so it cannot fire on the
+// legitimate divergence the baseline exists to measure.
+// ---------------------------------------------------------------------------
+
+Deno.test("gate 6: a baseline 10x below equity -> error:DataError before any order (2026-07-29 live values)", async () => {
+  const { deps, rec } = buildDeps();
+  // The exact 2026-07-29 ops-window numbers: `insert ... on conflict do
+  // nothing` silently kept a stale 100000.00 row while equity was 1017330.61,
+  // putting the floor at $85,000 -- a 91.6% loss before it would have fired.
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:DataError");
+  assertEquals(rec.trades, []);
+  assertEquals(rec.scans, []);
+  assertEquals(rec.configSets, []);
+  // audit_log notes is the only place an operator sees WHY. Both numbers have
+  // to be in it, or the diagnosis is still guesswork.
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes.includes("100000"), true);
+  assertEquals(notes.includes("1017330.61"), true);
+});
+
+// Round-2 finding 1. Equity at or below the baseline belongs to the floor
+// alone. A drawdown and a wrong-high baseline are indistinguishable on a first
+// scan, and pre-empting the floor there downgrades the persistent
+// bot_config.paused kill switch to a per-scan error -- status would report
+// paused=false while the bot sits erroring -- and the diagnostic would advise
+// moving the baseline DOWN to the drawn-down equity, erasing the very breach
+// the floor exists to catch.
+Deno.test("gate 6: unverified baseline, equity half of it -> the floor owns the run, paused persists", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 50000 });
+  assertEquals(await runHourlyCheck(deps), "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+});
+
+Deno.test("gate 6: unverified baseline, equity below it but above the floor -> no check, no marker (stays armed)", async () => {
+  const { deps, rec } = buildDeps();
+  // 90000 against a 100000 baseline: the floor does not fire, and nothing was
+  // validated, so the marker must NOT be recorded. Recording it here would
+  // permanently disarm the check on a baseline never checked against equity.
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 90000 });
+  assertEquals(await runHourlyCheck(deps), "success");
+  assertEquals(rec.configSets, []);
+  assertEquals(rec.alerts, []);
+});
+
+Deno.test("gate 6: a 2x-off baseline -> error:DataError (the error class the live one nearly was)", async () => {
+  const { deps } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 200000 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+});
+
+Deno.test("gate 6: a plausible baseline is recorded as verified, so the check is one-shot", async () => {
+  // The fixture's equity (100000) is exactly the baseline -- the ideal case, a
+  // baseline set from the equity this scan just read. It must be checked and
+  // recorded, not skipped as "not above the baseline", or the ideal case would
+  // leave the check armed until equity happened to tick up.
+  const { deps, rec } = buildDeps();
+  assertEquals(await runHourlyCheck(deps), "success");
+  assertEquals(
+    rec.configSets.filter(([k]) => k === "hourly_experiment_baseline_verified"),
+    [["hourly_experiment_baseline_verified", "100000"]],
+  );
+});
+
+Deno.test("gate 6: once verified, equity 3x above the baseline is legitimate divergence, not an error", async () => {
+  const { deps, rec } = buildDeps();
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "100000");
+  rec.configSets.length = 0;
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 300000 });
+  assertEquals(await runHourlyCheck(deps), "success");
+  // Already verified -> not re-recorded, and the run traded normally.
+  assertEquals(rec.configSets, []);
+  assertEquals(rec.trades.length, 1);
+});
+
+Deno.test("gate 6: once verified, a >20% drawdown is the floor's business, never a plausibility error", async () => {
+  const { deps, rec } = buildDeps();
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "100000");
+  rec.configSets.length = 0;
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 40000 });
+  assertEquals(await runHourlyCheck(deps), "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+});
+
+Deno.test("gate 6: the verified marker is keyed to the baseline VALUE -- a changed baseline is re-checked", async () => {
+  const { deps } = buildDeps();
+  // A stale marker from an earlier, correct baseline must not vouch for the
+  // 100000 now in force against a 1017330.61 account.
+  await deps.db.setConfig("hourly_experiment_baseline_verified", "1017330.61");
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+});
+
+// Round-2 finding 2. The marker landing IS the one-shot guarantee: if it does
+// not, the check stays armed and will fire on the legitimate upside divergence
+// the baseline exists to measure. A console.warn leaves no audit_log trace, so
+// the run fails instead. Nothing has been placed at this point, so the cost is
+// one skipped scan.
+Deno.test("gate 6: a marker write that fails -> error:DataError in audit_log, never a silent warn", async () => {
+  const { deps, rec } = buildDeps();
+  const realSetConfig = deps.db.setConfig;
+  deps.db.setConfig = (key, value) =>
+    key === "hourly_experiment_baseline_verified"
+      ? Promise.reject(new Error("db unavailable"))
+      : realSetConfig(key, value);
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.trades, []);
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes.includes("hourly_experiment_baseline_verified"), true);
+  assertEquals(notes.includes("db unavailable"), true);
+});
+
+// Round-2 finding 5. A DataError from this gate raises no Discord alert -- the
+// top-level catch notifies on AlpacaError only -- so detection would rest on
+// someone reading audit_log. Both ways the floor can be untrustworthy get an
+// alert; a wrong baseline is not more urgent than a missing one.
+Deno.test("gate 6: an implausible baseline alerts, not just an audit row", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.alerts.length, 1);
+  assertEquals(rec.alerts[0].includes("100000"), true);
+  assertEquals(rec.alerts[0].includes("1017330.61"), true);
+});
+
+Deno.test("gate 6: a missing baseline alerts too (same failure class: the floor cannot be trusted)", async () => {
+  const { deps, rec } = buildDeps();
+  deps.db.getConfig = (_key) => Promise.resolve(null);
+  assertEquals(await runHourlyCheck(deps), "error:DataError");
+  assertEquals(rec.alerts.length, 1);
+  assertEquals(rec.alerts[0].includes("hourly_experiment_start_equity"), true);
+});
+
+// Round-3: the third way the floor becomes untrustworthy. requireNumber throws
+// its OWN DataError, straight past alertAndFail, so a present-but-unparseable
+// baseline halted trading with an audit_log row and no alert while its two
+// siblings above alerted. Both literals are the fat-fingered paste an account
+// UI produces.
+for (const raw of ["1,017,330.61", "$1017330.61"]) {
+  Deno.test(`gate 6: an unparseable baseline '${raw}' alerts too, not just an audit row`, async () => {
+    const { deps, rec } = buildDeps();
+    deps.db.getConfig = (key) =>
+      Promise.resolve(key === "hourly_experiment_start_equity" ? raw : null);
+    assertEquals(await runHourlyCheck(deps), "error:DataError");
+    assertEquals(rec.trades, []);
+    assertEquals(rec.scans, []);
+    assertEquals(rec.alerts.length, 1);
+    assertEquals(rec.alerts[0].includes(raw), true);
+  });
+}
+
+Deno.test("gate 6: a plausible baseline raises no alert", async () => {
+  const { deps, rec } = buildDeps();
+  assertEquals(await runHourlyCheck(deps), "success");
+  assertEquals(rec.alerts, []);
+});
+
+// Round-2 nit 6: the tolerance boundary and the denominator were pinned by
+// nothing -- flipping <= to <, or dividing by baseline instead of equity, kept
+// the whole suite green.
+Deno.test("isBaselinePlausible: a baseline exactly at the tolerance edge is still plausible", () => {
+  // 20% of 100000 is 20000, so 120000 is the last accepted baseline.
+  assertEquals(isBaselinePlausible(120000, 100000), true);
+});
+
+Deno.test("isBaselinePlausible: one cent past the edge is not", () => {
+  assertEquals(isBaselinePlausible(120000.01, 100000), false);
+});
+
+Deno.test("isBaselinePlausible: the denominator is equity, not the baseline", () => {
+  // |100000 - 84000| = 16000. Against equity (84000) the allowance is 16800 ->
+  // plausible. Against the baseline (100000) it would be 20000 -> also
+  // plausible, so this pair cannot tell them apart; 83000 can:
+  // allowance 16600 < 17000 -> implausible on equity, plausible on baseline.
+  assertEquals(isBaselinePlausible(100000, 84000), true);
+  assertEquals(isBaselinePlausible(100000, 83000), false);
+});
+
+Deno.test("isBaselinePlausible: zero or negative equity admits no baseline", () => {
+  assertEquals(isBaselinePlausible(100000, 0), false);
+  assertEquals(isBaselinePlausible(100000, -5000), false);
 });
 
 Deno.test("gate 7: no completed bars -> skipped:stale_data, audit only (no hourly_scans row -- no candidate bar exists)", async () => {

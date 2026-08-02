@@ -22,6 +22,27 @@ const HOUR_MS = 60 * 60 * 1000;
 // owns via the spec's own merge, same as the 4-week/30-trade checkpoint.
 const EQUITY_FLOOR_PCT = 0.15;
 
+// #488: how far BELOW account equity the stored experiment baseline may sit at
+// the moment it is first checked. A wrong baseline (as opposed to a missing
+// one) parses fine and silently relocates the floor -- the 2026-07-29 ops
+// window left a stale 100000.00 baseline against 1017330.61 of equity, putting
+// the floor at a 91.6% loss.
+//
+// Both bounds on this number are real. It must stay WIDE enough to absorb the
+// drift between the operator's /v2/account read and the first scan, which is
+// hours to a few days and can carry a residual leveraged position. It must
+// stay well BELOW the smallest dangerous error class, a 2x stale value
+// (100% off). 20% sits between them with margin either way.
+//
+// Duplicated as the 0.20 in the runbook §5 verification query, which gives the
+// operator the same verdict before deploy. Change both together.
+const BASELINE_TOLERANCE_PCT = 0.20;
+
+// Companion bot_config key holding the baseline string that has already been
+// checked against this account's equity. It is what makes the check one-shot
+// rather than continuous -- see isBaselinePlausible and its call site.
+const BASELINE_VERIFIED_KEY = "hourly_experiment_baseline_verified";
+
 // Every reason this package's trades rows can carry. hourly_kill_switch is
 // read (as an exit event, for cooldown/day-cap bookkeeping) but never
 // written here -- the retrofit package (#474) owns writing it.
@@ -72,6 +93,27 @@ async function tryPostFillWrite(label: string, fn: () => Promise<unknown>): Prom
       `attempts: ${String((lastErr as Error)?.message ?? lastErr)}`,
   );
   return false;
+}
+
+/**
+ * #488 round-2 finding 5: raises a Discord alert and returns the DataError to
+ * throw. Gate 6's failures all mean "the -15% floor cannot be trusted", and
+ * the top-level catch notifies on AlpacaError only, so without this they are
+ * visible in audit_log alone -- detection would rest on someone reading it.
+ *
+ * Returns rather than throws so the call site keeps `throw` on the same line
+ * and stays obviously terminal. DataError is deliberate: these are config
+ * faults, not broker faults, so reparenting them to AlpacaError to inherit its
+ * notification would misreport the source (#494 set AlpacaError's scope).
+ */
+async function alertAndFail(
+  notifications: HourlyCheckDeps["notifications"],
+  message: string,
+): Promise<DataError> {
+  // The outbox's notifyError swallows its own failures, so alerting cannot
+  // mask the fault it is reporting.
+  await notifications.notifyError(`hourly-check equity floor: ${message}`);
+  return new DataError(message);
 }
 
 export interface HourlyCheckDeps {
@@ -154,6 +196,11 @@ export interface HourlyCheckDeps {
   };
   notifications: {
     notifyBrokerError: (p: { context: string; errorMsg: string }) => Promise<void>;
+    // #488: gate 6's failures are config faults, not broker faults, so the
+    // AlpacaError-only notify in the top-level catch never sees them. The
+    // outbox's notifyError is durable and never throws, so alerting cannot
+    // itself break the gate.
+    notifyError: (message: string) => Promise<void>;
   };
 }
 
@@ -206,6 +253,21 @@ export function isBarPartial(
   const sessionCloseMs = etHHMMToUtcMs(session.date, session.close);
   const fullyInside = startMs >= sessionOpenMs && endMs <= sessionCloseMs;
   return !isTopOfHour || !fullyInside;
+}
+
+/**
+ * #488: is `baseline` close enough to `equity` to have plausibly been derived
+ * from this account? Only ever asked at the one moment the answer is knowable
+ * -- the first scan after a baseline is written, when the two are supposed to
+ * be the same number -- and only when equity exceeds the baseline, since the
+ * floor owns the other direction. See BASELINE_TOLERANCE_PCT for both bounds.
+ *
+ * Equity is the denominator, so a zero or negative equity admits no baseline
+ * at all, which is the right answer: a floor cannot be validated against an
+ * account that has none.
+ */
+export function isBaselinePlausible(baseline: number, equity: number): boolean {
+  return Math.abs(baseline - equity) <= equity * BASELINE_TOLERANCE_PCT;
 }
 
 export interface BracketGeometry {
@@ -625,15 +687,98 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // never a silently inert floor.
     const baselineRaw = await db.getConfig("hourly_experiment_start_equity");
     if (baselineRaw === null || baselineRaw.trim() === "") {
-      throw new DataError(
+      throw await alertAndFail(
+        notifications,
         "bot_config.hourly_experiment_start_equity is not set -- required before any scan " +
           "can evaluate the -15% equity floor (spec §11)",
       );
     }
-    const baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+    // Third way the floor becomes untrustworthy: present but unparseable
+    // ('1,017,330.61', '$1017330.61' -- the fat-fingered paste an account UI
+    // produces). requireNumber throws its own DataError, which would sail past
+    // alertAndFail and leave this path the only silent one of the three.
+    let baseline: number;
+    try {
+      baseline = requireNumber(baselineRaw, "hourly_experiment_start_equity");
+    } catch (e) {
+      throw await alertAndFail(notifications, String((e as Error)?.message ?? e));
+    }
+
+    // The floor owns everything strictly below the baseline, and it runs FIRST
+    // (round-2 finding 1). Below the baseline a drawdown and a wrong-high
+    // baseline are indistinguishable on a first scan, and the plausibility
+    // check must not pre-empt the floor there: doing so would downgrade the
+    // persistent bot_config.paused kill switch to a per-scan error (status
+    // would report paused=false while the bot sits erroring), and the
+    // diagnostic would tell the operator to move the baseline DOWN onto the
+    // drawn-down equity, erasing the breach. A wrong-high baseline only makes
+    // the floor fire EARLY, which is conservative, so it needs no second
+    // opinion.
     if (equityAtStart <= baseline * (1 - EQUITY_FLOOR_PCT)) {
       await db.setConfig("paused", "true");
       return await done("success:auto_paused", `equity=${equityAtStart} baseline=${baseline}`);
+    }
+
+    // #488: a WRONG baseline parses fine here and silently relocates the
+    // floor, unlike a missing one. The dangerous direction is a baseline too
+    // LOW relative to equity -- the 2026-07-29 case, 100000 against 1017330.61
+    // -- because that is where the floor goes inert. So the check runs only
+    // when equity is AT OR ABOVE the baseline; below it, the floor above has
+    // already had its say.
+    //
+    // The check is one-shot, keyed to the baseline VALUE: BASELINE_VERIFIED_KEY
+    // holds the baseline string already checked against this account's equity.
+    // That keying is what distinguishes "this baseline was never derived from
+    // this account" from "the account has since drifted". Baseline and equity
+    // are only ever expected to agree at one instant -- the first scan after a
+    // baseline is written. After that, divergence is the whole point of a
+    // baseline and carries no expected bound, so a continuous magnitude check
+    // would false-positive on exactly the outcome the experiment is measuring.
+    // Once the marker matches, this block never runs again.
+    //
+    // Residual, deliberately accepted (runbook §5 documents it): the marker is
+    // keyed to the baseline value, not to the account, so pointing the bot at a
+    // different paper account whose baseline happens to be byte-identical skips
+    // the check. Account identity is not in bot_config today, and the check is
+    // one line of defence among several.
+    //
+    // The guard is `>=`, not `>`: equality is the IDEAL case, a baseline set
+    // from the equity this scan just read, and it can only ever pass (the
+    // deviation is zero). Excluding it would leave the ideal case unrecorded
+    // and the check armed until equity happened to tick up. Everything
+    // strictly below the baseline still belongs to the floor alone.
+    const alreadyVerified = baselineRaw === await db.getConfig(BASELINE_VERIFIED_KEY);
+    if (!alreadyVerified && equityAtStart >= baseline) {
+      if (!isBaselinePlausible(baseline, equityAtStart)) {
+        throw await alertAndFail(
+          notifications,
+          `bot_config.hourly_experiment_start_equity=${baseline} is implausible against ` +
+            `account equity ${equityAtStart} -- more than ${BASELINE_TOLERANCE_PCT * 100}% ` +
+            `below it, leaving the -15% floor at ` +
+            `${roundToCents(baseline * (1 - EQUITY_FLOOR_PCT), "floor_from_baseline")} when ` +
+            `the account holds ${roundToCents(equityAtStart, "equity_at_start")}. Correct the ` +
+            `baseline UP to the equity at experiment start with an explicit UPDATE (runbook ` +
+            `§5); to accept it as intentional, set bot_config.${BASELINE_VERIFIED_KEY} to the ` +
+            `same value.`,
+        );
+      }
+      // Recording the marker IS the one-shot guarantee, not bookkeeping
+      // (round-2 finding 2). If it cannot land, the check stays armed and will
+      // fire later on the legitimate upside divergence the baseline exists to
+      // measure -- so fail the run rather than warn into a function log that
+      // audit_log never sees. Nothing has been placed yet; the cost is one
+      // skipped scan.
+      try {
+        await db.setConfig(BASELINE_VERIFIED_KEY, baselineRaw);
+      } catch (e) {
+        throw await alertAndFail(
+          notifications,
+          `baseline ${baselineRaw} passed the plausibility check but ` +
+            `bot_config.${BASELINE_VERIFIED_KEY} could not be recorded ` +
+            `(${String((e as Error)?.message ?? e)}) -- refusing to continue with the check ` +
+            `left armed against legitimate divergence.`,
+        );
+      }
     }
 
     // 7. Bars: completed-only filter, partial-bar exclusion (before
