@@ -107,6 +107,19 @@ export function createLocalDbClient(): SupabaseClient {
 }
 
 /**
+ * A real supabase-js client whose transport is the caller's fetch stub and
+ * whose URL is a reserved .invalid host, so no request can leave the process
+ * even if the stub is misused. For wire-level assertions on the emitted HTTP
+ * request (#487), not for the RUN_DB_TESTS gated suite.
+ */
+export function createWireStubClient(fetchStub: typeof fetch): SupabaseClient {
+  return createClient("http://stub.invalid", "stub-service-role-key", {
+    auth: { persistSession: false },
+    global: { fetch: fetchStub },
+  });
+}
+
+/**
  * Runs `fn` and puts `bot_config[key]` back exactly as it was found, including
  * when `fn` throws. A key that did not exist is deleted again rather than left
  * behind at whatever the test wrote. `bot_config.paused` is the operational

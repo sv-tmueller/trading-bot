@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { createLocalDbClient, withConfigRestored } from "./db_test_guard.ts";
+import { createLocalDbClient, createWireStubClient, withConfigRestored } from "./db_test_guard.ts";
 import {
   claimBar,
   coerceEquitySnapshotRow,
@@ -1206,10 +1206,7 @@ function wireCapturingClient(bodies: string[] = ["[]", "[]"]) {
       }),
     );
   };
-  const sb = createClient("http://stub.invalid", "stub-service-role-key", {
-    auth: { persistSession: false },
-    global: { fetch: fetchStub as typeof fetch },
-  });
+  const sb = createWireStubClient(fetchStub as typeof fetch);
   return { sb, requests };
 }
 
