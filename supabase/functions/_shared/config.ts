@@ -151,7 +151,12 @@ export function getHourlyConfig(): HourlyConfig {
   }
   const hourlyContextMode = hourlyContextModeRaw as ContextMode;
 
-  const hourlyShortsEnabledRaw = (Deno.env.get("HOURLY_SHORTS_ENABLED") ?? "true").trim()
+  // Fail-closed (#493): the spec's §10 table listed a default of `true`, which
+  // let a lost or never-set secret arm the short-side path -- the opposite
+  // direction from what a safety flag owes. Absent now means shorts off, so
+  // enabling them takes an explicit "true" the same way HOURLY_BOT_PAPER_ONLY
+  // does.
+  const hourlyShortsEnabledRaw = (Deno.env.get("HOURLY_SHORTS_ENABLED") ?? "false").trim()
     .toLowerCase();
   if (hourlyShortsEnabledRaw !== "true" && hourlyShortsEnabledRaw !== "false") {
     throw new Error(
