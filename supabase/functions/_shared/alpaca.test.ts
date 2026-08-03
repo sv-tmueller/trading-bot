@@ -50,7 +50,7 @@ Deno.test("T1: every trade() request carries an AbortSignal", async () => {
     return Promise.resolve(jsonResponse({ equity: "1" }));
   });
   try {
-    await createAlpacaClient().getAccountValue();
+    await createAlpacaClient({ paperOnly: false }).getAccountValue();
   } finally {
     restore();
     clearKeys();
@@ -70,7 +70,7 @@ Deno.test("T2: a stalled request rejects with BrokerRequestTimeoutError (instanc
   });
   try {
     const err = await assertRejects(
-      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      () => createAlpacaClient({ paperOnly: false, requestTimeoutMs: 20 }).getAccountValue(),
       BrokerRequestTimeoutError,
     );
     assertEquals(err instanceof AlpacaError, true);
@@ -90,7 +90,7 @@ Deno.test("T2b: the initial fetch() call is bounded even if it never inspects th
   const restore = stubFetch(() => new Promise(() => {}));
   try {
     const err = await assertRejects(
-      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      () => createAlpacaClient({ paperOnly: false, requestTimeoutMs: 20 }).getAccountValue(),
       BrokerRequestTimeoutError,
     );
     assertEquals(err instanceof AlpacaError, true);
@@ -109,7 +109,7 @@ Deno.test("T3: a stalled BODY (headers arrive, body never completes) is bounded 
   );
   try {
     await assertRejects(
-      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      () => createAlpacaClient({ paperOnly: false, requestTimeoutMs: 20 }).getAccountValue(),
       BrokerRequestTimeoutError,
     );
   } finally {
@@ -122,7 +122,7 @@ Deno.test("T4: fast success at the 10s default leaves no pending timer (sanitize
   setKeys();
   const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: "42" })));
   try {
-    assertEquals(await createAlpacaClient().getAccountValue(), 42);
+    assertEquals(await createAlpacaClient({ paperOnly: false }).getAccountValue(), 42);
   } finally {
     restore();
     clearKeys();
@@ -303,7 +303,7 @@ Deno.test("T5: pollOrderUntilFilled bounds wall-clock elapsed, not just sleep co
   try {
     await assertRejects(
       () =>
-        createAlpacaClient().placeMarketOrder(
+        createAlpacaClient({ paperOnly: false }).placeMarketOrder(
           { symbol: "UPRO", side: "BUY", qty: 100 },
           { timeoutMs: 40, intervalMs: 1 },
         ),
@@ -333,7 +333,11 @@ Deno.test("T6: cancelOrder bounds wall-clock elapsed via a Date.now() deadline",
   liftBrokerGuard();
   try {
     await assertRejects(
-      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 30, intervalMs: 1 }),
+      () =>
+        createAlpacaClient({ paperOnly: false }).cancelOrder("o1", {
+          timeoutMs: 30,
+          intervalMs: 1,
+        }),
       AlpacaError,
     );
     assertEquals(statusReads <= 6, true);
@@ -362,7 +366,11 @@ Deno.test("T7: sleep clamp -- deadline expires mid-sleep, no extra GET after the
   liftBrokerGuard();
   try {
     await assertRejects(
-      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 60, intervalMs: 40 }),
+      () =>
+        createAlpacaClient({ paperOnly: false }).cancelOrder("o1", {
+          timeoutMs: 60,
+          intervalMs: 40,
+        }),
       AlpacaError,
     );
     assertEquals(statusReads <= 1, true);
