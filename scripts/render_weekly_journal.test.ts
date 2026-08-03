@@ -13,8 +13,12 @@ import {
   computeWeeklyAggregates,
   type CumulativeStats,
   DEFAULT_PROPOSAL_CANDIDATES,
+  findOrphanedPendingScans,
+  findUnmatchedEntryTrades,
   JournalExistsError,
+  type JournalIntegrityData,
   MissingBaselineError,
+  ORPHAN_LOOKBACK_MS,
   pairHourlyTrades,
   parseArgs,
   parseWeekLabel,
@@ -387,6 +391,107 @@ Deno.test("pairHourlyTrades: sequential FIFO pairing across multiple entries for
 });
 
 // ---------------------------------------------------------------------------
+// T3.5 -- journal integrity (#486): the unrecoverable-journal-state surface.
+// findOrphanedPendingScans/findUnmatchedEntryTrades are pure filters over the
+// already-fetched allScans/allTrades (D2 -- zero new PostgREST queries).
+// ---------------------------------------------------------------------------
+
+Deno.test("ORPHAN_LOOKBACK_MS: mirrors hourly-check's 5-day reconcile lookback", () => {
+  assertEquals(ORPHAN_LOOKBACK_MS, 5 * 24 * 60 * 60 * 1000);
+});
+
+Deno.test("findOrphanedPendingScans: a pending row 1ms older than end-5d is orphaned", () => {
+  const endMs = Date.parse("2026-08-01T04:00:00.000Z");
+  const s = scan({
+    decision: "LONG",
+    entry_order_id: null,
+    bar_ts: new Date(endMs - ORPHAN_LOOKBACK_MS - 1).toISOString(),
+  });
+  const result = findOrphanedPendingScans([s], endMs);
+  assertEquals(result.orphaned.length, 1);
+  assertEquals(result.orphaned[0].bar_ts, s.bar_ts);
+  assertEquals(result.pendingInsideLookbackCount, 0);
+});
+
+Deno.test("findOrphanedPendingScans: a pending row exactly at end-5d is NOT orphaned (recovery's own gte bound)", () => {
+  const endMs = Date.parse("2026-08-01T04:00:00.000Z");
+  const s = scan({
+    decision: "LONG",
+    entry_order_id: null,
+    bar_ts: new Date(endMs - ORPHAN_LOOKBACK_MS).toISOString(),
+  });
+  const result = findOrphanedPendingScans([s], endMs);
+  assertEquals(result.orphaned.length, 0);
+  assertEquals(result.pendingInsideLookbackCount, 1);
+});
+
+Deno.test("findOrphanedPendingScans: a young pending row is not orphaned but IS counted pending-inside-lookback", () => {
+  const endMs = Date.parse("2026-08-01T04:00:00.000Z");
+  const s = scan({
+    decision: "SHORT",
+    entry_order_id: null,
+    bar_ts: new Date(endMs - 1 * 24 * 60 * 60 * 1000).toISOString(), // 1 day old
+  });
+  const result = findOrphanedPendingScans([s], endMs);
+  assertEquals(result.orphaned.length, 0);
+  assertEquals(result.pendingInsideLookbackCount, 1);
+});
+
+Deno.test("findOrphanedPendingScans: a LONG row with entry_order_id set is excluded regardless of age", () => {
+  const endMs = Date.parse("2026-08-01T04:00:00.000Z");
+  const s = scan({
+    decision: "LONG",
+    entry_order_id: "o1", // already matched -- not pending at all
+    bar_ts: new Date(endMs - ORPHAN_LOOKBACK_MS - 1000).toISOString(),
+  });
+  const result = findOrphanedPendingScans([s], endMs);
+  assertEquals(result.orphaned.length, 0);
+  assertEquals(result.pendingInsideLookbackCount, 0);
+});
+
+Deno.test("findOrphanedPendingScans: a SKIP row is never included, even when old and entry_order_id is null", () => {
+  const endMs = Date.parse("2026-08-01T04:00:00.000Z");
+  const s = scan({
+    decision: "SKIP",
+    entry_order_id: null,
+    bar_ts: new Date(endMs - ORPHAN_LOOKBACK_MS - 1000).toISOString(),
+  });
+  const result = findOrphanedPendingScans([s], endMs);
+  assertEquals(result.orphaned.length, 0);
+  assertEquals(result.pendingInsideLookbackCount, 0);
+});
+
+Deno.test("findUnmatchedEntryTrades: a matched entry trade (broker_order_id found in a scan's entry_order_id) is excluded", () => {
+  const entry = trade({ reason: "hourly_long_entry", broker_order_id: "o1" });
+  const s = scan({ entry_order_id: "o1" });
+  const result = findUnmatchedEntryTrades([entry], [s]);
+  assertEquals(result.length, 0);
+});
+
+Deno.test("findUnmatchedEntryTrades: an unmatched entry trade (the clobbered-row variant) is reported", () => {
+  // A re-scan on the same bar overwrote the pending row to decision:SKIP,
+  // entry_order_id:null (#487) -- the scan-side orphan query can no longer
+  // see it, but the trades row itself still exists and matches no scan.
+  const entry = trade({ reason: "hourly_long_entry", broker_order_id: "o1" });
+  const clobberedScan = scan({ decision: "SKIP", entry_order_id: null });
+  const result = findUnmatchedEntryTrades([entry], [clobberedScan]);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].broker_order_id, "o1");
+});
+
+Deno.test("findUnmatchedEntryTrades: an exit-reason trade is never reported, matched or not", () => {
+  const exit = trade({ reason: "hourly_bracket_exit", broker_order_id: "x1" });
+  const result = findUnmatchedEntryTrades([exit], []);
+  assertEquals(result.length, 0);
+});
+
+Deno.test("findUnmatchedEntryTrades: a panic_cli trade is never reported, matched or not", () => {
+  const panic = trade({ reason: "panic_cli", broker_order_id: "p1" });
+  const result = findUnmatchedEntryTrades([panic], []);
+  assertEquals(result.length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // T4 -- aggregation
 // ---------------------------------------------------------------------------
 
@@ -624,6 +729,14 @@ function buildFixtureRenderData(): RenderData {
   const cumulative = computeCumulativeStats([...pairing.closedTrades, ...padded]);
   const proposal = proposeParamChange(cumulative);
 
+  const orphanResult = findOrphanedPendingScans(scans, Date.parse(win.endIsoExclusive));
+  const journalIntegrity: JournalIntegrityData = {
+    degradedCount: agg.auditOutcomeCounts["success:journal_degraded"] ?? 0,
+    orphanedPendingScans: orphanResult.orphaned,
+    pendingInsideLookbackCount: orphanResult.pendingInsideLookbackCount,
+    unmatchedEntryTrades: findUnmatchedEntryTrades([entry, exit], scans),
+  };
+
   return {
     title: win.title,
     agg,
@@ -634,6 +747,16 @@ function buildFixtureRenderData(): RenderData {
     cumulative,
     proposal,
     trialCount: 2,
+    journalIntegrity,
+  };
+}
+
+function emptyJournalIntegrity(): JournalIntegrityData {
+  return {
+    degradedCount: 0,
+    orphanedPendingScans: [],
+    pendingInsideLookbackCount: 0,
+    unmatchedEntryTrades: [],
   };
 }
 
@@ -653,7 +776,18 @@ const GOLDEN_RENDER =
   "| SPY | LONG | 550.00 | 554.50 | 10 | 2.00 | 2 | hourly_bracket_exit |\n\n" +
   "## Open positions at week end\n\n_None._\n\n" +
   "## Orphan exits (no matching queued entry)\n\n_None._\n\n" +
-  "## Manual interventions (`panic_cli`)\n\n_None._\n\n---\n\n## Gate-skip distribution\n\n" +
+  "## Manual interventions (`panic_cli`)\n\n_None._\n\n" +
+  "## Journal integrity\n\n" +
+  "Surfaces the unrecoverable-journal state (#486): scan rows recovery could not reconcile " +
+  "within the 5-day lookback, and the trades-side cross-check that also catches a clobbered " +
+  "pending row (decision overwritten to SKIP on a re-scan). See the `journal_degraded` triage " +
+  "entry in `docs/runbooks/hourly-bot-rollout.md` (section 10) for the manual-reconciliation " +
+  "procedure.\n\n" +
+  "- `success:journal_degraded` runs this week: 0\n\n" +
+  "### Orphaned pending scan rows (older than the 5-day reconcile lookback)\n\n_None._\n\n" +
+  "### Unmatched entry trades (no matching scan entry_order_id)\n\n_None._\n\n" +
+  "- Pending rows still inside the 5-day lookback (recovery still possible): 0\n\n---\n\n" +
+  "## Gate-skip distribution\n\n" +
   "Two sources (sub-plan's disclosed two-source gate-skip distribution): bar-level skips " +
   "from `hourly_scans.skip_reason`, and run-level exits from `audit_log` " +
   "(`script_name='hourly-check'`) -- a bar can be scanned and skipped without the run " +
@@ -742,6 +876,7 @@ Deno.test("renderJournal: audit rows present but zero hourly_scans rows renders 
     cumulative,
     proposal: proposeParamChange(cumulative),
     trialCount: 0,
+    journalIntegrity: emptyJournalIntegrity(),
   };
   const rendered = renderJournal(data);
   assertEquals(rendered.includes("$0.00"), false);
@@ -765,12 +900,109 @@ Deno.test("renderJournal: an all-quiet week renders the README's brief style, no
     cumulative,
     proposal: proposeParamChange(cumulative),
     trialCount: 2,
+    journalIntegrity: emptyJournalIntegrity(),
   };
   const rendered = renderJournal(data);
   assertEquals(rendered.includes("## Detector firing rates"), false);
   assertEquals(rendered.includes("paused or not deployed for the full week"), true);
   assertEquals(rendered.includes("## Cumulative stats (since experiment start)"), true);
   assertEquals(rendered.includes("## Notes (operator)"), true);
+});
+
+// ---------------------------------------------------------------------------
+// T6.5 -- Journal integrity section (#486)
+// ---------------------------------------------------------------------------
+
+Deno.test("renderJournal: the Journal integrity section renders with explicit zero/None empty states when clean", () => {
+  const data = buildFixtureRenderData();
+  const rendered = renderJournal(data);
+  assertEquals(rendered.includes("## Journal integrity"), true);
+  assertEquals(rendered.includes("`success:journal_degraded` runs this week: 0"), true);
+  assertEquals(
+    rendered.includes("Pending rows still inside the 5-day lookback (recovery still possible): 0"),
+    true,
+  );
+});
+
+Deno.test("renderJournal: a nonzero journal_degraded count renders the explicit number", () => {
+  const data = buildFixtureRenderData();
+  const withDegraded: RenderData = {
+    ...data,
+    journalIntegrity: { ...data.journalIntegrity, degradedCount: 3 },
+  };
+  const rendered = renderJournal(withDegraded);
+  assertEquals(rendered.includes("`success:journal_degraded` runs this week: 3"), true);
+});
+
+Deno.test("renderJournal: the orphan table renders symbol/bar/decision/qty/age", () => {
+  const data = buildFixtureRenderData();
+  const withOrphan: RenderData = {
+    ...data,
+    journalIntegrity: {
+      ...data.journalIntegrity,
+      orphanedPendingScans: [
+        { symbol: "SPY", bar_ts: "2026-07-01T14:00:00Z", decision: "LONG", qty: 12, ageDays: 30.2 },
+      ],
+    },
+  };
+  const rendered = renderJournal(withOrphan);
+  assertEquals(rendered.includes("SPY"), true);
+  assertEquals(rendered.includes("2026-07-01T14:00:00Z"), true);
+  assertEquals(rendered.includes("30.2d"), true);
+  assertEquals(rendered.includes("| SPY | 2026-07-01T14:00:00Z | LONG | 12 | 30.2d |"), true);
+});
+
+Deno.test("renderJournal: the unmatched-entry-trades table renders symbol and broker order id", () => {
+  const data = buildFixtureRenderData();
+  const withUnmatched: RenderData = {
+    ...data,
+    journalIntegrity: {
+      ...data.journalIntegrity,
+      unmatchedEntryTrades: [
+        trade({ reason: "hourly_long_entry", broker_order_id: "clobbered-1" }),
+      ],
+    },
+  };
+  const rendered = renderJournal(withUnmatched);
+  assertEquals(rendered.includes("clobbered-1"), true);
+});
+
+Deno.test("renderJournal: the quiet-week branch still renders the Journal integrity section, including a carried orphan", () => {
+  const win = weekWindowUtc(2026, 32);
+  const agg = computeWeeklyAggregates([], [], 100000);
+  const cumulative = computeCumulativeStats([]);
+  const data: RenderData = {
+    title: win.title,
+    agg,
+    closedTradesInWeek: [],
+    openEntries: [],
+    orphanExitsInWeek: [],
+    manualInterventionsInWeek: [],
+    cumulative,
+    proposal: proposeParamChange(cumulative),
+    trialCount: 2,
+    journalIntegrity: {
+      degradedCount: 0,
+      orphanedPendingScans: [
+        {
+          symbol: "SPY",
+          bar_ts: "2026-06-01T14:00:00Z",
+          decision: "LONG",
+          qty: 7,
+          ageDays: 61.4,
+        },
+      ],
+      pendingInsideLookbackCount: 0,
+      unmatchedEntryTrades: [],
+    },
+  };
+  const rendered = renderJournal(data);
+  // Still a quiet week -- the brief intro paragraph, not the full section set.
+  assertEquals(rendered.includes("## Detector firing rates"), false);
+  assertEquals(rendered.includes("paused or not deployed for the full week"), true);
+  // But the standing Journal integrity surface still shows the carried-over orphan.
+  assertEquals(rendered.includes("## Journal integrity"), true);
+  assertEquals(rendered.includes("2026-06-01T14:00:00Z"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -940,6 +1172,59 @@ Deno.test("runWeeklyReview (render mode): getHourlyTradesUntil receives the alre
   };
   await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
   assertEquals(capturedScans, providedScans);
+});
+
+// ---------------------------------------------------------------------------
+// T7.5 -- Journal integrity orchestration (#486)
+// ---------------------------------------------------------------------------
+
+Deno.test("runWeeklyReview (render mode): the journal_degraded count respects exact epoch window boundaries, not string comparison", async () => {
+  // Same +00:00-formatted-PostgREST-timestamp hazard as finding 4/5 above,
+  // now exercised through the dedicated journal_degraded count rather than
+  // the generic decision counts.
+  const win = weekWindowUtc(2026, 31);
+  const justBeforeStart = auditRow({
+    started_at: "2026-07-27T03:59:59+00:00",
+    outcome: "success:journal_degraded",
+  }); // excluded
+  const exactlyAtStart = auditRow({
+    started_at: win.startIso.replace(".000Z", "+00:00"),
+    outcome: "success:journal_degraded",
+  }); // inclusive bound -> included
+  const exactlyAtEnd = auditRow({
+    started_at: win.endIsoExclusive.replace(".000Z", "+00:00"),
+    outcome: "success:journal_degraded",
+  }); // exclusive bound -> excluded
+  const inside = auditRow({
+    started_at: "2026-07-28T12:00:00+00:00",
+    outcome: "success:journal_degraded",
+  }); // included
+
+  const { deps } = buildTestDeps();
+  deps.db.getAuditOutcomesUntil = (_untilIso: string) =>
+    Promise.resolve([justBeforeStart, exactlyAtStart, exactlyAtEnd, inside]);
+
+  const summary = await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
+  if (summary.mode !== "render") throw new Error("unreachable");
+  assertEquals(summary.markdown.includes("`success:journal_degraded` runs this week: 2"), true);
+});
+
+Deno.test("runWeeklyReview (render mode): an orphaned pending scan from weeks before the target week still appears (cumulative as-of-week-end)", async () => {
+  const { deps } = buildTestDeps();
+  // Well past the 5-day lookback measured from 2026-W31's own window end --
+  // the orphan report is cumulative as of week end, not windowed to the week.
+  const oldOrphan = scan({
+    symbol: "SPY",
+    bar_ts: "2026-06-01T14:00:00Z",
+    decision: "LONG",
+    entry_order_id: null,
+    qty: 7,
+  });
+  deps.db.getScansUntil = (_untilIso: string) => Promise.resolve([oldOrphan]);
+
+  const summary = await runWeeklyReview(deps, { mode: "render", week: "2026-W31", force: false });
+  if (summary.mode !== "render") throw new Error("unreachable");
+  assertEquals(summary.markdown.includes("| SPY | 2026-06-01T14:00:00Z | LONG | 7 |"), true);
 });
 
 // ---------------------------------------------------------------------------
