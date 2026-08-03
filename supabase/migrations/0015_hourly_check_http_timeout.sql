@@ -109,6 +109,60 @@
 -- a follow-up migration -- never to loosen the runbook's health check so the
 -- false alarm stops being reported, and never to touch
 -- HOURLY_STALENESS_TOLERANCE_MIN, which is a different problem entirely.
+--
+--
+-- #511 addendum (2026-08-03):
+--
+-- #511 landed: `alpaca.ts`'s `trade()` (and every fetch site in
+-- `marketdata.ts`) now carries a per-request `AbortSignal` deadline
+-- (`DEFAULT_REQUEST_TIMEOUT_MS` = 10_000ms, bounding the WHOLE round trip --
+-- headers and body -- via `fetchWithTimeout`), and `pollOrderUntilFilled` /
+-- `cancelOrder` were converted from accumulated-sleep counting to true
+-- `Date.now()` wall-clock deadlines. The "no bound anywhere in the cron
+-- path" and "the only mechanism that will ever surface a stalled
+-- invocation" paragraphs above are SUPERSEDED by this: a stalled broker
+-- request now surfaces as `error:BrokerRequestTimeoutError` in `audit_log`
+-- and Discord (`notifyBrokerError`, since the new error class extends
+-- `AlpacaError`) within 10s of the stall, not after this migration's 120s
+-- pg_net wait. This value's role changes from PRIMARY detector to SECONDARY
+-- backstop -- still load-bearing (see the pathological case below), just no
+-- longer the only signal in the path.
+--
+-- SQL is byte-identical to 0014/this migration's original body -- this is a
+-- comment-only addendum, per the repo's historical-layering convention
+-- (kept as record rather than rewritten). No re-schedule, no value change:
+-- the arithmetic below shows why.
+--
+-- Revised worst-case arithmetic, legitimate (stressed-but-healthy, ~500ms/
+-- request) case: the wall-clock deadline means each poll loop's own elapsed
+-- time is now bounded by (timeoutMs + one in-flight request), not
+-- (timeoutMs of SLEEP, plus every round trip's cost stacked ADDITIONALLY on
+-- top as the pre-#511 arithmetic above had to account for). So the 36_000ms
+-- sleep budget (2 cancelOrder legs x 3_000 + 1 placeMarketOrder poll x
+-- 30_000, unchanged from above) now also absorbs each loop's own network
+-- time, rather than that time being extra. What's left additive is the
+-- ~15-20 single (non-loop) requests on the flatten path -- the initial
+-- DELETE per cancelOrder, placeMarketOrder's post-timeout DELETE + status
+-- re-read, getPosition, listOpenOrderIds, and the gate ladder ahead of the
+-- flatten branch (paper assert, clock, bars, calendar, ...) -- each still
+-- independently bounded by the SAME 10_000ms D1 cap, costing ~500ms apiece
+-- under stress: ~15-20 x 500ms = 7.5-10s. Add the same ~8 Postgres round
+-- trips and cold start (~3s, unchanged) and the legitimate worst case is
+-- ~46-50s, versus ~89s before -- 120000's margin roughly doubles (~70-74s
+-- of slack now, versus ~31s before).
+--
+-- The ~800ms break-even claim above no longer applies the same way: the
+-- function now self-bounds every request at 10s AND every poll loop at its
+-- own timeoutMs, so the only way to threaten 120000 is a broker sustaining
+-- close to the full 10s-per-request cap across most of the ~20 requests a
+-- flatten makes -- D1's own accepted pathological case, worth roughly
+-- 200-240s (2 loops' single in-flight requests plus ~15-20 non-loop reads,
+-- each up to 10_000ms). That case correctly EXCEEDS 120000 and trips this
+-- migration's stall detector, same as before -- but by the time it does,
+-- the run has already reported `error:BrokerRequestTimeoutError` with a
+-- Discord alert, so `timed_out: true` in `net._http_response` is now
+-- confirmatory, not the first signal an operator sees. Only a sustained
+-- near-10s-per-request broker incident can outlast 120s at all.
 
 do $$
 begin

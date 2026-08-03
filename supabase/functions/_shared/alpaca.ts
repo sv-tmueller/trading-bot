@@ -44,6 +44,74 @@ export class PaperGuardFailedError extends Error {
 export class SubPennyPriceError extends AlpacaError {
   override name = "SubPennyPriceError";
 }
+// #511 D1: per-request deadline for every Alpaca REST call (trading and
+// market-data, one shared value -- see the 0015 migration's #511 addendum
+// for the arithmetic). ~20x #498's 500ms stressed-broker allowance, so no
+// legitimate call gets cut; deliberately generous rather than tight because
+// a falsely-aborted order POST can leave a broker-side order the client
+// never learns about.
+export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+// Extends AlpacaError (like OrderTimeoutError/SubPennyPriceError above) so
+// both cron callers' existing `instanceof AlpacaError -> notifyBrokerError`
+// catches surface a stalled broker connection with zero caller changes.
+export class BrokerRequestTimeoutError extends AlpacaError {
+  override name = "BrokerRequestTimeoutError";
+}
+
+// #511 D4: bounds the WHOLE round trip (headers + body), not just headers --
+// a headers-only bound leaves the classic blackhole (headers arrive, body
+// trickles forever) unbounded. AbortController + setTimeout, cleared in
+// `finally` -- deliberately NOT AbortSignal.timeout(): an explicit, cleared
+// timer is deterministic under Deno's test sanitizers, which otherwise flag
+// a leaked timer. Reads the body here and returns a reconstructed Response so
+// every existing call site (res.ok, res.status, res.json(), res.text(), the
+// 204 checks in cancelOrder/cancelAllOrders) works byte-for-byte unchanged;
+// "" -> null keeps null-body statuses (204) constructible. The body read is
+// raced against the SAME signal (rather than relying on fetch internals to
+// cancel the stream), so the bound holds identically for real fetches and
+// for stubFetch-constructed Responses in tests.
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const method = init.method ?? "GET";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await Promise.race([
+      res.text(),
+      new Promise<string>((_resolve, reject) => {
+        const onAbort = () => {
+          res.body?.cancel().catch(() => {});
+          reject(
+            new BrokerRequestTimeoutError(
+              `${method} ${url} did not complete within ${timeoutMs}ms`,
+            ),
+          );
+        };
+        // The timer can fire (and dispatch "abort") between fetch() resolving
+        // and this listener being attached -- a past "abort" event is never
+        // redelivered, so check signal.aborted directly rather than relying
+        // solely on the event to avoid a hang in that race window.
+        if (controller.signal.aborted) onAbort();
+        else controller.signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+    return new Response(text === "" ? null : text, { status: res.status });
+  } catch (e) {
+    if (e instanceof BrokerRequestTimeoutError) throw e;
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new BrokerRequestTimeoutError(
+        `${method} ${url} did not complete within ${timeoutMs}ms`,
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Matched against String(price), because that is what the order bodies below
 // put on the wire: this rejects sub-penny values AND magnitudes that serialize
@@ -182,9 +250,15 @@ export function checkPaperOnly(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
+export function createAlpacaClient(
+  opts: { paperOnly: boolean; requestTimeoutMs?: number },
+): AlpacaClient {
   const cfg = getAlpacaConfig();
   const paperOnly = opts.paperOnly;
+  // #511 D1: requestTimeoutMs is a test-only override -- every production call
+  // site (daily-check, kill-switch, panic, status, hourly-check) passes only
+  // paperOnly, so the 10s default applies everywhere in production.
+  const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const headers = {
     "APCA-API-KEY-ID": cfg.apiKeyId,
     "APCA-API-SECRET-KEY": cfg.apiSecretKey,
@@ -203,10 +277,11 @@ export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
   }
 
   async function trade(path: string, init?: RequestInit): Promise<Response> {
-    return await fetch(`${cfg.tradingBaseUrl}${path}`, {
-      ...init,
-      headers: { ...headers, ...(init?.headers ?? {}) },
-    });
+    return await fetchWithTimeout(
+      `${cfg.tradingBaseUrl}${path}`,
+      { ...init, headers: { ...headers, ...(init?.headers ?? {}) } },
+      requestTimeoutMs,
+    );
   }
 
   async function tradeJson(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
@@ -295,8 +370,13 @@ export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
     const timeoutMs = opts?.timeoutMs ?? 30_000;
     const intervalMs = opts?.intervalMs ?? 500;
 
-    let waited = 0;
-    while (waited < timeoutMs) {
+    // #511 D5: a true wall-clock deadline, not accumulated sleep -- the old
+    // `waited += intervalMs` counter never counted the awaited HTTP round
+    // trip inside each iteration, so `timeoutMs` didn't bound real elapsed
+    // time. Total loop elapsed is now bounded by timeoutMs plus at most one
+    // in-flight request (itself bounded by D1's per-request deadline).
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
       const o = await tradeJson(`/v2/orders/${orderId}`);
       if (o.status === "filled") {
         return {
@@ -318,8 +398,9 @@ export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
           String(o.status),
         );
       }
-      await sleep(intervalMs);
-      waited += intervalMs;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(intervalMs, remaining)); // clamp: never sleep past the deadline
     }
     // Timed out — best-effort cancel, then re-check once: the order can fill
     // (fully or partially) in the race window between the last poll and the
@@ -492,14 +573,18 @@ export function createAlpacaClient(opts: { paperOnly: boolean }): AlpacaClient {
     const timeoutMs = opts?.timeoutMs ?? 3_000;
     const intervalMs = opts?.intervalMs ?? 250;
 
-    let waited = 0;
+    // #511 D5: same wall-clock deadline as pollOrderUntilFilled above (the
+    // initial DELETE just issued is itself bounded by D1's per-request
+    // deadline).
+    const deadline = Date.now() + timeoutMs;
     let lastStatus = "";
-    while (waited < timeoutMs) {
+    while (Date.now() < deadline) {
       const final = await tradeJson(`/v2/orders/${orderId}`);
       lastStatus = String(final.status);
       if (TERMINAL_ANY.includes(lastStatus)) return;
-      await sleep(intervalMs);
-      waited += intervalMs;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(intervalMs, remaining)); // clamp: never sleep past the deadline
     }
     throw new AlpacaError(
       `cancelOrder(${orderId}) UNVERIFIED — order status still '${lastStatus}' after DELETE`,

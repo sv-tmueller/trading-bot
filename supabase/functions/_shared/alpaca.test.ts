@@ -3,6 +3,7 @@ import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
   AlpacaError,
   BrokerCallBlockedError,
+  BrokerRequestTimeoutError,
   checkPaperOnly,
   createAlpacaClient,
   OrderRejectedError,
@@ -35,6 +36,78 @@ function clearKeys() {
   if (ORIGINAL_NO_BROKER === undefined) Deno.env.delete("CLAUDE_AGENT_NO_BROKER");
   else Deno.env.set("CLAUDE_AGENT_NO_BROKER", ORIGINAL_NO_BROKER);
 }
+
+// ---------------------------------------------------------------------------
+// #511: per-request deadline (D1/D4) -- every trade() call carries an
+// AbortSignal, and the deadline bounds the WHOLE round trip (headers + body),
+// not just headers.
+// ---------------------------------------------------------------------------
+
+Deno.test("T1: every trade() request carries an AbortSignal", async () => {
+  setKeys();
+  const restore = stubFetch((_i, init) => {
+    assertEquals(init?.signal instanceof AbortSignal, true);
+    return Promise.resolve(jsonResponse({ equity: "1" }));
+  });
+  try {
+    await createAlpacaClient().getAccountValue();
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("T2: a stalled request rejects with BrokerRequestTimeoutError (instanceof AlpacaError)", async () => {
+  setKeys();
+  const restore = stubFetch((_i, init) => {
+    // Never resolves on its own -- only reacts to the AbortSignal firing,
+    // mirroring a real stalled connection.
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  });
+  try {
+    const err = await assertRejects(
+      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      BrokerRequestTimeoutError,
+    );
+    assertEquals(err instanceof AlpacaError, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("T3: a stalled BODY (headers arrive, body never completes) is bounded too", async () => {
+  setKeys();
+  const restore = stubFetch(() =>
+    // Headers arrive immediately; the body stream never emits or closes --
+    // this is the blackhole a headers-only bound would miss (D4).
+    Promise.resolve(new Response(new ReadableStream({ start() {} }), { status: 200 }))
+  );
+  try {
+    await assertRejects(
+      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      BrokerRequestTimeoutError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("T4: fast success at the 10s default leaves no pending timer (sanitizer-enforced)", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ equity: "42" })));
+  try {
+    assertEquals(await createAlpacaClient().getAccountValue(), 42);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
 
 Deno.test("getClock maps is_open", async () => {
   setKeys();
@@ -174,6 +247,105 @@ Deno.test("getPosition returns qty, 0 on 404", async () => {
   );
   try {
     assertEquals(await createAlpacaClient({ paperOnly: false }).getPosition("UPRO"), 0);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #511 D5: wall-clock poll deadlines (Date.now(), not accumulated sleep) --
+// T5/T6 assert on REQUEST COUNT, not elapsed time, so they stay
+// flake-resistant under CI scheduling jitter. Sleep-only counting (the
+// pre-#511 bug) would poll roughly timeoutMs/intervalMs times regardless of
+// how long each request itself takes; a true wall-clock deadline polls only
+// as many times as fit in timeoutMs given each request's real cost.
+// ---------------------------------------------------------------------------
+
+Deno.test("T5: pollOrderUntilFilled bounds wall-clock elapsed, not just sleep count", async () => {
+  setKeys();
+  let polls = 0;
+  const restore = stubFetch((i, init) => {
+    const url = urlOf(i);
+    if (init?.method === "POST" && url.endsWith("/v2/orders")) {
+      return Promise.resolve(jsonResponse({ id: "o1", status: "accepted" }));
+    }
+    if (init?.method === "DELETE") {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    // GET status -- ~15ms simulated broker latency per poll (real setTimeout).
+    polls += 1;
+    return new Promise((resolve) =>
+      setTimeout(() => resolve(jsonResponse({ id: "o1", status: "new" })), 15)
+    );
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient().placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 40, intervalMs: 1 },
+        ),
+      OrderTimeoutError,
+    );
+    // Sleep-only counting (waited += intervalMs, pre-#511) would poll ~40
+    // times here; a wall-clock deadline bounds it to a handful of ~15ms
+    // round trips (loop polls + the post-cancel verification read).
+    assertEquals(polls <= 6, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("T6: cancelOrder bounds wall-clock elapsed via a Date.now() deadline", async () => {
+  setKeys();
+  let statusReads = 0;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    // GET status -- ~10ms simulated broker latency per poll.
+    statusReads += 1;
+    return new Promise((resolve) =>
+      setTimeout(() => resolve(jsonResponse({ id: "o1", status: "pending_cancel" })), 10)
+    );
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 30, intervalMs: 1 }),
+      AlpacaError,
+    );
+    assertEquals(statusReads <= 6, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("T7: sleep clamp -- deadline expires mid-sleep, no extra GET after the final sleep", async () => {
+  // timeoutMs=60, intervalMs=40, each GET taking ~30ms: after the first read
+  // (t=30) the clamp sleeps only the 30ms REMAINING (not the full 40ms
+  // intervalMs), so the deadline (t=60) expires exactly there and the loop
+  // takes no second GET. A sleep-only budget (pre-#511: full unclamped 40ms
+  // sleep, waited-only deadline) would still see waited=40 < 60 and take a
+  // wasted second GET stretching real elapsed to ~100ms for a 60ms budget.
+  setKeys();
+  let statusReads = 0;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    statusReads += 1;
+    return new Promise((resolve) =>
+      setTimeout(() => resolve(jsonResponse({ id: "o1", status: "pending_cancel" })), 30)
+    );
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 60, intervalMs: 40 }),
+      AlpacaError,
+    );
+    assertEquals(statusReads, 1);
   } finally {
     restore();
     clearKeys();

@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { type ClosedOrderFill, type Fill, SubPennyPriceError } from "../_shared/alpaca.ts";
+import {
+  BrokerRequestTimeoutError,
+  type ClosedOrderFill,
+  type Fill,
+  SubPennyPriceError,
+} from "../_shared/alpaca.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
 import { coerceHourlyScanRow, type HourlyScanRow, type TradeRow } from "../_shared/db.ts";
 import { decideHourly } from "../_shared/hourly_signal.ts";
@@ -476,6 +481,27 @@ Deno.test("gate 3: market closed -> skipped:market_closed", async () => {
   const { deps } = buildDeps();
   deps.alpaca.getClock = () => Promise.resolve({ isOpen: false, nextClose: 0 });
   assertEquals(await runHourlyCheck(deps), "skipped:market_closed");
+});
+
+// T8 (#511): a stalled broker request now rejects with BrokerRequestTimeoutError
+// (extends AlpacaError, D3) instead of hanging the invocation -- pins the
+// fail-toward-notification contract end to end, from alpaca.ts's fetch
+// helper through the top-level catch's `instanceof AlpacaError` alert.
+Deno.test("gate 3: getClock times out -> error:BrokerRequestTimeoutError, alerts notifyBrokerError", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.getClock = () =>
+    Promise.reject(new BrokerRequestTimeoutError("GET /v2/clock did not complete within 10000ms"));
+  let alerted: { context: string; errorMsg: string } | null = null;
+  deps.notifications.notifyBrokerError = (p) => {
+    alerted = p;
+    return Promise.resolve();
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:BrokerRequestTimeoutError");
+  assertEquals(lastOutcome(rec), "error:BrokerRequestTimeoutError");
+  const sent = alerted as unknown as { context: string; errorMsg: string } | null;
+  assertEquals(sent?.context, "hourly-check");
+  assertEquals(sent?.errorMsg.includes("did not complete within"), true);
 });
 
 Deno.test("gate 4: naked position (no resting legs, no provenance) -> error:naked_position_flattened", async () => {
