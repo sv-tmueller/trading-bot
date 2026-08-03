@@ -15,7 +15,11 @@ const VALID: PanicAction[] = ["pause", "resume", "cancel-orders", "liquidate"];
 
 function runWithRealDeps(action: PanicAction, opts: PanicOpts): Promise<PanicResult> {
   const sb = getServiceClient();
-  const alpaca = createAlpacaClient();
+  // #508: explicit opt-out -- panic is the deterministic kill button, a
+  // protective-exit path that must keep functioning on a live account at
+  // #230 go-live; this literal is that decision's marker for a future
+  // reviewer.
+  const alpaca = createAlpacaClient({ paperOnly: false });
   return runPanic(
     {
       config: getStrategyConfig(),

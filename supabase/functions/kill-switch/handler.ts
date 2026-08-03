@@ -20,7 +20,11 @@ import { createOutbox } from "../_shared/outbox.ts";
 
 function buildDeps(): KillSwitchDeps {
   const sb = getServiceClient();
-  const alpaca = createAlpacaClient();
+  // #508: explicit opt-out -- kill-switch is the protective-exit path (must
+  // keep liquidating on a live account at #230 go-live), so it deliberately
+  // does not carry the paper-only guard; this literal is that decision's
+  // marker for a future reviewer.
+  const alpaca = createAlpacaClient({ paperOnly: false });
   const outbox = createOutbox(sb);
   const deps: KillSwitchDeps = {
     config: getStrategyConfig(),

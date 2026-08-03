@@ -316,3 +316,172 @@ import { createClient } from "@supabase/supabase-js";
 `;
   assertEquals(findForbiddenImport(source), null);
 });
+
+/**
+ * Invariant enforcement: "mechanical paper-only guard" (#508)
+ *
+ * `createAlpacaClient()`'s paperOnly opt-in is a plain function argument, so
+ * nothing stops a future edit from silently dropping or flipping it at the
+ * one call site (hourly-check/handler.ts) that must always pass it. This
+ * scans that call site's source text directly, the same class of guard as
+ * findForbiddenImport above.
+ *
+ * THREAT MODEL:
+ * Catches ACCIDENTAL removal/flip of the { paperOnly: true } literal at the
+ * hourly-check call site (e.g. a refactor that drops the opts object, or a
+ * copy-paste that changes true to false). It is NOT proof against deliberate
+ * obfuscation (e.g. building the opts object from a variable, or renaming the
+ * import) — that is owned by the reviewer's invariant check (this repo's
+ * CLAUDE.md Architectural invariants gate), same division of labor as
+ * findForbiddenImport's threat model above.
+ */
+
+/**
+ * Find a `createAlpacaClient(` call in `source` that is not armed with the
+ * literal `{ paperOnly: true }`. Returns the offending call-site snippet, or
+ * null if every call in `source` is armed (including the zero-calls case).
+ *
+ * A call is "armed" only when a literal `paperOnly: true` appears inside its
+ * argument object, matched by the whitespace-tolerant (multi-line-safe)
+ * pattern `createAlpacaClient\s*\(\s*\{[^}]*paperOnly\s*:\s*true`. Anything
+ * else — a bare call, an empty object, `paperOnly: false`, or an options
+ * value passed by a non-literal binding — is unarmed.
+ *
+ * The call-detection regex requires the identifier be immediately (modulo
+ * whitespace) followed by `(`, so `createAlpacaClient` appearing in prose
+ * (not followed by a call) is not treated as a call at all.
+ */
+export function findUnarmedAlpacaClientCall(source: string): string | null {
+  const callRe = /createAlpacaClient\s*\(/g;
+  const armedRe = /^createAlpacaClient\s*\(\s*\{[^}]*paperOnly\s*:\s*true[^}]*\}\s*\)/;
+
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(source)) !== null) {
+    const tail = source.slice(m.index);
+    if (armedRe.test(tail)) continue;
+    const closeIdx = tail.indexOf(")");
+    const snippet = closeIdx === -1 ? tail.slice(0, 80) : tail.slice(0, closeIdx + 1);
+    return snippet;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests: CAUGHT (findUnarmedAlpacaClientCall returns non-null)
+// ---------------------------------------------------------------------------
+
+Deno.test("findUnarmedAlpacaClientCall CAUGHT: bare call", () => {
+  assertNotEquals(
+    findUnarmedAlpacaClientCall(`const alpaca = createAlpacaClient();`),
+    null,
+  );
+});
+
+Deno.test("findUnarmedAlpacaClientCall CAUGHT: empty options object", () => {
+  assertNotEquals(
+    findUnarmedAlpacaClientCall(`const alpaca = createAlpacaClient({});`),
+    null,
+  );
+});
+
+Deno.test("findUnarmedAlpacaClientCall CAUGHT: paperOnly false", () => {
+  assertNotEquals(
+    findUnarmedAlpacaClientCall(`const alpaca = createAlpacaClient({ paperOnly: false });`),
+    null,
+  );
+});
+
+Deno.test("findUnarmedAlpacaClientCall CAUGHT: non-literal binding", () => {
+  const source = `
+const opts = { paperOnly: true };
+const alpaca = createAlpacaClient(opts);
+`;
+  assertNotEquals(findUnarmedAlpacaClientCall(source), null);
+});
+
+Deno.test("findUnarmedAlpacaClientCall CAUGHT: multi-line unarmed call", () => {
+  const source = `
+const alpaca = createAlpacaClient(
+  {},
+);
+`;
+  assertNotEquals(findUnarmedAlpacaClientCall(source), null);
+});
+
+// ---------------------------------------------------------------------------
+// Unit tests: NOT caught (findUnarmedAlpacaClientCall returns null)
+// ---------------------------------------------------------------------------
+
+Deno.test("findUnarmedAlpacaClientCall NOT caught: paperOnly true, single line", () => {
+  assertEquals(
+    findUnarmedAlpacaClientCall(`const alpaca = createAlpacaClient({ paperOnly: true });`),
+    null,
+  );
+});
+
+Deno.test("findUnarmedAlpacaClientCall NOT caught: paperOnly true, multi-line", () => {
+  const source = `
+const alpaca = createAlpacaClient({
+  paperOnly: true,
+});
+`;
+  assertEquals(findUnarmedAlpacaClientCall(source), null);
+});
+
+Deno.test("findUnarmedAlpacaClientCall NOT caught: identifier in prose comment, no call", () => {
+  // "createAlpacaClient" appears but is not immediately followed by "(" —
+  // it's prose, not a call.
+  const source = `
+// createAlpacaClient is the only guarded broker-client factory in this repo.
+`;
+  assertEquals(findUnarmedAlpacaClientCall(source), null);
+});
+
+// ---------------------------------------------------------------------------
+// Tree scan: hourly-check/ is the only call site allowed to construct the
+// Alpaca client, and it must always be armed with { paperOnly: true }.
+// ---------------------------------------------------------------------------
+Deno.test(
+  "invariant: hourly-check/ createAlpacaClient() calls are pinned to { paperOnly: true }",
+  async () => {
+    // This file lives in supabase/functions/_shared/; "../hourly-check/"
+    // resolves the sibling directory. decodeURIComponent per the note above
+    // (space-safe checkout dirs).
+    const hourlyCheckRoot = decodeURIComponent(
+      new URL("../hourly-check/", import.meta.url).pathname,
+    );
+
+    const files = await collectSourceFiles(hourlyCheckRoot);
+    assertNotEquals(
+      files.length,
+      0,
+      "No .ts files found under hourly-check/ — check hourlyCheckRoot path",
+    );
+
+    let callCount = 0;
+    const violations: string[] = [];
+    for (const file of files) {
+      const source = await Deno.readTextFile(file);
+      callCount += (source.match(/createAlpacaClient\s*\(/g) ?? []).length;
+      const unarmed = findUnarmedAlpacaClientCall(source);
+      if (unarmed !== null) {
+        violations.push(`${file}: unarmed call \`${unarmed}\``);
+      }
+    }
+
+    assertEquals(
+      violations,
+      [],
+      `Unarmed createAlpacaClient() call(s) in hourly-check/ (must be { paperOnly: true }):\n${
+        violations.join("\n")
+      }`,
+    );
+    // A silently-deleted call site would leave this scan vacuously green —
+    // require at least one call so removal itself goes red.
+    assertEquals(
+      callCount >= 1,
+      true,
+      "Expected at least one createAlpacaClient() call in hourly-check/ — found none.",
+    );
+  },
+);

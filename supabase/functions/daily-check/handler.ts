@@ -21,7 +21,10 @@ import { createOutbox } from "../_shared/outbox.ts";
 
 function buildDeps(): DailyCheckDeps {
   const sb = getServiceClient();
-  const alpaca = createAlpacaClient();
+  // #508: explicit opt-out -- daily-check is deprecated (superseded by the
+  // hourly candlestick bot) and its behavior is preserved unchanged through
+  // the decommission window, not newly exempted from the paper-only guard.
+  const alpaca = createAlpacaClient({ paperOnly: false });
   const outbox = createOutbox(sb);
   const deps: DailyCheckDeps = {
     config: getStrategyConfig(),
