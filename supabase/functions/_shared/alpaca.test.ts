@@ -688,7 +688,12 @@ Deno.test("placeMarketOrder raises BrokerCallBlockedError before any fetch when 
   });
   try {
     await assertRejects(
-      () => createAlpacaClient().placeMarketOrder({ symbol: "UPRO", side: "BUY", qty: 1 }),
+      () =>
+        createAlpacaClient({ paperOnly: false }).placeMarketOrder({
+          symbol: "UPRO",
+          side: "BUY",
+          qty: 1,
+        }),
       BrokerCallBlockedError,
     );
     assertEquals(networkHit, false);
