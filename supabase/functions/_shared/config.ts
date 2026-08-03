@@ -252,7 +252,17 @@ export function getStatusToken(): string {
 }
 
 // Ported #168 guard. Read fresh every call so tests can flip it mid-test.
+// #509: an unrecognised value used to silently return false (guard off) --
+// fail loud instead, same direction as every other settings parser in this file.
 export function isClaudeAgentNoBroker(): boolean {
-  const v = Deno.env.get("CLAUDE_AGENT_NO_BROKER")?.toLowerCase() ?? "";
-  return v === "1" || v === "true" || v === "yes";
+  const raw = Deno.env.get("CLAUDE_AGENT_NO_BROKER");
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "") return false;
+  if (v === "1" || v === "true" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "no") return false;
+  throw new Error(
+    `CLAUDE_AGENT_NO_BROKER must be "1"/"true"/"yes" (guard on), "0"/"false"/"no" (guard off), or unset; got ${
+      JSON.stringify(raw)
+    }`,
+  );
 }
