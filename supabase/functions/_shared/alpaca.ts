@@ -58,6 +58,40 @@ export class BrokerRequestTimeoutError extends AlpacaError {
   override name = "BrokerRequestTimeoutError";
 }
 
+// Races `promise` against the SAME AbortSignal-driven deadline used for the
+// setTimeout above, rejecting with BrokerRequestTimeoutError the instant the
+// deadline fires -- independent of whether `promise` itself ever inspects or
+// honors the signal. `onAbortExtra` runs first (e.g. cancelling a response
+// body stream) so callers can attach cleanup before the shared rejection.
+// The timer can fire (and dispatch "abort") between `promise` being created
+// and this listener being attached -- a past "abort" event is never
+// redelivered, so `controller.signal.aborted` is checked directly rather than
+// relying solely on the event, to avoid a hang in that race window.
+function raceAgainstDeadline<T>(
+  promise: Promise<T>,
+  controller: AbortController,
+  method: string,
+  url: string,
+  timeoutMs: number,
+  onAbortExtra?: () => void,
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      const onAbort = () => {
+        onAbortExtra?.();
+        reject(
+          new BrokerRequestTimeoutError(
+            `${method} ${url} did not complete within ${timeoutMs}ms`,
+          ),
+        );
+      };
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+}
+
 // #511 D4: bounds the WHOLE round trip (headers + body), not just headers --
 // a headers-only bound leaves the classic blackhole (headers arrive, body
 // trickles forever) unbounded. AbortController + setTimeout, cleared in
@@ -66,10 +100,12 @@ export class BrokerRequestTimeoutError extends AlpacaError {
 // a leaked timer. Reads the body here and returns a reconstructed Response so
 // every existing call site (res.ok, res.status, res.json(), res.text(), the
 // 204 checks in cancelOrder/cancelAllOrders) works byte-for-byte unchanged;
-// "" -> null keeps null-body statuses (204) constructible. The body read is
-// raced against the SAME signal (rather than relying on fetch internals to
-// cancel the stream), so the bound holds identically for real fetches and
-// for stubFetch-constructed Responses in tests.
+// "" -> null keeps null-body statuses (204) constructible. Both the initial
+// fetch() and the body read are raced against the SAME deadline (rather than
+// relying on fetch internals to cancel the stream), so the bound is
+// self-contained defense-in-depth: it holds even against a fetch
+// implementation that never inspects the AbortSignal at all, not just for
+// real fetches and stubFetch-constructed Responses in tests that do.
 export async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -79,26 +115,21 @@ export async function fetchWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
-    const text = await Promise.race([
+    const fetchPromise = fetch(url, { ...init, signal: controller.signal });
+    // A losing (non-cooperative) fetch promise may still settle later --
+    // swallow that so it never surfaces as an unhandled rejection.
+    fetchPromise.catch(() => {});
+    const res = await raceAgainstDeadline(fetchPromise, controller, method, url, timeoutMs);
+    const text = await raceAgainstDeadline(
       res.text(),
-      new Promise<string>((_resolve, reject) => {
-        const onAbort = () => {
-          res.body?.cancel().catch(() => {});
-          reject(
-            new BrokerRequestTimeoutError(
-              `${method} ${url} did not complete within ${timeoutMs}ms`,
-            ),
-          );
-        };
-        // The timer can fire (and dispatch "abort") between fetch() resolving
-        // and this listener being attached -- a past "abort" event is never
-        // redelivered, so check signal.aborted directly rather than relying
-        // solely on the event to avoid a hang in that race window.
-        if (controller.signal.aborted) onAbort();
-        else controller.signal.addEventListener("abort", onAbort, { once: true });
-      }),
-    ]);
+      controller,
+      method,
+      url,
+      timeoutMs,
+      () => {
+        res.body?.cancel().catch(() => {});
+      },
+    );
     return new Response(text === "" ? null : text, { status: res.status });
   } catch (e) {
     if (e instanceof BrokerRequestTimeoutError) throw e;

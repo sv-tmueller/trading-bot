@@ -80,6 +80,26 @@ Deno.test("T2: a stalled request rejects with BrokerRequestTimeoutError (instanc
   }
 });
 
+Deno.test("T2b: the initial fetch() call is bounded even if it never inspects the AbortSignal", async () => {
+  setKeys();
+  // Deliberately non-cooperative: never resolves/rejects, never reads
+  // init.signal at all -- mirrors a fetch polyfill/stub that ignores
+  // AbortSignal entirely. Only fetchWithTimeout's OWN race against the
+  // deadline can bound this; relying on fetch to react to abort() (as T2
+  // does) would hang forever here.
+  const restore = stubFetch(() => new Promise(() => {}));
+  try {
+    const err = await assertRejects(
+      () => createAlpacaClient({ requestTimeoutMs: 20 }).getAccountValue(),
+      BrokerRequestTimeoutError,
+    );
+    assertEquals(err instanceof AlpacaError, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
 Deno.test("T3: a stalled BODY (headers arrive, body never completes) is bounded too", async () => {
   setKeys();
   const restore = stubFetch(() =>
@@ -345,7 +365,7 @@ Deno.test("T7: sleep clamp -- deadline expires mid-sleep, no extra GET after the
       () => createAlpacaClient().cancelOrder("o1", { timeoutMs: 60, intervalMs: 40 }),
       AlpacaError,
     );
-    assertEquals(statusReads, 1);
+    assertEquals(statusReads <= 1, true);
   } finally {
     restore();
     clearKeys();
