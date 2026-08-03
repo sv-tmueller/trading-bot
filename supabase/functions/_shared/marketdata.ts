@@ -1,4 +1,10 @@
 // Alpaca Market Data REST v2. Replaces yfinance. Feed controlled by ALPACA_DATA_FEED (default iex).
+// #511 D2/D4: every fetch here goes through alpaca.ts's fetchWithTimeout (import
+// direction alpaca.ts -> marketdata.ts only, so this stays acyclic) -- the
+// hourly-check gate ladder calls getHourlyBars/getCalendarSessions before
+// anything else, so a stalled market-data connection must be bounded the same
+// way trading calls are.
+import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout } from "./alpaca.ts";
 import { getAlpacaConfig } from "./config.ts";
 import { DataError, requireNumber } from "./num.ts";
 
@@ -34,7 +40,7 @@ export async function getDailyCloses(symbol: string, count: number): Promise<Dai
   // a forward split of the bot ticker from faking a -50% kill-switch drawdown.
   const url = `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
     `?timeframe=1Day&start=${start}&limit=10000&adjustment=all&sort=asc&feed=${cfg.dataFeed}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithTimeout(url, { headers: headers() }, DEFAULT_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`GET bars ${symbol} -> ${res.status}: ${await res.text()}`);
   }
@@ -53,7 +59,7 @@ export async function getLatestTradePrice(symbol: string): Promise<number> {
   const url = `${cfg.dataBaseUrl}/v2/stocks/${
     encodeURIComponent(symbol)
   }/trades/latest?feed=${cfg.dataFeed}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithTimeout(url, { headers: headers() }, DEFAULT_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`GET latest trade ${symbol} -> ${res.status}: ${await res.text()}`);
   }
@@ -92,7 +98,7 @@ export async function getHourlyBars(
   const start = new Date(startMs).toISOString();
   const url = `${cfg.dataBaseUrl}/v2/stocks/${encodeURIComponent(symbol)}/bars` +
     `?timeframe=1Hour&start=${start}&limit=10000&adjustment=all&sort=asc&feed=${cfg.dataFeed}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithTimeout(url, { headers: headers() }, DEFAULT_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`GET hourly bars ${symbol} -> ${res.status}: ${await res.text()}`);
   }
@@ -124,7 +130,7 @@ export interface CalendarSession {
 export async function getCalendarSessions(start: string, end: string): Promise<CalendarSession[]> {
   const cfg = getAlpacaConfig();
   const url = `${cfg.tradingBaseUrl}/v2/calendar?start=${start}&end=${end}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithTimeout(url, { headers: headers() }, DEFAULT_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`GET calendar sessions -> ${res.status}: ${await res.text()}`);
   }
@@ -153,7 +159,7 @@ export async function getLatestQuote(
   const url = `${cfg.dataBaseUrl}/v2/stocks/${
     encodeURIComponent(symbol)
   }/quotes/latest?feed=${cfg.dataFeed}`;
-  const res = await fetch(url, { headers: headers() });
+  const res = await fetchWithTimeout(url, { headers: headers() }, DEFAULT_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`GET latest quote ${symbol} -> ${res.status}: ${await res.text()}`);
   }

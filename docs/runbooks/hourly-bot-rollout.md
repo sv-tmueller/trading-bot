@@ -580,9 +580,15 @@ the sessions where the bot traded (the 2026-07-31 flatten ran 5.132s and closed 
 137-share position). `0015_hourly_check_http_timeout.sql` raises the job's timeout to
 120000 ms, above the worst legitimate scan derivable from the function's own poll
 budgets, so a timeout row is once again a real anomaly. Treat one as worth
-investigating: because `alpaca.ts`'s `trade()` has no per-request timeout (#511), this
-pg_net timeout is currently the only thing in the cron path that will surface a stalled
-broker connection at all. Do not respond to one by loosening this check.
+investigating: `alpaca.ts`'s `trade()` (and every `marketdata.ts` fetch site) now
+carries a per-request `AbortSignal` deadline and the poll loops use true wall-clock
+budgets (#511), so the PRIMARY signal for a stalled broker connection is the
+function's own `error:BrokerRequestTimeoutError` row in `audit_log` plus a Discord
+alert, both within 10s of the stall -- this pg_net `timed_out` row is now a secondary,
+confirmatory signal (see the `0015` migration's `#511 addendum` for the arithmetic).
+A `timed_out` row is still worth investigating on its own, e.g. if it arrives without a
+matching `BrokerRequestTimeoutError` audit row. Do not respond to one by loosening
+this check.
 
 **Stop signals in `audit_log.outcome` for `script_name = 'hourly-check'` — not just
 `error:*`:**

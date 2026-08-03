@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
+import { BrokerRequestTimeoutError } from "./alpaca.ts";
 import {
   getCalendarSessions,
   getDailyCloses,
@@ -17,6 +18,48 @@ function clearKeys() {
   Deno.env.delete("ALPACA_API_KEY");
   Deno.env.delete("ALPACA_SECRET_KEY");
 }
+
+// ---------------------------------------------------------------------------
+// #511 D2/D4: hourly-check's gate ladder calls getHourlyBars/getCalendarSessions
+// before anything else, so a stalled market-data connection must be bounded
+// the same way trading calls are -- these two pin the shared fetchWithTimeout
+// (D1's per-request deadline) is actually wired into marketdata.ts, not just
+// alpaca.ts.
+// ---------------------------------------------------------------------------
+
+Deno.test("getHourlyBars: request carries an AbortSignal (D1 wired into marketdata.ts)", async () => {
+  setKeys();
+  const restore = stubFetch((_i, init) => {
+    assertEquals(init?.signal instanceof AbortSignal, true);
+    return Promise.resolve(jsonResponse({ bars: [] }));
+  });
+  try {
+    await getHourlyBars("SPY", { count: 10 });
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("getHourlyBars: an aborted request surfaces as BrokerRequestTimeoutError, not a raw AbortError", async () => {
+  // Simulates the AbortController firing (real fetch rejects with this exact
+  // DOMException shape on abort) without waiting out the real 10s default --
+  // fetchWithTimeout's conversion is already exhaustively covered by
+  // alpaca.test.ts's T1-T4; this test only pins that marketdata.ts is
+  // actually routed through that helper rather than a bare `fetch`, so the
+  // conversion isn't lost crossing the module boundary.
+  setKeys();
+  const restore = stubFetch(() => Promise.reject(new DOMException("aborted", "AbortError")));
+  try {
+    await assertRejects(
+      () => getHourlyBars("SPY", { count: 10 }),
+      BrokerRequestTimeoutError,
+    );
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
 
 Deno.test("getDailyCloses returns ordered {date, close, high, low}", async () => {
   setKeys();
