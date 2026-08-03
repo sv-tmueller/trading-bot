@@ -146,6 +146,55 @@ export function notifyKillSwitchFired(
   return notify(killSwitchFiredEvent(p));
 }
 
+// #514: the -15% equity floor's halt event (EQUITY_FLOOR_PCT in
+// hourly-check/logic.ts). floorPct is fixed at 0.15 here rather than taken
+// from the caller -- the floor is a spec-frozen constant (§11), not a config
+// setting, so there is nothing for a caller to legitimately vary. position at
+// pause time is the caller's job to resolve (a fresh, guarded broker read);
+// this function only renders whatever it is handed, including "unknown".
+export function equityFloorFiredEvent(p: {
+  ticker: string;
+  equity: number;
+  baseline: number;
+  drawdownPct: number;
+  /** null = position read failed or was never attempted -- rendered as unknown/treat-as-open. */
+  positionQty: number | null;
+  /** Set only when positionQty is null because the read itself failed. */
+  positionError?: string;
+}): Record<string, unknown> {
+  const head =
+    `EQUITY FLOOR FIRED on ${p.ticker}: equity $${p.equity} vs baseline $${p.baseline} ` +
+    `(-${(p.drawdownPct * 100).toFixed(1)}%). bot_config.paused=true.`;
+  let tail: string;
+  if (p.positionQty === null) {
+    tail = `Position: UNKNOWN (position read failed: ${p.positionError ?? "unknown error"}). ` +
+      `Treat as open (runbook §11).`;
+  } else if (p.positionQty === 0) {
+    tail = `Position: flat. No immediate broker action required; investigate before resuming.`;
+  } else {
+    tail = `OPEN POSITION qty=${p.positionQty}: pause leaves it UNMANAGED (no re-leg, no ` +
+      `flatten) until an operator acts. Use panic?action=liquidate or a manual flatten, not ` +
+      `resume alone (runbook §11).`;
+  }
+  const message = `${head} ${tail}`;
+  return {
+    event_type: "equity_floor_fired",
+    message,
+    ticker: p.ticker,
+    equity: p.equity,
+    baseline: p.baseline,
+    floor_pct: 0.15,
+    drawdown_pct: p.drawdownPct,
+    position_qty: p.positionQty,
+  };
+}
+
+export function notifyEquityFloorFired(
+  p: Parameters<typeof equityFloorFiredEvent>[0],
+): Promise<void> {
+  return notify(equityFloorFiredEvent(p));
+}
+
 export function tradeFailedEvent(p: {
   symbol: string;
   side: "BUY" | "SELL";

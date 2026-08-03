@@ -17,6 +17,7 @@ import type { SupabaseClient } from "jsr:@supabase/supabase-js@^2.45.0";
 import { getNotifyWebhookUrl } from "./config.ts";
 import {
   brokerErrorEvent,
+  equityFloorFiredEvent,
   errorEvent,
   killSwitchFiredEvent,
   type NotifyStatus,
@@ -148,6 +149,7 @@ export function createOutbox(sb: SupabaseClient): {
     notifyStateDesync: (p: Parameters<typeof stateDesyncEvent>[0]) => Promise<void>;
     notifyBrokerError: (p: Parameters<typeof brokerErrorEvent>[0]) => Promise<void>;
     notifyError: (message: string) => Promise<void>;
+    notifyEquityFloorFired: (p: Parameters<typeof equityFloorFiredEvent>[0]) => Promise<void>;
   };
   flush: () => Promise<void>;
 } {
@@ -183,6 +185,10 @@ export function createOutbox(sb: SupabaseClient): {
       },
       notifyError: (message) => {
         const event = errorEvent(message);
+        return notifyDurable(deps, String(event.event_type), event);
+      },
+      notifyEquityFloorFired: (p) => {
+        const event = equityFloorFiredEvent(p);
         return notifyDurable(deps, String(event.event_type), event);
       },
     },

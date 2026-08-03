@@ -3,9 +3,12 @@
 // flushOutbox are pure orchestration over an injected deps object, same
 // pattern as logic.ts. stubWarn mirrors notifications.test.ts's helper.
 import { assertEquals } from "@std/assert";
-import { flushOutbox, notifyDurable, type OutboxDeps } from "./outbox.ts";
+// deno-lint-ignore no-import-prefix -- mirrors outbox.ts's own inline specifier (bundler note there).
+import { createClient } from "jsr:@supabase/supabase-js@^2.45.0";
+import { createOutbox, flushOutbox, notifyDurable, type OutboxDeps } from "./outbox.ts";
 import type { OutboxRow } from "./db.ts";
 import type { NotifyStatus } from "./notifications.ts";
+import { stubFetch } from "./test_helpers.ts";
 
 function stubWarn(): { calls: unknown[][]; restore: () => void } {
   const original = console.warn;
@@ -320,6 +323,81 @@ Deno.test("warn-hygiene: dropped-row warn never includes event payload values", 
     assertEquals(joinCalls(calls).includes(marker), false);
   } finally {
     restore();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// createOutbox (#514): thin wiring, previously untested beyond type-checking
+// (see the doc comment on createOutbox itself). A real db-side POST is
+// unavoidable here -- enqueueNotification goes through the supabase-js fluent
+// builder, not a plain injected function -- so this stubs the CLIENT's own
+// fetch (mirrors db.test.ts's wireCapturingClient), kept local to this file
+// rather than promoted to db_test_guard.ts (out of scope for #514). The
+// webhook POST is a separate global-fetch stub (stubFetch), so the two never
+// collide.
+// ---------------------------------------------------------------------------
+
+function wireStubClient(dbResponses: Response[] = []) {
+  const dbRequests: Array<{ method: string; url: string }> = [];
+  let i = 0;
+  const fetchStub = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof Request ? input.url : String(input);
+    const method = (input instanceof Request ? input.method : init?.method) ?? "GET";
+    dbRequests.push({ method, url });
+    return Promise.resolve(dbResponses[i++] ?? new Response("[]", { status: 200 }));
+  };
+  const sb = createClient("http://stub.invalid", "stub-service-role-key", {
+    auth: { persistSession: false },
+    global: { fetch: fetchStub as typeof fetch },
+  });
+  return { sb, dbRequests };
+}
+
+Deno.test("createOutbox().notifications.notifyEquityFloorFired: 2xx webhook post -> no DB enqueue call", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  let webhookBody: Record<string, unknown> = {};
+  const restoreFetch = stubFetch((_i, init) => {
+    webhookBody = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response("ok", { status: 200 }));
+  });
+  const { sb, dbRequests } = wireStubClient();
+  try {
+    const outbox = createOutbox(sb);
+    await outbox.notifications.notifyEquityFloorFired({
+      ticker: "SPY",
+      equity: 84999,
+      baseline: 100000,
+      drawdownPct: 0.15001,
+      positionQty: 0,
+    });
+    assertEquals(webhookBody.event_type, "equity_floor_fired");
+    assertEquals(dbRequests.length, 0);
+  } finally {
+    restoreFetch();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
+});
+
+Deno.test("createOutbox().notifications.notifyEquityFloorFired: webhook post fails -> enqueues via notifyDurable (routes through the DB insert)", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  const restoreFetch = stubFetch(() => Promise.resolve(new Response("boom", { status: 500 })));
+  const { sb, dbRequests } = wireStubClient([new Response("[]", { status: 201 })]);
+  try {
+    const outbox = createOutbox(sb);
+    await outbox.notifications.notifyEquityFloorFired({
+      ticker: "SPY",
+      equity: 84999,
+      baseline: 100000,
+      drawdownPct: 0.15001,
+      positionQty: 18,
+      positionError: undefined,
+    });
+    const inserts = dbRequests.filter((r) => r.method === "POST");
+    assertEquals(inserts.length, 1);
+    assertEquals(inserts[0].url.includes("notification_outbox"), true);
+  } finally {
+    restoreFetch();
     Deno.env.delete("NOTIFY_WEBHOOK_URL");
   }
 });
