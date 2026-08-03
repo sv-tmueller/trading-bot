@@ -88,6 +88,8 @@ interface Recorder {
   cancelledOrderIds: string[];
   claimCalls: string[];
   alerts: string[];
+  /** #514: every notifyEquityFloorFired call, full params (not just the message). */
+  floorAlerts: Array<Parameters<HourlyCheckDeps["notifications"]["notifyEquityFloorFired"]>[0]>;
 }
 
 /** Reads the fake table the way a forensic query would: by (symbol, bar_ts). */
@@ -127,6 +129,7 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
     cancelledOrderIds: [],
     claimCalls: [],
     alerts: [],
+    floorAlerts: [],
   };
 
   const configStore = new Map<string, string>([
@@ -218,6 +221,10 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
       notifyBrokerError: (_p) => Promise.resolve(),
       notifyError: (message) => {
         rec.alerts.push(message);
+        return Promise.resolve();
+      },
+      notifyEquityFloorFired: (p) => {
+        rec.floorAlerts.push(p);
         return Promise.resolve();
       },
     },
@@ -2072,4 +2079,192 @@ Deno.test("#487: a SKIP that lands on a bar whose PRIOR row is also a SKIP still
 
   assertEquals(outcome, "skipped:stale_data");
   assertEquals(scanRow(rec, BAR1.timestamp)?.skipReason, "stale_data");
+});
+
+// ---------------------------------------------------------------------------
+// #514: the -15% equity floor now alerts (notifyEquityFloorFired), fired at
+// the gate-6 trip site after bot_config.paused=true is written and before the
+// audit close. Position-at-pause-time comes from a fresh, guarded
+// alpaca.getPosition() read (D2) -- separate from reconcile()'s own read,
+// which can be stale by this point (its own step-3 flatten, or simply time
+// passing between reconcile() at steps 4-5 and this gate at step 6).
+// ---------------------------------------------------------------------------
+
+Deno.test("#514 floor+open: alert states the open qty, paused=true, outcome success:auto_paused", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 });
+  deps.alpaca.getPosition = () => Promise.resolve(18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]); // legs resting -- not naked
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+  assertEquals(rec.floorAlerts.length, 1);
+  assertEquals(rec.floorAlerts[0].positionQty, 18);
+  assertEquals(rec.floorAlerts[0].equity, 84999);
+  assertEquals(rec.floorAlerts[0].baseline, 100000);
+});
+
+Deno.test("#514 floor+flat: alert states flat", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 });
+  deps.alpaca.getPosition = () => Promise.resolve(0);
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:auto_paused");
+  assertEquals(rec.floorAlerts.length, 1);
+  assertEquals(rec.floorAlerts[0].positionQty, 0);
+});
+
+Deno.test("#514 floor, getPosition rejects: alert states unknown/treat-as-open, outcome still success:auto_paused", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 });
+  // reconcile()'s OWN position read (step 2, ahead of gate 6) must succeed
+  // (flat, no naked-position complication) -- only the fire site's fresh
+  // read, the second call, fails.
+  let getPositionCalls = 0;
+  deps.alpaca.getPosition = () => {
+    getPositionCalls++;
+    return getPositionCalls === 1
+      ? Promise.resolve(0)
+      : Promise.reject(new Error("broker timeout"));
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+  assertEquals(rec.floorAlerts.length, 1);
+  assertEquals(rec.floorAlerts[0].positionQty, null);
+  assertEquals(rec.floorAlerts[0].positionError?.includes("broker timeout"), true);
+});
+
+Deno.test("#514 floor, notifyEquityFloorFired rejects: run still completes success:auto_paused, paused=true written", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 });
+  deps.notifications.notifyEquityFloorFired = () => Promise.reject(new Error("webhook down"));
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+  assertEquals(lastOutcome(rec), "success:auto_paused");
+});
+
+Deno.test("#514 D4: naked position re-legged AND floor fires -> outcome success:auto_paused (not legs_replaced), notes carry the supersede, alert sent", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 84999 });
+  deps.alpaca.getPosition = () => Promise.resolve(18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve([]); // no resting legs -- naked
+  deps.db.getTradesSince = () =>
+    Promise.resolve([{
+      symbol: "SPY",
+      side: "BUY",
+      qty: 18,
+      fill_price: 550,
+      fill_time: "2026-07-27T14:05:00Z",
+      reason: "hourly_long_entry",
+      broker_order_id: "bracket1",
+    }]);
+  deps.db.getHourlyScanByEntryOrderId = () =>
+    Promise.resolve({
+      symbol: "SPY",
+      bar_ts: "2026-07-27T14:00:00Z",
+      decision: "LONG",
+      skip_reason: null,
+      detectors_fired: ["bullish_marubozu"],
+      context_mode: "none",
+      entry_ref_price: 550,
+      stop_price: 547.75,
+      target_price: 554.5,
+      risk_per_share: 2.25,
+      equity_usd: 100000,
+      qty: 18,
+      entry_order_id: "bracket1",
+    });
+  const outcome = await runHourlyCheck(deps);
+  // Without the D4 fix this would report "success:legs_replaced" (`done()`'s
+  // supersede winning) and swallow the auto-pause outcome entirely.
+  assertEquals(outcome, "success:auto_paused");
+  assertEquals(rec.configSets, [["paused", "true"]]);
+  assertEquals(rec.floorAlerts.length, 1);
+  const notes = rec.auditFinishes[rec.auditFinishes.length - 1].notes ?? "";
+  assertEquals(notes.includes("supersede=success:legs_replaced"), true);
+});
+
+Deno.test("#514 D5 regression: the four gate-6 config-fault paths still alert exactly once (no double alert from the catch fallback)", async () => {
+  const cases: Array<(d: HourlyCheckDeps) => void> = [
+    // missing baseline
+    (d) => {
+      d.db.getConfig = (_key) => Promise.resolve(null);
+    },
+    // implausible (10x-off) baseline
+    (d) => {
+      d.alpaca.assertPaperAccount = () => Promise.resolve({ equity: 1017330.61 });
+    },
+    // unparseable baseline
+    (d) => {
+      d.db.getConfig = (key) =>
+        Promise.resolve(key === "hourly_experiment_start_equity" ? "$1017330.61" : null);
+    },
+    // marker write failure
+    (d) => {
+      const realSetConfig = d.db.setConfig;
+      d.db.setConfig = (key, value) =>
+        key === "hourly_experiment_baseline_verified"
+          ? Promise.reject(new Error("db unavailable"))
+          : realSetConfig(key, value);
+    },
+  ];
+  for (const applyCase of cases) {
+    const { deps, rec } = buildDeps();
+    applyCase(deps);
+    const outcome = await runHourlyCheck(deps);
+    assertEquals(outcome, "error:DataError");
+    assertEquals(rec.alerts.length, 1);
+  }
+});
+
+Deno.test("#514 D5: a thrown calendar-session DataError (not via alertAndFail) -> error:DataError with exactly one notifyError alert", async () => {
+  const { deps, rec } = buildDeps();
+  // No session matches "today" (2026-07-27) -- logic.ts throws a bare
+  // DataError at the calendar-session guard, never through alertAndFail.
+  deps.marketdata.getCalendarSessions = (_start, _end) => Promise.resolve([]);
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:DataError");
+  assertEquals(rec.alerts.length, 1);
+  assertEquals(rec.alerts[0].includes("no calendar session"), true);
+});
+
+Deno.test("#514 D5: an AlpacaError-derived error still alerts via notifyBrokerError ONLY -- no double alert from the catch fallback", async () => {
+  const { deps, rec } = buildLiveDeps();
+  deps.alpaca.placeBracketOrder = () => {
+    throw new SubPennyPriceError("takeProfitPrice must be a whole-cent price, got 746.173");
+  };
+  let brokerAlerts = 0;
+  deps.notifications.notifyBrokerError = (_p) => {
+    brokerAlerts++;
+    return Promise.resolve();
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:SubPennyPriceError");
+  assertEquals(brokerAlerts, 1);
+  assertEquals(rec.alerts.length, 0);
+});
+
+Deno.test("#514: zero alerts on a routine success:no_action run", async () => {
+  const { deps, rec } = buildDeps();
+  deps.marketdata.getHourlyBars = () =>
+    Promise.resolve([
+      BAR0,
+      { timestamp: "2026-07-27T14:00:00Z", open: 550, high: 550.05, low: 549.95, close: 550.02 },
+    ]); // no detectors fire (gate 11's own fixture)
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "success:no_action");
+  assertEquals(rec.alerts, []);
+  assertEquals(rec.floorAlerts, []);
+});
+
+Deno.test("#514: zero alerts on a routine skipped:position_open run", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.getPosition = () => Promise.resolve(18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["resting1"]); // legs present -- no naked-position path
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:position_open");
+  assertEquals(rec.alerts, []);
+  assertEquals(rec.floorAlerts, []);
 });
