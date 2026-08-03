@@ -1,9 +1,11 @@
 import { assertEquals } from "@std/assert";
 import { stubFetch } from "./test_helpers.ts";
 import {
+  equityFloorFiredEvent,
   killSwitchFiredEvent,
   notify,
   notifyBrokerError,
+  notifyEquityFloorFired,
   notifyError,
   notifyKillSwitchFired,
   notifyPanic,
@@ -144,6 +146,110 @@ Deno.test("killSwitchFiredEvent (SHORT): message names SHORT and BUY, ref low", 
   const message = String(event.message);
   assertEquals(message.includes("SHORT"), true);
   assertEquals(message.includes("BUY"), true);
+});
+
+// ---------------------------------------------------------------------------
+// equityFloorFiredEvent (#514): the -15% equity floor's halt event. Message
+// carries one of three position-at-pause-time variants (runbook §11 wording).
+// ---------------------------------------------------------------------------
+
+Deno.test("equityFloorFiredEvent: field shape (event_type, ticker/equity/baseline/floor_pct/drawdown_pct/position_qty)", () => {
+  const event = equityFloorFiredEvent({
+    ticker: "SPY",
+    equity: 84999,
+    baseline: 100000,
+    drawdownPct: 0.15001,
+    positionQty: 18,
+  });
+  assertEquals(event.event_type, "equity_floor_fired");
+  assertEquals(event.ticker, "SPY");
+  assertEquals(event.equity, 84999);
+  assertEquals(event.baseline, 100000);
+  assertEquals(event.floor_pct, 0.15);
+  assertEquals(event.drawdown_pct, 0.15001);
+  assertEquals(event.position_qty, 18);
+});
+
+Deno.test("equityFloorFiredEvent: position_qty is null (unknown/failed read) -- number-or-null, never a placeholder number", () => {
+  const event = equityFloorFiredEvent({
+    ticker: "SPY",
+    equity: 84999,
+    baseline: 100000,
+    drawdownPct: 0.15001,
+    positionQty: null,
+    positionError: "boom",
+  });
+  assertEquals(event.position_qty, null);
+});
+
+Deno.test("equityFloorFiredEvent: open position -- message names the qty, UNMANAGED warning, and the panic/liquidate lever", () => {
+  const event = equityFloorFiredEvent({
+    ticker: "SPY",
+    equity: 84999,
+    baseline: 100000,
+    drawdownPct: 0.15001,
+    positionQty: 18,
+  });
+  const message = String(event.message);
+  assertEquals(message.includes("EQUITY FLOOR FIRED on SPY"), true);
+  assertEquals(message.includes("84999"), true);
+  assertEquals(message.includes("100000"), true);
+  assertEquals(message.includes("bot_config.paused=true"), true);
+  assertEquals(message.includes("OPEN POSITION qty=18"), true);
+  assertEquals(message.includes("UNMANAGED"), true);
+  assertEquals(message.includes("panic?action=liquidate"), true);
+});
+
+Deno.test("equityFloorFiredEvent: flat position -- message states flat, no broker-action language", () => {
+  const event = equityFloorFiredEvent({
+    ticker: "SPY",
+    equity: 84999,
+    baseline: 100000,
+    drawdownPct: 0.15001,
+    positionQty: 0,
+  });
+  const message = String(event.message);
+  assertEquals(message.includes("Position: flat"), true);
+  assertEquals(message.includes("No immediate broker action required"), true);
+  assertEquals(message.includes("OPEN POSITION"), false);
+});
+
+Deno.test("equityFloorFiredEvent: unknown position (read failed) -- treat-as-open wording, error surfaced", () => {
+  const event = equityFloorFiredEvent({
+    ticker: "SPY",
+    equity: 84999,
+    baseline: 100000,
+    drawdownPct: 0.15001,
+    positionQty: null,
+    positionError: "getPosition timed out",
+  });
+  const message = String(event.message);
+  assertEquals(message.includes("Position: UNKNOWN"), true);
+  assertEquals(message.includes("getPosition timed out"), true);
+  assertEquals(message.includes("Treat as open"), true);
+  assertEquals(message.includes("runbook §11"), true);
+});
+
+Deno.test("notifyEquityFloorFired posts the event via notify()", async () => {
+  Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
+  let body: Record<string, unknown> = {};
+  const restore = stubFetch((_i, init) => {
+    body = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response("ok", { status: 200 }));
+  });
+  try {
+    await notifyEquityFloorFired({
+      ticker: "SPY",
+      equity: 84999,
+      baseline: 100000,
+      drawdownPct: 0.15001,
+      positionQty: 0,
+    });
+    assertEquals(body.event_type, "equity_floor_fired");
+  } finally {
+    restore();
+    Deno.env.delete("NOTIFY_WEBHOOK_URL");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -381,7 +487,7 @@ Deno.test("notify: 2xx response emits no warn", async () => {
   }
 });
 
-Deno.test("all seven notify helpers carry content === message", async () => {
+Deno.test("all eight notify helpers carry content === message", async () => {
   Deno.env.set("NOTIFY_WEBHOOK_URL", "http://localhost:5678/hook");
   const bodies: Record<string, unknown>[] = [];
   const restore = stubFetch((_i, init) => {
@@ -417,8 +523,15 @@ Deno.test("all seven notify helpers carry content === message", async () => {
     await notifyBrokerError({ context: "getClock", errorMsg: "timeout" });
     await notifyError("something went wrong");
     await notifyPanic({ action: "pause", result: "ok" });
+    await notifyEquityFloorFired({
+      ticker: "SPY",
+      equity: 84999,
+      baseline: 100000,
+      drawdownPct: 0.15001,
+      positionQty: 0,
+    });
 
-    assertEquals(bodies.length, 7);
+    assertEquals(bodies.length, 8);
     for (const body of bodies) {
       assertEquals(typeof body.message, "string");
       assertEquals(body.content, body.message);

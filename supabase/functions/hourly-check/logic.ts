@@ -7,6 +7,32 @@
 // Gate ladder (spec §4-§9, sub-plan T9): a fixed pipeline order, one
 // deterministic outcome per run. See the sub-plan's 20-row table for the
 // full spec; this file implements it in that exact order.
+//
+// #514 D6: outcome-to-alert policy (the recorded decision). Rule: an outcome
+// raises a real-time Discord alert iff (a) it halts trading in a way that
+// persists without operator action, or (b) it indicates broker state that is
+// or was unprotected. Every `error:*` alerts. Routine gates, idempotent
+// no-ops, and downstream consequences of an already-alerted event stay
+// silent. Any PR adding a new outcome string should update this table.
+//
+// | Outcome                                    | Alerts? | Reason                                                                    |
+// |---------------------------------------------|---------|----------------------------------------------------------------------------|
+// | success:auto_paused                          | YES (notifyEquityFloorFired) | halting, machine-initiated, never self-clears; possibly unmanaged open position (runbook §11) |
+// | error:naked_position_flattened               | YES (notifyBrokerError)      | position was unprotected and got closed unexpectedly |
+// | error:DataError via gate-6 alertAndFail      | YES (notifyError)            | halting: blocks every scan until fixed (#488) |
+// | error:AlpacaError incl. subclasses           | YES (notifyBrokerError)      | broker faults block entries (2026-07-30 precedent) |
+// | any other error:* (calendar-session          | YES (notifyError, D5)        | verified gap; a repeating silent error is a halted bot |
+// |   DataError, marketdata parse faults, generic throws) | | |
+// | success                                      | no      | routine paper entry; visible in `trades` and weekly review |
+// | success:no_action                            | no      | the modal outcome |
+// | success:legs_replaced                        | no (real-time) | auto-repaired, protected at run end; runbook §10 marks it investigate-only |
+// | success:journal_degraded                     | no (here)      | surfacing owned by #486 in a later batch |
+// | skipped:trading_paused                       | no      | the pause event itself alerted; re-alerting is 9/day spam |
+// | skipped:kill_switch_active                    | no      | the fire already alerted via notifyKillSwitchFired at flag-set |
+// | all other skipped:*                          | no      | routine gates working as designed; anomalies surface in `hourly_scans` and weekly review |
+//
+// Residual, disclosed: a crash before insertAuditLog produces no outcome and
+// no alert; runbook §10's no-audit-row triage covers it, out of scope.
 import { AlpacaError, type ClosedOrderFill, type Fill } from "../_shared/alpaca.ts";
 import { CONTEXT_SMA_WINDOW } from "../_shared/candlestick.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
@@ -118,7 +144,13 @@ async function alertAndFail(
   // The outbox's notifyError swallows its own failures, so alerting cannot
   // mask the fault it is reporting.
   await notifications.notifyError(`hourly-check equity floor: ${message}`);
-  return new DataError(message);
+  const err = new DataError(message);
+  // #514 D5: a property flag, not a subclass -- the outcome string this
+  // error produces (`error:DataError`) must stay exactly that. The top-level
+  // catch's fallback alert (below) checks this flag so an already-alerted
+  // gate-6 fault never alerts twice.
+  (err as DataError & { alerted?: boolean }).alerted = true;
+  return err;
 }
 
 export interface HourlyCheckDeps {
@@ -195,6 +227,17 @@ export interface HourlyCheckDeps {
     // outbox's notifyError is durable and never throws, so alerting cannot
     // itself break the gate.
     notifyError: (message: string) => Promise<void>;
+    // #514: the -15% equity floor's halt event. positionQty is null when the
+    // fire site's own guarded getPosition() read failed or was never
+    // attempted -- rendered as unknown/treat-as-open (fail-safe, runbook §11).
+    notifyEquityFloorFired: (p: {
+      ticker: string;
+      equity: number;
+      baseline: number;
+      drawdownPct: number;
+      positionQty: number | null;
+      positionError?: string;
+    }) => Promise<void>;
   };
 }
 
@@ -709,8 +752,54 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     // the floor fire EARLY, which is conservative, so it needs no second
     // opinion.
     if (equityAtStart <= baseline * (1 - EQUITY_FLOOR_PCT)) {
+      // #514 D2: bot_config.paused=true is written FIRST, unconditionally --
+      // the alert and the position read below are reporting duties, not
+      // gates, and must never delay or block the pause itself.
       await db.setConfig("paused", "true");
-      return await done("success:auto_paused", `equity=${equityAtStart} baseline=${baseline}`);
+
+      // Fresh, guarded read of the position "at pause time": reconcile()'s
+      // own read (steps 4-5, above) can be stale by now -- its own step-3
+      // flatten can change it, or time simply passes -- so this is a second,
+      // deliberate broker call. A failed read renders as UNKNOWN in the
+      // alert, which the message treats as open (fail-safe).
+      let positionQty: number | null = null;
+      let positionError: string | undefined;
+      try {
+        positionQty = await alpaca.getPosition(symbol);
+      } catch (e) {
+        positionError = String((e as Error)?.message ?? e);
+      }
+
+      // #514 D3: guarded even though the outbox's own notify helpers never
+      // throw -- this path is a protection duty, so a misbehaving injected
+      // dep (a test double, a future regression) must never cost this audit
+      // row after paused=true is already written.
+      try {
+        await notifications.notifyEquityFloorFired({
+          ticker: symbol,
+          equity: equityAtStart,
+          baseline,
+          drawdownPct: (baseline - equityAtStart) / baseline,
+          positionQty,
+          positionError,
+        });
+      } catch (e) {
+        console.warn(
+          `hourly-check: equity-floor alert failed: ${String((e as Error)?.message ?? e)}`,
+        );
+      }
+
+      // #514 D4: bypasses `done()` deliberately. Gate 6 runs AFTER
+      // reconcile() (steps 4-5), so a same-run naked-position re-leg can have
+      // already set `supersede = "success:legs_replaced"` -- `done()` would
+      // let that supersede win and silently swallow the auto-pause outcome
+      // (see the outcome-to-alert policy table above the gate ladder). The
+      // re-leg is still recorded, in notes, just never as the outcome string.
+      const notes = supersede
+        ? `equity=${equityAtStart} baseline=${baseline} supersede=${supersede}`
+        : `equity=${equityAtStart} baseline=${baseline}`;
+      await finish("success:auto_paused", notes);
+      return "success:auto_paused";
     }
 
     // #488: a WRONG baseline parses fine here and silently relocates the
@@ -1176,6 +1265,14 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     const err = e as Error;
     if (err instanceof AlpacaError) {
       await notifications.notifyBrokerError({ context: "hourly-check", errorMsg: err.message });
+    } else if (!(err as DataError & { alerted?: boolean }).alerted) {
+      // #514 D5: closes the verified gap -- gate-6 DataErrors already alert
+      // via alertAndFail (skipped here via the `alerted` flag), but a thrown
+      // calendar-session DataError, a marketdata parse fault, or any other
+      // generic throw produced a silent `error:*` audit row. An erroring
+      // scan blocks every entry until fixed and can repeat up to 9x/day, so
+      // it must alert exactly like a broker fault does.
+      await notifications.notifyError(`hourly-check: ${err.name}: ${err.message}`);
     }
     await finish(`error:${err.name}`, String(err.message).slice(0, 500));
     return `error:${err.name}`;
