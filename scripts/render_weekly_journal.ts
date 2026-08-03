@@ -431,6 +431,91 @@ export function pairHourlyTrades(trades: TradeRow[], scans: HourlyScanRow[]): Pa
 }
 
 // ---------------------------------------------------------------------------
+// T3.5 -- journal integrity (#486). Surfaces the unrecoverable-journal state:
+// pending entry scans recovery could never adopt within its own 5-day
+// reconcile window, plus a trades-side cross-check that catches the same
+// class even when a re-scan clobbered the pending row's decision to SKIP
+// (#487). Both are pure filters over the caller's already-fetched
+// allScans/allTrades -- ZERO new PostgREST queries (D2).
+// ---------------------------------------------------------------------------
+
+// Mirrors hourly-check/logic.ts's own 5-day reconcile lookback
+// (`lookbackIso = now - 5 * 24 * HOUR_MS`, matched with `gte(bar_ts, ...)` in
+// getHourlyScansPendingEntry) -- kept in sync manually, same precedent as
+// EQUITY_FLOOR_PCT above.
+export const ORPHAN_LOOKBACK_MS = 5 * 24 * 60 * 60 * 1000;
+
+export interface OrphanedPendingScan {
+  symbol: string;
+  bar_ts: string;
+  decision: "LONG" | "SHORT";
+  qty: number;
+  /** Fractional days between bar_ts and the as-of instant (week end). */
+  ageDays: number;
+}
+
+export interface OrphanedPendingScansResult {
+  orphaned: OrphanedPendingScan[];
+  /** Pending rows recovery can still reach -- not orphaned, just not yet adopted. */
+  pendingInsideLookbackCount: number;
+}
+
+/**
+ * A "pending entry" scan (decision LONG/SHORT, entry_order_id still null) is
+ * orphaned once its bar is strictly older than `asOfMs - ORPHAN_LOOKBACK_MS`
+ * -- recovery's own `gte` bound means a row exactly at that threshold is
+ * still in reach, so the orphan predicate must be strict (D1). `asOfMs` is
+ * always the week window's end (never a clock read here), so the report
+ * stays reproducible on a re-run (D1/D4).
+ */
+export function findOrphanedPendingScans(
+  scans: HourlyScanRow[],
+  asOfMs: number,
+): OrphanedPendingScansResult {
+  const thresholdMs = asOfMs - ORPHAN_LOOKBACK_MS;
+  const orphaned: OrphanedPendingScan[] = [];
+  let pendingInsideLookbackCount = 0;
+  for (const s of scans) {
+    if (s.decision === "SKIP" || s.entry_order_id !== null) continue;
+    const barMs = Date.parse(s.bar_ts);
+    if (barMs < thresholdMs) {
+      orphaned.push({
+        symbol: s.symbol,
+        bar_ts: s.bar_ts,
+        decision: s.decision,
+        qty: s.qty,
+        ageDays: (asOfMs - barMs) / MS_PER_DAY,
+      });
+    } else {
+      pendingInsideLookbackCount++;
+    }
+  }
+  orphaned.sort((a, b) => a.bar_ts.localeCompare(b.bar_ts));
+  return { orphaned, pendingInsideLookbackCount };
+}
+
+/**
+ * The trades-side cross-check (PR #483 round-2 narrowing note): an
+ * entry-reason trade whose broker_order_id matches no scan's entry_order_id
+ * is unrecoverable regardless of what the scan row itself looks like now --
+ * this catches the clobbered variant (#487: a re-scan on the same bar
+ * overwrote the pending row to decision:SKIP, entry_order_id:null), which
+ * findOrphanedPendingScans can no longer see from the scan side alone.
+ */
+export function findUnmatchedEntryTrades(
+  trades: TradeRow[],
+  scans: HourlyScanRow[],
+): TradeRow[] {
+  const matchedEntryOrderIds = new Set<string>();
+  for (const s of scans) {
+    if (s.entry_order_id !== null) matchedEntryOrderIds.add(s.entry_order_id);
+  }
+  return trades
+    .filter((t) => ENTRY_REASONS.has(t.reason) && !matchedEntryOrderIds.has(t.broker_order_id))
+    .sort((a, b) => a.fill_time.localeCompare(b.fill_time));
+}
+
+// ---------------------------------------------------------------------------
 // T4 -- aggregation (pure). Per-detector firing counts/rates over scanned
 // bars, decision/skip/audit-outcome distributions, and equity vs the -15%
 // floor -- all restricted to the caller's already-windowed inputs (D4: the
@@ -637,6 +722,16 @@ export function proposeParamChange(
 // as-of-run value is the trial-count read, labelled in the footer").
 // ---------------------------------------------------------------------------
 
+// #486: the unrecoverable-journal-state surface. Cumulative as of week end
+// (not windowed to the week) -- an orphan is a standing defect until
+// hand-reconciled, so a quiet week must still show one carried from earlier.
+export interface JournalIntegrityData {
+  degradedCount: number;
+  orphanedPendingScans: OrphanedPendingScan[];
+  pendingInsideLookbackCount: number;
+  unmatchedEntryTrades: TradeRow[];
+}
+
 export interface RenderData {
   title: string;
   agg: WeeklyAggregates;
@@ -647,6 +742,7 @@ export interface RenderData {
   cumulative: CumulativeStats;
   proposal: ProposalOutcome;
   trialCount: number;
+  journalIntegrity: JournalIntegrityData;
 }
 
 function fmtMoney(n: number): string {
@@ -708,6 +804,58 @@ function renderFooter(trialCount: number): string {
   return `**Trial counter (as of this run):** \`hourly_param_trial_count\` = ${trialCount}`;
 }
 
+// #486 D4: renders in both the normal and quiet-week branches (an orphan is
+// a standing defect that must stay visible even in an otherwise-quiet week).
+function renderJournalIntegritySection(ji: JournalIntegrityData): string {
+  const orphanTable = ji.orphanedPendingScans.length > 0
+    ? table(
+      ["Symbol", "Bar", "Decision", "Qty", "Age"],
+      ji.orphanedPendingScans.map((o) => [
+        o.symbol,
+        o.bar_ts,
+        o.decision,
+        String(o.qty),
+        `${o.ageDays.toFixed(1)}d`,
+      ]),
+    )
+    : "_None._";
+
+  const unmatchedTable = ji.unmatchedEntryTrades.length > 0
+    ? table(
+      ["Symbol", "Side", "Fill price", "Fill time", "Broker order id"],
+      ji.unmatchedEntryTrades.map((t) => [
+        t.symbol,
+        t.reason === "hourly_short_entry" ? "SHORT" : "LONG",
+        fmtMoney(t.fill_price),
+        t.fill_time,
+        t.broker_order_id,
+      ]),
+    )
+    : "_None._";
+
+  return [
+    "## Journal integrity",
+    "",
+    "Surfaces the unrecoverable-journal state (#486): scan rows recovery could not reconcile " +
+    "within the 5-day lookback, and the trades-side cross-check that also catches a clobbered " +
+    "pending row (decision overwritten to SKIP on a re-scan). See the `journal_degraded` " +
+    "triage entry in `docs/runbooks/hourly-bot-rollout.md` (section 10) for the " +
+    "manual-reconciliation procedure.",
+    "",
+    `- \`success:journal_degraded\` runs this week: ${ji.degradedCount}`,
+    "",
+    "### Orphaned pending scan rows (older than the 5-day reconcile lookback)",
+    "",
+    orphanTable,
+    "",
+    "### Unmatched entry trades (no matching scan entry_order_id)",
+    "",
+    unmatchedTable,
+    "",
+    `- Pending rows still inside the 5-day lookback (recovery still possible): ${ji.pendingInsideLookbackCount}`,
+  ].join("\n");
+}
+
 /**
  * Renders the full hourly-era journal entry as markdown. Fixed section set
  * (D7): detector firing rates, decisions, entries/exits, open positions,
@@ -729,6 +877,10 @@ export function renderJournal(data: RenderData): string {
       "",
       "No scans recorded and no trades filed this week -- the bot appears to have been paused " +
       "or not deployed for the full week. See `bot_config.paused` and `audit_log` for the reason.",
+      "",
+      "---",
+      "",
+      renderJournalIntegritySection(data.journalIntegrity),
       "",
       "---",
       "",
@@ -869,6 +1021,8 @@ export function renderJournal(data: RenderData): string {
     "## Manual interventions (`panic_cli`)",
     "",
     manualTable,
+    "",
+    renderJournalIntegritySection(data.journalIntegrity),
     "",
     "---",
     "",
@@ -1059,6 +1213,17 @@ async function runRenderMode(
   const cumulative = computeCumulativeStats(pairing.closedTrades);
   const proposal = proposeParamChange(cumulative);
 
+  // #486: cumulative as of week end, over the FULL allScans/allTrades history
+  // (not just this week's), same rationale as the pairing above -- an orphan
+  // is a standing defect until hand-reconciled, not a per-week event.
+  const orphanResult = findOrphanedPendingScans(allScans, winBounds.endMsExclusive);
+  const journalIntegrity: JournalIntegrityData = {
+    degradedCount: agg.auditOutcomeCounts["success:journal_degraded"] ?? 0,
+    orphanedPendingScans: orphanResult.orphaned,
+    pendingInsideLookbackCount: orphanResult.pendingInsideLookbackCount,
+    unmatchedEntryTrades: findUnmatchedEntryTrades(allTrades, allScans),
+  };
+
   const markdown = renderJournal({
     title: win.title,
     agg,
@@ -1069,6 +1234,7 @@ async function runRenderMode(
     cumulative,
     proposal,
     trialCount,
+    journalIntegrity,
   });
 
   await deps.writeFile(outPath, markdown);

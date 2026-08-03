@@ -8,7 +8,10 @@ Function -- run it manually once a week (or on demand).
 
 It reports: per-detector firing rates, entries/exits with R-multiples, gate-skip distribution
 (bar-level `hourly_scans.skip_reason` and run-level `audit_log` outcomes), equity trajectory vs the
-spec's -15% floor, and the `PROPOSAL_RULE` trigger statistics. It never writes to `trades`,
+spec's -15% floor, the `PROPOSAL_RULE` trigger statistics, and a "Journal integrity" section
+surfacing the `success:journal_degraded` count, orphaned pending scan rows, and unmatched entry
+trades (#486) -- see `docs/runbooks/hourly-bot-rollout.md` §10 for the manual-reconciliation
+procedure. It never writes to `trades`,
 `hourly_scans`, or `audit_log`, and it never places a broker order -- the only write it can ever
 make is the trial-counter bump described below, and that only in its own separate mode.
 

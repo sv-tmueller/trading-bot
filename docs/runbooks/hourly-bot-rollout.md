@@ -590,9 +590,22 @@ broker connection at all. Do not respond to one by loosening this check.
 - Any `error:*` outcome.
 - `success:journal_degraded` (`logic.ts:992`) — a filled paper entry whose `trades`
   row or `entry_order_id` never landed; degrades the day cap, cooldown, and re-leg
-  provenance for later scans even though the scan itself "succeeded." Follow-up #486
-  tracks surfacing this more visibly; until then, treat every occurrence as a stop
-  signal here.
+  provenance for later scans even though the scan itself "succeeded." Treat every
+  occurrence as a stop signal here -- this status is not relaxed by #486. Triage:
+  - The broker order id is in `audit_log.notes`, in the exact format
+    `failed=[<groups>] order=<broker_order_id>` (the `success:journal_degraded`
+    outcome string's own `notes` row) -- `<groups>` lists which write(s) failed
+    (`insert_trade`, `journal`, `kill_switch_clear`).
+  - A filled paper position may exist unjournaled. Recovery normally adopts it on
+    a later scan if the fill landed inside `[bar_ts+1h, bar_ts+2h)` and the row is
+    still younger than the 5-day reconcile lookback.
+  - If recovery did not adopt it, reconcile by hand: look the order id up in
+    Alpaca, insert the `trades` row (reason `hourly_long_entry` or
+    `hourly_short_entry`), and stamp `hourly_scans.entry_order_id`.
+  - The weekly journal's "Journal integrity" section
+    (`scripts/render_weekly_journal.ts`, #486) is the standing surface for this
+    residue -- the orphaned-pending-scan report and the trades-side cross-check
+    both carry an unresolved row forward week over week until it is hand-reconciled.
 - `success:auto_paused` (`logic.ts:622`) — the -15% equity floor tripped. Same
   unmanaged-position consequence as an operator-initiated pause with a position
   open (§11) — check for an open position before assuming this is inert.
