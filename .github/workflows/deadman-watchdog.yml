@@ -25,7 +25,7 @@
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   STATUS_URL / STATUS_TOKEN            - dev status function (same values
-#                                           as .env.status / soak-digest.yml)
+#                                           as .env.status)
 #   NOTIFY_WEBHOOK_URL                    - Discord incoming webhook (same
 #                                           value as the Supabase
 #                                           NOTIFY_WEBHOOK_URL secret)
@@ -45,11 +45,11 @@
 # (creates the issue + posts to Discord, or dedups against an already-open
 # issue) exits **green** — the open issue is the incident marker; a red X on
 # every poll while an incident is open would be its own spam channel. Red is
-# reserved for watchdog-internal failure: dev secrets missing (loud-fail,
-# same idiom as soak-digest.yml — a silently-skipping watchdog is worthless)
-# or the Discord post failing while there are findings and no issue was
-# already open to dedup against (the issue is still created in that case —
-# only the run goes red, so the incident is never silently unrecorded).
+# reserved for watchdog-internal failure: dev secrets missing (loud-fail — a
+# silently-skipping watchdog is worthless) or the Discord post failing while
+# there are findings and no issue was already open to dedup against (the
+# issue is still created in that case — only the run goes red, so the
+# incident is never silently unrecorded).
 #
 # Silencing during maintenance: set the repo **variable** (not secret)
 # DEADMAN_SILENCED to the exact string `true` -> every step short-circuits to
@@ -109,8 +109,8 @@ jobs:
           deno-version: v2.x
 
       # -----------------------------------------------------------------
-      # dev leg — required coverage, mirrors soak-digest.yml's loud-fail
-      # idiom on missing secrets (a silently-skipping watchdog is worthless).
+      # dev leg — required coverage, loud-fail on missing secrets (a
+      # silently-skipping watchdog is worthless).
       # -----------------------------------------------------------------
 
       - name: Check dev secrets configured
@@ -143,7 +143,7 @@ jobs:
 
       # Never prints digest-dev.json (may contain account/position data) —
       # only the evaluator's findings (timestamps + outcome strings) reach
-      # the log, same exposure class as the existing soak-digest.
+      # the log.
       - name: Evaluate dev
         id: eval_dev
         if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' && steps.check_dev.outcome == 'success' }}

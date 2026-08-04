@@ -6,8 +6,8 @@ pipeline** — `daily-check` and/or `kill-switch` have stopped being invoked by
 Actions runner + `curl` against the read-only `status` Edge Function + a
 Discord webhook, so it still fires even if every Supabase component (the
 project itself, `pg_cron`, the Edge Functions) is dead. This complements
-`heartbeat.yml` (keeps the project awake) and `soak-digest.yml` (weekly
-summary) — neither of those alerts on a stalled pipeline on its own.
+`heartbeat.yml` (keeps the project awake) — it does not alert on a stalled
+pipeline on its own.
 
 ## What it monitors
 
@@ -55,15 +55,15 @@ Settings → Secrets and variables → Actions:
 
 | Secret | Purpose |
 | --- | --- |
-| `STATUS_URL` | dev `status` function URL (same value as `.env.status` / `soak-digest.yml`) |
+| `STATUS_URL` | dev `status` function URL (same value as `.env.status`) |
 | `STATUS_TOKEN` | dev `status` function token |
 | `NOTIFY_WEBHOOK_URL` | Discord incoming webhook — same value as the Supabase `NOTIFY_WEBHOOK_URL` secret (see `docs/runbooks/discord-notifications.md`) |
 | `STATUS_URL_PROD` | prod `status` function URL — set at go-live (#230) |
 | `STATUS_TOKEN_PROD` | prod `status` function token — set at go-live (#230) |
 
 The dev leg is **required coverage**: missing `STATUS_URL`/`STATUS_TOKEN`
-fails the run loudly (`::error::` + exit 1), same idiom as `soak-digest.yml`
-— a silently-skipping watchdog would be worthless. The prod leg is an
+fails the run loudly (`::error::` + exit 1) — a silently-skipping watchdog
+would be worthless. The prod leg is an
 **inert green skip** (`::notice::`) until both `STATUS_URL_PROD` and
 `STATUS_TOKEN_PROD` are set (prod isn't deployed pre-go-live, #230); a red
 dev leg never skips the prod leg (its steps are gated on `!cancelled()`, not
@@ -133,11 +133,10 @@ then revert.
   further (see above).
 - **GitHub's 60-day auto-disable.** GitHub automatically disables a
   scheduled workflow after 60 days with no repository activity at all. This
-  repo has frequent commits and other scheduled workflows
-  (`backup-db.yml`, `heartbeat.yml`), so this is a low but non-zero residual
-  risk — if it ever fires, `deadman-watchdog.yml` stops running silently (no
-  notification from GitHub itself), and re-enabling requires a manual visit
-  to the Actions tab.
+  repo has frequent commits and other scheduled workflows (`heartbeat.yml`),
+  so this is a low but non-zero residual risk — if it ever fires,
+  `deadman-watchdog.yml` stops running silently (no notification from GitHub
+  itself), and re-enabling requires a manual visit to the Actions tab.
 - **Public repo.** Forks get none of the secrets above, and GitHub disables
   scheduled workflows on forks by default — a fork's watchdog is inert.
 

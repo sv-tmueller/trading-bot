@@ -3,7 +3,7 @@
 Weekly encrypted `db dump --data-only` committed to the repo via a GitHub Action, in preference to Supabase Pro or accepting the risk.
 
 **Date:** 2026-07-07
-**Status:** accepted
+**Status:** superseded by 2026-08-04-retire-db-backup-workflow.md
 
 ---
 

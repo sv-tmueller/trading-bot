@@ -5,8 +5,7 @@
 # workflow for the exact env wiring. Not a Deno script (no test coverage
 # here by design — the pure evaluation logic lives in scripts/deadman_check.ts
 # and IS unit-tested; this is thin gh/curl orchestration glue, same class as
-# the untested CLI wiring at the bottom of deadman_check.ts and
-# render_soak_digest.sh).
+# the untested CLI wiring at the bottom of deadman_check.ts).
 #
 # Required env:
 #   LABEL               - GitHub label for this target's latch issue
