@@ -1,7 +1,7 @@
 pandas==2.2.3
+numpy==2.0.2      # directly imported by backtest/ modules and tests/, previously only transitive via pandas; 2.0.2 is the last line with Python 3.9 wheels
 pytest==8.3.5
-pytest-mock==3.14.0
 yfinance>=0.2
-matplotlib>=3.9   # research charts (e.g. backtest/run_scalping_cost_wall.py equity curve)
+matplotlib>=3.9   # sole consumer: backtest/run_scalping_cost_wall.py (equity curve)
 requests>=2.32    # public read-only market-data REST pulls in research scripts (Bybit klines)
-ta>=0.11          # standard ADX/MACD/ATR indicators for the scalping cost-wall study
+ta>=0.11          # ADX/MACD/ATR indicators for the research studies (run_mes_swing_study, run_scalping_cost_wall, run_turtle_breakout)

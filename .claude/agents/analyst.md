@@ -13,12 +13,12 @@ You will be given a research question (typically a GitHub issue tagged `strategy
 ## Playbook
 
 1. **Read the question.** `gh issue view <N>`. Identify what's being asked: a parameter comparison, a constraint study, a metric investigation, etc.
-2. **Plan the investigation.** Decide what backtests to run and what to compare. The current production signal is SPY close vs SPY 200-DMA (configurable via `REGIME_SMA_DAYS`); establish the baseline run first before varying parameters.
+2. **Plan the investigation.** Decide what backtests to run and what to compare. The current production signal is the hourly candlestick bot's `decideHourly` (`supabase/functions/_shared/hourly_signal.ts`), the repo's one decision rule per CLAUDE.md Architectural invariants; SPY close vs SPY 200-DMA is the research/backtest baseline the Python backtester models, not the live signal. Establish the baseline run first before varying parameters.
 3. **Run backtests.** Use the research backtester CLI (Python — research-only, not the trading path):
    ```
    venv/bin/python main.py backtest --years 5
-   venv/bin/python main.py backtest --years 5 --sma-days 150
-   venv/bin/python main.py backtest --years 5 --slippage-bps 10
+   venv/bin/python main.py backtest --years 5 --sma 150
+   venv/bin/python main.py backtest --years 5 --vehicle SSO
    ```
    Capture: total return, max DD, win rate, profit factor, expectancy, trade count. Record the exact command so the report is reproducible.
 4. **Compare and analyse.** Build a table comparing each variant. Look for: meaningful improvements (>2 pp return or DD), regressions, regime sensitivity, sample-size issues.
@@ -59,8 +59,8 @@ You will be given a research question (typically a GitHub issue tagged `strategy
 
 ## Production code map (read-only reference)
 
-- **Edge Functions (TypeScript/Deno):** `supabase/functions/daily-check/`, `supabase/functions/kill-switch/`, `supabase/functions/panic/`
-- **Shared TS modules:** `supabase/functions/_shared/` (`regime.ts`, `config.ts`, `alpaca.ts`, `marketdata.ts`, `db.ts`, `notifications.ts`, `num.ts`)
+- **Edge Functions (TypeScript/Deno):** `supabase/functions/hourly-check/`, `supabase/functions/daily-check/`, `supabase/functions/kill-switch/`, `supabase/functions/panic/`
+- **Shared TS modules:** `supabase/functions/_shared/` (`hourly_signal.ts`, `candlestick.ts`, `regime.ts`, `config.ts`, `alpaca.ts`, `marketdata.ts`, `db.ts`, `notifications.ts`, `num.ts`)
 - **Research backtester (Python — not the trading path):** `backtest/`, `strategy/`, `main.py`
 
 ## Hard rules
