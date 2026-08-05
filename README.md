@@ -168,9 +168,11 @@ deno task test:db    # DB integration tests — needs a local Postgres (gated be
 ## Dashboard
 
 A read-only Next.js status page lives in `web/` and is deployed on Vercel. It reads Supabase
-server-side with the service-role key and shows the current position, regime, drawdown,
-kill-switch flag, paused banner, recent trades, and recent audit runs. There are no controls — the
-panic kill button stays the token-auth Edge Function. See [`web/README.md`](web/README.md).
+server-side with the service-role key and shows the hourly bot's latest scan (bar timestamp and
+decision), its open position with bracket levels, the paused flag, equity against the -15% floor,
+recent scans, recent `hourly_*` trades, and recent `hourly-check` audit runs. There are no
+controls — the panic kill button stays the token-auth Edge Function. A GitHub Actions job
+(`web-ci.yml`) typechecks and builds it on every change. See [`web/README.md`](web/README.md).
 
 ## Backtest (research)
 
