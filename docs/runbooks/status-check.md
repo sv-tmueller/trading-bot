@@ -38,21 +38,29 @@ The script uses `curl --fail-with-body`, which requires **curl >= 7.76**
 body before exiting non-zero, so a 400/401/500 error's `{ "error": "…" }` JSON
 reaches the operator instead of just a bare `curl: (22) ...` line.
 
-When `jq` is available and the digest has a `regime` row with a non-null
-`regime_margin_pct` (SPY's raw % distance from its 200-DMA, positive above /
-negative below), `scripts/status.sh` prints a one-line "why" summary above
-the raw JSON dump — e.g. `LONG \`UPRO\` because SPY is 7.2% above its
-200-DMA.` (or `CASH because SPY is 4.3% below its 200-DMA.` with no ticker
-when `current_state` is `CASH`) — built from `alpaca.position.symbol` and
-`regime.current_state`. It's skipped when `regime` or `regime_margin_pct` is
-`null`. The causal "because" phrasing only appears when `target_state ==
-current_state` and `kill_switch_active` is not `true` — i.e. when the margin
-is genuinely why the position is held. If the kill-switch has fired, or a
-flip is pending (`target_state != current_state`), the line instead states
-the state and the signed margin without asserting a cause (e.g. `CASH — SPY
-vs 200-DMA: +7.2% (above).`), since a kill-switch-forced liquidation or a
-pending flip means the margin isn't the real reason for the current
-position.
+When `jq` is available and the digest has a non-null `hourly.latest_scan`,
+`scripts/status.sh` prints a one-line summary for the **live** hourly bot
+first — e.g. `` Hourly `SPY`: LONG @ 2026-08-05T14:00:00Z -- equity $95000,
+floor headroom 10.5%. `` — built from `hourly.latest_scan` and
+`hourly.equity`. The headroom fraction reads `n/a (no baseline set)` when
+`bot_config.hourly_experiment_start_equity` hasn't been set yet; the whole
+line is skipped when `hourly.latest_scan` is `null` (no scan has run yet).
+
+Below that, when `jq` is available and the digest has a `regime` row with a
+non-null `regime_margin_pct` (SPY's raw % distance from its 200-DMA, positive
+above / negative below), `scripts/status.sh` also prints a one-line "why"
+summary for the **retired** daily regime bot — e.g. `LONG \`UPRO\` because
+SPY is 7.2% above its 200-DMA.` (or `CASH because SPY is 4.3% below its
+200-DMA.` with no ticker when `current_state` is `CASH`) — built from
+`alpaca.position.symbol` and `regime.current_state`. It's skipped when
+`regime` or `regime_margin_pct` is `null`. The causal "because" phrasing only
+appears when `target_state == current_state` and `kill_switch_active` is not
+`true` — i.e. when the margin is genuinely why the position is held. If the
+kill-switch has fired, or a flip is pending (`target_state != current_state`),
+the line instead states the state and the signed margin without asserting a
+cause (e.g. `CASH — SPY vs 200-DMA: +7.2% (above).`), since a
+kill-switch-forced liquidation or a pending flip means the margin isn't the
+real reason for the current position.
 
 ### `--days N`: history window
 
@@ -172,20 +180,37 @@ keep-alive pair (status takes precedence per the mode order above); the
 
 ## What the digest contains
 
-Latest regime state (date, target/current state, drawdown %, kill-switch
-flag), a top-level `regime_margin_pct` — SPY's raw (unrounded) % distance
-from its 200-DMA, `null` when `regime` is `null` — 7-day (or `--days N`)
-`audit_log` outcome counts plus any `error:*` rows verbatim, the last trade,
-the `bot_config.paused` flag, and the Alpaca paper account equity + open
-position. When `--days`/`?days=` is supplied, the digest additionally
-carries `trades` and `regime_history` (see above). See
-`supabase/functions/status/logic.ts` (`StatusDigest`) for the exact shape —
-the function is strictly read-only and writes nothing, not even its own
-`audit_log` row.
+`hourly` (#536) covers the **live** hourly candlestick bot: `latest_scan` is a
+direct pass-through of the newest `hourly_scans` row (bar timestamp, symbol,
+decision, detectors fired, context mode, and bracket geometry when that scan
+entered), `equity` reports `hourly_scans.equity_usd` against the -15% floor
+computed from `bot_config.hourly_experiment_start_equity` (all four fields
+`null` until a baseline is set and at least one scan has run),
+`skip_reason_counts` is the bar-level SKIP distribution over the same window
+as `audit_7d` (grouped exactly like `scripts/render_weekly_journal.ts`'s
+weekly aggregation), and `audit_outcome_counts` is the run-level outcome
+distribution for `hourly-check` only, pulled from the same `audit_log` rows
+already fetched for `audit_7d` (no extra DB round trip). Equity here is
+always `hourly_scans.equity_usd` — never a live Alpaca account read.
+
+The remaining top-level fields (`regime`, `regime_margin_pct`, `returns`,
+`alpaca.position`) describe the **retired** daily regime bot (superseded by
+the hourly candlestick bot; see CLAUDE.md's deprecation marker) and are kept
+for now — `regime_margin_pct` is SPY's raw (unrounded) % distance from
+its 200-DMA, `null` when `regime` is `null`. `audit_7d` (7-day, or `--days N`,
+`audit_log` outcome counts plus any `error:*` rows verbatim) and `last_trade`
+span both bots' `audit_log`/`trades` rows, not just the retired one's. The
+digest also carries the `bot_config.paused` flag and the Alpaca paper account
+equity + open position (still on `BOT_TICKER`, the retired bot's symbol —
+deferred to a later batch, see #536's non-goals). When `--days`/`?days=` is
+supplied, the digest additionally carries `trades` and `regime_history` (see
+above). See `supabase/functions/status/logic.ts` (`StatusDigest`) for the
+exact shape — the function is strictly read-only and writes nothing, not even
+its own `audit_log` row.
 
 `last_runs` (#396) is always present alongside the above: the latest
-`audit_log` row's `started_at`/`outcome` for each of `daily_check` and
-`kill_switch` (`null` if that script has never written a row). This exists
-specifically so an external process can detect a stalled `pg_cron` pipeline
-without having to page through `audit_7d` — see
+`audit_log` row's `started_at`/`outcome` for each of `daily_check`,
+`kill_switch`, and `hourly_check` (`null` if that script has never written a
+row). This exists specifically so an external process can detect a stalled
+`pg_cron` pipeline without having to page through `audit_7d` — see
 `docs/runbooks/deadman-watchdog.md`.

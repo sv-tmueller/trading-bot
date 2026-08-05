@@ -3,8 +3,19 @@
 // no DB writes. runStatus performs zero writes: StatusDeps has no
 // insert/update/upsert method at all (compile-time enforcement).
 import { assertEquals, assertRejects } from "@std/assert";
-import { computeRegimeMarginPct, runStatus, type StatusDeps } from "./logic.ts";
-import type { AuditLogRow, EquitySnapshotRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
+import {
+  computeEquityHeadroomPct,
+  computeRegimeMarginPct,
+  runStatus,
+  type StatusDeps,
+} from "./logic.ts";
+import type {
+  AuditLogRow,
+  EquitySnapshotRow,
+  HourlyScanRow,
+  RegimeStateRow,
+  TradeRow,
+} from "../_shared/db.ts";
 
 const REGIME_ROW: RegimeStateRow = {
   date: "2026-07-08",
@@ -27,6 +38,39 @@ const TRADE_ROW: TradeRow = {
   broker_order_id: "o-1",
 };
 
+// #536: fixtures for the status digest's `hourly` block.
+const HOURLY_SCAN_LONG: HourlyScanRow = {
+  symbol: "SPY",
+  bar_ts: "2026-07-09T14:00:00Z",
+  decision: "LONG",
+  skip_reason: null,
+  detectors_fired: ["hammer", "bullish_pin_bar"],
+  context_mode: "none",
+  entry_ref_price: 550.1,
+  stop_price: 547.75,
+  target_price: 554.55,
+  risk_per_share: 2.35,
+  equity_usd: 100_000,
+  qty: 18,
+  entry_order_id: "o1",
+};
+
+const HOURLY_SCAN_SKIP: HourlyScanRow = {
+  symbol: "SPY",
+  bar_ts: "2026-07-09T13:00:00Z",
+  decision: "SKIP",
+  skip_reason: "no_detectors_fired",
+  detectors_fired: [],
+  context_mode: "none",
+  entry_ref_price: null,
+  stop_price: null,
+  target_price: null,
+  risk_per_share: null,
+  equity_usd: 100_000,
+  qty: 0,
+  entry_order_id: null,
+};
+
 function makeDeps(
   over: Partial<StatusDeps> = {},
 ): { deps: StatusDeps; calls: Record<string, unknown> } {
@@ -47,7 +91,10 @@ function makeDeps(
       ]);
     },
     getLastTrade: () => Promise.resolve(TRADE_ROW),
-    getConfig: (_key: string) => Promise.resolve("false"),
+    // #536: "paused" and "hourly_experiment_start_equity" share this one
+    // getConfig method — branch on key so both digest reads get sane defaults.
+    getConfig: (key: string) =>
+      Promise.resolve(key === "hourly_experiment_start_equity" ? "100000" : "false"),
     getTradesSince: (_sinceIso: string) => {
       calls.tradesSinceCalled = true;
       return Promise.resolve<TradeRow[]>([]);
@@ -76,6 +123,12 @@ function makeDeps(
         outcome: "success",
         notes: null,
       });
+    },
+    // #536: hourly digest block.
+    getLatestHourlyScan: () => Promise.resolve<HourlyScanRow | null>(HOURLY_SCAN_LONG),
+    getHourlyScansSince: (sinceIso: string) => {
+      calls.hourlyScansSinceArg = sinceIso;
+      return Promise.resolve<HourlyScanRow[]>([]);
     },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
@@ -220,7 +273,9 @@ Deno.test("no trades -> last_trade: null", async () => {
 
 Deno.test("paused: 'true' -> true", async () => {
   const { deps } = makeDeps({
-    db: { getConfig: () => Promise.resolve("true") } as unknown as StatusDeps["db"],
+    db: {
+      getConfig: (key: string) => Promise.resolve(key === "paused" ? "true" : "100000"),
+    } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps);
   assertEquals(digest.paused, true);
@@ -266,6 +321,9 @@ Deno.test("default mode (no windowDays): shape-lock - exact current 10 keys (#39
       "alpaca",
       "audit_7d",
       "generated_at",
+      // #536: `hourly` — the live hourly bot's digest block, strictly
+      // additive alongside the pre-existing keys below.
+      "hourly",
       "last_runs",
       "last_trade",
       "market_open",
@@ -549,18 +607,22 @@ Deno.test("last_runs: populated from mocks for both daily-check and kill-switch"
     } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps);
-  assertEquals(digest.last_runs, {
-    daily_check: { started_at: "2026-07-09T13:37:00Z", outcome: "success" },
-    kill_switch: { started_at: "2026-07-09T14:35:00Z", outcome: "skipped:market_closed" },
+  assertEquals(digest.last_runs.daily_check, {
+    started_at: "2026-07-09T13:37:00Z",
+    outcome: "success",
+  });
+  assertEquals(digest.last_runs.kill_switch, {
+    started_at: "2026-07-09T14:35:00Z",
+    outcome: "skipped:market_closed",
   });
 });
 
-Deno.test("last_runs: getLatestAuditForScript is called with exactly 'daily-check' and 'kill-switch'", async () => {
+Deno.test("last_runs: getLatestAuditForScript is called with exactly 'daily-check', 'kill-switch', and 'hourly-check'", async () => {
   const { deps, calls } = makeDeps();
   await runStatus(deps);
   assertEquals(
     (calls.latestAuditForScriptArgs as string[]).sort(),
-    ["daily-check", "kill-switch"],
+    ["daily-check", "hourly-check", "kill-switch"],
   );
 });
 
@@ -590,4 +652,218 @@ Deno.test("last_runs: present in extended (?days=N) mode too", async () => {
   const digest = await runStatus(deps, 30);
   assertEquals(digest.last_runs.daily_check?.outcome, "success");
   assertEquals(digest.last_runs.kill_switch?.outcome, "success");
+});
+
+// ---------------------------------------------------------------------------
+// #536: `hourly` block + `last_runs.hourly_check` — the live hourly bot's
+// digest, sourced from hourly_scans + bot_config. Strictly additive: no
+// pre-existing key is touched.
+// ---------------------------------------------------------------------------
+
+Deno.test("regression: every pre-#536 top-level key is still present (strictly additive)", async () => {
+  const { deps } = makeDeps();
+  const digest = await runStatus(deps);
+  const preExistingKeys = [
+    "generated_at",
+    "market_open",
+    "paused",
+    "regime",
+    "regime_margin_pct",
+    "audit_7d",
+    "last_trade",
+    "alpaca",
+    "returns",
+    "last_runs",
+  ];
+  for (const key of preExistingKeys) {
+    assertEquals(key in digest, true, `missing pre-existing key: ${key}`);
+  }
+});
+
+Deno.test("hourly.latest_scan: direct pass-through, including bracket geometry, when the scan entered", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getLatestHourlyScan: () => Promise.resolve(HOURLY_SCAN_LONG),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.latest_scan, HOURLY_SCAN_LONG);
+});
+
+Deno.test("hourly: no scans, no baseline -> all-null day zero", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getLatestHourlyScan: () => Promise.resolve(null),
+      getHourlyScansSince: () => Promise.resolve([]),
+      getConfig: (key: string) =>
+        Promise.resolve(key === "hourly_experiment_start_equity" ? null : "false"),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.latest_scan, null);
+  assertEquals(digest.hourly.equity, {
+    equity_usd: null,
+    floor_baseline_usd: null,
+    floor_price_usd: null,
+    headroom_pct: null,
+  });
+  assertEquals(digest.hourly.skip_reason_counts, {});
+  assertEquals(digest.hourly.audit_outcome_counts, {});
+});
+
+Deno.test("hourly.skip_reason_counts: groups SKIP rows by skip_reason, null -> 'unspecified', LONG/SHORT rows excluded", async () => {
+  const scans: HourlyScanRow[] = [
+    { ...HOURLY_SCAN_SKIP, bar_ts: "t1", skip_reason: "no_detectors_fired" },
+    { ...HOURLY_SCAN_SKIP, bar_ts: "t2", skip_reason: "no_detectors_fired" },
+    { ...HOURLY_SCAN_SKIP, bar_ts: "t3", skip_reason: "signal_conflict" },
+    { ...HOURLY_SCAN_SKIP, bar_ts: "t4", skip_reason: null },
+    HOURLY_SCAN_LONG,
+  ];
+  const { deps } = makeDeps({
+    db: { getHourlyScansSince: () => Promise.resolve(scans) } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.skip_reason_counts, {
+    no_detectors_fired: 2,
+    signal_conflict: 1,
+    unspecified: 1,
+  });
+});
+
+Deno.test("hourly.audit_outcome_counts: scoped to script_name='hourly-check' from the same already-fetched auditRows; audit_7d.outcome_counts stays mixed", async () => {
+  const rows: AuditLogRow[] = [
+    {
+      script_name: "hourly-check",
+      started_at: "t1",
+      finished_at: "t1f",
+      outcome: "success",
+      notes: null,
+    },
+    {
+      script_name: "hourly-check",
+      started_at: "t2",
+      finished_at: "t2f",
+      outcome: "success",
+      notes: null,
+    },
+    {
+      script_name: "hourly-check",
+      started_at: "t3",
+      finished_at: null,
+      outcome: null,
+      notes: null,
+    },
+    {
+      script_name: "daily-check",
+      started_at: "t4",
+      finished_at: "t4f",
+      outcome: "success",
+      notes: null,
+    },
+  ];
+  const { deps } = makeDeps({
+    db: { getAuditLogSince: () => Promise.resolve(rows) } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.audit_outcome_counts, { "success": 2, "(unfinished)": 1 });
+  assertEquals(digest.audit_7d.outcome_counts, { "success": 3, "(unfinished)": 1 });
+});
+
+Deno.test("hourly.equity: headroom_pct computed from equity_usd vs floor_price_usd (baseline present)", async () => {
+  const scan: HourlyScanRow = { ...HOURLY_SCAN_LONG, equity_usd: 95_000 };
+  const { deps } = makeDeps({
+    db: {
+      getLatestHourlyScan: () => Promise.resolve(scan),
+      getConfig: (key: string) =>
+        Promise.resolve(key === "hourly_experiment_start_equity" ? "100000" : "false"),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.equity.equity_usd, 95_000);
+  assertEquals(digest.hourly.equity.floor_baseline_usd, 100_000);
+  assertEquals(digest.hourly.equity.floor_price_usd, 85_000);
+  assertEquals(digest.hourly.equity.headroom_pct, (95_000 - 85_000) / 95_000 * 100);
+});
+
+Deno.test("hourly.equity: baseline absent -> floor_baseline_usd/floor_price_usd/headroom_pct null, not a throw", async () => {
+  const scan: HourlyScanRow = { ...HOURLY_SCAN_LONG, equity_usd: 95_000 };
+  const { deps } = makeDeps({
+    db: {
+      getLatestHourlyScan: () => Promise.resolve(scan),
+      getConfig: (key: string) =>
+        Promise.resolve(key === "hourly_experiment_start_equity" ? null : "false"),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.hourly.equity.equity_usd, 95_000);
+  assertEquals(digest.hourly.equity.floor_baseline_usd, null);
+  assertEquals(digest.hourly.equity.floor_price_usd, null);
+  assertEquals(digest.hourly.equity.headroom_pct, null);
+});
+
+Deno.test("hourly: getHourlyScansSince is called with the same `since` as audit_7d", async () => {
+  const { deps, calls } = makeDeps();
+  const digest = await runStatus(deps);
+  assertEquals(calls.hourlyScansSinceArg, digest.audit_7d.since);
+});
+
+Deno.test("hourly: present and shaped the same in extended (?days=N) mode", async () => {
+  const { deps } = makeDeps();
+  const digest = await runStatus(deps, 30);
+  assertEquals("hourly" in digest, true);
+  assertEquals(digest.hourly.latest_scan, HOURLY_SCAN_LONG);
+  assertEquals(typeof digest.hourly.skip_reason_counts, "object");
+  assertEquals(typeof digest.hourly.audit_outcome_counts, "object");
+});
+
+Deno.test("last_runs.hourly_check: populated from getLatestAuditForScript('hourly-check')", async () => {
+  const { deps } = makeDeps({
+    db: {
+      getLatestAuditForScript: (scriptName: string) =>
+        scriptName === "hourly-check"
+          ? Promise.resolve<AuditLogRow>({
+            script_name: "hourly-check",
+            started_at: "2026-07-09T14:00:00Z",
+            finished_at: "2026-07-09T14:00:05Z",
+            outcome: "success",
+            notes: null,
+          })
+          : Promise.resolve(null),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.last_runs.hourly_check, {
+    started_at: "2026-07-09T14:00:00Z",
+    outcome: "success",
+  });
+});
+
+Deno.test("last_runs.hourly_check: no rows -> null", async () => {
+  const { deps } = makeDeps({
+    db: { getLatestAuditForScript: () => Promise.resolve(null) } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.last_runs.hourly_check, null);
+});
+
+// ---------------------------------------------------------------------------
+// #536: computeEquityHeadroomPct — pure helper, guarded like
+// computeRegimeMarginPct: non-finite inputs and a non-positive equityUsd
+// (division-by-zero / nonsensical domain) both -> null, never Infinity/NaN.
+// ---------------------------------------------------------------------------
+
+Deno.test("computeEquityHeadroomPct: happy path — % distance from equity down to the floor price", () => {
+  assertEquals(computeEquityHeadroomPct(95_000, 85_000), (95_000 - 85_000) / 95_000 * 100);
+});
+
+Deno.test("computeEquityHeadroomPct: non-finite inputs -> null", () => {
+  assertEquals(computeEquityHeadroomPct(NaN, 85_000), null);
+  assertEquals(computeEquityHeadroomPct(95_000, NaN), null);
+  assertEquals(computeEquityHeadroomPct(Infinity, 85_000), null);
+  assertEquals(computeEquityHeadroomPct(95_000, Infinity), null);
+});
+
+Deno.test("computeEquityHeadroomPct: equityUsd <= 0 -> null (avoids division by zero / nonsensical domain)", () => {
+  assertEquals(computeEquityHeadroomPct(0, 85_000), null);
+  assertEquals(computeEquityHeadroomPct(-100, 85_000), null);
 });

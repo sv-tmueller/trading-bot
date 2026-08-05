@@ -631,6 +631,39 @@ export async function getHourlyScanByEntryOrderId(
   return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
 }
 
+// #536 T1: getLatestHourlyScan / getHourlyScansSince -- read-only helpers for
+// the status digest's `hourly` block (status/logic.ts). SELECT-only, no
+// symbol filter -- same one-bot-one-symbol assumption already documented in
+// scripts/render_weekly_journal.ts.
+export async function getLatestHourlyScan(sb: SupabaseClient): Promise<HourlyScanRow | null> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .order("bar_ts", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLatestHourlyScan: ${error.message}`);
+  return data ? coerceHourlyScanRow(data as Record<string, unknown>) : null;
+}
+
+// Windowed read for the status digest's bar-level skip-reason distribution,
+// mirroring getTradesSince's shape and defensive cap: an hourly-cadence bot
+// scanning only during market hours cannot plausibly produce more than 1000
+// rows even across the widest 60-day window this digest supports.
+export async function getHourlyScansSince(
+  sb: SupabaseClient,
+  sinceIso: string,
+): Promise<HourlyScanRow[]> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .gte("bar_ts", sinceIso)
+    .order("bar_ts", { ascending: false })
+    .limit(1000);
+  if (error) throw new Error(`getHourlyScansSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
+}
+
 // #480 T2: pending-entry scan lookup, consumed by logic.ts reconcile()'s
 // recovery step. `decision IN ('LONG','SHORT') AND entry_order_id IS NULL` is
 // the exact signature the pre-order journal (logic.ts step 20) leaves behind
