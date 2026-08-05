@@ -1,5 +1,5 @@
-# Dead-man watchdog: detects a stalled trading pipeline — daily-check and/or
-# kill-switch have stopped being invoked by pg_cron — from OUTSIDE Supabase
+# Dead-man watchdog: detects a stalled trading pipeline — kill-switch and/or
+# hourly-check have stopped being invoked by pg_cron — from OUTSIDE Supabase
 # (the Actions runner + curl + this repo's `status` Edge Function + a Discord
 # webhook is the whole alert path), so it still fires even if every Supabase
 # component is dead. See docs/runbooks/deadman-watchdog.md for the full
