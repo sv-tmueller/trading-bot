@@ -78,14 +78,22 @@ function coerceHourlyScan(raw: Record<string, unknown>): HourlyScan {
   };
 }
 
-// Coerce a value to a finite number, or null if it is missing/NaN/Infinity.
-// Mirrors web/lib/alpaca.ts's `num` guard: a malformed bot_config value (the
-// column is free-text) would otherwise render "NaN%" while floorBreached
-// stays false and the accent stays neutral — a wrong baseline has happened
-// before, see docs/runbooks/hourly-bot-rollout.md.
+// Coerce the bot_config baseline to a finite, strictly positive number, or
+// null if it is missing/blank/non-positive/non-finite. Mirrors
+// _shared/num.ts's requireNumber — trim before the empty check
+// (Number(" ") === 0, and Number("") === 0 too) — rather than the weaker
+// web/lib/alpaca.ts `num` guard, because those are exactly the values
+// hourly-check/logic.ts hard-errors the scan on (blank baseline fails the
+// scan outright; "0" trips the plausibility guard). Letting them through
+// here would render a floor of $0 and "100.00%" headroom: a maximally
+// reassuring number on the one axis this page exists to protect, while the
+// bot itself is refusing to run.
 function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) {
+    return null;
+  }
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 async function getData() {
@@ -211,7 +219,10 @@ export default async function Page() {
   const bracketRow = openPosition && latestEntered && latestEntered.symbol === openPosition.symbol
     ? latestEntered
     : null;
-  const bracketUnavailable = openPosition != null && bracketRow == null;
+  // Gated on account !== null: when the account read fails, the section above
+  // renders "position unknown" rather than asserting openPosition, so a note
+  // that presupposes an asserted position must not render alongside it.
+  const bracketUnavailable = account !== null && openPosition != null && bracketRow == null;
 
   const equity = latestScan?.equity_usd ?? null;
   const floorPrice = baseline != null ? baseline * (1 - EQUITY_FLOOR_PCT) : null;
@@ -286,8 +297,8 @@ export default async function Page() {
         <h2 className="text-sm font-medium text-zinc-300">Open position &amp; bracket levels ({symbol})</h2>
         {account === null ? (
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
-            Position unknown — Alpaca not connected. This is not a claim of "no position";
-            see the Holdings panel below for the connection details.
+            Position unknown — the Alpaca account read failed. This is not a claim of "no
+            position"; see the Holdings panel below for the connection details.
           </div>
         ) : openPosition === null ? (
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
