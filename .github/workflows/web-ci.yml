@@ -1,0 +1,40 @@
+# CI for the read-only web/ dashboard (#538). Nothing else lints, typechecks,
+# or builds web/ -- deploy-dev.yml's `test` job covers only supabase/**, which
+# is how the dashboard drifted onto the retired daily bot unnoticed for months.
+# Runs on every web/ change so a TypeScript error or a broken `next build`
+# fails the pull request instead of shipping to Vercel.
+#
+# No secrets required: app/page.tsx sets `export const dynamic = "force-dynamic"`,
+# which opts the route out of static generation, so `next build` never calls
+# getData() (no Supabase/Alpaca client is constructed at build time).
+name: web-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+  pull_request:
+    paths:
+      - "web/**"
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
