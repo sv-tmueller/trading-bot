@@ -41,8 +41,6 @@ type HourlyScan = {
   stop_price: number | null;
   target_price: number | null;
   equity_usd: number;
-  qty: number;
-  entry_order_id: string | null;
 };
 type Trade = {
   id: number;
@@ -77,9 +75,17 @@ function coerceHourlyScan(raw: Record<string, unknown>): HourlyScan {
     stop_price: num(raw.stop_price),
     target_price: num(raw.target_price),
     equity_usd: Number(raw.equity_usd),
-    qty: raw.qty as number,
-    entry_order_id: (raw.entry_order_id as string | null) ?? null,
   };
+}
+
+// Coerce a value to a finite number, or null if it is missing/NaN/Infinity.
+// Mirrors web/lib/alpaca.ts's `num` guard: a malformed bot_config value (the
+// column is free-text) would otherwise render "NaN%" while floorBreached
+// stays false and the accent stays neutral — a wrong baseline has happened
+// before, see docs/runbooks/hourly-bot-rollout.md.
+function numOrNull(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function getData() {
@@ -132,7 +138,7 @@ async function getData() {
     recentScans,
     latestEntered,
     paused: (pausedRes.data as { value: string } | null)?.value === "true",
-    baseline: baselineRaw == null ? null : Number(baselineRaw),
+    baseline: baselineRaw == null ? null : numOrNull(baselineRaw),
     trades,
     audit: (auditRes.data as Audit[] | null) ?? [],
     account: account as AlpacaAccount | null,
@@ -142,10 +148,27 @@ async function getData() {
 }
 
 const pct = (n: number | null) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
+// For values already expressed in percent units (not a fraction) — used for
+// computeEquityHeadroomPct's return, which is pre-scaled like its counterpart
+// in supabase/functions/status/logic.ts.
+const pctValue = (n: number | null) => (n == null ? "—" : `${n.toFixed(2)}%`);
 const money = (n: number | null) =>
   n == null ? "—" : `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const fmt = (s: string | null) =>
   s ? `${new Date(s).toISOString().replace("T", " ").slice(0, 19)}Z` : "—";
+
+// Mirrors supabase/functions/status/logic.ts's computeEquityHeadroomPct (#536,
+// PR #542) exactly, guards included, so this page's floor-headroom number
+// agrees with the status digest's published key for the same fact rather than
+// diverging via a different denominator (#538 review finding 1: this page
+// previously scaled by baseline, producing 10.0% vs A's 10.5% on the same
+// equity/floor inputs).
+function computeEquityHeadroomPct(equityUsd: number, floorPriceUsd: number): number | null {
+  if (!Number.isFinite(equityUsd) || !Number.isFinite(floorPriceUsd) || equityUsd <= 0) {
+    return null;
+  }
+  return ((equityUsd - floorPriceUsd) / equityUsd) * 100;
+}
 
 // Plain-fact age string, e.g. "3h 12m ago" / "2d 4h ago" — always rendered,
 // never gated on the staleness threshold, per the honest-emptiness extension.
@@ -173,8 +196,13 @@ export default async function Page() {
   // Bracket-level pairing is a disclosed heuristic, not a guaranteed match:
   // Alpaca positions carry no back-reference to the order that opened them, so
   // this pairs by symbol. `symbol` is the traded symbol derived from the latest
-  // scan; a leftover position under a different (e.g. legacy) symbol is shown
-  // honestly as unpaired rather than mispaired with these bracket numbers.
+  // scan, and only a position under this traded symbol is paired here — a
+  // position under any other symbol (e.g. a legacy leftover) is not shown in
+  // this section at all, though it still appears in the unfiltered Holdings
+  // panel below. The "unavailable" note further down fires when the traded
+  // symbol does have an open position but the latest entered-scan row is for
+  // a different symbol (or none exists), so there is no bracket data to
+  // attach to it.
   const symbol = latestScan?.symbol ?? DEFAULT_SYMBOL;
   const matchedPosition = positions.find((p) => p.symbol === symbol) ?? null;
   const openPosition = matchedPosition && matchedPosition.qty != null && matchedPosition.qty !== 0
@@ -187,9 +215,9 @@ export default async function Page() {
 
   const equity = latestScan?.equity_usd ?? null;
   const floorPrice = baseline != null ? baseline * (1 - EQUITY_FLOOR_PCT) : null;
-  // Scaled by baseline (not floorPrice) so the number lines up with the floor's
-  // own scale: 15% headroom at the baseline, 0% exactly at the floor.
-  const headroomPct = equity != null && baseline != null ? (equity - (floorPrice as number)) / baseline : null;
+  const headroomPct = equity != null && floorPrice != null
+    ? computeEquityHeadroomPct(equity, floorPrice)
+    : null;
   const floorBreached = equity != null && floorPrice != null && equity <= floorPrice;
 
   return (
@@ -239,7 +267,7 @@ export default async function Page() {
         <Stat label="Paused" value={paused ? "PAUSED" : "no"} accent={paused ? "amber" : "zinc"} />
         <Stat
           label={`Equity vs -${EQUITY_FLOOR_PCT * 100}% floor`}
-          value={pct(headroomPct)}
+          value={pctValue(headroomPct)}
           accent={floorBreached ? "red" : "zinc"}
         />
       </section>
@@ -256,7 +284,12 @@ export default async function Page() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-zinc-300">Open position &amp; bracket levels ({symbol})</h2>
-        {openPosition === null ? (
+        {account === null ? (
+          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
+            Position unknown — Alpaca not connected. This is not a claim of "no position";
+            see the Holdings panel below for the connection details.
+          </div>
+        ) : openPosition === null ? (
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
             No open {symbol} position.
           </div>
