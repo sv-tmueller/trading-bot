@@ -52,9 +52,7 @@ flip is pending (`target_state != current_state`), the line instead states
 the state and the signed margin without asserting a cause (e.g. `CASH — SPY
 vs 200-DMA: +7.2% (above).`), since a kill-switch-forced liquidation or a
 pending flip means the margin isn't the real reason for the current
-position. The weekly `scripts/render_soak_digest.sh` markdown report renders
-the same headline plus a signed, 1-decimal `SPY vs 200-DMA` line in the
-`### Regime` section.
+position.
 
 ### `--days N`: history window
 
@@ -73,43 +71,11 @@ no client-side range validation in the script; an out-of-range or malformed
 `N` reaches the server, whose `400 { "error": "days must be an integer
 between 1 and 60" }` is now visible via `--fail-with-body` above.
 
-## Automated weekly soak digest (GitHub Actions)
-
-`.github/workflows/soak-digest.yml` ("soak-digest") automates the manual
-check above: once a week it fetches the digest and posts a rendered markdown
-summary as a comment on the paper-soak tracking issue, replacing "watch the
-SQL editor by hand."
-
-- **Schedule:** Friday 21:30 UTC (after the US close in both EDT and EST;
-  GitHub schedule jitter of a few minutes to about an hour is expected).
-- **Manual dispatch:** trigger the workflow from the Actions tab with an
-  optional `issue_number` input (defaults to `229`) — useful for testing
-  against a scratch issue before it lands on the real tracking issue.
-- **Target issue:** #229 by default.
-- **Rendering:** the workflow shells out to the committed
-  `scripts/render_soak_digest.sh`, which validates the digest JSON (garbled,
-  partial, truncated, or missing/mistyped keys all fail the render step) and
-  renders regime state, 7-day outcome counts, `error:*` rows verbatim, the
-  last trade, and Alpaca equity/position, plus the raw JSON in a collapsed
-  `<details>` block. It targets the current no-param `StatusDigest` shape
-  in `supabase/functions/status/logic.ts` — no `?days=` parameter.
-- **Required repo secrets** (Settings -> Secrets and variables -> Actions,
-  same values as your local `.env.status`):
-  - `STATUS_URL`
-  - `STATUS_TOKEN` (read-only by design)
-- **Failure contract:** unlike `backup-db.yml`, this workflow does **not**
-  skip inertly when secrets are missing — it fails loudly (`::error::`),
-  because a red run is itself soak signal. Any endpoint failure (401, 5xx,
-  timeout, unreachable) or garbled/invalid JSON also fails the run before the
-  comment step runs, so nothing is posted on failure. Re-run via manual
-  dispatch once the underlying issue (missing secret, endpoint down, etc.)
-  is fixed.
-
 ## Heartbeat (GitHub Actions)
 
-`.github/workflows/heartbeat.yml` ("heartbeat") exists for a different reason
-than soak-digest: Supabase's free-tier inactivity/pause criterion is based on
-user-facing API traffic, and `pg_cron` invocations of `daily-check` /
+`.github/workflows/heartbeat.yml` ("heartbeat") exists because Supabase's
+free-tier inactivity/pause criterion is based on user-facing API traffic, and
+`pg_cron` invocations of `daily-check` /
 `kill-switch` do **not** count toward it — a project can be paused for
 inactivity even while the trading cron runs continuously. Dev received such a
 warning on 2026-07-12 (see the Addendum in
@@ -120,9 +86,9 @@ a schedule so the project sees real gateway traffic and stays active.
 
 - **Schedule:** weekdays 12:23 UTC, plus manual `workflow_dispatch`.
 - **Two independent targets, one job:**
-  - **dev** — gated on the same `STATUS_URL`/`STATUS_TOKEN` repo secrets as
-    soak-digest (deliberate reuse, not new `_DEV`-suffixed secrets — see the
-    sub-plan on #361). Already active as of this workflow merging.
+  - **dev** — gated on the `STATUS_URL`/`STATUS_TOKEN` repo secrets (not new
+    `_DEV`-suffixed secrets — see the sub-plan on #361). Already active as of
+    this workflow merging.
   - **prod** — a single "Resolve prod coverage" step picks one of three
     modes, in precedence order:
     1. **status** — `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` are both set
@@ -134,20 +100,19 @@ a schedule so the project sees real gateway traffic and stays active.
     3. **none** — neither pair is fully set: inert green skip, unless the
        `HEARTBEAT_REQUIRE_PROD` repo variable is set to the exact string
        `true`, in which case the run fails red instead (see below).
-- **Failure contract — inert skip vs red run:** unlike soak-digest, missing
-  coverage for prod is an **inert green skip** (`::notice::`, no request
-  made) — matching `backup-db.yml`'s default-OFF idiom, since this workflow
-  is meant to be safe to merge into forks or before secrets exist — *unless*
-  the `HEARTBEAT_REQUIRE_PROD` repo variable is set to the exact string
-  `true`, in which case a prod leg with no coverage configured fails the run
-  red (`::error::` + exit 1) instead, so a scheduled failure notifies the
-  operator by email. Default is unset (today's inert-skip behavior); this is
-  a repo **variable**, not a secret. Once prod coverage resolves to `status`
-  or `keepalive`, a non-2xx response or a timeout from that target **fails
-  the run red** regardless of `HEARTBEAT_REQUIRE_PROD` (same
-  `curl --fail-with-body --max-time 60` idiom as soak-digest). The dev and
-  prod steps are independent — a red prod run doesn't block dev's ping, and
-  vice versa.
+- **Failure contract — inert skip vs red run:** missing coverage for prod is
+  an **inert green skip** (`::notice::`, no request made) — the default-OFF
+  idiom, since this workflow is meant to be safe to merge into forks or
+  before secrets exist — *unless* the `HEARTBEAT_REQUIRE_PROD` repo variable
+  is set to the exact string `true`, in which case a prod leg with no
+  coverage configured fails the run red (`::error::` + exit 1) instead, so a
+  scheduled failure notifies the operator by email. Default is unset
+  (today's inert-skip behavior); this is a repo **variable**, not a secret.
+  Once prod coverage resolves to `status` or `keepalive`, a non-2xx response
+  or a timeout from that target **fails the run red** regardless of
+  `HEARTBEAT_REQUIRE_PROD` (same `curl --fail-with-body --max-time 60` idiom
+  `heartbeat.yml`'s own dev and prod ping steps use). The dev and prod steps
+  are independent — a red prod run doesn't block dev's ping, and vice versa.
 
 ### Interim prod keep-alive (pre-go-live)
 
@@ -185,11 +150,11 @@ keep-alive pair (status takes precedence per the mode order above); the
 `public.keepalive` table can then be removed. See
 `docs/runbooks/mvp2-deploy-and-decommission.md`.
 - **GitHub's 60-day auto-disable caveat:** GitHub automatically disables a
-  scheduled workflow after 60 days with no repository activity at all. This
-  repo has weekly commits from `backup-db.yml` alone, so this is a low but
-  non-zero residual risk — if it ever fires, both `heartbeat.yml` and
-  `backup-db.yml` stop running silently (no notification), and re-enabling
-  requires a manual visit to the Actions tab.
+  scheduled workflow after 60 days with no repository activity at all.
+  Auto-disable protection here relies on regular development activity
+  (commits, PRs, deploys) alone — this is a low but non-zero residual risk —
+  if it ever fires, `heartbeat.yml` stops running silently (no
+  notification), and re-enabling requires a manual visit to the Actions tab.
 
 ## Troubleshooting
 

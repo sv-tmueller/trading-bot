@@ -35,16 +35,14 @@
 # cancellation is the only thing that still skips them.
 #
 # Failure contract per target: secrets unset -> inert green skip (`::notice::`
-# + no request), matching backup-db.yml's default-OFF idiom, unless
-# HEARTBEAT_REQUIRE_PROD=true (see mode 3 above). Secrets set ->
-# `curl --fail-with-body` against the endpoint; a non-2xx response or a
-# timeout fails the run red, same idiom as soak-digest.yml's "Fetch digest"
-# step. The JSON digest/response body prints to the step log on success for
-# forensics (same exposure class as the soak-digest already posted to issue
-# #229 - paper equity/position, no secrets); a failing response body is
-# included in curl's --fail-with-body error output. Never echo the token or
-# key. This repo is PUBLIC - forks get neither the secrets nor the variable
-# below, so a fork's prod leg is always an inert skip.
+# + no request), the default-OFF idiom, unless HEARTBEAT_REQUIRE_PROD=true
+# (see mode 3 above). Secrets set -> `curl --fail-with-body` against the
+# endpoint; a non-2xx response or a timeout fails the run red. The JSON
+# digest/response body prints to the step log on success for forensics
+# (paper equity/position, no secrets); a failing response body is included
+# in curl's --fail-with-body error output. Never echo the token or key. This
+# repo is PUBLIC - forks get neither the secrets nor the variable below, so a
+# fork's prod leg is always an inert skip.
 #
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   STATUS_URL              - dev status function URL (same as .env.status)

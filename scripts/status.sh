@@ -72,8 +72,7 @@ if command -v jq >/dev/null 2>&1; then
     exit "$curl_status"
   fi
 
-  # #384: short one-line "why" summary (same construction as
-  # scripts/render_soak_digest.sh's headline) above the raw dump below.
+  # #384: short one-line "why" summary above the raw dump below.
   # Guarded on regime/regime_margin_pct being present — skipped otherwise.
   #
   # D5 (#384 fix round): the margin is only the TRUE cause of the current
