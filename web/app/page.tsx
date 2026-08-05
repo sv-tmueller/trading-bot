@@ -187,6 +187,8 @@ export default async function Page() {
 
   const equity = latestScan?.equity_usd ?? null;
   const floorPrice = baseline != null ? baseline * (1 - EQUITY_FLOOR_PCT) : null;
+  // Scaled by baseline (not floorPrice) so the number lines up with the floor's
+  // own scale: 15% headroom at the baseline, 0% exactly at the floor.
   const headroomPct = equity != null && baseline != null ? (equity - (floorPrice as number)) / baseline : null;
   const floorBreached = equity != null && floorPrice != null && equity <= floorPrice;
 
