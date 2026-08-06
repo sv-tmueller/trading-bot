@@ -3,7 +3,73 @@
 // CLI/permission split. Structured like deadman_check.test.ts: explicit
 // `now`/input construction, no network, no DB, no env.
 import { assertEquals } from "@std/assert";
-import { isWeekendYmd, resolveTargetDate } from "./daily_verify.ts";
+import type { HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
+import {
+  buildLedgerRow,
+  checkGeometry,
+  checkJournal,
+  checkKillSwitch,
+  checkLatency,
+  checkScans,
+  checkSlots,
+  checkState,
+  evaluateVerification,
+  isWeekendYmd,
+  type LedgerRow,
+  NON_SCANNING_OUTCOMES,
+  resolveTargetDate,
+  selectPreviousRow,
+  upsertLedgerJsonl,
+  type VerificationBlock,
+  type VerifyHourlyCheckRun,
+} from "./daily_verify.ts";
+
+// ---------------------------------------------------------------------------
+// Fixture builders -- minimal, complete rows so every test only spells out
+// the field(s) it actually varies.
+// ---------------------------------------------------------------------------
+
+function scanRow(overrides: Partial<HourlyScanRow> = {}): HourlyScanRow {
+  return {
+    symbol: "SPY",
+    bar_ts: "2026-08-05T13:00:00.000Z",
+    decision: "SKIP",
+    skip_reason: "no_detectors_fired",
+    detectors_fired: [],
+    context_mode: "sma",
+    entry_ref_price: null,
+    stop_price: null,
+    target_price: null,
+    risk_per_share: null,
+    equity_usd: 1_000_000,
+    qty: 0,
+    entry_order_id: null,
+    ...overrides,
+  };
+}
+
+function tradeRow(overrides: Partial<TradeRow> = {}): TradeRow {
+  return {
+    symbol: "SPY",
+    side: "BUY",
+    qty: 100,
+    fill_price: 500,
+    fill_time: "2026-08-05T14:07:00.000Z",
+    reason: "hourly_long_entry",
+    broker_order_id: "order-1",
+    ...overrides,
+  };
+}
+
+function hourlyRun(overrides: Partial<VerifyHourlyCheckRun> = {}): VerifyHourlyCheckRun {
+  return {
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:01.000Z",
+    outcome: "success:no_action",
+    notes: null,
+    ...overrides,
+  };
+}
 
 function utc(iso: string): Date {
   return new Date(iso);
@@ -57,4 +123,597 @@ Deno.test("isWeekendYmd: Monday -> false", () => {
 
 Deno.test("isWeekendYmd: Friday -> false", () => {
   assertEquals(isWeekendYmd("2026-08-07"), false);
+});
+
+// ---------------------------------------------------------------------------
+// NON_SCANNING_OUTCOMES (spec §5.3): pinned against the five gates in
+// supabase/functions/hourly-check/logic.ts that return before any
+// hourly_scans journal write for the run's own candidate bar, per the #545
+// architect's traced derivation (issue #547 SUB_PLAN):
+//   1. skipped:trading_paused   -- gate 1, operational pause (~line 677-681):
+//      returns before reconcile() and before the bar fetch.
+//   2. skipped:market_closed    -- gate 3, market-open gate (~line 687-691):
+//      same, precedes reconcile() entirely.
+//   3. error:naked_position_flattened -- reconcile()'s terminal branch
+//      (~line 576-627): returned via recon.terminalOutcome, short-circuits
+//      before the bar fetch.
+//   4. success:auto_paused      -- gate 6, equity floor fires (~line
+//      754-803): calls finish() directly, deliberately bypassing done(),
+//      before the gate-7 bar fetch.
+//   5. skipped:duplicate_run    -- gate 19, bar-claim loser (~line
+//      1136-1141): the file's own comment says the loser writes audit only
+//      and must not upsert.
+// Confirmed NOT in the set (all journal before returning): skipped:partial_bar
+// and skipped:stale_data (both via preDecisionSkip -> journalSkip, ~line
+// 922-950), every gateSkip() outcome, the SKIP-decision outcomes
+// (skipped:signal_conflict, success:no_action), skipped:geometry_invalid,
+// skipped:size_too_small, and success / success:journal_degraded (preceded by
+// the pre-order journal at ~line 1147). error:* outcomes are excluded
+// generally -- they are dynamic (err.name), not enumerable, and the `slots`
+// check already FAILs any error:* regardless of how `scans` classifies it.
+Deno.test("NON_SCANNING_OUTCOMES: exactly the five outcomes derived from hourly-check/logic.ts's gate order", () => {
+  assertEquals(
+    NON_SCANNING_OUTCOMES,
+    new Set([
+      "skipped:trading_paused",
+      "skipped:market_closed",
+      "error:naked_position_flattened",
+      "success:auto_paused",
+      "skipped:duplicate_run",
+    ]),
+  );
+});
+
+Deno.test("NON_SCANNING_OUTCOMES: does not contain skipped:partial_bar or skipped:stale_data (both journal via preDecisionSkip)", () => {
+  assertEquals(NON_SCANNING_OUTCOMES.has("skipped:partial_bar"), false);
+  assertEquals(NON_SCANNING_OUTCOMES.has("skipped:stale_data"), false);
+});
+
+Deno.test("NON_SCANNING_OUTCOMES: does not contain any gateSkip()/SKIP-decision/success outcome", () => {
+  for (
+    const outcome of [
+      "skipped:session_close_flatten_only",
+      "skipped:kill_switch_active",
+      "skipped:position_open",
+      "skipped:cooldown",
+      "skipped:max_entries_reached",
+      "skipped:shorts_disabled",
+      "skipped:not_shortable",
+      "skipped:signal_conflict",
+      "skipped:geometry_invalid",
+      "skipped:size_too_small",
+      "success:no_action",
+      "success",
+      "success:journal_degraded",
+    ]
+  ) {
+    assertEquals(NON_SCANNING_OUTCOMES.has(outcome), false, outcome);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// checkSlots (§5.3 check 1)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkSlots: 9 finished runs, no error outcomes -> PASS", () => {
+  const runs = Array.from({ length: 9 }, () => hourlyRun());
+  assertEquals(checkSlots(runs), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkSlots: fewer than 9 runs -> FAIL", () => {
+  const runs = Array.from({ length: 8 }, () => hourlyRun());
+  const result = checkSlots(runs);
+  assertEquals(result.status, "FAIL");
+  assertEquals(result.findings.length > 0, true);
+});
+
+Deno.test("checkSlots: a run with finished_at null -> FAIL", () => {
+  const runs = [
+    ...Array.from({ length: 8 }, () => hourlyRun()),
+    hourlyRun({ finished_at: null, outcome: null }),
+  ];
+  assertEquals(checkSlots(runs).status, "FAIL");
+});
+
+Deno.test("checkSlots: a run with outcome starting error: -> FAIL", () => {
+  const runs = [
+    ...Array.from({ length: 8 }, () => hourlyRun()),
+    hourlyRun({ outcome: "error:AlpacaError" }),
+  ];
+  assertEquals(checkSlots(runs).status, "FAIL");
+});
+
+// ---------------------------------------------------------------------------
+// checkLatency (§5.3 check 5)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkLatency: every run well under the warn threshold -> PASS", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:02.000Z",
+  })];
+  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkLatency: just over the 10s warn threshold -> WARN", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:10.001Z",
+  })];
+  const result = checkLatency(runs);
+  assertEquals(result.status, "WARN");
+  assertEquals(result.findings.length, 1);
+});
+
+Deno.test("checkLatency: exactly at the 10s warn threshold -> PASS (boundary is exclusive)", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:10.000Z",
+  })];
+  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkLatency: just over the 120s fail threshold -> FAIL", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:09:00.001Z",
+  })];
+  assertEquals(checkLatency(runs).status, "FAIL");
+});
+
+Deno.test("checkLatency: a FAIL run alongside a WARN run -> overall FAIL (highest severity wins)", () => {
+  const runs = [
+    hourlyRun({
+      started_at: "2026-08-05T13:07:00.000Z",
+      finished_at: "2026-08-05T13:07:10.001Z",
+    }),
+    hourlyRun({
+      started_at: "2026-08-05T14:07:00.000Z",
+      finished_at: "2026-08-05T14:09:00.001Z",
+    }),
+  ];
+  assertEquals(checkLatency(runs).status, "FAIL");
+});
+
+Deno.test("checkLatency: unfinished run (finished_at null) is skipped, not a latency finding", () => {
+  const runs = [hourlyRun({ finished_at: null, outcome: null })];
+  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+});
+
+// ---------------------------------------------------------------------------
+// checkScans (§5.3 check 2)
+// ---------------------------------------------------------------------------
+
+function verificationForScans(overrides: {
+  hourly_check_runs?: VerifyHourlyCheckRun[];
+  scans?: HourlyScanRow[];
+  shorts_enabled?: boolean;
+}) {
+  return {
+    shorts_enabled: overrides.shorts_enabled ?? true,
+    hourly_check_runs: overrides.hourly_check_runs ?? [],
+    scans: overrides.scans ?? [],
+  };
+}
+
+Deno.test("checkScans: scan count matches the number of scanning runs -> PASS", () => {
+  const v = verificationForScans({
+    hourly_check_runs: [
+      hourlyRun({ outcome: "skipped:market_closed" }),
+      hourlyRun({ outcome: "success:no_action" }),
+    ],
+    scans: [scanRow()],
+  });
+  assertEquals(checkScans(v), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkScans: holiday -- 9 skipped:market_closed runs, zero scans -> PASS", () => {
+  const v = verificationForScans({
+    hourly_check_runs: Array.from(
+      { length: 9 },
+      () => hourlyRun({ outcome: "skipped:market_closed" }),
+    ),
+    scans: [],
+  });
+  assertEquals(checkScans(v), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkScans: mismatch between scan count and scanning-run count -> FAIL", () => {
+  const v = verificationForScans({
+    hourly_check_runs: [hourlyRun({ outcome: "success:no_action" })],
+    scans: [],
+  });
+  assertEquals(checkScans(v).status, "FAIL");
+});
+
+Deno.test("checkScans: SHORT decision while shorts_enabled is false -> FAIL", () => {
+  const v = verificationForScans({
+    hourly_check_runs: [hourlyRun({ outcome: "success" })],
+    scans: [scanRow({ decision: "SHORT" })],
+    shorts_enabled: false,
+  });
+  assertEquals(checkScans(v).status, "FAIL");
+});
+
+Deno.test("checkScans: LONG decision with a null entry_order_id -> WARN, not FAIL", () => {
+  const v = verificationForScans({
+    hourly_check_runs: [hourlyRun({ outcome: "success:journal_degraded" })],
+    scans: [scanRow({ decision: "LONG", entry_order_id: null })],
+  });
+  assertEquals(checkScans(v).status, "WARN");
+});
+
+Deno.test("checkScans: neutral-only detectors_fired alongside no_detectors_fired skip_reason is never a finding", () => {
+  const v = verificationForScans({
+    hourly_check_runs: [hourlyRun({ outcome: "success:no_action" })],
+    scans: [
+      scanRow({
+        decision: "SKIP",
+        skip_reason: "no_detectors_fired",
+        detectors_fired: ["neutral"],
+      }),
+    ],
+  });
+  assertEquals(checkScans(v), { status: "PASS", findings: [] });
+});
+
+// ---------------------------------------------------------------------------
+// checkGeometry (§5.3 check 3)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkGeometry: whole-cent stop/target prices -> PASS", () => {
+  const scans = [scanRow({ stop_price: 499.5, target_price: 501.25 })];
+  assertEquals(checkGeometry(scans), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkGeometry: null stop/target prices (no entry attempted) -> PASS", () => {
+  assertEquals(checkGeometry([scanRow()]), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkGeometry: sub-cent stop_price -> FAIL", () => {
+  const scans = [scanRow({ stop_price: 499.505 })];
+  assertEquals(checkGeometry(scans).status, "FAIL");
+});
+
+Deno.test("checkGeometry: a value within the 1e-6 float-noise tolerance of a whole cent -> PASS", () => {
+  // 123.45 * 100 === 12344.999999999998 in IEEE 754 -- must not FAIL on that noise.
+  const scans = [scanRow({ stop_price: 123.45 })];
+  assertEquals(checkGeometry(scans), { status: "PASS", findings: [] });
+});
+
+// ---------------------------------------------------------------------------
+// checkJournal (§5.3 check 4)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkJournal: every entry trade matched by a scan's entry_order_id -> PASS", () => {
+  const scans = [scanRow({ decision: "LONG", entry_order_id: "order-1" })];
+  const trades = [tradeRow({ reason: "hourly_long_entry", broker_order_id: "order-1" })];
+  assertEquals(checkJournal(trades, scans), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkJournal: an entry trade with no matching scan -> FAIL", () => {
+  const trades = [tradeRow({ reason: "hourly_long_entry", broker_order_id: "order-1" })];
+  const result = checkJournal(trades, []);
+  assertEquals(result.status, "FAIL");
+  assertEquals(result.findings.length, 1);
+});
+
+Deno.test("checkJournal: a non-hourly trade is ignored entirely", () => {
+  const trades = [tradeRow({ reason: "panic_cli", broker_order_id: "order-9" })];
+  assertEquals(checkJournal(trades, []), { status: "PASS", findings: [] });
+});
+
+// ---------------------------------------------------------------------------
+// checkState (§5.3 check 6)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkState: paused=false, verified matches baseline, no previous row -> PASS", () => {
+  const config = {
+    paused: "false",
+    hourly_experiment_start_equity: "1000000.00",
+    hourly_experiment_baseline_verified: "1000000.00",
+  };
+  assertEquals(checkState(config, null), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkState: paused=true -> FAIL", () => {
+  const config = {
+    paused: "true",
+    hourly_experiment_start_equity: "1000000.00",
+    hourly_experiment_baseline_verified: "1000000.00",
+  };
+  assertEquals(checkState(config, null).status, "FAIL");
+});
+
+Deno.test("checkState: unset baseline -> WARN (day-zero), not FAIL", () => {
+  const config = {
+    paused: "false",
+    hourly_experiment_start_equity: null,
+    hourly_experiment_baseline_verified: null,
+  };
+  assertEquals(checkState(config, null).status, "WARN");
+});
+
+Deno.test("checkState: baseline_verified diverges from the raw baseline -> FAIL", () => {
+  const config = {
+    paused: "false",
+    hourly_experiment_start_equity: "1000000.00",
+    hourly_experiment_baseline_verified: "999999.99",
+  };
+  assertEquals(checkState(config, null).status, "FAIL");
+});
+
+Deno.test("checkState: baseline moved since the previous ledger row -> FAIL", () => {
+  const config = {
+    paused: "false",
+    hourly_experiment_start_equity: "1000000.00",
+    hourly_experiment_baseline_verified: "1000000.00",
+  };
+  assertEquals(
+    checkState(config, { floor_baseline_raw: "999000.00" }).status,
+    "FAIL",
+  );
+});
+
+Deno.test("checkState: baseline byte-identical to the previous ledger row -> PASS", () => {
+  const config = {
+    paused: "false",
+    hourly_experiment_start_equity: "1000000.00",
+    hourly_experiment_baseline_verified: "1000000.00",
+  };
+  assertEquals(
+    checkState(config, { floor_baseline_raw: "1000000.00" }),
+    { status: "PASS", findings: [] },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// checkKillSwitch (§5.3 check 7)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkKillSwitch: 108 runs, all success:no_position, no LONG scans -> PASS", () => {
+  const result = checkKillSwitch(
+    { count: 108, outcome_counts: { "success:no_position": 108 } },
+    [],
+  );
+  assertEquals(result, { status: "PASS", findings: [] });
+});
+
+Deno.test("checkKillSwitch: count !== 108 -> FAIL", () => {
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 } },
+    [],
+  );
+  assertEquals(result.status, "FAIL");
+});
+
+Deno.test("checkKillSwitch: an outcome not starting success:/skipped: -> FAIL", () => {
+  const result = checkKillSwitch(
+    { count: 108, outcome_counts: { "success:no_position": 107, "error:AlpacaError": 1 } },
+    [],
+  );
+  assertEquals(result.status, "FAIL");
+});
+
+Deno.test("checkKillSwitch: uniform success:no_position alongside a LONG scan -> FAIL (contradiction)", () => {
+  const result = checkKillSwitch(
+    { count: 108, outcome_counts: { "success:no_position": 108 } },
+    [scanRow({ decision: "LONG" })],
+  );
+  assertEquals(result.status, "FAIL");
+});
+
+Deno.test("checkKillSwitch: non-uniform outcome_counts alongside a LONG scan is not the contradiction -> PASS", () => {
+  const result = checkKillSwitch(
+    { count: 108, outcome_counts: { "success:no_position": 100, "success:in_position": 8 } },
+    [scanRow({ decision: "LONG" })],
+  );
+  assertEquals(result, { status: "PASS", findings: [] });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateVerification -- composes the seven checks + metrics (§5.3/§6.1).
+// ---------------------------------------------------------------------------
+
+function cleanDayVerification(): VerificationBlock {
+  return {
+    date: "2026-08-05",
+    window: { since: "2026-08-05T00:00:00.000Z", until: "2026-08-05T23:59:59.999Z" },
+    shorts_enabled: false,
+    hourly_check_runs: Array.from({ length: 9 }, (_, i) =>
+      hourlyRun({
+        started_at: `2026-08-05T${13 + i}:07:00.000Z`,
+        finished_at: `2026-08-05T${13 + i}:07:01.500Z`,
+        outcome: "success:no_action",
+      })),
+    kill_switch_runs: { count: 108, outcome_counts: { "success:no_position": 108 } },
+    scans: Array.from(
+      { length: 9 },
+      (_, i) => scanRow({ bar_ts: `2026-08-05T${13 + i}:00:00.000Z` }),
+    ),
+    trades: [],
+    config: {
+      paused: "false",
+      hourly_experiment_start_equity: "1000000.00",
+      hourly_experiment_baseline_verified: "1000000.00",
+    },
+  };
+}
+
+Deno.test("evaluateVerification: a clean day -> PASS with every check PASS", () => {
+  const result = evaluateVerification(cleanDayVerification(), null);
+  assertEquals(result.verdict, "PASS");
+  assertEquals(result.checks, {
+    slots: "PASS",
+    latency: "PASS",
+    scans: "PASS",
+    geometry: "PASS",
+    journal: "PASS",
+    state: "PASS",
+    kill_switch: "PASS",
+  });
+  assertEquals(result.findings, []);
+});
+
+Deno.test("evaluateVerification: a holiday (9x skipped:market_closed, zero scans) -> PASS", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs = v.hourly_check_runs.map((r) => ({
+    ...r,
+    outcome: "skipped:market_closed",
+  }));
+  v.scans = [];
+  const result = evaluateVerification(v, null);
+  assertEquals(result.verdict, "PASS");
+  assertEquals(result.metrics.scan_rows, 0);
+});
+
+Deno.test("evaluateVerification: metrics.hourly_runs and metrics.scan_rows count the clean day correctly", () => {
+  const result = evaluateVerification(cleanDayVerification(), null);
+  assertEquals(result.metrics.hourly_runs, 9);
+  assertEquals(result.metrics.scan_rows, 9);
+  assertEquals(result.metrics.kill_switch_runs, 108);
+  assertEquals(result.metrics.decision_counts, { LONG: 0, SHORT: 0, SKIP: 9 });
+});
+
+Deno.test("evaluateVerification: metrics.latency_ms.max/median over finished runs", () => {
+  const result = evaluateVerification(cleanDayVerification(), null);
+  // Every clean-day run takes 1500ms.
+  assertEquals(result.metrics.latency_ms, { max: 1500, median: 1500 });
+});
+
+Deno.test("evaluateVerification: metrics.evaluated_bars excludes partial_bar/stale_data skips", () => {
+  const v = cleanDayVerification();
+  v.scans = [
+    scanRow({ bar_ts: "2026-08-05T13:00:00.000Z", skip_reason: "partial_bar" }),
+    scanRow({ bar_ts: "2026-08-05T14:00:00.000Z", skip_reason: "no_detectors_fired" }),
+  ];
+  const result = evaluateVerification(v, null);
+  assertEquals(result.metrics.scan_rows, 2);
+  assertEquals(result.metrics.evaluated_bars, 1);
+});
+
+Deno.test("evaluateVerification: metrics.equity_usd is the latest (by bar_ts) scan's equity, or null with no scans", () => {
+  const v = cleanDayVerification();
+  v.scans = [
+    scanRow({ bar_ts: "2026-08-05T13:00:00.000Z", equity_usd: 1_000_000 }),
+    scanRow({ bar_ts: "2026-08-05T14:00:00.000Z", equity_usd: 1_010_000 }),
+  ];
+  assertEquals(evaluateVerification(v, null).metrics.equity_usd, 1_010_000);
+
+  v.scans = [];
+  assertEquals(evaluateVerification(v, null).metrics.equity_usd, null);
+});
+
+Deno.test("evaluateVerification: metrics.floor_price_usd and headroom_pct match the published formula", () => {
+  const v = cleanDayVerification();
+  v.config.hourly_experiment_start_equity = "1017330.61";
+  v.config.hourly_experiment_baseline_verified = "1017330.61";
+  v.scans = [scanRow({ bar_ts: "2026-08-05T13:00:00.000Z", equity_usd: 1017330.61 })];
+  const result = evaluateVerification(v, null);
+  assertEquals(result.metrics.floor_price_usd, 1017330.61 * 0.85);
+  assertEquals(Math.round((result.metrics.headroom_pct ?? 0) * 10) / 10, 15.0);
+});
+
+Deno.test("evaluateVerification: metrics.entries/fills/closed_trades/r_multiples come from pairHourlyTrades", () => {
+  const v = cleanDayVerification();
+  v.scans = [
+    scanRow({
+      bar_ts: "2026-08-05T13:00:00.000Z",
+      decision: "LONG",
+      entry_order_id: "order-1",
+      risk_per_share: 1,
+    }),
+  ];
+  v.trades = [
+    tradeRow({
+      reason: "hourly_long_entry",
+      broker_order_id: "order-1",
+      fill_price: 500,
+      fill_time: "2026-08-05T14:07:00.000Z",
+    }),
+    tradeRow({
+      reason: "hourly_bracket_exit",
+      broker_order_id: "order-2",
+      fill_price: 502,
+      fill_time: "2026-08-05T15:07:00.000Z",
+    }),
+  ];
+  const result = evaluateVerification(v, null);
+  assertEquals(result.metrics.entries, 1);
+  assertEquals(result.metrics.fills, 2);
+  assertEquals(result.metrics.closed_trades, 1);
+  assertEquals(result.metrics.r_multiples, [2]);
+});
+
+// ---------------------------------------------------------------------------
+// buildLedgerRow / upsertLedgerJsonl / selectPreviousRow (§5.5/§6.1, D6)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildLedgerRow: carries date/verdict/checks/metrics/findings straight from the evaluation", () => {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  const row = buildLedgerRow("2026-08-05", evaluation);
+  assertEquals(row.date, "2026-08-05");
+  assertEquals(row.verdict, "PASS");
+  assertEquals(row.checks, evaluation.checks);
+  assertEquals(row.findings, evaluation.findings);
+});
+
+function ledgerRow(date: string, overrides: Partial<LedgerRow> = {}): LedgerRow {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  return { ...buildLedgerRow(date, evaluation), ...overrides };
+}
+
+Deno.test("upsertLedgerJsonl: inserts into an empty ledger", () => {
+  const row = ledgerRow("2026-08-05");
+  const text = upsertLedgerJsonl("", row);
+  assertEquals(text, JSON.stringify(row) + "\n");
+});
+
+Deno.test("upsertLedgerJsonl: replaces an existing row for the same date rather than duplicating it", () => {
+  const first = ledgerRow("2026-08-05", { verdict: "PASS" });
+  const replaced = ledgerRow("2026-08-05", { verdict: "FAIL" });
+  const afterFirst = upsertLedgerJsonl("", first);
+  const afterReplace = upsertLedgerJsonl(afterFirst, replaced);
+  const lines = afterReplace.trim().split("\n");
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]).verdict, "FAIL");
+});
+
+Deno.test("upsertLedgerJsonl: keeps rows in ascending date order regardless of insertion order", () => {
+  const day1 = ledgerRow("2026-08-03");
+  const day3 = ledgerRow("2026-08-05");
+  const day2 = ledgerRow("2026-08-04");
+  let text = upsertLedgerJsonl("", day3);
+  text = upsertLedgerJsonl(text, day1);
+  text = upsertLedgerJsonl(text, day2);
+  const dates = text.trim().split("\n").map((l: string) => JSON.parse(l).date);
+  assertEquals(dates, ["2026-08-03", "2026-08-04", "2026-08-05"]);
+});
+
+Deno.test("upsertLedgerJsonl: re-running the same date with the same row is byte-identical (idempotent)", () => {
+  const row = ledgerRow("2026-08-05");
+  const once = upsertLedgerJsonl("", row);
+  const twice = upsertLedgerJsonl(once, row);
+  assertEquals(twice, once);
+});
+
+Deno.test("selectPreviousRow: the newest row strictly before the target date", () => {
+  const rows = [ledgerRow("2026-08-03"), ledgerRow("2026-08-04"), ledgerRow("2026-08-05")];
+  assertEquals(selectPreviousRow(rows, "2026-08-05")?.date, "2026-08-04");
+});
+
+Deno.test("selectPreviousRow: skips a gap day correctly (no row exactly one day back)", () => {
+  const rows = [ledgerRow("2026-08-01"), ledgerRow("2026-08-05")];
+  assertEquals(selectPreviousRow(rows, "2026-08-06")?.date, "2026-08-05");
+});
+
+Deno.test("selectPreviousRow: a backfilled out-of-order write is still found by date, not insertion order", () => {
+  const rows = [ledgerRow("2026-08-05"), ledgerRow("2026-08-01")];
+  assertEquals(selectPreviousRow(rows, "2026-08-05")?.date, "2026-08-01");
+});
+
+Deno.test("selectPreviousRow: no row strictly before the target -> null (day zero)", () => {
+  const rows = [ledgerRow("2026-08-05")];
+  assertEquals(selectPreviousRow(rows, "2026-08-05"), null);
+  assertEquals(selectPreviousRow([], "2026-08-05"), null);
 });
