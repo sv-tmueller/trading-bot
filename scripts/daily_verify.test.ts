@@ -2,10 +2,11 @@
 // B). Pure core only -- see daily_verify.ts's own header comment for the
 // CLI/permission split. Structured like deadman_check.test.ts: explicit
 // `now`/input construction, no network, no DB, no env.
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import type { HourlyScanRow, TradeRow } from "../supabase/functions/_shared/db.ts";
 import {
   buildLedgerRow,
+  buildSummary,
   checkGeometry,
   checkJournal,
   checkKillSwitch,
@@ -17,7 +18,9 @@ import {
   HOURLY_SLOTS_PER_WEEKDAY,
   isWeekendYmd,
   type LedgerRow,
+  MalformedVerificationError,
   NON_SCANNING_OUTCOMES,
+  parseVerificationBlock,
   renderMarkdownDigest,
   resolveTargetDate,
   selectPreviousRow,
@@ -885,4 +888,57 @@ Deno.test("fixture zero-completed-bars-residual: surfaces as a scans-check FAIL,
   const result = evaluateVerification(loadFixture("zero-completed-bars-residual"), null);
   assertEquals(result.checks.scans, "FAIL");
   assertEquals(result.verdict, "FAIL");
+});
+
+// ---------------------------------------------------------------------------
+// buildSummary (§5.5 stdout envelope's `summary` field)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildSummary: matches §5.5's worked example format", () => {
+  const evaluation = evaluateVerification(loadFixture("clean-day"), null);
+  const summary = buildSummary(evaluation.metrics);
+  assertEquals(summary, "9/9 slots, 9 scans, 0 entries, 108/108 kill-switch, headroom 15.0%");
+});
+
+Deno.test("buildSummary: headroom n/a when there is no baseline to compute it from", () => {
+  const evaluation = evaluateVerification(loadFixture("baseline-unset"), null);
+  const summary = buildSummary(evaluation.metrics);
+  assertEquals(summary.includes("headroom n/a"), true);
+});
+
+// ---------------------------------------------------------------------------
+// parseVerificationBlock (§5.1: malformed input -> exit 1)
+// ---------------------------------------------------------------------------
+
+Deno.test("parseVerificationBlock: a well-formed block round-trips unchanged", () => {
+  const raw = loadFixture("clean-day");
+  assertEquals(parseVerificationBlock(raw), raw);
+});
+
+Deno.test("parseVerificationBlock: null -> throws MalformedVerificationError", () => {
+  assertThrows(() => parseVerificationBlock(null), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: missing hourly_check_runs -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  delete (raw as { hourly_check_runs?: unknown }).hourly_check_runs;
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: an unparseable started_at timestamp -> throws", () => {
+  const raw = loadFixture("clean-day");
+  raw.hourly_check_runs[0].started_at = "not-a-timestamp";
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: an unparseable finished_at timestamp -> throws", () => {
+  const raw = loadFixture("clean-day");
+  raw.hourly_check_runs[0].finished_at = "not-a-timestamp";
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: missing config -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  delete (raw as { config?: unknown }).config;
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
 });

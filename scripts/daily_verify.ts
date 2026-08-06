@@ -617,7 +617,7 @@ export function buildLedgerRow(date: string, evaluation: EvaluationResult): Ledg
   };
 }
 
-function parseLedgerJsonl(text: string): LedgerRow[] {
+export function parseLedgerJsonl(text: string): LedgerRow[] {
   return text
     .split("\n")
     .filter((line) => line.trim().length > 0)
@@ -785,4 +785,197 @@ export function renderMarkdownDigest(
     renderChangedSection(metrics, previousRow),
     "",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// stdout envelope + input validation (§5.5, frozen). buildSummary and
+// parseVerificationBlock are pure and unit-tested directly; only main()
+// below touches stdin/stdout/disk.
+// ---------------------------------------------------------------------------
+
+export type Verdict = CheckStatus | "SKIPPED_WEEKEND";
+
+export interface StdoutEnvelope {
+  date: string;
+  verdict: Verdict;
+  summary: string;
+  findings: string[];
+  artifacts: { ledger: string | null; digest: string | null };
+}
+
+/** The §5.5 worked-example summary line: headline numbers, one per check family. */
+export function buildSummary(metrics: Metrics): string {
+  const headroom = metrics.headroom_pct !== null ? `${metrics.headroom_pct.toFixed(1)}%` : "n/a";
+  return `${metrics.hourly_runs}/${HOURLY_SLOTS_PER_WEEKDAY} slots, ${metrics.scan_rows} scans, ` +
+    `${metrics.entries} entries, ${metrics.kill_switch_runs}/${KILL_SWITCH_SLOTS_PER_WEEKDAY} ` +
+    `kill-switch, headroom ${headroom}`;
+}
+
+export class MalformedVerificationError extends Error {
+  override name = "MalformedVerificationError";
+}
+
+function assertParsableTimestamp(value: unknown, label: string): void {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+    throw new MalformedVerificationError(
+      `unparseable timestamp for ${label}: ${JSON.stringify(value)}`,
+    );
+  }
+}
+
+/**
+ * Validates the shape of the digest's `.verification` block (§4.3) before
+ * any check runs over it. Throws MalformedVerificationError -- main() maps
+ * that to exit 1, printing nothing and writing nothing (§5.1/§5.5). Not
+ * exhaustive field-by-field (a malformed scan/trade row still fails loudly
+ * downstream in Number()/Date.parse() calls); this covers exactly the three
+ * documented exit-1 triggers: a missing verification block, a structurally
+ * wrong shape, and an unparseable timestamp.
+ */
+export function parseVerificationBlock(raw: unknown): VerificationBlock {
+  if (raw === null || typeof raw !== "object") {
+    throw new MalformedVerificationError("digest is missing a verification block");
+  }
+  const v = raw as Record<string, unknown>;
+
+  if (typeof v.date !== "string") {
+    throw new MalformedVerificationError("verification.date is missing or not a string");
+  }
+  if (typeof v.shorts_enabled !== "boolean") {
+    throw new MalformedVerificationError("verification.shorts_enabled is missing or not a boolean");
+  }
+  if (!Array.isArray(v.hourly_check_runs)) {
+    throw new MalformedVerificationError(
+      "verification.hourly_check_runs is missing or not an array",
+    );
+  }
+  for (const run of v.hourly_check_runs) {
+    if (run === null || typeof run !== "object") {
+      throw new MalformedVerificationError(
+        "a verification.hourly_check_runs entry is not an object",
+      );
+    }
+    const r = run as Record<string, unknown>;
+    assertParsableTimestamp(r.started_at, "hourly_check_runs[].started_at");
+    if (r.finished_at !== null) {
+      assertParsableTimestamp(r.finished_at, "hourly_check_runs[].finished_at");
+    }
+  }
+  if (v.kill_switch_runs === null || typeof v.kill_switch_runs !== "object") {
+    throw new MalformedVerificationError(
+      "verification.kill_switch_runs is missing or not an object",
+    );
+  }
+  if (!Array.isArray(v.scans)) {
+    throw new MalformedVerificationError("verification.scans is missing or not an array");
+  }
+  if (!Array.isArray(v.trades)) {
+    throw new MalformedVerificationError("verification.trades is missing or not an array");
+  }
+  if (v.config === null || typeof v.config !== "object") {
+    throw new MalformedVerificationError("verification.config is missing or not an object");
+  }
+
+  return v as unknown as VerificationBlock;
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry point (§5.5, frozen). Not exercised by any test -- everything
+// above this point is unit-tested with explicit inputs, per
+// deadman_check.ts's own documented convention. main() is the only code in
+// this file that touches stdin/stdout/disk.
+// ---------------------------------------------------------------------------
+
+const LEDGER_PATH = "docs/trading-journal/daily-verification.jsonl";
+const DIGEST_DIR = "docs/trading-journal/daily";
+
+function digestPath(date: string): string {
+  return `${DIGEST_DIR}/${date}.md`;
+}
+
+function parseDateArg(argv: string[]): string {
+  for (const arg of argv) {
+    if (arg.startsWith("--date=")) return arg.slice("--date=".length);
+  }
+  throw new MalformedVerificationError("missing required --date=YYYY-MM-DD argument");
+}
+
+async function readTextIfExists(path: string): Promise<string> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return "";
+    throw e;
+  }
+}
+
+async function main(): Promise<void> {
+  let date: string;
+  try {
+    date = parseDateArg(Deno.args);
+  } catch (e) {
+    console.error(`daily_verify: ${(e as Error).message}`);
+    Deno.exit(1);
+    return;
+  }
+
+  // Weekend short-circuit (§5.4/D12): no artifact written, stdin never read.
+  if (isWeekendYmd(date)) {
+    const envelope: StdoutEnvelope = {
+      date,
+      verdict: "SKIPPED_WEEKEND",
+      summary: "weekend -- not evaluated",
+      findings: [],
+      artifacts: { ledger: null, digest: null },
+    };
+    console.log(JSON.stringify(envelope));
+    Deno.exit(0);
+    return;
+  }
+
+  let verification: VerificationBlock;
+  try {
+    const raw = await new Response(Deno.stdin.readable).text();
+    const body = JSON.parse(raw) as { verification?: unknown };
+    verification = parseVerificationBlock(body.verification);
+  } catch (e) {
+    console.error(`daily_verify: malformed input: ${(e as Error).message}`);
+    Deno.exit(1);
+    return;
+  }
+
+  try {
+    const existingLedgerText = await readTextIfExists(LEDGER_PATH);
+    const existingRows = parseLedgerJsonl(existingLedgerText);
+    const previousRow = selectPreviousRow(existingRows, date);
+    const previousForState = previousRow === null
+      ? null
+      : { floor_baseline_raw: previousRow.metrics.floor_baseline_raw };
+
+    const evaluation = evaluateVerification(verification, previousForState);
+    const ledgerRow = buildLedgerRow(date, evaluation);
+    const newLedgerText = upsertLedgerJsonl(existingLedgerText, ledgerRow);
+    const markdown = renderMarkdownDigest(date, evaluation, previousRow);
+
+    await Deno.mkdir(DIGEST_DIR, { recursive: true });
+    await Deno.writeTextFile(LEDGER_PATH, newLedgerText);
+    await Deno.writeTextFile(digestPath(date), markdown);
+
+    const envelope: StdoutEnvelope = {
+      date,
+      verdict: evaluation.verdict,
+      summary: buildSummary(evaluation.metrics),
+      findings: evaluation.findings,
+      artifacts: { ledger: LEDGER_PATH, digest: digestPath(date) },
+    };
+    console.log(JSON.stringify(envelope));
+    Deno.exit(evaluation.verdict === "FAIL" ? 2 : 0);
+  } catch (e) {
+    console.error(`daily_verify: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
+}
+
+if (import.meta.main) {
+  main();
 }
