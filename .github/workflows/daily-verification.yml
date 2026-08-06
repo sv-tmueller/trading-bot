@@ -247,40 +247,57 @@ jobs:
         env:
           NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
 
+      # A gh API blip here is deliberately NOT allowed to red the run: by
+      # this point the Discord line has already landed, so the day's signal
+      # already reached the operator. `set +e` around the subshell (needed
+      # because this step is several `gh` calls, not one) mirrors the
+      # "Evaluate day" step's capture-then-branch idiom above, just wrapped
+      # around a block instead of a single command.
       - name: Open FAIL issue (deduped by exact title)
         if: ${{ steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.code == '2' }}
         run: |
-          DATE=$(jq -r '.date' verify-result.json)
-          N=$(jq -r '.findings | length' verify-result.json)
-          TITLE="[daily-verify][dev] $DATE: $N finding(s)"
+          set +e
+          (
+            set -e
+            DATE=$(jq -r '.date' verify-result.json)
+            N=$(jq -r '.findings | length' verify-result.json)
+            TITLE="[daily-verify][dev] $DATE: $N finding(s)"
 
-          # Idempotent -- never fails if the label already exists.
-          gh label create daily-verify --color 5319E7 \
-            --description "Daily verification FAIL for a specific trading day (#549)" \
-            --force >/dev/null
+            # Idempotent -- never fails if the label already exists.
+            gh label create daily-verify --color 5319E7 \
+              --description "Daily verification FAIL for a specific trading day (#549)" \
+              --force >/dev/null
 
-          # Dedup: one issue per date, exact-title-matched so a near-title
-          # cannot cause a false dedup.
-          EXISTING="$(gh issue list --search "$TITLE in:title" --state all \
-                        --json number,title \
-                        --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
-          if [ -n "$EXISTING" ]; then
-            echo "Issue #$EXISTING already exists for $DATE -- no-op."
-            exit 0
+            # Dedup: one issue per date, exact-title-matched so a near-title
+            # cannot cause a false dedup.
+            EXISTING="$(gh issue list --search "$TITLE in:title" --state all \
+                          --json number,title \
+                          --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
+            if [ -n "$EXISTING" ]; then
+              echo "Issue #$EXISTING already exists for $DATE -- no-op."
+              exit 0
+            fi
+
+            DIGEST=$(jq -r '.artifacts.digest // empty' verify-result.json)
+            BODY_FILE="$(mktemp)"
+            {
+              echo "Automated daily verification found $N finding(s) for **$DATE**."
+              echo
+              jq -r '.findings[] | "- " + .' verify-result.json
+              echo
+              echo "Digest: \`$DIGEST\`"
+              echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            } > "$BODY_FILE"
+
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label daily-verify
+          )
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 0 ]; then
+            DATE=$(jq -r '.date' verify-result.json)
+            echo "::warning::daily-verification: failed to open/dedupe the FAIL issue for $DATE (exit $CODE) -- the Discord line for this date already landed, so today's signal is not lost. See the step logs above for detail."
           fi
-
-          DIGEST=$(jq -r '.artifacts.digest // empty' verify-result.json)
-          BODY_FILE="$(mktemp)"
-          {
-            echo "Automated daily verification found $N finding(s) for **$DATE**."
-            echo
-            jq -r '.findings[] | "- " + .' verify-result.json
-            echo
-            echo "Digest: \`$DIGEST\`"
-            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          } > "$BODY_FILE"
-
-          gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label daily-verify
+          exit 0
 
       # -----------------------------------------------------------------
       # Prod leg -- INERT NOTICE ONLY, permanently. See the header comment:

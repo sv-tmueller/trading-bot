@@ -159,8 +159,8 @@ select key, value from bot_config order by key;
 
 - [ ] `paused` = false (unless the floor fired, which would have alerted Discord with position
   context).
-- [ ] `hourly_experiment_start_equity` unchanged from the last verified day (floor is roughly
-  86.5% of that value).
+- [ ] `hourly_experiment_start_equity` unchanged from the last verified day (the `EQUITY_FLOOR_PCT`
+  floor is -15% off that value, per `hourly-check/logic.ts`).
 - [ ] `hourly_experiment_baseline_verified` byte-identical to `hourly_experiment_start_equity`.
   This is the expected post-#488 state: the plausibility check ran once against live equity,
   passed, and recorded the marker so it never re-fires on the legitimate divergence the baseline
