@@ -14,6 +14,7 @@ import {
   checkSlots,
   checkState,
   evaluateVerification,
+  HOURLY_SLOTS_PER_WEEKDAY,
   isWeekendYmd,
   type LedgerRow,
   NON_SCANNING_OUTCOMES,
@@ -765,4 +766,123 @@ Deno.test("renderMarkdownDigest: never contains a generated-at timestamp or run 
   const md = renderMarkdownDigest("2026-08-05", evaluation, null);
   assertEquals(md.includes("generated"), false);
   assertEquals(md.includes("http://") || md.includes("https://"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Fixture-driven case matrix (§9), one file per case class under
+// scripts/testdata/. Each fixture is a verification-block-shaped object built
+// by hand against §4.3 (never against Package A's branch, per §10's file
+// ownership split).
+// ---------------------------------------------------------------------------
+
+function loadFixture(name: string): VerificationBlock {
+  const text = Deno.readTextFileSync(
+    new URL(`./testdata/daily-verify-${name}.json`, import.meta.url),
+  );
+  return JSON.parse(text) as VerificationBlock;
+}
+
+Deno.test("fixture clean-day: PASS", () => {
+  const result = evaluateVerification(loadFixture("clean-day"), null);
+  assertEquals(result.verdict, "PASS");
+});
+
+Deno.test("fixture holiday: nine gate-exits, zero scans, still PASS (no calendar needed)", () => {
+  const v = loadFixture("holiday");
+  const result = evaluateVerification(v, null);
+  assertEquals(result.verdict, "PASS");
+  assertEquals(v.scans.length, 0);
+  assertEquals(v.hourly_check_runs.length, HOURLY_SLOTS_PER_WEEKDAY);
+});
+
+Deno.test("fixture missing-slot: FAIL via the slots check", () => {
+  const result = evaluateVerification(loadFixture("missing-slot"), null);
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(result.checks.slots, "FAIL");
+});
+
+Deno.test("fixture unfinished-row: FAIL via the slots check (finished_at: null)", () => {
+  const result = evaluateVerification(loadFixture("unfinished-row"), null);
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(result.checks.slots, "FAIL");
+});
+
+Deno.test("fixture error-outcome: FAIL via the slots check regardless of the scans check", () => {
+  const result = evaluateVerification(loadFixture("error-outcome"), null);
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(result.checks.slots, "FAIL");
+});
+
+Deno.test("fixture latency-warn: WARN via the latency check, not FAIL", () => {
+  const result = evaluateVerification(loadFixture("latency-warn"), null);
+  assertEquals(result.checks.latency, "WARN");
+  assertEquals(result.verdict, "WARN");
+});
+
+Deno.test("fixture latency-fail: FAIL via the latency check", () => {
+  const result = evaluateVerification(loadFixture("latency-fail"), null);
+  assertEquals(result.checks.latency, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture sub-cent-geometry: FAIL via the geometry check", () => {
+  const result = evaluateVerification(loadFixture("sub-cent-geometry"), null);
+  assertEquals(result.checks.geometry, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture unmatched-fill: FAIL via the journal check", () => {
+  const result = evaluateVerification(loadFixture("unmatched-fill"), null);
+  assertEquals(result.checks.journal, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture paused-true: FAIL via the state check", () => {
+  const result = evaluateVerification(loadFixture("paused-true"), null);
+  assertEquals(result.checks.state, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture baseline-moved: FAIL via the state check, against a previous ledger row with a different baseline", () => {
+  const result = evaluateVerification(loadFixture("baseline-moved"), {
+    floor_baseline_raw: "999000.00",
+  });
+  assertEquals(result.checks.state, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture baseline-unset: WARN via the state check (day-zero), not FAIL", () => {
+  const result = evaluateVerification(loadFixture("baseline-unset"), null);
+  assertEquals(result.checks.state, "WARN");
+  assertEquals(result.verdict, "WARN");
+});
+
+Deno.test("fixture short-while-disabled: FAIL via the scans check", () => {
+  const result = evaluateVerification(loadFixture("short-while-disabled"), null);
+  assertEquals(result.checks.scans, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+Deno.test("fixture pending-long: WARN via the scans check, not FAIL", () => {
+  const result = evaluateVerification(loadFixture("pending-long"), null);
+  assertEquals(result.checks.scans, "WARN");
+  assertEquals(result.verdict, "WARN");
+});
+
+Deno.test("fixture no-position-contradiction: FAIL via the kill_switch check", () => {
+  const result = evaluateVerification(loadFixture("no-position-contradiction"), null);
+  assertEquals(result.checks.kill_switch, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+});
+
+// Disclosed residual (§5.3/NON_SCANNING_OUTCOMES's own comment): the
+// completed.length === 0 branch returns via done() before any journal call
+// and can surface as skipped:stale_data without a matching scan row. It is
+// deliberately NOT folded into NON_SCANNING_OUTCOMES either way, so this
+// fixture pins that it surfaces as an ordinary scans-check FAIL (a visible,
+// investigable mismatch) rather than crashing or being silently swallowed.
+Deno.test("fixture zero-completed-bars-residual: surfaces as a scans-check FAIL, not a crash or a silent pass", () => {
+  const result = evaluateVerification(loadFixture("zero-completed-bars-residual"), null);
+  assertEquals(result.checks.scans, "FAIL");
+  assertEquals(result.verdict, "FAIL");
 });

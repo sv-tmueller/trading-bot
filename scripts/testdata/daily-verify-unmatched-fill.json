@@ -1,0 +1,223 @@
+{
+  "date": "2026-08-05",
+  "window": {
+    "since": "2026-08-05T00:00:00.000Z",
+    "until": "2026-08-05T23:59:59.999Z"
+  },
+  "shorts_enabled": false,
+  "hourly_check_runs": [
+    {
+      "started_at": "2026-08-05T13:07:00.000Z",
+      "finished_at": "2026-08-05T13:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T14:07:00.000Z",
+      "finished_at": "2026-08-05T14:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T15:07:00.000Z",
+      "finished_at": "2026-08-05T15:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T16:07:00.000Z",
+      "finished_at": "2026-08-05T16:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T17:07:00.000Z",
+      "finished_at": "2026-08-05T17:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T18:07:00.000Z",
+      "finished_at": "2026-08-05T18:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T19:07:00.000Z",
+      "finished_at": "2026-08-05T19:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T20:07:00.000Z",
+      "finished_at": "2026-08-05T20:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    },
+    {
+      "started_at": "2026-08-05T21:07:00.000Z",
+      "finished_at": "2026-08-05T21:07:01.500Z",
+      "outcome": "success:no_action",
+      "notes": null
+    }
+  ],
+  "kill_switch_runs": {
+    "count": 108,
+    "outcome_counts": {
+      "success:no_position": 108
+    }
+  },
+  "scans": [
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T13:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T14:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T15:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T16:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T17:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T18:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T19:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T20:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    },
+    {
+      "symbol": "SPY",
+      "bar_ts": "2026-08-05T21:00:00.000Z",
+      "decision": "SKIP",
+      "skip_reason": "no_detectors_fired",
+      "detectors_fired": [],
+      "context_mode": "sma",
+      "entry_ref_price": null,
+      "stop_price": null,
+      "target_price": null,
+      "risk_per_share": null,
+      "equity_usd": 1000000,
+      "qty": 0,
+      "entry_order_id": null
+    }
+  ],
+  "trades": [
+    {
+      "symbol": "SPY",
+      "side": "BUY",
+      "qty": 10,
+      "fill_price": 500.0,
+      "fill_time": "2026-08-05T14:07:05.000Z",
+      "reason": "hourly_long_entry",
+      "broker_order_id": "order-unmatched-1"
+    }
+  ],
+  "config": {
+    "paused": "false",
+    "hourly_experiment_start_equity": "1000000.00",
+    "hourly_experiment_baseline_verified": "1000000.00"
+  }
+}

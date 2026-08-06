@@ -1,0 +1,69 @@
+{
+  "date": "2026-11-26",
+  "window": { "since": "2026-11-26T00:00:00.000Z", "until": "2026-11-26T23:59:59.999Z" },
+  "shorts_enabled": false,
+  "hourly_check_runs": [
+    {
+      "started_at": "2026-11-26T13:07:00.000Z",
+      "finished_at": "2026-11-26T13:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T14:07:00.000Z",
+      "finished_at": "2026-11-26T14:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T15:07:00.000Z",
+      "finished_at": "2026-11-26T15:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T16:07:00.000Z",
+      "finished_at": "2026-11-26T16:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T17:07:00.000Z",
+      "finished_at": "2026-11-26T17:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T18:07:00.000Z",
+      "finished_at": "2026-11-26T18:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T19:07:00.000Z",
+      "finished_at": "2026-11-26T19:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T20:07:00.000Z",
+      "finished_at": "2026-11-26T20:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    },
+    {
+      "started_at": "2026-11-26T21:07:00.000Z",
+      "finished_at": "2026-11-26T21:07:00.400Z",
+      "outcome": "skipped:market_closed",
+      "notes": null
+    }
+  ],
+  "kill_switch_runs": { "count": 108, "outcome_counts": { "skipped:market_closed": 108 } },
+  "scans": [],
+  "trades": [],
+  "config": {
+    "paused": "false",
+    "hourly_experiment_start_equity": "1000000.00",
+    "hourly_experiment_baseline_verified": "1000000.00"
+  }
+}
