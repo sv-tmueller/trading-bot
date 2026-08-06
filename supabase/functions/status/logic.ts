@@ -21,6 +21,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface StatusDeps {
   config: StrategyConfig;
   now: () => Date;
+  // #546: the narrow HOURLY_SHORTS_ENABLED reader's result (getHourlyShortsEnabled()
+  // in _shared/config.ts), passed in by handler.ts's buildDeps() rather than
+  // read here via getHourlyConfig() -- that function throws unless
+  // HOURLY_BOT_PAPER_ONLY is explicitly "true", which would take this
+  // read-only, availability-critical endpoint down over one unrelated secret
+  // (lead decision on #545). Feeds `verification.shorts_enabled` only.
+  shortsEnabled: boolean;
   alpaca: {
     getClock: () => Promise<{ isOpen: boolean }>;
     getAccountValue: () => Promise<number>;
@@ -51,6 +58,12 @@ export interface StatusDeps {
     // scripts/render_weekly_journal.ts.
     getLatestHourlyScan: () => Promise<HourlyScanRow | null>;
     getHourlyScansSince: (sinceIso: string) => Promise<HourlyScanRow[]>;
+    // #546: day-scoped [since, until] reads for the `verification` block.
+    // Only called when `verifyDate` is passed to runStatus. No mutating
+    // helper is added alongside these -- the read-only-by-type guarantee
+    // documented at the top of this file still holds.
+    getHourlyScansInWindow: (sinceIso: string, untilIso: string) => Promise<HourlyScanRow[]>;
+    getTradesInWindow: (sinceIso: string, untilIso: string) => Promise<TradeRow[]>;
   };
 }
 
@@ -138,6 +151,48 @@ export interface StatusDigest {
     // filtered from the same auditRows already fetched for audit_7d -- no
     // second DB round trip.
     audit_outcome_counts: Record<string, number>;
+  };
+  // #546: only present when `runStatus` is called with a `verifyDate`
+  // (i.e. `?verify=YYYY-MM-DD` was supplied). Never set to `undefined` --
+  // the key is conditionally spread so it is entirely absent from the JSON
+  // when no verifyDate is given, matching the `trades`/`regime_history`
+  // precedent (#358 D3). Frozen shape: spec §4.3
+  // (docs/superpowers/specs/2026-08-06-daily-verification-design.md) --
+  // #547's evaluator implements against this shape from its own fixtures,
+  // with no file shared between the two packages, so a silent deviation here
+  // breaks #547 without either package's tests catching it.
+  verification?: {
+    date: string;
+    window: { since: string; until: string };
+    shorts_enabled: boolean;
+    // Filtered to script_name === "hourly-check", ascending by started_at.
+    // `notes` carries the journal-degraded order id (rollout runbook §10).
+    hourly_check_runs: Array<
+      {
+        started_at: string;
+        finished_at: string | null;
+        outcome: string | null;
+        notes: string | null;
+      }
+    >;
+    // Counts only, never rows -- 108 identical-outcome rows carry no
+    // information the counts lack.
+    kill_switch_runs: { count: number; outcome_counts: Record<string, number> };
+    // Full HourlyScanRow values, ascending by bar_ts.
+    scans: HourlyScanRow[];
+    // Full TradeRow values, unfiltered by reason, ascending by fill_time --
+    // the evaluator applies the `hourly%` filter, so a future reason string
+    // needs no redeploy here.
+    trades: TradeRow[];
+    // Raw `bot_config` strings, null when unset. `hourly_experiment_start_equity`
+    // and `hourly_experiment_baseline_verified` MUST NOT be coerced to number
+    // -- check 6 (#547) is a byte-identity string comparison, which coercion
+    // would destroy.
+    config: {
+      paused: string | null;
+      hourly_experiment_start_equity: string | null;
+      hourly_experiment_baseline_verified: string | null;
+    };
   };
 }
 
@@ -242,12 +297,25 @@ function computeReturns(
 // windowDays: presence (not value) toggles extended mode (#358 D3). Absent ->
 // the legacy 7-day-window, 7-key response (byte-identical to the current
 // deployment); present -> same base shape plus `trades`/`regime_history`.
-export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<StatusDigest> {
+// verifyDate: presence (not value) toggles the `verification` block (#546),
+// independently of windowDays -- the two params compose freely.
+export async function runStatus(
+  deps: StatusDeps,
+  windowDays?: number,
+  verifyDate?: string,
+): Promise<StatusDigest> {
   const { db, alpaca, config } = deps;
   const now = deps.now();
   const until = now.toISOString();
   const since = new Date(now.getTime() - (windowDays ?? 7) * DAY_MS).toISOString();
   const extended = windowDays !== undefined;
+  const verifying = verifyDate !== undefined;
+  // #546: fixed string templates, not date arithmetic -- avoids any
+  // month/year-boundary bug (sub-plan). Deliberately a distinct window from
+  // `since`/`until` above (the 7-day/`?days=N` window): the two are never
+  // conflated.
+  const verifySince = verifying ? `${verifyDate}T00:00:00.000Z` : undefined;
+  const verifyUntil = verifying ? `${verifyDate}T23:59:59.999Z` : undefined;
 
   const [
     regime,
@@ -267,6 +335,10 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     latestHourlyScan,
     hourlyScansWindow,
     hourlyFloorBaselineRaw,
+    verifyAuditRows,
+    verifyScans,
+    verifyTrades,
+    hourlyBaselineVerifiedRaw,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -290,6 +362,12 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     db.getLatestHourlyScan(),
     db.getHourlyScansSince(since),
     db.getConfig("hourly_experiment_start_equity"),
+    // #546: `verification` block reads -- a second, day-scoped
+    // getAuditLogSince call, distinct from the 7-day/`?days=N` call above.
+    verifying ? db.getAuditLogSince(verifySince!, verifyUntil!) : Promise.resolve(undefined),
+    verifying ? db.getHourlyScansInWindow(verifySince!, verifyUntil!) : Promise.resolve(undefined),
+    verifying ? db.getTradesInWindow(verifySince!, verifyUntil!) : Promise.resolve(undefined),
+    verifying ? db.getConfig("hourly_experiment_baseline_verified") : Promise.resolve(undefined),
   ]);
 
   const outcome_counts: Record<string, number> = {};
@@ -338,6 +416,48 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     : [];
   const returns = computeReturns(earliestSnapshot, latestSnapshot, equityWindow);
 
+  // #546: `verification` block -- split the day's audit rows into
+  // hourly_check_runs (rows, ascending by started_at) and kill_switch_runs
+  // (counts only), per spec §4.3.
+  let verification: StatusDigest["verification"];
+  if (verifying) {
+    const dayRows = verifyAuditRows ?? [];
+    const hourlyCheckRuns = dayRows
+      .filter((r) => r.script_name === "hourly-check")
+      .map((r) => ({
+        started_at: r.started_at,
+        finished_at: r.finished_at,
+        outcome: r.outcome,
+        notes: r.notes,
+      }))
+      .sort((a, b) => a.started_at.localeCompare(b.started_at));
+    const killSwitchOutcomeCounts: Record<string, number> = {};
+    let killSwitchCount = 0;
+    for (const row of dayRows) {
+      if (row.script_name !== "kill-switch") continue;
+      killSwitchCount++;
+      const key = row.outcome ?? UNFINISHED_LABEL;
+      killSwitchOutcomeCounts[key] = (killSwitchOutcomeCounts[key] ?? 0) + 1;
+    }
+    verification = {
+      date: verifyDate!,
+      window: { since: verifySince!, until: verifyUntil! },
+      shorts_enabled: deps.shortsEnabled,
+      hourly_check_runs: hourlyCheckRuns,
+      kill_switch_runs: { count: killSwitchCount, outcome_counts: killSwitchOutcomeCounts },
+      scans: verifyScans ?? [],
+      trades: verifyTrades ?? [],
+      // Raw strings, no coercion (byte-identity-sensitive -- see check 6 in
+      // spec §5.3). pausedRaw/hourlyFloorBaselineRaw are the same already-
+      // fetched values used elsewhere in this digest, reused here verbatim.
+      config: {
+        paused: pausedRaw,
+        hourly_experiment_start_equity: hourlyFloorBaselineRaw,
+        hourly_experiment_baseline_verified: hourlyBaselineVerifiedRaw ?? null,
+      },
+    };
+  }
+
   return {
     generated_at: now.toISOString(),
     market_open: clock.isOpen,
@@ -376,5 +496,6 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     ...(extended
       ? { trades: trades as TradeRow[], regime_history: regimeHistory as RegimeStateRow[] }
       : {}),
+    ...(verifying ? { verification } : {}),
   };
 }
