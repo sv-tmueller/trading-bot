@@ -13,6 +13,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getHourlyScanByEntryOrderId,
+  getHourlyScansInWindow,
   getHourlyScansPendingEntry,
   getHourlyScansSince,
   getLastTrade,
@@ -22,6 +23,7 @@ import {
   getLatestRegimeState,
   getPendingNotifications,
   getRegimeStatesSince,
+  getTradesInWindow,
   getTradesSince,
   insertAuditLog,
   insertTrade,
@@ -520,6 +522,64 @@ Deno.test({
     assertEquals(rows[0].broker_order_id, "o-newer");
     assertEquals(rows[1].broker_order_id, "o-older");
     await sb.from("trades").delete().in("id", [belowId, olderId, newerId]);
+  },
+});
+
+// #546: getTradesInWindow -- day-scoped [since, until] window for the status
+// digest's `verification.trades` block, ascending by fill_time (lead decision
+// on #545 -- the spec's §4.3 was silent on trade ordering; both sibling arrays
+// in the block are ascending, so this one is too).
+Deno.test({
+  name: "getTradesInWindow: returns fills with since <= fill_time <= until, ascending by fill_time",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const belowId = await insertTrade(sb, {
+      symbol: "SPY",
+      side: "BUY",
+      qty: 10,
+      fillPrice: 550.1,
+      fillTime: "2030-02-04T23:59:59Z",
+      brokerOrderId: "o-window-below",
+      reason: "hourly_long_entry",
+    });
+    const olderId = await insertTrade(sb, {
+      symbol: "SPY",
+      side: "BUY",
+      qty: 10,
+      fillPrice: 550.1,
+      fillTime: "2030-02-05T14:00:00Z",
+      brokerOrderId: "o-window-older",
+      reason: "hourly_long_entry",
+    });
+    const newerId = await insertTrade(sb, {
+      symbol: "SPY",
+      side: "SELL",
+      qty: 10,
+      fillPrice: 552.0,
+      fillTime: "2030-02-05T20:00:00Z",
+      brokerOrderId: "o-window-newer",
+      reason: "hourly_bracket_exit",
+    });
+    const aboveId = await insertTrade(sb, {
+      symbol: "SPY",
+      side: "BUY",
+      qty: 10,
+      fillPrice: 553.0,
+      fillTime: "2030-02-06T00:00:00Z",
+      brokerOrderId: "o-window-above",
+      reason: "hourly_long_entry",
+    });
+    const rows = await getTradesInWindow(
+      sb,
+      "2030-02-05T00:00:00.000Z",
+      "2030-02-05T23:59:59.999Z",
+    );
+    assertEquals(
+      rows.map((r: { broker_order_id: string }) => r.broker_order_id),
+      ["o-window-older", "o-window-newer"],
+    );
+    await sb.from("trades").delete().in("id", [belowId, olderId, newerId, aboveId]);
   },
 });
 
@@ -1041,6 +1101,58 @@ Deno.test({
       belowTs,
       olderTs,
       newerTs,
+    ]);
+  },
+});
+
+// #546: getHourlyScansInWindow -- day-scoped [since, until] window for the
+// status digest's `verification.scans` block, **ascending** by bar_ts (note:
+// the sibling getHourlyScansSince above is descending -- do not copy that
+// part, per the sub-plan).
+Deno.test({
+  name: "getHourlyScansInWindow: returns rows with since <= bar_ts <= until, ascending by bar_ts",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const belowTs = "2030-02-04T23:00:00Z";
+    const olderTs = "2030-02-05T14:00:00Z";
+    const newerTs = "2030-02-05T20:00:00Z";
+    const aboveTs = "2030-02-06T00:00:00Z";
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      belowTs,
+      olderTs,
+      newerTs,
+      aboveTs,
+    ]);
+    const base = {
+      symbol: "SPY",
+      decision: "SKIP" as const,
+      skipReason: "no_detectors_fired",
+      detectorsFired: [],
+      contextMode: "none",
+      entryRefPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      riskPerShare: null,
+      equityUsd: 100000,
+      qty: 0,
+      entryOrderId: null,
+    };
+    await upsertHourlyScan(sb, { ...base, barTs: belowTs });
+    await upsertHourlyScan(sb, { ...base, barTs: olderTs });
+    await upsertHourlyScan(sb, { ...base, barTs: newerTs });
+    await upsertHourlyScan(sb, { ...base, barTs: aboveTs });
+    const rows = await getHourlyScansInWindow(
+      sb,
+      "2030-02-05T00:00:00.000Z",
+      "2030-02-05T23:59:59.999Z",
+    );
+    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [olderTs, newerTs]);
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      belowTs,
+      olderTs,
+      newerTs,
+      aboveTs,
     ]);
   },
 });
