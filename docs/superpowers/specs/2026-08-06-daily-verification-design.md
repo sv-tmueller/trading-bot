@@ -399,10 +399,22 @@ per D6.
 - `concurrency: daily-verification`, no cancel-in-progress, because it commits.
 - `permissions: contents: write, issues: write`.
 - Secrets: `STATUS_URL` / `STATUS_TOKEN` (dev, loud-fail when missing, since a
-  silently skipping check is worthless), `NOTIFY_WEBHOOK_URL`, and
-  `STATUS_URL_PROD` / `STATUS_TOKEN_PROD` for the prod leg, which stays an
-  inert `::notice::` skip until both exist (#230), mirroring both existing
-  workflows.
+  silently skipping check is worthless) and `NOTIFY_WEBHOOK_URL`. No new secret
+  is introduced; all three are already configured for `deadman-watchdog.yml`
+  and `heartbeat.yml`.
+- **Prod leg: inert check only, with no pipeline behind it even once the
+  secrets exist.** This deliberately does NOT mirror
+  `deadman-watchdog.yml`/`heartbeat.yml`, whose prod legs become fully
+  symmetric second pipelines once `STATUS_URL_PROD` / `STATUS_TOKEN_PROD` are
+  set. The reason is that neither of those workflows writes repo files, while
+  this one does, and §6's artifact schema carries **no environment dimension**:
+  a dev leg and a prod leg would both write
+  `docs/trading-journal/daily/<date>.md` and the same date-keyed ledger row for
+  the same calendar date, so whichever ran second would silently clobber the
+  other. Activating prod therefore requires a schema decision (namespacing the
+  artifacts per environment), which is out of scope here and recorded as a
+  follow-up in §12. Until then the leg is a `::notice::` and nothing more. See
+  the amendment log in §13.
 - Maintenance silence: repo **variable** `DAILY_VERIFY_SILENCED` set to exactly
   `true` short-circuits every step to a green `::notice::` exit, the same idiom
   as `DEADMAN_SILENCED`.
@@ -533,6 +545,12 @@ Non-goals for this work:
 
 Follow-ups worth filing after this lands:
 
+- **Namespacing the artifacts per environment, before any prod leg is
+  activated.** §6's ledger and digest paths are keyed by date alone, so a live
+  prod leg would collide with the dev leg on every trading day. Whoever flips
+  the prod switch at #230 needs this first. Recorded because the collision is
+  invisible until both legs run.
+
 - The `net._http_response` timeout check, via a `security definer` SQL function
   plus an RPC, restoring manual check 5 in full.
 - Backfilling the ledger for 2026-08-03 onward by dispatching the workflow per
@@ -574,6 +592,32 @@ contract, so the batch keeps its concurrency and gains no `Blocked by` edge.
 §5.5 also settles the architect's open question about where disk access lives:
 one scoped invocation, all judgment in pure functions, matching
 `render_weekly_journal.ts` rather than `deadman_check.ts`.
+
+**2026-08-06, D1: the prod leg is inert-check-only, and §7 said otherwise.**
+§7 originally told Package D to mirror `deadman-watchdog.yml` and
+`heartbeat.yml`, whose prod legs activate into full symmetric pipelines once
+their secrets exist. Package D's architect found that this cannot be right for
+this workflow: those two write no repo files, whereas §6's artifacts are keyed
+by date with no environment dimension, so a live prod leg would clobber the dev
+leg's ledger row and digest for every trading day, invisibly, whichever ran
+second. Corrected §7 to inert-check-only with no pipeline behind it, and filed
+the artifact-namespacing decision as a §12 follow-up that must land before
+anyone activates prod at #230. The architect flagged this rather than inventing
+a namespacing scheme, which was correct: the artifact schema is Package B's
+contract, not Package D's file to change.
+
+**2026-08-06, D2: end-to-end verification needs #546 deployed too, not only
+#547 merged.** The batch framing described the workflow as coupled to the script
+alone. Package D's architect pointed out that its fetch step targets
+`status?verify=`, which the dev-deployed `status` function does not recognise
+until Package A (#546) is merged and deployed. So the first real pipeline run
+needs all three: #546 merged and deployed, #547 merged, then #549.
+
+**2026-08-06, D3: #535's SQL gets a durable home.** "Keep the manual SQL as the
+documented fallback" (§12) was underspecified: those seven queries currently
+exist only in the body of #535 and the superseded #523, both closable. Package D
+copies the corrected seven-query ritual verbatim into
+`docs/trading-journal/README.md` rather than linking to an issue.
 
 **2026-08-06, B2: the `NON_SCANNING_OUTCOMES` derivation is done.** Package B's
 architect traced every return path in `hourly-check/logic.ts` against the file's
