@@ -650,3 +650,139 @@ export function selectPreviousRow(rows: LedgerRow[], targetDate: string): Ledger
   }
   return best;
 }
+
+// ---------------------------------------------------------------------------
+// Markdown digest renderer (§6.2). Follows #535's seven-check layout: a
+// verdict header, one section per check with a pass marker and the actual
+// numbers, the findings, and a "changed since the previous verified day"
+// section derived entirely from the previous ledger row. D6: no clock read,
+// no run URL, no generated-at stamp -- a straight function of its three
+// arguments, so re-rendering the same evaluation is byte-identical.
+// ---------------------------------------------------------------------------
+
+const CHECK_TITLES: Array<{ key: keyof EvaluationChecks; title: string }> = [
+  { key: "slots", title: "1. Slots" },
+  { key: "scans", title: "2. Scans" },
+  { key: "geometry", title: "3. Geometry" },
+  { key: "journal", title: "4. Journal" },
+  { key: "latency", title: "5. Latency" },
+  { key: "state", title: "6. State" },
+  { key: "kill_switch", title: "7. Kill-switch" },
+];
+
+function fmtMoneyOrNa(n: number | null): string {
+  return n === null
+    ? "n/a"
+    : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtPctOrNa(n: number | null): string {
+  return n === null ? "n/a" : `${n.toFixed(1)}%`;
+}
+
+function fmtMsOrNa(n: number | null): string {
+  return n === null ? "n/a" : `${n}ms`;
+}
+
+function checkNumbers(key: keyof EvaluationChecks, metrics: Metrics): string {
+  switch (key) {
+    case "slots":
+      return `${metrics.hourly_runs}/${HOURLY_SLOTS_PER_WEEKDAY} hourly-check runs completed cleanly.`;
+    case "scans":
+      return `${metrics.scan_rows} scan row(s) (${metrics.evaluated_bars} evaluated bar(s)).`;
+    case "geometry":
+      return "Every non-null stop/target price checked for whole-cent quantization.";
+    case "journal":
+      return `${metrics.entries} entr${
+        metrics.entries === 1 ? "y" : "ies"
+      }, ${metrics.fills} fill(s), ` +
+        `${metrics.closed_trades} closed trade(s).`;
+    case "latency":
+      return `max ${fmtMsOrNa(metrics.latency_ms.max)}, median ${
+        fmtMsOrNa(metrics.latency_ms.median)
+      }.`;
+    case "state":
+      return `bot_config.paused expected "false"; baseline ${
+        metrics.floor_baseline_raw ?? "n/a"
+      } ` +
+        "checked byte-identical against hourly_experiment_baseline_verified and the previous " +
+        "verified day.";
+    case "kill_switch":
+      return `${metrics.kill_switch_runs}/${KILL_SWITCH_SLOTS_PER_WEEKDAY} runs.`;
+  }
+}
+
+function renderChangedSection(metrics: Metrics, previousRow: LedgerRow | null): string {
+  if (previousRow === null) {
+    return "_No previous verified day to compare against (day zero)._";
+  }
+  const lines: string[] = [];
+  if (previousRow.metrics.floor_baseline_raw !== metrics.floor_baseline_raw) {
+    lines.push(
+      `- Baseline: ${previousRow.metrics.floor_baseline_raw ?? "n/a"} -> ${
+        metrics.floor_baseline_raw ?? "n/a"
+      }`,
+    );
+  }
+  if (previousRow.metrics.latency_ms.max !== metrics.latency_ms.max) {
+    lines.push(
+      `- Max latency: ${fmtMsOrNa(previousRow.metrics.latency_ms.max)} -> ${
+        fmtMsOrNa(metrics.latency_ms.max)
+      }`,
+    );
+  }
+  if (previousRow.metrics.entries === 0 && metrics.entries > 0) {
+    lines.push("- First entry recorded since the previous verified day.");
+  }
+  return lines.length > 0 ? lines.join("\n") : "_No change since the previous verified day._";
+}
+
+export function renderMarkdownDigest(
+  date: string,
+  evaluation: EvaluationResult,
+  previousRow: LedgerRow | null,
+): string {
+  const { checks, metrics, findings, verdict } = evaluation;
+
+  const checkSections = CHECK_TITLES.flatMap(({ key, title }) => [
+    `## ${title}`,
+    "",
+    `**${checks[key]}** -- ${checkNumbers(key, metrics)}`,
+    "",
+  ]);
+
+  const findingsSection = findings.length > 0
+    ? findings.map((f) => `- ${f}`).join("\n")
+    : "_None._";
+
+  return [
+    `# Daily verification: ${date}`,
+    "",
+    `**Verdict: ${verdict}**`,
+    "",
+    "---",
+    "",
+    ...checkSections,
+    "---",
+    "",
+    "## Equity vs the -15% floor",
+    "",
+    `- Equity: ${fmtMoneyOrNa(metrics.equity_usd)}`,
+    `- Floor baseline: ${metrics.floor_baseline_raw ?? "n/a"}`,
+    `- Floor price: ${fmtMoneyOrNa(metrics.floor_price_usd)}`,
+    `- Headroom: ${fmtPctOrNa(metrics.headroom_pct)}`,
+    "",
+    "---",
+    "",
+    "## Findings",
+    "",
+    findingsSection,
+    "",
+    "---",
+    "",
+    "## Changed since the previous verified day",
+    "",
+    renderChangedSection(metrics, previousRow),
+    "",
+  ].join("\n");
+}

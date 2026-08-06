@@ -17,6 +17,7 @@ import {
   isWeekendYmd,
   type LedgerRow,
   NON_SCANNING_OUTCOMES,
+  renderMarkdownDigest,
   resolveTargetDate,
   selectPreviousRow,
   upsertLedgerJsonl,
@@ -716,4 +717,52 @@ Deno.test("selectPreviousRow: no row strictly before the target -> null (day zer
   const rows = [ledgerRow("2026-08-05")];
   assertEquals(selectPreviousRow(rows, "2026-08-05"), null);
   assertEquals(selectPreviousRow([], "2026-08-05"), null);
+});
+
+// ---------------------------------------------------------------------------
+// renderMarkdownDigest (§6.2, D6 determinism)
+// ---------------------------------------------------------------------------
+
+Deno.test("renderMarkdownDigest: two renders of the same evaluation are byte-identical", () => {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  const first = renderMarkdownDigest("2026-08-05", evaluation, null);
+  const second = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(first, second);
+});
+
+Deno.test("renderMarkdownDigest: mentions the verdict, the date, and every one of the seven checks", () => {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(md.includes("PASS"), true);
+  assertEquals(md.includes("2026-08-05"), true);
+  for (
+    const title of [
+      "Slots",
+      "Scans",
+      "Geometry",
+      "Journal",
+      "Latency",
+      "State",
+      "Kill-switch",
+    ]
+  ) {
+    assertEquals(md.includes(title), true, title);
+  }
+});
+
+Deno.test("renderMarkdownDigest: lists every finding on a FAIL day", () => {
+  const v = cleanDayVerification();
+  v.config.paused = "true";
+  const evaluation = evaluateVerification(v, null);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  for (const finding of evaluation.findings) {
+    assertEquals(md.includes(finding), true);
+  }
+});
+
+Deno.test("renderMarkdownDigest: never contains a generated-at timestamp or run URL (D6)", () => {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(md.includes("generated"), false);
+  assertEquals(md.includes("http://") || md.includes("https://"), false);
 });
