@@ -619,6 +619,22 @@ exist only in the body of #535 and the superseded #523, both closable. Package D
 copies the corrected seven-query ritual verbatim into
 `docs/trading-journal/README.md` rather than linking to an issue.
 
+**2026-08-06, B3: a second disclosed residual, in the `state` check.** §5.3's
+`state` rule requires the day's baseline to be byte-identical to the previous
+ledger row's. Package B's implementation takes the day-zero WARN branch when the
+baseline is unset, without comparing against the previous row, so a baseline that
+gets **deleted** WARNs rather than FAILs. #547's reviewer verified that this is
+transitively covered for every realistic day: a missing or blank
+`hourly_experiment_start_equity` makes `hourly-check`'s gate 6 throw via
+`alertAndFail`, surfacing as `error:DataError`, which the `slots` check FAILs
+unconditionally, and a `paused=true` day already FAILs on `state`'s first clause.
+The residual is one triple coincidence: a full-day market closure, with
+`paused=false`, and the baseline deleted that same day. Gate 6 then never runs on
+any of the nine slots, so `slots` passes and only a WARN surfaces. Left as
+should-fix rather than must-fix on this batch's own tiebreaker (a visible WARN is
+not a false all-clear), and recorded here so the boundary survives whether or not
+the code comment disclosing it ever lands.
+
 **2026-08-06, B2: the `NON_SCANNING_OUTCOMES` derivation is done.** Package B's
 architect traced every return path in `hourly-check/logic.ts` against the file's
 own numbered gates and found five outcomes that return before any journal call
