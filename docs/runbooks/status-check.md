@@ -79,6 +79,62 @@ no client-side range validation in the script; an out-of-range or malformed
 `N` reaches the server, whose `400 { "error": "days must be an integer
 between 1 and 60" }` is now visible via `--fail-with-body` above.
 
+### `?verify=YYYY-MM-DD`: daily-verification data channel
+
+```bash
+curl -s "$STATUS_URL?verify=2026-08-05" -H "x-status-token: $STATUS_TOKEN" | jq .verification
+```
+
+Composable with `--days`/`?days=` — the two parameters are independent and
+can be supplied together. `scripts/status.sh` has no dedicated flag for this
+parameter; it exists for the automated daily-verification workflow (#546,
+#547), not for interactive use, though the raw `curl` above works from any
+shell that holds `.env.status`'s two values.
+
+Adds a `verification` object to the digest, present only when `?verify=` is
+supplied. Validation, in order (each rejection is a `400`, never a silent
+fallback):
+
+1. Must match `YYYY-MM-DD` after trimming — `400 { "error": "verify must be
+   a real calendar date (YYYY-MM-DD), not in the future, and within 90
+   days" }`.
+2. Must parse to a real UTC calendar date — `2026-13-01` and `2026-02-30`
+   (which silently rolls over to March) are both rejected, same error as
+   above.
+3. Must not be in the future relative to the server's clock; today (UTC) is
+   allowed.
+4. Must be within 90 days of today (UTC).
+
+`?days=`'s own validation runs first when both parameters are malformed, so a
+`400` for a bad `days` value never mentions `verify`.
+
+What it contains: `verification.window` is the UTC calendar day
+`[00:00:00.000, 23:59:59.999]` for the requested date — a fixed string
+template, not date arithmetic, so there is no month/year-boundary bug.
+`shorts_enabled` is the `HOURLY_SHORTS_ENABLED` secret's current value (a
+narrow reader, independent of the unrelated `HOURLY_BOT_PAPER_ONLY` guard —
+see `supabase/functions/_shared/config.ts`'s `getHourlyShortsEnabled()`).
+`hourly_check_runs` is every `audit_log` row for `hourly-check` that day,
+ascending by `started_at`, carrying `notes` (the journal-degraded order id,
+per the hourly-bot rollout runbook). `kill_switch_runs` is counts only
+(`count` plus `outcome_counts`) — never rows, since ~108 same-outcome rows a
+day carry no information the counts lack. `scans` and `trades` are the full,
+unfiltered `hourly_scans`/`trades` rows for the day, ascending by
+`bar_ts`/`fill_time` respectively — `trades` is not filtered by `reason`, so
+a future entry/exit reason string needs no redeploy to show up here.
+`config.paused`, `config.hourly_experiment_start_equity`, and
+`config.hourly_experiment_baseline_verified` are the **raw** `bot_config`
+strings (or `null` when unset) — deliberately not coerced to numbers, since a
+downstream byte-identity comparison between the last two depends on the exact
+string surviving unmangled.
+
+This is the read-only data channel for the automated daily-verification
+check (`scripts/daily_verify.ts`, #547) — see
+`docs/superpowers/specs/2026-08-06-daily-verification-design.md` §4 for the
+frozen contract and `docs/runbooks/daily-verification.md` for the check
+itself. The manual seven-query SQL ritual it replaces stays documented (#535)
+as a fallback.
+
 ## Heartbeat (GitHub Actions)
 
 `.github/workflows/heartbeat.yml` ("heartbeat") exists because Supabase's
