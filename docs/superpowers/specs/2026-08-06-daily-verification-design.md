@@ -189,15 +189,21 @@ Contract notes, all load-bearing:
   information the counts lack, and the payload stays small.
 - `scans` are full `HourlyScanRow` values (numbers already coerced), ascending
   by `bar_ts`.
-- `trades` are full `TradeRow` values for the day, **unfiltered by reason**.
-  The evaluator applies the `hourly%` filter, so a future reason string needs
-  no redeploy.
+- `trades` are full `TradeRow` values for the day, **unfiltered by reason**,
+  ascending by `fill_time`. The evaluator applies the `hourly%` filter, so a
+  future reason string needs no redeploy.
 - `config` values are the **raw strings** from `bot_config`, or null when
   unset. Check 6 is a byte-identity comparison between
   `hourly_experiment_start_equity` and `hourly_experiment_baseline_verified`,
   which coercion to number would destroy.
-- `shorts_enabled` comes from the already-loaded `StrategyConfig`, so the
-  evaluator can judge a SHORT decision without a second source of truth.
+- `shorts_enabled` comes from a **narrow reader for `HOURLY_SHORTS_ENABLED`
+  alone**, extracted in `_shared/config.ts` and delegated to by
+  `getHourlyConfig()` so there is one parser for the variable. It must NOT come
+  from `getHourlyConfig()` itself: that function throws unless
+  `HOURLY_BOT_PAPER_ONLY` is explicitly `"true"`, and coupling `status` to it
+  would take the endpoint down for every caller (including the deadman
+  watchdog, whose only data source it is) over one unrelated secret. See the
+  amendment log in §13.
 
 ### 4.4 Reads
 
@@ -276,6 +282,54 @@ lives in the tested pure layer:
   midnight still evaluates the day it was scheduled for.
 - A Saturday or Sunday target returns `SKIPPED_WEEKEND` and writes nothing.
 
+### 5.5 CLI contract (frozen, because two packages implement against it)
+
+Package B owns the script; Package D owns the workflow that drives it. They are
+coupled by this contract only, the same way Package B is coupled to §4.3 rather
+than to Package A's code.
+
+Invocation:
+
+```
+deno run --allow-read=docs/trading-journal --allow-write=docs/trading-journal \
+  scripts/daily_verify.ts --date=YYYY-MM-DD < digest.json
+```
+
+- **Input**: the full `status` response on stdin. The script reads
+  `.verification` and ignores every other key, including `generated_at`.
+- **Permissions**: read and write scoped to `docs/trading-journal` and nothing
+  else, matching `scripts/render_weekly_journal.ts`'s precedent. The evaluation
+  and rendering core stays free of all I/O and is unit-tested directly; only
+  `main()` touches disk. The zero-permission property of
+  `scripts/deadman_check.ts` does not carry over, because cross-day state and
+  both artifacts live on disk; the property that does carry over is that every
+  judgment lives in a pure function.
+- **Side effects**: upserts the ledger row and writes the day's markdown
+  digest. Nothing else.
+- **stdout**: exactly one JSON object, so the workflow parses it with `jq`
+  rather than scraping text.
+
+```json
+{
+  "date": "2026-08-05",
+  "verdict": "PASS",
+  "summary": "9/9 slots, 6 scans, 0 entries, 108/108 kill-switch, headroom 15.0%",
+  "findings": [],
+  "artifacts": {
+    "ledger": "docs/trading-journal/daily-verification.jsonl",
+    "digest": "docs/trading-journal/daily/2026-08-05.md"
+  }
+}
+```
+
+- **Exit codes**: 0 for PASS, WARN, or SKIPPED_WEEKEND; 2 for FAIL; 1 for
+  malformed input. On exit 1 the JSON object above is not printed and nothing is
+  written.
+- On `SKIPPED_WEEKEND` no artifact is written and `artifacts` values are null.
+- Selecting the previous verified day's ledger row (the newest row with a date
+  strictly before `--date`) is the script's job, not the workflow's, so the
+  selection rule is covered by tests rather than by shell.
+
 ## 6. Artifacts (owned by Package B)
 
 ### 6.1 Ledger row
@@ -335,7 +389,7 @@ findings, and a "changed since the previous verified day" line derived from the
 previous ledger row (baseline moves, latency drift, first entry). Deterministic
 per D6.
 
-## 7. The workflow (owned by Package B)
+## 7. The workflow (owned by Package D)
 
 `.github/workflows/daily-verification.yml`, structured on
 `deadman-watchdog.yml`.
@@ -427,17 +481,27 @@ collisions.
 
 | Package | Owns |
 |---|---|
-| A | `supabase/functions/status/**`, `supabase/functions/_shared/db.ts`, `scripts/testdata/status-digest-verification.json`, `docs/runbooks/status-check.md` |
-| B | `scripts/daily_verify.ts`, `scripts/daily_verify.test.ts`, `scripts/testdata/daily-verify-*.json`, `.github/workflows/daily-verification.yml`, `docs/runbooks/daily-verification.md`, `docs/trading-journal/README.md`, `CLAUDE.md` |
+| A | `supabase/functions/status/**`, `supabase/functions/_shared/db.ts`, `supabase/functions/_shared/config.ts`, `scripts/testdata/status-digest-verification.json`, `docs/runbooks/status-check.md` |
+| B | `scripts/daily_verify.ts`, `scripts/daily_verify.test.ts`, `scripts/testdata/daily-verify-*.json` |
 | C | `web/**` |
+| D | `.github/workflows/daily-verification.yml`, `docs/runbooks/daily-verification.md`, `docs/trading-journal/README.md`, `CLAUDE.md` |
 
-Package B is the sole owner of `CLAUDE.md` this batch. Package A documents its
-new parameter in `docs/runbooks/status-check.md` only.
+Package D is the sole owner of `CLAUDE.md` this batch. Package A documents its
+new parameter in `docs/runbooks/status-check.md` only, and touches
+`_shared/config.ts` only for the narrow `HOURLY_SHORTS_ENABLED` reader (§4.3).
+The lead owns this spec file; no package edits it.
 
-Packages A and B are coupled by §4.3's frozen shape, not by code: B implements
-against its own fixtures, exactly as `deadman_check.ts` is coupled to the
-digest's shape rather than to the Edge Function module. Neither blocks the
-other.
+The packages are coupled by frozen contracts, never by code, so none blocks
+another and all four can run concurrently:
+
+- A and B by §4.3's digest shape. B implements against its own fixtures,
+  exactly as `deadman_check.ts` is coupled to the digest's shape rather than to
+  the Edge Function module.
+- B and D by §5.5's CLI contract. D's workflow is written against the documented
+  invocation and stdout envelope, and its end-to-end verification waits for B to
+  merge.
+- C by §6.1 and §6.2's artifact schemas, with an empty state that renders before
+  any artifact exists.
 
 ## 11. Architectural invariant compliance
 
@@ -475,3 +539,56 @@ Follow-ups worth filing after this lands:
   date (D11), which is operator-run, not part of any package.
 - Whether the daily digest should also carry the `hourly_kill_switch`
   attribution gap tracked in #543, once that lands.
+
+## 13. Amendment log
+
+Amendments made by the lead during batch #545's run. Each is logged in full as a
+decision comment on #545; this section is the durable record.
+
+**2026-08-06, A1: `shorts_enabled`'s source (§4.3).** The original text said the
+value comes from `StrategyConfig`. It does not exist there. Corrected to a narrow
+`HOURLY_SHORTS_ENABLED` reader extracted in `_shared/config.ts`, which
+`getHourlyConfig()` delegates to. Package A's ownership extends to
+`_shared/config.ts` for that extraction only. Rejected the alternative of
+calling `getHourlyConfig()` from `status`, because it throws unless
+`HOURLY_BOT_PAPER_ONLY` is explicitly `"true"`
+(`_shared/config.ts:175-183`), which would take `status` down for every caller,
+the deadman watchdog included, over one unrelated secret. The JSON shape is
+unchanged.
+
+**2026-08-06, A2: minor calls settled with A1.** Trades ascending by `fill_time`
+(§4.3 was silent). `scripts/testdata/status-digest-verification.json` must be
+consumed by a test, not merely committed: the three existing sibling fixtures
+have zero consumers, and a fixture nothing reads pins nothing. Validation order
+`days` before `verify`, pinned by a test. `handleStatus` may take an injectable
+`now` whose default leaves `index.ts` unchanged.
+
+**2026-08-06, B1: Package B split, and §5.5 added.** The original Package B
+(evaluator, artifacts, workflow, and three doc surfaces) was larger than its
+`size:M` label. Its architect recommended relabeling to `size:L` and running it
+whole; overruled, because the kickoff pipeline's own gate stops on `size:L`
+precisely to avoid a session dying mid-task. Split instead into Package B
+(`scripts/daily_verify.ts` plus tests and fixtures) and Package D (the workflow
+and the three doc surfaces), which are independent given §5.5's frozen CLI
+contract, so the batch keeps its concurrency and gains no `Blocked by` edge.
+§5.5 also settles the architect's open question about where disk access lives:
+one scoped invocation, all judgment in pure functions, matching
+`render_weekly_journal.ts` rather than `deadman_check.ts`.
+
+**2026-08-06, B2: the `NON_SCANNING_OUTCOMES` derivation is done.** Package B's
+architect traced every return path in `hourly-check/logic.ts` against the file's
+own numbered gates and found five outcomes that return before any journal call
+for the run's candidate bar: `skipped:trading_paused` (gate 1),
+`skipped:market_closed` (gate 3), `error:naked_position_flattened`
+(`reconcile()`'s terminal branch), `success:auto_paused` (gate 6's floor fire,
+which calls `finish()` directly and bypasses `done()`), and
+`skipped:duplicate_run` (gate 19's bar-claim loser, whose own code comment says
+it must not upsert). Confirmed not in the set: `skipped:partial_bar` and
+`skipped:stale_data` (both journal through `preDecisionSkip`), every `gateSkip()`
+outcome, the SKIP-decision outcomes, and `success` / `success:journal_degraded`.
+One disclosed residual stays in the code as a comment plus a fixture rather than
+being folded silently either way: the `completed.length === 0` path returns
+before journaling and can surface as `skipped:stale_data`, so that narrow
+anomaly can produce a scan-count mismatch. `error:*` outcomes are excluded
+because they are dynamic and not enumerable, and the `slots` check already FAILs
+any `error:*` regardless.
