@@ -7,7 +7,14 @@
 // audit_log row: status is deliberately invisible to that table so it stays
 // a clean record of trading actions.
 import type { StrategyConfig } from "../_shared/config.ts";
-import type { AuditLogRow, EquitySnapshotRow, RegimeStateRow, TradeRow } from "../_shared/db.ts";
+import type {
+  AuditLogRow,
+  EquitySnapshotRow,
+  HourlyScanRow,
+  RegimeStateRow,
+  TradeRow,
+} from "../_shared/db.ts";
+import { requireNumber } from "../_shared/num.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -38,6 +45,12 @@ export interface StatusDeps {
     // #396 T1: latest audit_log row for a single script, used to build
     // `last_runs` for the dead-man watchdog (scripts/deadman_check.ts).
     getLatestAuditForScript: (scriptName: string) => Promise<AuditLogRow | null>;
+    // #536 T3: read-only reads for the `hourly` digest block, sourced from
+    // hourly_scans + bot_config. No symbol filter -- one bot instance, one
+    // symbol, same assumption already documented in
+    // scripts/render_weekly_journal.ts.
+    getLatestHourlyScan: () => Promise<HourlyScanRow | null>;
+    getHourlyScansSince: (sinceIso: string) => Promise<HourlyScanRow[]>;
   };
 }
 
@@ -94,8 +107,48 @@ export interface StatusDigest {
   last_runs: {
     daily_check: { started_at: string; outcome: string | null } | null;
     kill_switch: { started_at: string; outcome: string | null } | null;
+    // #536 T3: alongside daily_check/kill_switch above, for the same
+    // dead-man-watchdog purpose.
+    hourly_check: { started_at: string; outcome: string | null } | null;
+  };
+  // #536 T3: the live hourly bot's digest, sourced from hourly_scans +
+  // bot_config -- strictly additive, no existing key touched. Required
+  // (always present, both digest modes), unlike `trades`/`regime_history`.
+  hourly: {
+    // Direct pass-through of the newest hourly_scans row, same style as
+    // `regime`/`last_trade` above -- carries bracket geometry (entry
+    // reference price, stop, target, qty) when that scan entered.
+    latest_scan: HourlyScanRow | null;
+    equity: {
+      // Sourced from latest_scan.equity_usd -- never a live
+      // alpaca.getAccountValue() read, matching render_weekly_journal.ts's
+      // documented equity source for the hourly bot.
+      equity_usd: number | null;
+      // bot_config.hourly_experiment_start_equity; null when unset.
+      floor_baseline_usd: number | null;
+      floor_price_usd: number | null;
+      headroom_pct: number | null;
+    };
+    // Bar-level distribution over the same [since, until] window as
+    // audit_7d, grouped exactly like computeWeeklyAggregates in
+    // scripts/render_weekly_journal.ts (skip_reason ?? "unspecified";
+    // LONG/SHORT rows excluded).
+    skip_reason_counts: Record<string, number>;
+    // Run-level outcome counts for script_name === "hourly-check" only,
+    // filtered from the same auditRows already fetched for audit_7d -- no
+    // second DB round trip.
+    audit_outcome_counts: Record<string, number>;
   };
 }
+
+// #536: mirrors supabase/functions/hourly-check/logic.ts's own
+// EQUITY_FLOOR_PCT (and scripts/render_weekly_journal.ts's copy of it).
+// Duplicated rather than imported/extracted to `_shared/`: this package's
+// batch slicing keeps status/logic.ts single-owner, and hourly-check/logic.ts
+// is a file this package deliberately does not touch. Kept in sync manually
+// -- a mismatch here would only affect this digest's rendered headroom, never
+// the live floor enforcement in hourly-check itself.
+const EQUITY_FLOOR_PCT = 0.15;
 
 // A crashed/still-open run leaves outcome NULL in the DB (documented in
 // CLAUDE.md: "outcome is written before exit so a crashed run leaves a row
@@ -110,6 +163,21 @@ export function computeRegimeMarginPct(spyClose: number, spySma200: number): num
     return null;
   }
   return ((spyClose - spySma200) / spySma200) * 100;
+}
+
+// #536: pure helper — the hourly bot's equity headroom above its -15% floor,
+// as a % of current equity (how much further equity could drop before
+// hitting floorPriceUsd). Guarded like computeRegimeMarginPct: non-finite
+// inputs and equityUsd <= 0 (division by zero / nonsensical domain) -> null,
+// never Infinity/NaN.
+export function computeEquityHeadroomPct(
+  equityUsd: number,
+  floorPriceUsd: number,
+): number | null {
+  if (!Number.isFinite(equityUsd) || !Number.isFinite(floorPriceUsd) || equityUsd <= 0) {
+    return null;
+  }
+  return ((equityUsd - floorPriceUsd) / equityUsd) * 100;
 }
 
 // #383 T4: `returns` helpers — pure, calendar-date arithmetic on
@@ -195,6 +263,10 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     latestSnapshot,
     latestDailyCheckAudit,
     latestKillSwitchAudit,
+    latestHourlyCheckAudit,
+    latestHourlyScan,
+    hourlyScansWindow,
+    hourlyFloorBaselineRaw,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -213,14 +285,50 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
     // by daily-check/kill-switch's insertAuditLog calls.
     db.getLatestAuditForScript("daily-check"),
     db.getLatestAuditForScript("kill-switch"),
+    // #536 T3: hourly digest reads.
+    db.getLatestAuditForScript("hourly-check"),
+    db.getLatestHourlyScan(),
+    db.getHourlyScansSince(since),
+    db.getConfig("hourly_experiment_start_equity"),
   ]);
 
   const outcome_counts: Record<string, number> = {};
+  const hourlyAuditOutcomeCounts: Record<string, number> = {};
   for (const row of auditRows) {
     const key = row.outcome ?? UNFINISHED_LABEL;
     outcome_counts[key] = (outcome_counts[key] ?? 0) + 1;
+    // #536: same already-fetched auditRows, scoped to hourly-check -- no
+    // second DB round trip.
+    if (row.script_name === "hourly-check") {
+      hourlyAuditOutcomeCounts[key] = (hourlyAuditOutcomeCounts[key] ?? 0) + 1;
+    }
   }
   const errors = auditRows.filter((r) => r.outcome?.startsWith("error:"));
+
+  // #536: skip-reason grouping matches computeWeeklyAggregates in
+  // scripts/render_weekly_journal.ts exactly -- only SKIP rows are counted.
+  const hourlySkipReasonCounts: Record<string, number> = {};
+  for (const scan of hourlyScansWindow) {
+    if (scan.decision === "SKIP") {
+      const reason = scan.skip_reason ?? "unspecified";
+      hourlySkipReasonCounts[reason] = (hourlySkipReasonCounts[reason] ?? 0) + 1;
+    }
+  }
+
+  // #536: bot_config.hourly_experiment_start_equity is a runtime config
+  // value, not an env secret -- null if never set (day-zero digest). A set
+  // but non-numeric value throws (fail loud, not a silently corrupted
+  // headroom), same contract as render_weekly_journal.ts's own read of it.
+  const hourlyFloorBaselineUsd = hourlyFloorBaselineRaw == null
+    ? null
+    : requireNumber(hourlyFloorBaselineRaw, "hourly_experiment_start_equity");
+  const hourlyFloorPriceUsd = hourlyFloorBaselineUsd == null
+    ? null
+    : hourlyFloorBaselineUsd * (1 - EQUITY_FLOOR_PCT);
+  const hourlyEquityUsd = latestHourlyScan?.equity_usd ?? null;
+  const hourlyHeadroomPct = hourlyEquityUsd != null && hourlyFloorPriceUsd != null
+    ? computeEquityHeadroomPct(hourlyEquityUsd, hourlyFloorPriceUsd)
+    : null;
 
   // #383 T4: the window query needs latestSnapshot's date, so it can't join
   // the Promise.all above; always computed (both modes), independent of
@@ -250,6 +358,20 @@ export async function runStatus(deps: StatusDeps, windowDays?: number): Promise<
       kill_switch: latestKillSwitchAudit
         ? { started_at: latestKillSwitchAudit.started_at, outcome: latestKillSwitchAudit.outcome }
         : null,
+      hourly_check: latestHourlyCheckAudit
+        ? { started_at: latestHourlyCheckAudit.started_at, outcome: latestHourlyCheckAudit.outcome }
+        : null,
+    },
+    hourly: {
+      latest_scan: latestHourlyScan,
+      equity: {
+        equity_usd: hourlyEquityUsd,
+        floor_baseline_usd: hourlyFloorBaselineUsd,
+        floor_price_usd: hourlyFloorPriceUsd,
+        headroom_pct: hourlyHeadroomPct,
+      },
+      skip_reason_counts: hourlySkipReasonCounts,
+      audit_outcome_counts: hourlyAuditOutcomeCounts,
     },
     ...(extended
       ? { trades: trades as TradeRow[], regime_history: regimeHistory as RegimeStateRow[] }

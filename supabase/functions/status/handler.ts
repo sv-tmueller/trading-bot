@@ -12,9 +12,11 @@ import {
   getConfig,
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
+  getHourlyScansSince,
   getLastTrade,
   getLatestAuditForScript,
   getLatestEquitySnapshot,
+  getLatestHourlyScan,
   getLatestRegimeState,
   getRegimeStatesSince,
   getTradesSince,
@@ -47,6 +49,8 @@ function buildDeps(): StatusDeps {
       getLatestEquitySnapshot: () => getLatestEquitySnapshot(sb),
       getEquitySnapshotsSince: (sinceDate) => getEquitySnapshotsSince(sb, sinceDate),
       getLatestAuditForScript: (scriptName) => getLatestAuditForScript(sb, scriptName),
+      getLatestHourlyScan: () => getLatestHourlyScan(sb),
+      getHourlyScansSince: (sinceIso) => getHourlyScansSince(sb, sinceIso),
     },
   };
 }

@@ -72,6 +72,30 @@ if command -v jq >/dev/null 2>&1; then
     exit "$curl_status"
   fi
 
+  # #536: hourly bot summary -- leads ahead of the (retired) regime summary
+  # below, since the hourly bot is the one actually trading. Guarded on
+  # `.hourly.latest_scan` being non-null so a day-zero digest (no scan yet)
+  # prints nothing here instead of a row of "n/a" noise.
+  if printf '%s' "$RESPONSE" | jq -e '.hourly.latest_scan != null' >/dev/null 2>&1; then
+    hourly_symbol="$(printf '%s' "$RESPONSE" | jq -r '.hourly.latest_scan.symbol')"
+    hourly_bar_ts="$(printf '%s' "$RESPONSE" | jq -r '.hourly.latest_scan.bar_ts')"
+    hourly_decision="$(printf '%s' "$RESPONSE" | jq -r '.hourly.latest_scan.decision')"
+    hourly_equity="$(
+      printf '%s' "$RESPONSE" |
+        jq -r 'if .hourly.equity.equity_usd == null then "n/a" else (.hourly.equity.equity_usd | tostring) end'
+    )"
+    if printf '%s' "$RESPONSE" | jq -e '.hourly.equity.headroom_pct != null' >/dev/null 2>&1; then
+      headroom_raw="$(printf '%s' "$RESPONSE" | jq -r '.hourly.equity.headroom_pct')"
+      # env LC_ALL=C printf: same macOS bash 3.2 comma-decimal footgun as the
+      # regime margin formatting below.
+      hourly_headroom="$(env LC_ALL=C printf '%.1f' "$headroom_raw")%"
+    else
+      hourly_headroom="n/a (no baseline set)"
+    fi
+    echo "Hourly \`${hourly_symbol}\`: ${hourly_decision} @ ${hourly_bar_ts} -- equity \$${hourly_equity}, floor headroom ${hourly_headroom}."
+    echo
+  fi
+
   # #384: short one-line "why" summary above the raw dump below.
   # Guarded on regime/regime_margin_pct being present — skipped otherwise.
   #

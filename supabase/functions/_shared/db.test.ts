@@ -14,9 +14,11 @@ import {
   getEquitySnapshotsSince,
   getHourlyScanByEntryOrderId,
   getHourlyScansPendingEntry,
+  getHourlyScansSince,
   getLastTrade,
   getLatestAuditForScript,
   getLatestEquitySnapshot,
+  getLatestHourlyScan,
   getLatestRegimeState,
   getPendingNotifications,
   getRegimeStatesSince,
@@ -946,6 +948,100 @@ Deno.test({
       "bar_ts",
       "2030-01-02T14:00:00Z",
     );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #536 T1: getLatestHourlyScan / getHourlyScansSince -- read-only helpers for
+// the status digest's `hourly` block (status/logic.ts). Real-Postgres round
+// trips only, matching this file's own convention for every other read
+// helper (getLatestRegimeState, getTradesSince): no mocked-client unit test,
+// since there is no coercion/conflict-mapping logic here beyond what
+// coerceHourlyScanRow's own tests above already cover.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "getLatestHourlyScan: returns the newest row by bar_ts",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const olderTs = "2030-01-04T14:00:00Z";
+    const newerTs = "2030-01-04T15:00:00Z";
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [olderTs, newerTs]);
+    await upsertHourlyScan(sb, {
+      symbol: "SPY",
+      barTs: olderTs,
+      decision: "SKIP",
+      skipReason: "no_detectors_fired",
+      detectorsFired: [],
+      contextMode: "none",
+      entryRefPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      riskPerShare: null,
+      equityUsd: 100000,
+      qty: 0,
+      entryOrderId: null,
+    });
+    await upsertHourlyScan(sb, {
+      symbol: "SPY",
+      barTs: newerTs,
+      decision: "LONG",
+      skipReason: null,
+      detectorsFired: ["hammer"],
+      contextMode: "none",
+      entryRefPrice: 550.1,
+      stopPrice: 547.75,
+      targetPrice: 554.55,
+      riskPerShare: 2.35,
+      equityUsd: 100500,
+      qty: 18,
+      entryOrderId: "o1",
+    });
+    const latest = await getLatestHourlyScan(sb);
+    assertEquals(latest?.bar_ts, newerTs);
+    assertEquals(latest?.decision, "LONG");
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [olderTs, newerTs]);
+  },
+});
+
+Deno.test({
+  name: "getHourlyScansSince: returns rows with bar_ts >= sinceIso, newest first",
+  ignore: !RUN,
+  fn: async () => {
+    const sb = localClient();
+    const belowTs = "2029-12-31T15:00:00Z";
+    const olderTs = "2030-01-02T15:00:00Z";
+    const newerTs = "2030-01-03T15:00:00Z";
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      belowTs,
+      olderTs,
+      newerTs,
+    ]);
+    const base = {
+      symbol: "SPY",
+      decision: "SKIP" as const,
+      skipReason: "no_detectors_fired",
+      detectorsFired: [],
+      contextMode: "none",
+      entryRefPrice: null,
+      stopPrice: null,
+      targetPrice: null,
+      riskPerShare: null,
+      equityUsd: 100000,
+      qty: 0,
+      entryOrderId: null,
+    };
+    await upsertHourlyScan(sb, { ...base, barTs: belowTs });
+    await upsertHourlyScan(sb, { ...base, barTs: olderTs });
+    await upsertHourlyScan(sb, { ...base, barTs: newerTs });
+    const rows = await getHourlyScansSince(sb, "2030-01-01T00:00:00Z");
+    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [newerTs, olderTs]);
+    await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
+      belowTs,
+      olderTs,
+      newerTs,
+    ]);
   },
 });
 
