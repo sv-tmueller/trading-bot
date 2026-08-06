@@ -20,7 +20,7 @@ age fact, plus a banner past a fixed 72h threshold) and notes when no scan has
 ever been recorded, rather than letting either read as silent "all clear".
 A tile on this page shows the latest daily-verification day and its verdict,
 linking to `/daily` (see below); it is the one part of this page that is not
-covered by the `force-dynamic` export above it — see "Daily verification
+covered by the `force-dynamic` export above it: see "Daily verification
 pages" for why.
 
 ## Daily verification pages (#548)
@@ -29,17 +29,17 @@ Two additional routes render the artifacts produced by
 `scripts/daily_verify.ts` (#547) and committed to
 `docs/trading-journal/` by `.github/workflows/daily-verification.yml` (#549):
 
-- `/daily` — an index of verified days, newest first, each with its verdict
+- `/daily`: an index of verified days, newest first, each with its verdict
   badge and headline numbers, read from `docs/trading-journal/daily-verification.jsonl`.
-- `/daily/[date]` — the rendered markdown digest for one day
+- `/daily/[date]`: the rendered markdown digest for one day
   (`docs/trading-journal/daily/YYYY-MM-DD.md`), via `react-markdown` +
   `remark-gfm` (GitHub-flavored tables and task lists). HTML embedded in the
-  markdown stays escaped — this is react-markdown's default, and neither
+  markdown stays escaped, which is react-markdown's default, and neither
   route adds `rehype-raw` or any other raw-HTML plugin.
 
 Both routes read `docs/trading-journal/` **at build time only**
 (`generateStaticParams` plus a plain `fs` read in `web/lib/dailyJournal.ts`,
-the sole owner of filesystem access for these artifacts) — no runtime
+the sole owner of filesystem access for these artifacts): no runtime
 filesystem access, no secrets, and `next build` in `web-ci.yml` still passes
 with no environment variables set. `/daily/[date]` additionally sets
 `dynamicParams = false`, so a date with no rendered digest 404s through
@@ -52,7 +52,7 @@ fabricating a row.
 **Known deployment risk with a documented fallback.** With Vercel's Root
 Directory set to `web`, reading `../docs` at build time requires "Include
 source files outside of the Root Directory" to be enabled in the Vercel
-project settings — this cannot be verified by an agent (Vercel is behind SSO).
+project settings; this cannot be verified by an agent (Vercel is behind SSO).
 If a deploy shows an empty `/daily` despite committed artifacts, that setting
 is the first thing to check. The fallback: `web/lib/dailyJournal.ts` prefers
 `web/content/daily/` and `web/content/daily-verification.jsonl` (gitignored)

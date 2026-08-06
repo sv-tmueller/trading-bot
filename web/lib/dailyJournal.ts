@@ -5,7 +5,7 @@ import path from "node:path";
 // Sole owner of filesystem access for the daily-verification artifacts (#548,
 // design spec §6.1/§6.2/§8). Every read here happens at Next.js build time
 // (generateStaticParams / a plain static-page render), never at request time
-// for the two /daily routes — see web/app/daily/**. The dashboard tile
+// for the two /daily routes; see web/app/daily/**. The dashboard tile
 // (web/app/page.tsx) is the one deliberate exception: it calls
 // getLatestVerifiedDay() from a force-dynamic route at request time, which
 // the design spec's lead decision accepts (identical Vercel
@@ -50,7 +50,7 @@ function isVerdict(value: unknown): value is Verdict {
 
 // Tolerant per-line validation: only the envelope (date, verdict, checks,
 // metrics, findings) is checked. A line that fails this check is skipped with
-// a console.warn rather than failing the whole build — #547 (the producer)
+// a console.warn rather than failing the whole build; #547 (the producer)
 // may still be stabilizing its output.
 function asLedgerRow(value: unknown): LedgerRow | null {
   if (typeof value !== "object" || value === null) return null;
@@ -75,7 +75,7 @@ function isEnoent(err: unknown): boolean {
 
 // Prefers web/content/** (populated by the documented, currently-unwired
 // scripts/copy-daily-artifacts.mjs prebuild fallback) and falls through to
-// the repo's docs/trading-journal/** on ENOENT — the layout a full CI
+// the repo's docs/trading-journal/** on ENOENT, the layout a full CI
 // checkout and a correctly configured Vercel "include source files outside
 // the Root Directory" setting both have. Any non-ENOENT error propagates and
 // fails the build loudly, matching this repo's no-silent-fallback
@@ -107,7 +107,7 @@ function dailyDigestDir(): string {
 // Reads the full ledger (docs/trading-journal/daily-verification.jsonl),
 // ascending by date per D6. Returns [] when the file does not exist yet
 // (#547 has not landed, or no day has been verified yet) rather than
-// throwing — the empty state is a first-class case, not a fallback.
+// throwing: the empty state is a first-class case, not a fallback.
 export function readLedger(): LedgerRow[] {
   let raw: string;
   try {

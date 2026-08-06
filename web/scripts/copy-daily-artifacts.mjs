@@ -13,7 +13,7 @@
 // path handles them without this script running at all. If that Vercel
 // setting turns out to be off, the operator adds the prebuild line above.
 //
-// Plain Node fs/path only (no new dependency) — no-ops (exit 0, one notice)
+// Plain Node fs/path only (no new dependency), no-ops (exit 0, one notice)
 // when the source directory is unreachable, so it is safe to wire in before
 // #547 has produced any artifacts yet.
 
@@ -34,7 +34,7 @@ const destLedger = path.join(destContentDir, "daily-verification.jsonl");
 function main() {
   if (!existsSync(sourceDailyDir) && !existsSync(sourceLedger)) {
     console.log(
-      "copy-daily-artifacts: no docs/trading-journal daily artifacts found yet — nothing to copy.",
+      "copy-daily-artifacts: no docs/trading-journal daily artifacts found yet, nothing to copy.",
     );
     return;
   }

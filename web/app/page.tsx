@@ -196,7 +196,7 @@ export default async function Page() {
   const { recentScans, latestEntered, paused, baseline, trades, audit, account, positions, dbError } =
     await getData();
   // Synchronous, request-time read (design spec §8's accepted tension
-  // resolution) — no need to join the Promise.all above.
+  // resolution); no need to join the Promise.all above.
   const latestVerifiedDay = getLatestVerifiedDay();
 
   const latestScan = recentScans[0] ?? null;
@@ -407,7 +407,7 @@ export default async function Page() {
               : "text-zinc-100"
           }`}
         >
-          {latestVerifiedDay ? `${latestVerifiedDay.date} — ${latestVerifiedDay.verdict}` : "No verified days yet"}
+          {latestVerifiedDay ? `${latestVerifiedDay.date} · ${latestVerifiedDay.verdict}` : "No verified days yet"}
         </div>
       </a>
     </main>

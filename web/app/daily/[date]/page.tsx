@@ -44,7 +44,7 @@ const MARKDOWN_COMPONENTS: Components = {
   code: ({ children }) => <code className="rounded bg-zinc-800 px-1 py-0.5 text-xs text-zinc-200">{children}</code>,
 };
 
-// Next 15 made dynamic-segment props async — `params` is a Promise here, not
+// Next 15 made dynamic-segment props async: `params` is a Promise here, not
 // a plain object, so the component must await it.
 export default async function DailyDigestPage({ params }: { params: Promise<{ date: string }> }) {
   const { date } = await params;
@@ -56,7 +56,7 @@ export default async function DailyDigestPage({ params }: { params: Promise<{ da
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
       <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Daily verification — {date}</h1>
+        <h1 className="text-xl font-semibold">Daily verification: {date}</h1>
         <Link href="/daily" className="text-xs text-zinc-500 hover:text-zinc-300">
           ← all days
         </Link>

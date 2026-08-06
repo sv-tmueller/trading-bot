@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { readLedger, type LedgerRow, type Verdict } from "@/lib/dailyJournal";
 
-// No `export const dynamic` here — App Router prerenders statically by
+// No `export const dynamic` here: App Router prerenders statically by
 // default unless it sees a dynamic API, and readLedger()'s plain
 // fs.readFileSync is not one. This is a build-time-only read (#548 design
 // spec §8): no runtime filesystem access, no secrets, and `next build` still
