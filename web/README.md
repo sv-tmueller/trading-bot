@@ -1,13 +1,23 @@
-# Trading Bot — read-only dashboard (#228)
+# Trading Bot — read-only dashboard (#228, repointed at the hourly bot in #538)
 
-A Next.js (App Router) status page for the deterministic regime bot, reading
+A Next.js (App Router) status page for the hourly candlestick bot, reading
 Supabase **server-side** with the service-role key. No controls — viewing only
-(the panic kill button stays the token-auth Edge Function).
+(the panic kill button stays the token-auth Edge Function). Answers one
+question: is the bot alive, and what did it just do — strategy-performance
+analysis (R-multiples, detector hit rates, equity curves) is out of scope here;
+`scripts/render_weekly_journal.ts` owns that weekly.
 
-Shows: current position (LONG/CASH), regime (SPY vs 200-DMA), drawdown,
-kill-switch flag, paused banner, recent `trades`, and recent `audit_log` runs —
-plus a **Holdings** panel (live Alpaca equity + open positions + unrealized P&L)
-when Alpaca keys are configured (otherwise it shows a "not connected" hint).
+Shows: the latest `hourly_scans` bar's timestamp and decision, the open
+position with its bracket levels (entry ref / stop / target, paired with the
+position by symbol — a disclosed heuristic, since Alpaca positions carry no
+back-reference to the order that opened them), the paused flag, equity against
+the -15% floor, a recent-scans table (decision, detectors fired, skip reason
+per bar), recent `hourly_*` `trades`, and recent `hourly-check` `audit_log`
+runs — plus a **Holdings** panel (live Alpaca equity + open positions +
+unrealized P&L) when Alpaca keys are configured (otherwise it shows a "not
+connected" hint). The page also states how stale its newest scan is (a plain
+age fact, plus a banner past a fixed 72h threshold) and notes when no scan has
+ever been recorded, rather than letting either read as silent "all clear".
 
 ## Run locally
 ```bash
