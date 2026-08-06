@@ -1,0 +1,88 @@
+{
+  "generated_at": "2026-08-05T21:07:02.123Z",
+  "market_open": false,
+  "paused": false,
+  "regime": null,
+  "regime_margin_pct": null,
+  "audit_7d": {
+    "since": "2026-07-29T21:07:02.123Z",
+    "outcome_counts": {
+      "success": 5,
+      "skipped:market_closed": 4
+    },
+    "errors": []
+  },
+  "last_trade": null,
+  "alpaca": {
+    "equity_usd": 1017330.61,
+    "position": {
+      "symbol": "UPRO",
+      "qty": 0
+    }
+  },
+  "returns": {
+    "since_inception_pct": 1.73,
+    "trailing_7d_pct": 0.42,
+    "trailing_30d_pct": 1.73
+  },
+  "last_runs": {
+    "daily_check": null,
+    "kill_switch": {
+      "started_at": "2026-08-05T21:55:00.000Z",
+      "outcome": "success:no_position"
+    },
+    "hourly_check": {
+      "started_at": "2026-08-05T14:07:01.500Z",
+      "outcome": "success"
+    }
+  },
+  "hourly": {
+    "latest_scan": null,
+    "equity": {
+      "equity_usd": 1017330.61,
+      "floor_baseline_usd": 1017330.61,
+      "floor_price_usd": 864730.0185,
+      "headroom_pct": 15.0
+    },
+    "skip_reason_counts": {},
+    "audit_outcome_counts": {
+      "success": 1,
+      "skipped:market_closed": 1
+    }
+  },
+  "verification": {
+    "date": "2026-08-05",
+    "window": {
+      "since": "2026-08-05T00:00:00.000Z",
+      "until": "2026-08-05T23:59:59.999Z"
+    },
+    "shorts_enabled": false,
+    "hourly_check_runs": [
+      {
+        "started_at": "2026-08-05T13:07:02.113Z",
+        "finished_at": "2026-08-05T13:07:03.001Z",
+        "outcome": "skipped:market_closed",
+        "notes": null
+      },
+      {
+        "started_at": "2026-08-05T14:07:01.500Z",
+        "finished_at": "2026-08-05T14:07:02.200Z",
+        "outcome": "success",
+        "notes": null
+      }
+    ],
+    "kill_switch_runs": {
+      "count": 108,
+      "outcome_counts": {
+        "success:no_position": 108
+      }
+    },
+    "scans": [],
+    "trades": [],
+    "config": {
+      "paused": "false",
+      "hourly_experiment_start_equity": "1017330.61",
+      "hourly_experiment_baseline_verified": "1017330.61"
+    }
+  }
+}

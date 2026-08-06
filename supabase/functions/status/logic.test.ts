@@ -1146,3 +1146,63 @@ Deno.test("composition: verifyDate + windowDays both present -> both blocks corr
   assertEquals(auditCalls[0], [digest.audit_7d.since, digest.generated_at]);
   assertEquals(auditCalls[1], ["2026-08-05T00:00:00.000Z", "2026-08-05T23:59:59.999Z"]);
 });
+
+// #546: the fixture must be consumed by a test, not merely committed (lead
+// decision on #545: the three pre-existing sibling fixtures in
+// scripts/testdata/ have zero consumers, and "a fixture nothing reads pins
+// nothing"). This diffs runStatus's `verification` output, built from mocks
+// reproducing the fixture's inputs, against the fixture's own
+// `verification` key.
+Deno.test("scripts/testdata/status-digest-verification.json: fixture's `verification` matches runStatus's output built from the same inputs", async () => {
+  const fixtureRaw = await Deno.readTextFile(
+    new URL("../../../scripts/testdata/status-digest-verification.json", import.meta.url),
+  );
+  const fixture = JSON.parse(fixtureRaw);
+
+  const [since] = dayWindow(VERIFY_DATE);
+  const killSwitchRows: AuditLogRow[] = Array.from({ length: 108 }, (_, i) => ({
+    script_name: "kill-switch",
+    started_at: `2026-08-05T${String(13 + Math.floor(i / 12)).padStart(2, "0")}:${
+      String((i % 12) * 5).padStart(2, "0")
+    }:00.000Z`,
+    finished_at: `2026-08-05T${String(13 + Math.floor(i / 12)).padStart(2, "0")}:${
+      String((i % 12) * 5).padStart(2, "0")
+    }:00.500Z`,
+    outcome: "success:no_position",
+    notes: null,
+  }));
+  const dayRows: AuditLogRow[] = [
+    {
+      script_name: "hourly-check",
+      started_at: "2026-08-05T13:07:02.113Z",
+      finished_at: "2026-08-05T13:07:03.001Z",
+      outcome: "skipped:market_closed",
+      notes: null,
+    },
+    {
+      script_name: "hourly-check",
+      started_at: "2026-08-05T14:07:01.500Z",
+      finished_at: "2026-08-05T14:07:02.200Z",
+      outcome: "success",
+      notes: null,
+    },
+    ...killSwitchRows,
+  ];
+
+  const { deps } = makeDeps({
+    shortsEnabled: false,
+    db: {
+      getAuditLogSince: (sinceIso: string) => Promise.resolve(sinceIso === since ? dayRows : []),
+      getHourlyScansInWindow: () => Promise.resolve([]),
+      getTradesInWindow: () => Promise.resolve([]),
+      getConfig: (key: string) => {
+        if (key === "paused") return Promise.resolve("false");
+        if (key === "hourly_experiment_start_equity") return Promise.resolve("1017330.61");
+        if (key === "hourly_experiment_baseline_verified") return Promise.resolve("1017330.61");
+        return Promise.resolve(null);
+      },
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification, fixture.verification);
+});
