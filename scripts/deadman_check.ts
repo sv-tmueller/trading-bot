@@ -16,31 +16,46 @@
 // Function module (which pulls in Alpaca/Supabase client types this script
 // has no business depending on).
 export interface DeadmanLastRuns {
-  daily_check: { started_at: string; outcome: string | null } | null;
   kill_switch: { started_at: string; outcome: string | null } | null;
+  // Optional: absent entirely on a status digest deployed before #536
+  // shipped last_runs.hourly_check. `undefined` (key missing) and `null`
+  // (key present, no audit_log row yet) are two DISTINCT findings below --
+  // do not collapse them with `== null`.
+  hourly_check?: { started_at: string; outcome: string | null } | null;
 }
 
 // ---------------------------------------------------------------------------
 // Constants — derived from the pg_cron schedules (CLAUDE.md "Daily flow" /
 // "Intraday kill-switch"). No trading-day/holiday calendar is needed
-// anywhere in this script: both daily-check and kill-switch write their
-// audit_log row *before any gate* (market-closed, paused, etc.), so even a
-// holiday leaves a fresh row with a `skipped:*` outcome — staleness here is
-// measured purely against the UTC cron schedule, and outcome content is
-// never inspected (see the "skipped:market_closed" test case).
+// anywhere in this script: both kill-switch and hourly-check write their
+// audit_log row *before any gate* (market-closed, paused, etc. —
+// hourly-check's `insertAuditLog` call at hourly-check/logic.ts precedes its
+// paused/paper/clock gates, same as kill-switch), so even a holiday leaves a
+// fresh row with a `skipped:*` outcome — staleness here is measured purely
+// against the UTC cron schedule, and outcome content is never inspected (see
+// the "skipped:market_closed" test case).
 // ---------------------------------------------------------------------------
 
-// daily-check pg_cron: "37 13 * * 1-5" and "37 14 * * 1-5" UTC (two slots,
-// DST-invariant). The finding only arms once both slots have had a chance to
-// run — 14:37 + a short grace window, rounded up to 15:00 UTC (audit rows
-// are written at run *start*, so the grace only needs to cover scheduling
-// jitter, not a full run's duration).
-const DAILY_CHECK_ARM_UTC = { hour: 15, minute: 0 } as const;
-// A daily-check row counts as "ran today" once its started_at is at or after
-// today's first slot (13:37 UTC) with a little headroom — 13:30 UTC. Any row
-// older than that must be from a prior day (rows are append-only, ordered by
-// started_at), meaning neither of today's slots has fired yet.
-const DAILY_CHECK_CUTOFF_UTC = { hour: 13, minute: 30 } as const;
+// hourly-check pg_cron: "7 13-21 * * 1-5" UTC (migration 0014) — 9 daily
+// slots at :07 past each hour, 13:07 through 21:07 UTC. Stale threshold is
+// the 60-minute cadence plus ~15 minutes' grace (covers the cron's own
+// 7-minute minute-offset, observed feed latency, and evaluation-timing
+// variance) — comfortably above kill-switch's 20-minute floor and above the
+// cadence itself, so a healthy bot is never flagged mid-hour.
+//
+// Distinct from _shared/config.ts's HOURLY_STALENESS_TOLERANCE_MIN, which
+// governs *bar* freshness inside hourly-check itself, not *audit_log-row*
+// freshness as observed externally by this script — do not conflate the two.
+const HOURLY_CHECK_STALE_MINUTES = 75;
+// armStart = firstSlot (13:07) + staleThreshold (75min) = 14:22 UTC,
+// mirroring kill-switch's exact derivation: guarantees no false alarm from
+// yesterday's leftover 21:07 row before today's first slot has had a full
+// threshold's grace to land.
+const HOURLY_CHECK_ARM_START_UTC = { hour: 14, minute: 22 } as const;
+// Reuses kill-switch's own end-of-day boundary. Satisfies
+// armEnd <= lastSlot (21:07) + staleThreshold (75min) = 22:22, with 12
+// minutes of margin.
+const HOURLY_CHECK_ARM_END_UTC = { hour: 22, minute: 10 } as const;
 
 // kill-switch pg_cron: "*/5 13-21 * * 1-5" UTC, i.e. 13:00-21:55 UTC. Armed
 // window starts at 13:20 UTC (avoids a false alarm right at window start,
@@ -85,21 +100,34 @@ export function evaluateDeadman(lastRuns: DeadmanLastRuns, now: Date): string[] 
     return findings;
   }
 
-  // daily-check
-  if (
-    now.getTime() >= todayAt(now, DAILY_CHECK_ARM_UTC.hour, DAILY_CHECK_ARM_UTC.minute).getTime()
-  ) {
-    const dc = lastRuns.daily_check;
-    if (dc == null) {
+  // hourly-check
+  const hourlyArmStart = todayAt(
+    now,
+    HOURLY_CHECK_ARM_START_UTC.hour,
+    HOURLY_CHECK_ARM_START_UTC.minute,
+  );
+  const hourlyArmEnd = todayAt(now, HOURLY_CHECK_ARM_END_UTC.hour, HOURLY_CHECK_ARM_END_UTC.minute);
+  if (now.getTime() >= hourlyArmStart.getTime() && now.getTime() <= hourlyArmEnd.getTime()) {
+    const hc = lastRuns.hourly_check;
+    // `undefined` (key absent -- digest predates #536) and `null` (key
+    // present, no row yet) are two DISTINCT findings. Do NOT collapse with
+    // `== null`.
+    if (hc === undefined) {
       findings.push(
-        "daily-check: no audit_log row at all (last_runs.daily_check is null) — the scheduled pg_cron job appears to have stopped invoking daily-check.",
+        "hourly-check: last_runs.hourly_check is absent from the digest — the deployed status function predates hourly-bot coverage (#536); redeploy status to enable this check.",
+      );
+    } else if (hc === null) {
+      findings.push(
+        "hourly-check: no audit_log row at all (last_runs.hourly_check is null) — the scheduled pg_cron job appears to have stopped invoking hourly-check.",
       );
     } else {
-      const startedAt = parseTimestamp(dc.started_at, "last_runs.daily_check.started_at");
-      const cutoff = todayAt(now, DAILY_CHECK_CUTOFF_UTC.hour, DAILY_CHECK_CUTOFF_UTC.minute);
-      if (startedAt.getTime() < cutoff.getTime()) {
+      const startedAt = parseTimestamp(hc.started_at, "last_runs.hourly_check.started_at");
+      const ageMinutes = (now.getTime() - startedAt.getTime()) / 60_000;
+      if (ageMinutes > HOURLY_CHECK_STALE_MINUTES) {
         findings.push(
-          `daily-check: stale — latest run started ${dc.started_at}, before today's ${cutoff.toISOString()} cutoff (neither scheduled slot has run today).`,
+          `hourly-check: stale — latest run started ${hc.started_at}, ${
+            ageMinutes.toFixed(1)
+          } minutes ago (> ${HOURLY_CHECK_STALE_MINUTES}m threshold).`,
         );
       }
     }

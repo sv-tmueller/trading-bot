@@ -1,5 +1,5 @@
-# Dead-man watchdog: detects a stalled trading pipeline — daily-check and/or
-# kill-switch have stopped being invoked by pg_cron — from OUTSIDE Supabase
+# Dead-man watchdog: detects a stalled trading pipeline — kill-switch and/or
+# hourly-check have stopped being invoked by pg_cron — from OUTSIDE Supabase
 # (the Actions runner + curl + this repo's `status` Edge Function + a Discord
 # webhook is the whole alert path), so it still fires even if every Supabase
 # component is dead. See docs/runbooks/deadman-watchdog.md for the full
@@ -10,15 +10,17 @@
 # encoded as named constants in scripts/deadman_check.ts, which owns the
 # actual evaluation logic; this workflow only fetches + latches):
 #
-#   Script       | Armed window (UTC, weekdays only) | Stale threshold
-#   -------------|------------------------------------|--------------------
-#   daily-check  | >= 15:00                            | no row started
-#                |                                      | today >= 13:30 UTC
-#   kill-switch  | [13:20, 22:10]                       | latest row > 20 min
-#                |                                      | old (or absent)
+#   Script         | Armed window (UTC, weekdays only) | Stale threshold
+#   ---------------|------------------------------------|--------------------
+#   kill-switch    | [13:20, 22:10]                      | latest row > 20 min
+#                  |                                      | old (or absent)
+#   hourly-check   | [14:22, 22:10]                       | latest row > 75 min
+#                  |                                      | old (or absent);
+#                  |                                      | absent field ->
+#                  |                                      | separate finding
 #
-# No holiday calendar is needed anywhere in this package: both daily-check
-# and kill-switch write their audit_log row *before any gate* (market-closed,
+# No holiday calendar is needed anywhere in this package: both kill-switch
+# and hourly-check write their audit_log row *before any gate* (market-closed,
 # paused, etc.), so even a market holiday leaves a fresh row with a
 # `skipped:*` outcome — a real staleness only happens when the scheduled
 # invocation itself stops firing. Weekends are excluded by UTC weekday.
@@ -64,9 +66,9 @@ name: deadman-watchdog
 on:
   schedule:
     # 18 evaluations/weekday (minutes :07 and :37, hours 13-21 UTC) — free on
-    # a public repo. The :07/:37 minutes avoid kill-switch's */5 slots; :37
-    # coincides with daily-check's 13:37/14:37 UTC runs, which is harmless —
-    # both trading functions write their audit_log row at run start.
+    # a public repo. The :07/:37 minutes avoid kill-switch's */5 slots; :07
+    # coincides with hourly-check's own :07-past-the-hour cron slots, which
+    # is harmless — hourly-check writes its audit_log row at run start.
     - cron: "7,37 13-21 * * 1-5"
   workflow_dispatch:
 
