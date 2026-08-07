@@ -1,5 +1,6 @@
 import { serviceClient } from "@/lib/supabase";
 import { getAccount, getPositions, type AlpacaAccount, type AlpacaPosition } from "@/lib/alpaca";
+import { getLatestVerifiedDay } from "@/lib/dailyJournal";
 
 // Always render fresh at request time — this is a live status page.
 export const dynamic = "force-dynamic";
@@ -194,6 +195,9 @@ function formatAge(iso: string, now: Date): string {
 export default async function Page() {
   const { recentScans, latestEntered, paused, baseline, trades, audit, account, positions, dbError } =
     await getData();
+  // Synchronous, request-time read (design spec §8's accepted tension
+  // resolution); no need to join the Promise.all above.
+  const latestVerifiedDay = getLatestVerifiedDay();
 
   const latestScan = recentScans[0] ?? null;
   const now = new Date();
@@ -386,6 +390,26 @@ export default async function Page() {
         rows={audit.map((a) => [fmt(a.finished_at), a.script_name, a.outcome ?? "—", a.notes ?? ""])}
         empty="No runs yet."
       />
+
+      <a
+        href="/daily"
+        className="block rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 hover:border-zinc-700"
+      >
+        <div className="text-[11px] uppercase tracking-wide text-zinc-500">Daily verification</div>
+        <div
+          className={`mt-1 text-lg font-semibold ${
+            latestVerifiedDay?.verdict === "FAIL"
+              ? "text-red-400"
+              : latestVerifiedDay?.verdict === "WARN"
+              ? "text-amber-400"
+              : latestVerifiedDay
+              ? "text-emerald-400"
+              : "text-zinc-100"
+          }`}
+        >
+          {latestVerifiedDay ? `${latestVerifiedDay.date} · ${latestVerifiedDay.verdict}` : "No verified days yet"}
+        </div>
+      </a>
     </main>
   );
 }
