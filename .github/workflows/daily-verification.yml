@@ -1,0 +1,319 @@
+# Daily verification: runs the soak-day SQL ritual mechanically instead of by
+# hand (#535's closing question). Fetches the `status?verify=YYYY-MM-DD`
+# digest (#546), pipes it through the pure evaluator `scripts/daily_verify.ts`
+# (#547), commits the two artifacts it writes, posts one Discord line, and
+# opens a dated issue on FAIL. See
+# docs/superpowers/specs/2026-08-06-daily-verification-design.md and
+# docs/runbooks/daily-verification.md for the full design and operator guide.
+#
+# Structured on deadman-watchdog.yml (silence flag, loud-fail dev secrets,
+# never print the raw digest) crossed with weekly-research-review.yml's
+# commit-idempotently and dedup-issue-by-title idioms. Deliberately NOT
+# scripts/deadman_latch.sh: a bad trading day is a dated event, not an
+# ongoing incident, and that script posts its own Discord message, which
+# would duplicate the one line this workflow already sends every run.
+#
+# Schedule: 22:15 UTC weekdays, after kill-switch's final 21:55 slot has
+# landed. Plus workflow_dispatch with an optional `date` input, so a specific
+# day can be backfilled one at a time (`audit_log` and `hourly_scans` hold
+# 2026-08-03 onward).
+#
+# Date resolution happens here in the workflow's shell, not in the script:
+# the resolved date is needed before the `status?verify=<date>` URL can be
+# built, and the pipeline is fetch-then-pipe, so nothing downstream of the
+# fetch can supply it. `workflow_dispatch`'s `date` input is used verbatim;
+# otherwise today in UTC when the UTC hour is 12 or later, else the previous
+# UTC day (the 22:15 schedule is far enough from midnight that ordinary
+# Actions jitter never crosses the boundary the wrong way). The weekend
+# judgment itself (SKIPPED_WEEKEND) stays in the script's tested pure layer --
+# this workflow always resolves a date, always fetches, always pipes, and
+# trusts the stdout verdict.
+#
+# Green versus red: any verdict the evaluator reaches -- PASS, WARN, FAIL, or
+# SKIPPED_WEEKEND -- exits this run green, because the dated issue plus the
+# Discord line ARE the signal (deadman's own rule, for deadman's reason). Red
+# is reserved for workflow-internal failure only:
+#   - missing dev secrets (loud ::error::, never a silent skip)
+#   - a failed digest fetch (deliberately NOT softened into a finding --
+#     the frozen stdout envelope has no vocabulary for "could not fetch", so
+#     a curl failure propagates under Actions' default `bash -eo pipefail`)
+#   - the evaluator exiting 1 (malformed input -- no JSON printed, nothing
+#     written)
+#   - a failed commit or push
+#   - a failed Discord post
+# Step order is evaluate, commit, Discord, issue, so a commit failure can't
+# still send a line describing artifacts that never reached the repo.
+#
+# The evaluator's exit code 2 (FAIL) must NOT propagate under Actions'
+# default errexit -- hence the `set +e` capture-then-branch idiom below,
+# mirroring deadman's own "Evaluate" steps.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions), all
+# already configured for deadman-watchdog.yml (STATUS_URL/STATUS_TOKEN also
+# for heartbeat.yml) -- no new secret is introduced by this workflow:
+#   STATUS_URL / STATUS_TOKEN   - dev status function (loud-fail if missing)
+#   NOTIFY_WEBHOOK_URL          - Discord incoming webhook
+#
+# Prod leg: an INERT NOTICE ONLY, permanently -- this deliberately does NOT
+# mirror deadman-watchdog.yml/heartbeat.yml, whose prod legs become full
+# symmetric pipelines once STATUS_URL_PROD/STATUS_TOKEN_PROD are set. Those
+# two workflows write no repo files; this one does, and the artifact schema
+# (docs/trading-journal/daily-verification.jsonl and
+# docs/trading-journal/daily/<date>.md) is keyed by date alone with no
+# environment dimension. A live prod leg would silently clobber the dev
+# leg's ledger row and digest for the same calendar date, whichever ran
+# second. Activating prod needs the artifact schema namespaced per
+# environment first -- out of scope here, tracked as a follow-up ahead of
+# #230. See docs/runbooks/daily-verification.md for the full caveat.
+#
+# Maintenance silence: repo variable DAILY_VERIFY_SILENCED set to exactly
+# `true` short-circuits every step to a green ::notice:: exit (same idiom as
+# DEADMAN_SILENCED). Unset it (or set it to anything else) to re-arm.
+#
+# Never prints the raw status digest (it carries account and position data).
+# Only the evaluator's own stdout envelope (verdict, summary, findings,
+# artifact paths) reaches the log.
+#
+# FAIL dedup: one issue per date, deduped by exact title against
+# `--state all`, following weekly-research-review.yml's idiom (not
+# deadman_latch.sh's open/close latch -- a bad trading day is a dated event,
+# not an ongoing incident that "recovers").
+#
+# This repo is PUBLIC: forks get none of the secrets above, and GitHub
+# disables scheduled workflows on forks by default, so a fork's copy of this
+# workflow is inert.
+name: daily-verification
+
+on:
+  schedule:
+    - cron: "15 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Trading day to verify (YYYY-MM-DD). Defaults to today (UTC hour >= 12) or yesterday otherwise."
+        required: false
+        type: string
+
+concurrency:
+  group: daily-verification
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check silence flag
+        id: silence
+        run: |
+          if [ "$DAILY_VERIFY_SILENCED" = "true" ]; then
+            echo "::notice::daily-verification is silenced (DAILY_VERIFY_SILENCED=true repo variable). Skipping this run. Unset the variable to re-arm. See docs/runbooks/daily-verification.md."
+            echo "silenced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "silenced=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DAILY_VERIFY_SILENCED: ${{ vars.DAILY_VERIFY_SILENCED }}
+
+      - name: Checkout
+        if: steps.silence.outputs.silenced != 'true'
+        uses: actions/checkout@v5
+
+      - name: Setup Deno
+        if: steps.silence.outputs.silenced != 'true'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Check dev secrets configured
+        id: check_dev
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          if [ -z "$STATUS_URL" ] || [ -z "$STATUS_TOKEN" ]; then
+            echo "::error::daily-verification requires STATUS_URL and STATUS_TOKEN repo secrets to be set (Settings -> Secrets and variables -> Actions). See docs/runbooks/daily-verification.md. Failing loudly -- no silent skip."
+            exit 1
+          fi
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+
+      - name: Resolve target date
+        id: date
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          DATE="${{ inputs.date }}"
+          if [ -z "$DATE" ]; then
+            HOUR="$(date -u +%H)"
+            if [ "$HOUR" -ge 12 ]; then
+              DATE="$(date -u +%F)"
+            else
+              DATE="$(date -u -d yesterday +%F)"
+            fi
+          fi
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "Resolved target date: $DATE"
+
+      # A curl failure here is deliberately NOT softened into a finding: the
+      # frozen stdout envelope (spec §5.5) has no vocabulary for "could not
+      # fetch the digest", so this propagates under `bash -eo pipefail` and
+      # reds the run, per the green/red contract above.
+      - name: Fetch dev digest
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          curl --fail-with-body -sS --max-time 60 --retry 2 \
+            -H "x-status-token: $STATUS_TOKEN" \
+            "$STATUS_URL?verify=$DATE" -o digest.json
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}
+          DATE: ${{ steps.date.outputs.date }}
+
+      # capture-then-branch: exit code 2 (FAIL) must stay green, exit code 1
+      # (malformed input) must red the run. `set +e` around the invocation
+      # keeps the FAIL case from tripping this step's own errexit.
+      - name: Evaluate day
+        id: evaluate
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          set +e
+          OUT=$(deno run --allow-read=docs/trading-journal --allow-write=docs/trading-journal \
+            scripts/daily_verify.ts --date="$DATE" < digest.json)
+          CODE=$?
+          set -e
+          if [ "$CODE" -eq 1 ]; then
+            echo "::error::daily-verification: scripts/daily_verify.ts exited 1 (malformed input) for $DATE -- see the script's stderr above for detail."
+            exit 1
+          fi
+          if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+            echo "::error::daily-verification: scripts/daily_verify.ts exited unexpected code $CODE for $DATE."
+            exit 1
+          fi
+          echo "$OUT" > verify-result.json
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+        env:
+          DATE: ${{ steps.date.outputs.date }}
+
+      - name: Commit artifacts (no-op when unchanged)
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          LEDGER=$(jq -r '.artifacts.ledger // empty' verify-result.json)
+          DIGEST=$(jq -r '.artifacts.digest // empty' verify-result.json)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -z "$LEDGER" ] && [ -z "$DIGEST" ]; then
+            echo "No artifacts for this date (e.g. SKIPPED_WEEKEND). Nothing to commit."
+            exit 0
+          fi
+          if [ -n "$LEDGER" ]; then git add "$LEDGER"; fi
+          if [ -n "$DIGEST" ]; then git add "$DIGEST"; fi
+          if git diff --cached --quiet; then
+            echo "No change -- this date's verification re-rendered byte-identical output. Nothing to commit."
+            exit 0
+          fi
+          COMMIT_DATE=$(jq -r '.date' verify-result.json)
+          git commit -m "docs(daily-verify): verification for $COMMIT_DATE"
+          git push
+
+      # Exactly one Discord message per run, whatever the verdict (D7).
+      # jq's `[0:2000]` slice is Unicode-codepoint-based, giving the same
+      # safety property `_shared/notifications.ts`'s `truncateCodepoints`
+      # gives the trading path, without importing it (CI acquires no
+      # Supabase client).
+      - name: Post Discord message
+        if: steps.silence.outputs.silenced != 'true'
+        run: |
+          if [ -z "$NOTIFY_WEBHOOK_URL" ]; then
+            echo "::error::daily-verification: NOTIFY_WEBHOOK_URL is unset -- cannot deliver the required Discord line. Failing the run red so this isn't silent."
+            exit 1
+          fi
+          DATE=$(jq -r '.date' verify-result.json)
+          VERDICT=$(jq -r '.verdict' verify-result.json)
+          SUMMARY=$(jq -r '.summary' verify-result.json)
+          FINDINGS=$(jq -r '.findings | if length > 0 then (map("- " + .) | join("\n")) else "" end' verify-result.json)
+          MSG=$(jq -nr --arg date "$DATE" --arg verdict "$VERDICT" --arg summary "$SUMMARY" --arg findings "$FINDINGS" \
+            '"[dev] Daily verify " + $date + ": " + $verdict + " -- " + $summary + (if $findings == "" then "" else "\n" + $findings end)')
+          PAYLOAD=$(jq -n --arg content "$MSG" '{content: $content[0:2000]}')
+          curl --fail-with-body -sS --max-time 30 \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$NOTIFY_WEBHOOK_URL" >/dev/null
+        env:
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+
+      # A gh API blip here is deliberately NOT allowed to red the run: by
+      # this point the Discord line has already landed, so the day's signal
+      # already reached the operator. `set +e` around the subshell (needed
+      # because this step is several `gh` calls, not one) mirrors the
+      # "Evaluate day" step's capture-then-branch idiom above, just wrapped
+      # around a block instead of a single command.
+      - name: Open FAIL issue (deduped by exact title)
+        if: ${{ steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.code == '2' }}
+        run: |
+          set +e
+          (
+            set -e
+            DATE=$(jq -r '.date' verify-result.json)
+            N=$(jq -r '.findings | length' verify-result.json)
+            TITLE="[daily-verify][dev] $DATE: $N finding(s)"
+
+            # Idempotent -- never fails if the label already exists.
+            gh label create daily-verify --color 5319E7 \
+              --description "Daily verification FAIL for a specific trading day (#549)" \
+              --force >/dev/null
+
+            # Dedup: one issue per date, exact-title-matched so a near-title
+            # cannot cause a false dedup.
+            EXISTING="$(gh issue list --search "$TITLE in:title" --state all \
+                          --json number,title \
+                          --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)"
+            if [ -n "$EXISTING" ]; then
+              echo "Issue #$EXISTING already exists for $DATE -- no-op."
+              exit 0
+            fi
+
+            DIGEST=$(jq -r '.artifacts.digest // empty' verify-result.json)
+            BODY_FILE="$(mktemp)"
+            {
+              echo "Automated daily verification found $N finding(s) for **$DATE**."
+              echo
+              jq -r '.findings[] | "- " + .' verify-result.json
+              echo
+              echo "Digest: \`$DIGEST\`"
+              echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            } > "$BODY_FILE"
+
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label daily-verify
+          )
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 0 ]; then
+            DATE=$(jq -r '.date' verify-result.json)
+            echo "::warning::daily-verification: failed to open/dedupe the FAIL issue for $DATE (exit $CODE) -- the Discord line for this date already landed, so today's signal is not lost. See the step logs above for detail."
+          fi
+          exit 0
+
+      # -----------------------------------------------------------------
+      # Prod leg -- INERT NOTICE ONLY, permanently. See the header comment:
+      # this never activates into a real pipeline, even once
+      # STATUS_URL_PROD/STATUS_TOKEN_PROD are set, because the artifact
+      # schema has no environment dimension. Gated on !cancelled() (not
+      # success()) so a red dev leg can't skip this reminder.
+      # -----------------------------------------------------------------
+      - name: Prod leg (inert notice only)
+        if: ${{ !cancelled() && steps.silence.outputs.silenced != 'true' }}
+        run: |
+          if [ -n "$STATUS_URL_PROD" ] && [ -n "$STATUS_TOKEN_PROD" ]; then
+            echo "::notice::daily-verification (prod) stays intentionally inert even though STATUS_URL_PROD/STATUS_TOKEN_PROD are set. Activating a prod leg needs the artifact schema namespaced per environment first (see docs/runbooks/daily-verification.md's known caveats) -- do not build a symmetric prod pipeline here."
+          else
+            echo "::notice::daily-verification (prod) is inert -- STATUS_URL_PROD/STATUS_TOKEN_PROD are not configured. This leg is designed to never activate into a real pipeline, even once they are set. See docs/runbooks/daily-verification.md."
+          fi
+        env:
+          STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
+          STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}

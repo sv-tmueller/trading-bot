@@ -72,6 +72,11 @@ bash scripts/status.sh   # renders the JSON digest from .env.status via curl + j
 deno run --allow-env --allow-net --allow-write=docs/trading-journal \
   --env-file=.env.weekly scripts/render_weekly_journal.ts [--week YYYY-Www] [--force]
 
+# Daily verification (scheduled GitHub Actions workflow, weekdays 22:15 UTC -- read-only,
+# no Supabase cron, no Edge Function; see docs/runbooks/daily-verification.md)
+gh workflow run daily-verification.yml                     # manual run / re-run
+gh workflow run daily-verification.yml -f date=YYYY-MM-DD  # backfill a specific date
+
 # Backtest the regime strategy (Python research — not the trading path)
 venv/bin/python main.py backtest --years 5
 ```
