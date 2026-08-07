@@ -90,6 +90,26 @@ export interface HourlyConfig {
   hourlyBotPaperOnly: true;
 }
 
+// #546: narrow reader for HOURLY_SHORTS_ENABLED alone, extracted so exactly
+// one parser owns the variable. getHourlyConfig() below delegates to this.
+// Deliberately independent of HOURLY_BOT_PAPER_ONLY -- callers (status's
+// `shorts_enabled` field, per the lead decision on #545) must be able to read
+// this one flag without tripping getHourlyConfig()'s unrelated paper-only
+// guard, which throws unless HOURLY_BOT_PAPER_ONLY is explicitly "true".
+//
+// Fail-closed (#493): absent means shorts off, so a lost or never-set secret
+// cannot arm the short-side path. Enabling requires an explicit "true", the
+// same way HOURLY_BOT_PAPER_ONLY does.
+export function getHourlyShortsEnabled(): boolean {
+  const raw = (Deno.env.get("HOURLY_SHORTS_ENABLED") ?? "false").trim().toLowerCase();
+  if (raw !== "true" && raw !== "false") {
+    throw new Error(
+      `HOURLY_SHORTS_ENABLED must be "true" or "false", got ${JSON.stringify(raw)}`,
+    );
+  }
+  return raw === "true";
+}
+
 export function getHourlyConfig(): HourlyConfig {
   const hourlyBotTicker = strEnv("HOURLY_BOT_TICKER", "SPY");
   if (hourlyBotTicker === "") {
@@ -151,21 +171,9 @@ export function getHourlyConfig(): HourlyConfig {
   }
   const hourlyContextMode = hourlyContextModeRaw as ContextMode;
 
-  // Fail-closed (#493): the spec's §10 table listed a default of `true`, which
-  // let a lost or never-set secret arm the short-side path -- the opposite
-  // direction from what a safety flag owes. Absent now means shorts off, so
-  // enabling them takes an explicit "true" the same way HOURLY_BOT_PAPER_ONLY
-  // does.
-  const hourlyShortsEnabledRaw = (Deno.env.get("HOURLY_SHORTS_ENABLED") ?? "false").trim()
-    .toLowerCase();
-  if (hourlyShortsEnabledRaw !== "true" && hourlyShortsEnabledRaw !== "false") {
-    throw new Error(
-      `HOURLY_SHORTS_ENABLED must be "true" or "false", got ${
-        JSON.stringify(hourlyShortsEnabledRaw)
-      }`,
-    );
-  }
-  const hourlyShortsEnabled = hourlyShortsEnabledRaw === "true";
+  // #546: delegates to the narrow reader above so there is exactly one
+  // parser for HOURLY_SHORTS_ENABLED.
+  const hourlyShortsEnabled = getHourlyShortsEnabled();
 
   // Strict reading (derived decision, #475 T1): §10's table lists a default of
   // `true` alongside "throws if unset or false" -- an internally tense pair.

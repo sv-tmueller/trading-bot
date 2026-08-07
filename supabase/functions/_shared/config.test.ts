@@ -2,6 +2,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   getAlpacaConfig,
   getHourlyConfig,
+  getHourlyShortsEnabled,
   getNotifyWebhookUrl,
   getStatusToken,
   getStrategyConfig,
@@ -483,6 +484,41 @@ Deno.test("getHourlyConfig: blank/whitespace-only HOURLY_SHORTS_ENABLED throws",
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
   Deno.env.set("HOURLY_SHORTS_ENABLED", "  ");
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_SHORTS_ENABLED");
+  clearHourlyEnv();
+});
+
+// #546: getHourlyShortsEnabled -- the narrow single-flag reader `status`
+// sources `shorts_enabled` from (lead decision on #545), extracted so exactly
+// one parser owns HOURLY_SHORTS_ENABLED. Deliberately never sets
+// HOURLY_BOT_PAPER_ONLY in any of these cases -- that is the point: this
+// reader must not require or read that unrelated secret at all.
+Deno.test("getHourlyShortsEnabled: unset disables shorts (fail-closed), independent of HOURLY_BOT_PAPER_ONLY", () => {
+  clearHourlyEnv();
+  assertEquals(getHourlyShortsEnabled(), false);
+});
+
+Deno.test("getHourlyShortsEnabled: explicit true/false, case-insensitive", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "TRUE");
+  assertEquals(getHourlyShortsEnabled(), true);
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "false");
+  assertEquals(getHourlyShortsEnabled(), false);
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyShortsEnabled: rejects a non-boolean value", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "yes");
+  assertThrows(() => getHourlyShortsEnabled(), Error, "HOURLY_SHORTS_ENABLED");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyShortsEnabled: blank/whitespace-only value throws", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "");
+  assertThrows(() => getHourlyShortsEnabled(), Error, "HOURLY_SHORTS_ENABLED");
+  Deno.env.set("HOURLY_SHORTS_ENABLED", "  ");
+  assertThrows(() => getHourlyShortsEnabled(), Error, "HOURLY_SHORTS_ENABLED");
   clearHourlyEnv();
 });
 

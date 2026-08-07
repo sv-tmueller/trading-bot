@@ -189,6 +189,28 @@ export async function getTradesSince(sb: SupabaseClient, sinceIso: string): Prom
   return ((data ?? []) as Record<string, unknown>[]).map(coerceTradeRow);
 }
 
+// #546: day-scoped [sinceIso, untilIso] read for the status digest's
+// `verification.trades` block, unfiltered by reason. Ascending by fill_time
+// (lead decision on #545 -- the other two arrays in the block are ascending;
+// a mixed convention inside one block is a trap for the consumer). Same
+// defensive .limit(1000) cap as getTradesSince: a single trading day cannot
+// plausibly produce anywhere near that many fills.
+export async function getTradesInWindow(
+  sb: SupabaseClient,
+  sinceIso: string,
+  untilIso: string,
+): Promise<TradeRow[]> {
+  const { data, error } = await sb
+    .from("trades")
+    .select("symbol, side, qty, fill_price, fill_time, reason, broker_order_id")
+    .gte("fill_time", sinceIso)
+    .lte("fill_time", untilIso)
+    .order("fill_time", { ascending: true })
+    .limit(1000);
+  if (error) throw new Error(`getTradesInWindow: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceTradeRow);
+}
+
 // #358 T4: windowed read for the status digest's `?days=N` extended mode.
 // SELECT-only. .limit(1000) is a defensive cap: one row per trading day
 // means a 60-day window cannot plausibly exceed it.
@@ -661,6 +683,27 @@ export async function getHourlyScansSince(
     .order("bar_ts", { ascending: false })
     .limit(1000);
   if (error) throw new Error(`getHourlyScansSince: ${error.message}`);
+  return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
+}
+
+// #546: day-scoped [sinceIso, untilIso] read for the status digest's
+// `verification.scans` block. **Ascending** by bar_ts, unlike the descending
+// getHourlyScansSince above -- the evaluator reads a day's scans in
+// chronological order. Same defensive .limit(1000) cap: a single trading
+// day's scan volume cannot plausibly approach it.
+export async function getHourlyScansInWindow(
+  sb: SupabaseClient,
+  sinceIso: string,
+  untilIso: string,
+): Promise<HourlyScanRow[]> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("*")
+    .gte("bar_ts", sinceIso)
+    .lte("bar_ts", untilIso)
+    .order("bar_ts", { ascending: true })
+    .limit(1000);
+  if (error) throw new Error(`getHourlyScansInWindow: ${error.message}`);
   return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
 }
 
