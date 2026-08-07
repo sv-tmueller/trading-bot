@@ -48,8 +48,11 @@ deno task test
 deno test --allow-env --allow-net supabase/functions/_shared/regime.test.ts
 deno test --allow-env --allow-net supabase/functions/hourly-check/logic.test.ts
 
-# DB integration tests — needs a local Postgres (gated behind RUN_DB_TESTS)
-deno task test:db
+# DB integration tests (gated behind RUN_DB_TESTS; needs a local Postgres, never dev or prod).
+# Full setup, expected result, and troubleshooting: docs/runbooks/db-tests.md
+supabase start                                        # applies every migration to the local stack
+eval "$(supabase status -o env | sed -n 's/^SERVICE_ROLE_KEY=/export SUPABASE_SERVICE_ROLE_KEY=/p')"
+deno task test:db                                     # 52 pass, 5 fail on #491's timestamptz spelling
 
 # Deploy the bot to a Supabase project (full steps: docs/runbooks/mvp2-deploy-and-decommission.md)
 supabase functions deploy daily-check kill-switch     # JWT-verified; cron sends the bearer
