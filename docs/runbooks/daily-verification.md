@@ -114,14 +114,34 @@ anything else) to re-arm.
 
 ## Backfilling a specific date
 
-`workflow_dispatch` takes an optional `date` input (`YYYY-MM-DD`). Backfill
-one date at a time -- the ledger is upserted and kept in date order, so
-backfill order doesn't matter, but running two dates concurrently would race
-on the same commit:
+`workflow_dispatch` takes an optional `date` input (`YYYY-MM-DD`). Backfill one
+date at a time; running two dates concurrently would race on the same commit.
+
+**Backfill oldest date first, and re-run any date that already has a digest
+rendered before its predecessor existed.** The ledger itself is upserted and
+kept in date order, so its ordering is safe whatever sequence you use, but the
+markdown digest's "Changed since the previous verified day" section is rendered
+from the previous ledger row **at render time**. A day rendered while it had no
+predecessor keeps saying so, permanently, even after earlier dates land.
+
+That was demonstrated when this ledger was first backfilled (#545): 2026-08-06
+was verified first and its digest read "No previous verified day to compare
+against (day zero)" (commit `76e001b`). After 08-03 through 08-05 were
+backfilled, re-running 08-06 re-rendered the same date as "Max latency: 2454ms
+-> 8054ms" plus "First entry recorded since the previous verified day"
+(`5888da9`). Same date, different content, from ordering alone.
 
 ```bash
+# oldest first
 gh workflow run daily-verification.yml -f date=2026-08-03
+gh workflow run daily-verification.yml -f date=2026-08-04
+# then re-run anything already rendered as day zero
+gh workflow run daily-verification.yml -f date=2026-08-06
 ```
+
+A re-run of a date whose comparison section does not change is a byte-identical
+no-op and the commit step skips it, so re-running more dates than strictly
+necessary costs nothing but a workflow run and one Discord line each.
 
 Without `-f date=`, the workflow resolves today (UTC) when the UTC hour is
 12 or later, otherwise yesterday (UTC) -- matching the 22:15 UTC schedule,
