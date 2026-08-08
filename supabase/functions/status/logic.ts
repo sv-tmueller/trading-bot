@@ -175,9 +175,15 @@ export interface StatusDigest {
         notes: string | null;
       }
     >;
-    // Counts only, never rows -- 108 identical-outcome rows carry no
-    // information the counts lack.
-    kill_switch_runs: { count: number; outcome_counts: Record<string, number> };
+    // Counts plus per-run `started_at` timestamps (facts only, #562), never
+    // full rows -- 108 identical-outcome rows carry no information the
+    // counts lack, but the run timestamps let the evaluator (#547) name
+    // which 5-minute grid slot(s) are missing on a short day.
+    kill_switch_runs: {
+      count: number;
+      outcome_counts: Record<string, number>;
+      started_at: string[];
+    };
     // Full HourlyScanRow values, ascending by bar_ts.
     scans: HourlyScanRow[];
     // Full TradeRow values, unfiltered by reason, ascending by fill_time --
@@ -433,18 +439,25 @@ export async function runStatus(
       .sort((a, b) => a.started_at.localeCompare(b.started_at));
     const killSwitchOutcomeCounts: Record<string, number> = {};
     let killSwitchCount = 0;
+    const killSwitchStartedAt: string[] = [];
     for (const row of dayRows) {
       if (row.script_name !== "kill-switch") continue;
       killSwitchCount++;
       const key = row.outcome ?? UNFINISHED_LABEL;
       killSwitchOutcomeCounts[key] = (killSwitchOutcomeCounts[key] ?? 0) + 1;
+      killSwitchStartedAt.push(row.started_at);
     }
+    killSwitchStartedAt.sort((a, b) => a.localeCompare(b));
     verification = {
       date: verifyDate!,
       window: { since: verifySince!, until: verifyUntil! },
       shorts_enabled: deps.shortsEnabled,
       hourly_check_runs: hourlyCheckRuns,
-      kill_switch_runs: { count: killSwitchCount, outcome_counts: killSwitchOutcomeCounts },
+      kill_switch_runs: {
+        count: killSwitchCount,
+        outcome_counts: killSwitchOutcomeCounts,
+        started_at: killSwitchStartedAt,
+      },
       scans: verifyScans ?? [],
       trades: verifyTrades ?? [],
       // Raw strings, no coercion (byte-identity-sensitive -- see check 6 in

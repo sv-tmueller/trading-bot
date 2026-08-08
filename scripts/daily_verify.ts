@@ -42,6 +42,11 @@ export interface VerifyHourlyCheckRun {
 export interface VerifyKillSwitchRuns {
   count: number;
   outcome_counts: Record<string, number>;
+  // #562: the day's kill-switch run started_at timestamps, ascending.
+  // Optional -- absent when an older deployed `status` hasn't been upgraded
+  // yet (backward compat: parseVerificationBlock treats absence as valid,
+  // and checkKillSwitch falls back to today's plain count-mismatch finding).
+  started_at?: string[];
 }
 
 export interface VerifyConfig {
@@ -100,6 +105,82 @@ export const HOURLY_SLOTS_PER_WEEKDAY = 9;
 // kill-switch's "*/5 13-21 * * 1-5" UTC -- 13:00 through 21:55 UTC inclusive,
 // every 5 minutes: (21*60+55 - 13*60) / 5 + 1 = 108.
 export const KILL_SWITCH_SLOTS_PER_WEEKDAY = 108;
+// The kill-switch grid's first slot, in minutes since UTC midnight (13:00 UTC).
+const KILL_SWITCH_GRID_START_MINUTES = 13 * 60;
+// The grid's step, in minutes.
+const KILL_SWITCH_GRID_STEP_MINUTES = 5;
+// The grid's last valid offset from KILL_SWITCH_GRID_START_MINUTES, inclusive:
+// (KILL_SWITCH_SLOTS_PER_WEEKDAY - 1) * step = 107 * 5 = 535 (21:55 UTC).
+const KILL_SWITCH_GRID_LAST_OFFSET_MINUTES = (KILL_SWITCH_SLOTS_PER_WEEKDAY - 1) *
+  KILL_SWITCH_GRID_STEP_MINUTES;
+
+/** `HH:MMZ` label for grid slot `index` (0-based, 0 = 13:00Z). */
+function killSwitchSlotLabel(index: number): string {
+  const totalMinutes = KILL_SWITCH_GRID_START_MINUTES + index * KILL_SWITCH_GRID_STEP_MINUTES;
+  const h = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const m = String(totalMinutes % 60).padStart(2, "0");
+  return `${h}:${m}Z`;
+}
+
+/**
+ * #562: the 108-slot kill-switch grid's unoccupied 5-minute slots, given the
+ * day's run started_at timestamps (any order). Each timestamp is bucketed by
+ * its UTC h/m via `floor(offset / 5)` -- pg_cron jitter is fire-at-or-after,
+ * so a run firing at 19:00:00.531Z still occupies the 19:00 slot. A
+ * timestamp outside the 13:00-21:55 UTC grid (e.g. a manual off-hours
+ * invocation) occupies no slot and is otherwise ignored.
+ *
+ * Disclosed residual: a run delayed past its own 5-minute window mis-buckets
+ * into the next slot instead of showing as missing -- the `count` mismatch
+ * still drives the FAIL in checkKillSwitch; this is best-effort naming, not
+ * a second source of truth.
+ */
+export function deriveMissingKillSwitchSlots(startedAt: string[]): string[] {
+  const occupied = new Set<number>();
+  for (const ts of startedAt) {
+    const d = new Date(ts);
+    const offset = (d.getUTCHours() - 13) * 60 + d.getUTCMinutes();
+    if (offset < 0 || offset > KILL_SWITCH_GRID_LAST_OFFSET_MINUTES) continue;
+    occupied.add(Math.floor(offset / KILL_SWITCH_GRID_STEP_MINUTES));
+  }
+  const missing: string[] = [];
+  for (let i = 0; i < KILL_SWITCH_SLOTS_PER_WEEKDAY; i++) {
+    if (!occupied.has(i)) missing.push(killSwitchSlotLabel(i));
+  }
+  return missing;
+}
+
+/** Minutes since UTC midnight for an `HH:MMZ` slot label. */
+function parseSlotLabelMinutes(label: string): number {
+  const [h, m] = label.slice(0, 5).split(":").map(Number);
+  return h * 60 + m;
+}
+
+/**
+ * #562: collapse maximal runs of consecutive (5-minute-apart) slot labels
+ * into `first-last` ranges; singletons stay bare. `slots` must already be
+ * ascending (deriveMissingKillSwitchSlots's own contract).
+ */
+export function formatMissingSlots(slots: string[]): string {
+  if (slots.length === 0) return "";
+  const parts: string[] = [];
+  let rangeStart = slots[0];
+  let rangeEnd = slots[0];
+  for (let i = 1; i < slots.length; i++) {
+    const isConsecutive = parseSlotLabelMinutes(slots[i]) - parseSlotLabelMinutes(rangeEnd) ===
+      KILL_SWITCH_GRID_STEP_MINUTES;
+    if (isConsecutive) {
+      rangeEnd = slots[i];
+      continue;
+    }
+    parts.push(rangeStart === rangeEnd ? rangeStart : `${rangeStart}-${rangeEnd}`);
+    rangeStart = slots[i];
+    rangeEnd = slots[i];
+  }
+  parts.push(rangeStart === rangeEnd ? rangeStart : `${rangeStart}-${rangeEnd}`);
+  return parts.join(", ");
+}
+
 // #511's per-request Alpaca deadline.
 export const LATENCY_WARN_MS = 10_000;
 // Migration 0015's documented pg_net budget.
@@ -338,9 +419,20 @@ export function checkKillSwitch(
 
   if (killSwitchRuns.count !== KILL_SWITCH_SLOTS_PER_WEEKDAY) {
     statuses.push("FAIL");
-    findings.push(
-      `kill_switch: expected ${KILL_SWITCH_SLOTS_PER_WEEKDAY} runs, found ${killSwitchRuns.count}`,
-    );
+    let finding =
+      `kill_switch: expected ${KILL_SWITCH_SLOTS_PER_WEEKDAY} runs, found ${killSwitchRuns.count}`;
+    // #562: name the missing slots when the digest published timestamps
+    // (older deployed `status` omits started_at -- fall back to the plain
+    // count-mismatch finding, unchanged). A non-empty count mismatch with no
+    // derived missing slot (e.g. a duplicated slot) also falls back --
+    // naming duplicates is out of scope (sub-plan §2).
+    if (killSwitchRuns.started_at !== undefined) {
+      const missing = deriveMissingKillSwitchSlots(killSwitchRuns.started_at);
+      if (missing.length > 0) {
+        finding += ` (missing: ${formatMissingSlots(missing)})`;
+      }
+    }
+    findings.push(finding);
   }
 
   const outcomeEntries = Object.entries(killSwitchRuns.outcome_counts);
@@ -865,6 +957,19 @@ export function parseVerificationBlock(raw: unknown): VerificationBlock {
     throw new MalformedVerificationError(
       "verification.kill_switch_runs is missing or not an object",
     );
+  }
+  // #562: started_at is optional (absent -> older deployed `status`, still
+  // valid); when present it must be an array of parsable timestamps.
+  const killSwitchRuns = v.kill_switch_runs as Record<string, unknown>;
+  if (killSwitchRuns.started_at !== undefined) {
+    if (!Array.isArray(killSwitchRuns.started_at)) {
+      throw new MalformedVerificationError(
+        "verification.kill_switch_runs.started_at is present but not an array",
+      );
+    }
+    for (const ts of killSwitchRuns.started_at) {
+      assertParsableTimestamp(ts, "kill_switch_runs.started_at[]");
+    }
   }
   if (!Array.isArray(v.scans)) {
     throw new MalformedVerificationError("verification.scans is missing or not an array");

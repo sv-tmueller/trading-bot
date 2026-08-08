@@ -14,9 +14,12 @@ import {
   checkScans,
   checkSlots,
   checkState,
+  deriveMissingKillSwitchSlots,
   evaluateVerification,
+  formatMissingSlots,
   HOURLY_SLOTS_PER_WEEKDAY,
   isWeekendYmd,
+  KILL_SWITCH_SLOTS_PER_WEEKDAY,
   type LedgerRow,
   MalformedVerificationError,
   NON_SCANNING_OUTCOMES,
@@ -28,6 +31,18 @@ import {
   type VerificationBlock,
   type VerifyHourlyCheckRun,
 } from "./daily_verify.ts";
+
+// The full 108-slot grid of kill-switch started_at timestamps for a clean
+// weekday, 13:00 through 21:55 UTC every 5 minutes -- shared by the
+// deriveMissingKillSwitchSlots and fixture tests below.
+function fullKillSwitchGrid(dateYmd = "2026-08-07"): string[] {
+  return Array.from({ length: KILL_SWITCH_SLOTS_PER_WEEKDAY }, (_, i) => {
+    const totalMinutes = 13 * 60 + i * 5;
+    const h = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+    const m = String(totalMinutes % 60).padStart(2, "0");
+    return `${dateYmd}T${h}:${m}:00.000Z`;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Fixture builders -- minimal, complete rows so every test only spells out
@@ -473,6 +488,93 @@ Deno.test("checkState: baseline byte-identical to the previous ledger row -> PAS
 });
 
 // ---------------------------------------------------------------------------
+// deriveMissingKillSwitchSlots (#562: name the missing kill-switch slots)
+// ---------------------------------------------------------------------------
+
+Deno.test("deriveMissingKillSwitchSlots: a full 108-slot day -> no gaps", () => {
+  assertEquals(deriveMissingKillSwitchSlots(fullKillSwitchGrid()), []);
+});
+
+Deno.test("deriveMissingKillSwitchSlots: one missing slot", () => {
+  const grid = fullKillSwitchGrid().filter((ts) => !ts.includes("T19:05:00"));
+  assertEquals(deriveMissingKillSwitchSlots(grid), ["19:05Z"]);
+});
+
+Deno.test("deriveMissingKillSwitchSlots: scattered gaps returned ascending", () => {
+  const grid = fullKillSwitchGrid().filter(
+    (ts) => !ts.includes("T20:15:00") && !ts.includes("T13:00:00"),
+  );
+  assertEquals(deriveMissingKillSwitchSlots(grid), ["13:00Z", "20:15Z"]);
+});
+
+Deno.test("deriveMissingKillSwitchSlots: jittered timestamp maps to its slot via flooring", () => {
+  const grid = fullKillSwitchGrid().map((ts) =>
+    ts.includes("T19:00:00") ? "2026-08-07T19:00:00.531Z" : ts
+  );
+  assertEquals(deriveMissingKillSwitchSlots(grid), []);
+});
+
+Deno.test("deriveMissingKillSwitchSlots: an out-of-grid timestamp occupies nothing", () => {
+  const grid = fullKillSwitchGrid().filter((ts) => !ts.includes("T19:05:00"));
+  grid.push("2026-08-07T22:30:00.000Z");
+  assertEquals(deriveMissingKillSwitchSlots(grid), ["19:05Z"]);
+});
+
+Deno.test("deriveMissingKillSwitchSlots: boundary slots 13:00Z and 21:55Z are recognized", () => {
+  const grid = fullKillSwitchGrid().filter(
+    (ts) => !ts.includes("T13:00:00") && !ts.includes("T21:55:00"),
+  );
+  assertEquals(deriveMissingKillSwitchSlots(grid), ["13:00Z", "21:55Z"]);
+});
+
+// ---------------------------------------------------------------------------
+// formatMissingSlots (#562)
+// ---------------------------------------------------------------------------
+
+Deno.test("formatMissingSlots: empty -> empty string", () => {
+  assertEquals(formatMissingSlots([]), "");
+});
+
+Deno.test("formatMissingSlots: a single slot", () => {
+  assertEquals(formatMissingSlots(["19:05Z"]), "19:05Z");
+});
+
+Deno.test("formatMissingSlots: two non-adjacent slots", () => {
+  assertEquals(formatMissingSlots(["19:05Z", "20:15Z"]), "19:05Z, 20:15Z");
+});
+
+Deno.test("formatMissingSlots: a consecutive run collapses into a range", () => {
+  assertEquals(
+    formatMissingSlots(["19:05Z", "19:10Z", "19:15Z", "19:20Z"]),
+    "19:05Z-19:20Z",
+  );
+});
+
+Deno.test("formatMissingSlots: a mix of a singleton and a range", () => {
+  assertEquals(
+    formatMissingSlots([
+      "19:05Z",
+      "20:15Z",
+      "20:20Z",
+      "20:25Z",
+      "20:30Z",
+      "20:35Z",
+      "20:40Z",
+      "20:45Z",
+      "20:50Z",
+      "20:55Z",
+      "21:00Z",
+    ]),
+    "19:05Z, 20:15Z-21:00Z",
+  );
+});
+
+Deno.test("formatMissingSlots: a full dead day collapses to one range", () => {
+  const allLabels = fullKillSwitchGrid().map((ts) => ts.slice(11, 16) + "Z");
+  assertEquals(formatMissingSlots(allLabels), "13:00Z-21:55Z");
+});
+
+// ---------------------------------------------------------------------------
 // checkKillSwitch (§5.3 check 7)
 // ---------------------------------------------------------------------------
 
@@ -514,6 +616,62 @@ Deno.test("checkKillSwitch: non-uniform outcome_counts alongside a LONG scan is 
     [scanRow({ decision: "LONG" })],
   );
   assertEquals(result, { status: "PASS", findings: [] });
+});
+
+// #562: naming the missing slots in the count-mismatch finding.
+
+Deno.test("checkKillSwitch: 107 runs with started_at -> finding names the missing slot", () => {
+  const startedAt = fullKillSwitchGrid().filter((ts) => !ts.includes("T19:05:00"));
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 }, started_at: startedAt },
+    [],
+  );
+  assertEquals(result.status, "FAIL");
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 107 (missing: 19:05Z)",
+  ]);
+});
+
+Deno.test("checkKillSwitch: multiple missing slots with started_at -> finding names all of them", () => {
+  const startedAt = fullKillSwitchGrid().filter(
+    (ts) => !ts.includes("T19:05:00") && !ts.includes("T20:15:00"),
+  );
+  const result = checkKillSwitch(
+    { count: 106, outcome_counts: { "success:no_position": 106 }, started_at: startedAt },
+    [],
+  );
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 106 (missing: 19:05Z, 20:15Z)",
+  ]);
+});
+
+Deno.test("checkKillSwitch: 108 runs with a full started_at grid -> PASS, exactly as today", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 108 },
+      started_at: fullKillSwitchGrid(),
+    },
+    [],
+  );
+  assertEquals(result, { status: "PASS", findings: [] });
+});
+
+Deno.test("checkKillSwitch: count mismatch, started_at absent -> today's plain finding, unchanged", () => {
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 } },
+    [],
+  );
+  assertEquals(result.findings, ["kill_switch: expected 108 runs, found 107"]);
+});
+
+Deno.test("checkKillSwitch: 109 runs (a duplicated slot) with started_at but no grid slot missing -> today's plain finding", () => {
+  const startedAt = [...fullKillSwitchGrid(), "2026-08-07T19:05:00.900Z"];
+  const result = checkKillSwitch(
+    { count: 109, outcome_counts: { "success:no_position": 109 }, started_at: startedAt },
+    [],
+  );
+  assertEquals(result.findings, ["kill_switch: expected 108 runs, found 109"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -771,6 +929,29 @@ Deno.test("renderMarkdownDigest: never contains a generated-at timestamp or run 
   assertEquals(md.includes("http://") || md.includes("https://"), false);
 });
 
+// #562: a full 108-entry started_at grid alongside cleanDayVerification's
+// existing count: 108 -- the digest/ledger render is byte-identical to
+// before this change (acceptance criterion: "a full 108-run day behaves
+// exactly as today").
+Deno.test("renderMarkdownDigest: a clean day with a full started_at grid renders identically to one without it", () => {
+  const withoutTimestamps = evaluateVerification(cleanDayVerification(), null);
+  const withTimestamps = evaluateVerification(
+    {
+      ...cleanDayVerification(),
+      kill_switch_runs: {
+        count: 108,
+        outcome_counts: { "success:no_position": 108 },
+        started_at: fullKillSwitchGrid("2026-08-05"),
+      },
+    },
+    null,
+  );
+  assertEquals(
+    renderMarkdownDigest("2026-08-05", withTimestamps, null),
+    renderMarkdownDigest("2026-08-05", withoutTimestamps, null),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Fixture-driven case matrix (§9), one file per case class under
 // scripts/testdata/. Each fixture is a verification-block-shaped object built
@@ -878,6 +1059,32 @@ Deno.test("fixture no-position-contradiction: FAIL via the kill_switch check", (
   assertEquals(result.verdict, "FAIL");
 });
 
+// #562: reproduces the 2026-08-07 incident (#559) -- 107 kill-switch runs,
+// missing the 19:05 UTC slot. The finding, ledger row, and rendered digest
+// all carry the enriched string.
+Deno.test("fixture kill-switch-missing-slot: FAIL via the kill_switch check, finding names the missing 19:05Z slot", () => {
+  const v = loadFixture("kill-switch-missing-slot");
+  const result = evaluateVerification(v, null);
+  assertEquals(result.checks.kill_switch, "FAIL");
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(
+    result.findings.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"),
+    true,
+  );
+
+  const ledgerRow = buildLedgerRow(v.date, result);
+  assertEquals(
+    ledgerRow.findings.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"),
+    true,
+  );
+
+  const digest = renderMarkdownDigest(v.date, result, null);
+  assertEquals(
+    digest.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"),
+    true,
+  );
+});
+
 // Disclosed residual (§5.3/NON_SCANNING_OUTCOMES's own comment): the
 // completed.length === 0 branch returns via done() before any journal call
 // and can surface as skipped:stale_data without a matching scan row. It is
@@ -940,5 +1147,42 @@ Deno.test("parseVerificationBlock: an unparseable finished_at timestamp -> throw
 Deno.test("parseVerificationBlock: missing config -> throws", () => {
   const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
   delete (raw as { config?: unknown }).config;
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+// #562: kill_switch_runs.started_at is optional -- absent is valid (backward
+// compat with an older deployed `status`); when present it must be an array
+// of parsable timestamps.
+
+Deno.test("parseVerificationBlock: kill_switch_runs.started_at absent -> parses fine (old digest)", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  const killSwitchRuns = raw.kill_switch_runs as Record<string, unknown>;
+  assertEquals("started_at" in killSwitchRuns, false);
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.kill_switch_runs.started_at, undefined);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.started_at present and valid -> parses through", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).started_at = [
+    "2026-08-05T13:00:00.000Z",
+    "2026-08-05T13:05:00.000Z",
+  ];
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.kill_switch_runs.started_at, [
+    "2026-08-05T13:00:00.000Z",
+    "2026-08-05T13:05:00.000Z",
+  ]);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.started_at not an array -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).started_at = "not-an-array";
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.started_at with an unparseable entry -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).started_at = ["not-a-timestamp"];
   assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
 });

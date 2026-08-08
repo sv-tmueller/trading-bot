@@ -116,9 +116,12 @@ narrow reader, independent of the unrelated `HOURLY_BOT_PAPER_ONLY` guard —
 see `supabase/functions/_shared/config.ts`'s `getHourlyShortsEnabled()`).
 `hourly_check_runs` is every `audit_log` row for `hourly-check` that day,
 ascending by `started_at`, carrying `notes` (the journal-degraded order id,
-per the hourly-bot rollout runbook). `kill_switch_runs` is counts only
-(`count` plus `outcome_counts`) — never rows, since ~108 same-outcome rows a
-day carry no information the counts lack. `scans` and `trades` are the full,
+per the hourly-bot rollout runbook). `kill_switch_runs` is counts
+(`count` plus `outcome_counts`) plus the day's per-run `started_at`
+timestamps ascending (#562), still never full rows, since ~108
+same-outcome rows a day carry no information the counts lack beyond their
+timing; the timestamps let the daily-verification evaluator name which
+5-minute grid slot(s) are missing on a short day. `scans` and `trades` are the full,
 unfiltered `hourly_scans`/`trades` rows for the day, ascending by
 `bar_ts`/`fill_time` respectively — `trades` is not filtered by `reason`, so
 a future entry/exit reason string needs no redeploy to show up here.

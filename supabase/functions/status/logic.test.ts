@@ -998,7 +998,7 @@ Deno.test("verification.hourly_check_runs: filtered to hourly-check, ascending b
   assertEquals(digest.verification?.hourly_check_runs[1].notes, null);
 });
 
-Deno.test("verification.kill_switch_runs: counts only (count + outcome_counts), never rows", async () => {
+Deno.test("verification.kill_switch_runs: counts (count + outcome_counts) plus started_at, never a full rows key", async () => {
   const [since] = dayWindow(VERIFY_DATE);
   const dayRows: AuditLogRow[] = [
     ...Array.from({ length: 107 }, (_, i) => ({
@@ -1029,11 +1029,57 @@ Deno.test("verification.kill_switch_runs: counts only (count + outcome_counts), 
     } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  const expectedStartedAt = [
+    ...Array.from(
+      { length: 107 },
+      (_, i) => `2026-08-05T13:${String(i).padStart(2, "0")}:00.000Z`,
+    ),
+    "2026-08-05T21:55:00.000Z",
+  ].sort((a, b) => a.localeCompare(b));
   assertEquals(digest.verification?.kill_switch_runs, {
     count: 108,
     outcome_counts: { "success:no_position": 107, "skipped:market_closed": 1 },
+    started_at: expectedStartedAt,
   });
   assertEquals("rows" in digest.verification!.kill_switch_runs, false);
+});
+
+Deno.test("verification.kill_switch_runs.started_at: ascending even when rows arrive unsorted", async () => {
+  const [since] = dayWindow(VERIFY_DATE);
+  const dayRows: AuditLogRow[] = [
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T21:55:00.000Z",
+      finished_at: "2026-08-05T21:55:00.500Z",
+      outcome: "success:no_position",
+      notes: null,
+    },
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:00:00.000Z",
+      finished_at: "2026-08-05T13:00:00.500Z",
+      outcome: "success:no_position",
+      notes: null,
+    },
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T17:30:00.000Z",
+      finished_at: "2026-08-05T17:30:00.500Z",
+      outcome: "success:no_position",
+      notes: null,
+    },
+  ];
+  const { deps } = makeDeps({
+    db: {
+      getAuditLogSince: (sinceIso: string) => Promise.resolve(sinceIso === since ? dayRows : []),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.kill_switch_runs.started_at, [
+    "2026-08-05T13:00:00.000Z",
+    "2026-08-05T17:30:00.000Z",
+    "2026-08-05T21:55:00.000Z",
+  ]);
 });
 
 Deno.test("verification.scans/trades: unfiltered pass-through from the window helpers", async () => {
@@ -1131,7 +1177,11 @@ Deno.test("verification: empty day -> scans/trades/hourly_check_runs [], kill_sw
   assertEquals(digest.verification?.scans, []);
   assertEquals(digest.verification?.trades, []);
   assertEquals(digest.verification?.hourly_check_runs, []);
-  assertEquals(digest.verification?.kill_switch_runs, { count: 0, outcome_counts: {} });
+  assertEquals(digest.verification?.kill_switch_runs, {
+    count: 0,
+    outcome_counts: {},
+    started_at: [],
+  });
 });
 
 Deno.test("composition: verifyDate + windowDays both present -> both blocks correct and independent", async () => {
