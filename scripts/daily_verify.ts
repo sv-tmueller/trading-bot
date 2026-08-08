@@ -111,8 +111,8 @@ const KILL_SWITCH_GRID_START_MINUTES = 13 * 60;
 const KILL_SWITCH_GRID_STEP_MINUTES = 5;
 // The grid's last valid offset from KILL_SWITCH_GRID_START_MINUTES, inclusive:
 // (KILL_SWITCH_SLOTS_PER_WEEKDAY - 1) * step = 107 * 5 = 535 (21:55 UTC).
-const KILL_SWITCH_GRID_LAST_OFFSET_MINUTES =
-  (KILL_SWITCH_SLOTS_PER_WEEKDAY - 1) * KILL_SWITCH_GRID_STEP_MINUTES;
+const KILL_SWITCH_GRID_LAST_OFFSET_MINUTES = (KILL_SWITCH_SLOTS_PER_WEEKDAY - 1) *
+  KILL_SWITCH_GRID_STEP_MINUTES;
 
 /** `HH:MMZ` label for grid slot `index` (0-based, 0 = 13:00Z). */
 function killSwitchSlotLabel(index: number): string {

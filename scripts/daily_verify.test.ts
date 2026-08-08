@@ -1079,7 +1079,10 @@ Deno.test("fixture kill-switch-missing-slot: FAIL via the kill_switch check, fin
   );
 
   const digest = renderMarkdownDigest(v.date, result, null);
-  assertEquals(digest.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"), true);
+  assertEquals(
+    digest.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"),
+    true,
+  );
 });
 
 // Disclosed residual (§5.3/NON_SCANNING_OUTCOMES's own comment): the
