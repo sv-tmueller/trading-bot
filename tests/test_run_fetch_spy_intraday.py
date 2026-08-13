@@ -93,6 +93,35 @@ def test_fetch_bars_paginates_and_validates(monkeypatch):
     assert df["Close"].iloc[-1] == 202.5
 
 
+def test_fetch_bars_maps_60min_to_1hour_for_the_api_request(monkeypatch):
+    """#571 defect fix: Alpaca rejects timeframe=60Min with HTTP 400 (valid grammar is
+    1-59Min or 1Hour). The request must carry "1Hour" while the output-file convention
+    (SPY_60min.csv, via fetch_and_save's timeframe.lower() stem) is untouched.
+    """
+    captured = {}
+
+    def _fake_page(url, key, secret, *, timeout=30):
+        captured["url"] = url
+        return {"bars": [], "next_page_token": None}
+
+    monkeypatch.setattr(fetcher, "_fetch_page", _fake_page)
+    fetcher.fetch_bars("SPY", "60Min", "2016-01-01", "2016-02-01", key="k", secret="s")
+    assert "timeframe=1Hour" in captured["url"]
+    assert "timeframe=60Min" not in captured["url"]
+
+
+def test_fetch_bars_leaves_other_timeframes_unmapped(monkeypatch):
+    captured = {}
+
+    def _fake_page(url, key, secret, *, timeout=30):
+        captured["url"] = url
+        return {"bars": [], "next_page_token": None}
+
+    monkeypatch.setattr(fetcher, "_fetch_page", _fake_page)
+    fetcher.fetch_bars("SPY", "30Min", "2016-01-01", "2016-02-01", key="k", secret="s")
+    assert "timeframe=30Min" in captured["url"]
+
+
 def test_fetch_bars_empty_result_returns_empty_frame(monkeypatch):
     monkeypatch.setattr(fetcher, "_fetch_page", lambda *a, **k: {"bars": []})
     df = fetcher.fetch_bars("SPY", "60Min", "2016-01-01", "2016-02-01", key="k", secret="s")
@@ -196,3 +225,40 @@ def test_main_cli_reports_blocked_count_with_no_keys(monkeypatch, tmp_path, caps
     assert rc == 2  # both timeframes blocked
     assert "DATA_BLOCKED" in out
     assert "60Min" in out and "30Min" in out
+
+
+def test_main_cli_defaults_end_to_previous_utc_date(monkeypatch, tmp_path):
+    """#571 defect fix: the default `end` (today) 403s on feed=sip for this account tier
+    (recent-SIP embargo); the previous UTC date succeeds for the full history window.
+    """
+    from datetime import date, timedelta
+
+    _clear_alpaca_env(monkeypatch)
+    captured_end = {}
+    real_fetch_and_save = fetcher.fetch_and_save
+
+    def _spy(symbol, timeframe, start, end, **kwargs):
+        captured_end[timeframe] = end
+        return real_fetch_and_save(symbol, timeframe, start, end, **kwargs)
+
+    monkeypatch.setattr(fetcher, "fetch_and_save", _spy)
+    fetcher.main(["--symbol", "SPY", "--timeframes", "60Min", "--out-dir", str(tmp_path)])
+    expected = (date.today() - timedelta(days=1)).isoformat()
+    assert captured_end["60Min"] == expected
+
+
+def test_main_cli_respects_explicit_end_override(monkeypatch, tmp_path):
+    _clear_alpaca_env(monkeypatch)
+    captured_end = {}
+    real_fetch_and_save = fetcher.fetch_and_save
+
+    def _spy(symbol, timeframe, start, end, **kwargs):
+        captured_end[timeframe] = end
+        return real_fetch_and_save(symbol, timeframe, start, end, **kwargs)
+
+    monkeypatch.setattr(fetcher, "fetch_and_save", _spy)
+    fetcher.main([
+        "--symbol", "SPY", "--timeframes", "60Min", "--out-dir", str(tmp_path),
+        "--end", "2020-05-01",
+    ])
+    assert captured_end["60Min"] == "2020-05-01"
