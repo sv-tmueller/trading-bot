@@ -356,7 +356,14 @@ export interface SizingResult {
   qty: number;
 }
 
-/** Sizing (spec §6): stop first, then quantity. Whole shares only. */
+/**
+ * Sizing (spec §6): stop first, then quantity. Whole shares only.
+ *
+ * The two legs (`qtyRisk`, `qtyCap`) cross at
+ * `stopDistance > (SIZING_RISK_PCT / SIZING_NOTIONAL_CAP_PCT) x entryRef` -- 10% of price at the
+ * 0.01/0.10 defaults. SPY hourly stops never clear that, so `qtyCap` always binds and realised
+ * risk per trade is ~0.03% of equity, not the configured `SIZING_RISK_PCT` (#499).
+ */
 export function computeSizing(
   action: "LONG" | "SHORT",
   entryRef: number,

@@ -641,7 +641,9 @@ this check.
   day-order behavior, not yet observed on this account — see the first-session check
   below) to be cancelled by the broker at the close, so a position still open after
   that scan is unmanaged overnight regardless of whether that assumption holds.
-- An order whose notional materially exceeds 10% of equity (`SIZING_NOTIONAL_CAP_PCT`).
+- An order whose notional materially exceeds 10% of equity (`SIZING_NOTIONAL_CAP_PCT`) -- this is
+  the primary sizing check: the risk leg (`SIZING_RISK_PCT`) provides no practical second bound on
+  SPY, so this is the one sizing alarm that can actually fire (#499).
 
 **First-session check (new, round 2):** on the first morning after a session that
 held a position, confirm no resting legs survived from the prior session — query

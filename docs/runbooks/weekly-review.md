@@ -15,6 +15,10 @@ procedure. It never writes to `trades`,
 `hourly_scans`, or `audit_log`, and it never places a broker order -- the only write it can ever
 make is the trial-counter bump described below, and that only in its own separate mode.
 
+When comparing the journal's live paper results against backtest figures, remember the backtest's
+return and drawdown numbers are all-in, while live runs at `SIZING_NOTIONAL_CAP_PCT = 0.10` --
+divide backtest figures by ~10 before comparing (#499).
+
 ## Prerequisites
 
 - Migration `0012_hourly_scans.sql` applied (`supabase db push`).
