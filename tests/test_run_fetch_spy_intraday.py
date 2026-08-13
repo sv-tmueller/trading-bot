@@ -6,6 +6,7 @@ otherwise touch the network. No test ever calls the real Alpaca host.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
@@ -228,10 +229,15 @@ def test_main_cli_reports_blocked_count_with_no_keys(monkeypatch, tmp_path, caps
 
 
 def test_main_cli_defaults_end_to_previous_utc_date(monkeypatch, tmp_path):
-    """#571 defect fix: the default `end` (today) 403s on feed=sip for this account tier
-    (recent-SIP embargo); the previous UTC date succeeds for the full history window.
+    """#575 round-2 fix (reviewer finding 3 on PR #572): the default `end` must be the
+    previous **UTC** date, not the previous LOCAL date -- on UTC+2, local wall-clock
+    22:00-24:00 is already tomorrow-local but still today-UTC, so a local-date computation
+    can undershoot by a day and re-trigger the recent-SIP-embargo 403 this default exists
+    to avoid. Pinned with an injected clock (``fetcher._now_utc``) so the test is
+    deterministic regardless of the host's timezone or the day it runs -- no network.
     """
-    from datetime import date, timedelta
+    fixed_now = datetime(2026, 8, 13, 23, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(fetcher, "_now_utc", lambda: fixed_now)
 
     _clear_alpaca_env(monkeypatch)
     captured_end = {}
@@ -243,8 +249,7 @@ def test_main_cli_defaults_end_to_previous_utc_date(monkeypatch, tmp_path):
 
     monkeypatch.setattr(fetcher, "fetch_and_save", _spy)
     fetcher.main(["--symbol", "SPY", "--timeframes", "60Min", "--out-dir", str(tmp_path)])
-    expected = (date.today() - timedelta(days=1)).isoformat()
-    assert captured_end["60Min"] == expected
+    assert captured_end["60Min"] == "2026-08-12"
 
 
 def test_main_cli_respects_explicit_end_override(monkeypatch, tmp_path):

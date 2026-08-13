@@ -33,9 +33,11 @@ mocked tests since they never called the real Alpaca host):
    ``_api_timeframe`` remaps it to ``"1Hour"`` at request time only; every output-facing
    name (the ``SPY_60min.csv`` stem, this module's own ``DEFAULT_TIMEFRAMES``, every
    caller/test) keeps spelling it ``"60Min"``.
-2. The CLI's default ``end`` (today, UTC) 403s on ``feed=sip`` for this account tier (a
-   recent-SIP embargo); the default is now the previous UTC date, which succeeds for the
-   full 2016-01-01-> window.
+2. The CLI's default ``end`` (today) 403s on ``feed=sip`` for this account tier (a
+   recent-SIP embargo); the default is the previous **UTC** date -- computed via
+   ``datetime.now(timezone.utc)``, not the host's local date (#575 round-2: a
+   local-date computation can undershoot by a day on UTC+ timezones and reopen the
+   embargo 403) -- which succeeds for the full 2016-01-01-> window.
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -246,6 +249,13 @@ def fetch_and_save(
     )
 
 
+def _now_utc() -> datetime:
+    """Testing seam: real UTC "now". Monkeypatched in tests to pin the default-``end``
+    math (#575 round-2 fix) without depending on the host's timezone or the day it runs.
+    """
+    return datetime.now(timezone.utc)
+
+
 def main(argv: Optional[list] = None) -> int:
     """CLI: fetch every requested timeframe, print each report, return the blocked count.
 
@@ -260,8 +270,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--start", default=DEFAULT_START)
     ap.add_argument(
         "--end", default=None,
-        help="defaults to yesterday (UTC) -- feed=sip 403s on today's date for this "
-             "account tier (#571, the recent-SIP embargo)",
+        help="defaults to yesterday, UTC (not the host's local date) -- feed=sip 403s "
+             "on today's date for this account tier (#571, the recent-SIP embargo)",
     )
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--feed", default=DEFAULT_FEED)
@@ -270,10 +280,12 @@ def main(argv: Optional[list] = None) -> int:
 
     end = args.end
     if end is None:
-        from datetime import date, timedelta
-        # #571 defect fix: today's date 403s on feed=sip (recent-data embargo);
-        # the previous UTC date succeeds for the full 2016-01-01+ window.
-        end = (date.today() - timedelta(days=1)).isoformat()
+        # #571 defect fix: today's date 403s on feed=sip (recent-data embargo); the
+        # previous UTC date succeeds for the full 2016-01-01+ window. #575 round-2 fix:
+        # this must be the previous UTC date, not the previous LOCAL date -- on UTC+2,
+        # local wall-clock 22:00-24:00 is already tomorrow-local but still today-UTC, so a
+        # local-date computation can undershoot by a day and reopen the embargo 403.
+        end = (_now_utc().date() - timedelta(days=1)).isoformat()
 
     timeframes = [tf.strip() for tf in args.timeframes.split(",") if tf.strip()]
     blocked = 0
