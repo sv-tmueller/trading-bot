@@ -11,6 +11,7 @@ import {
   type DecisionRow,
   decisionsToCsv,
   emitDecisions,
+  findFillOpen,
   isBarPartialForPeriod,
   parseBarsCsv,
   R_MULTIPLES,
@@ -170,6 +171,50 @@ Deno.test("emitDecisions: a single bearish fire is SKIP/shorts_disabled when sho
   assertEquals(last.actionRaw, "SHORT");
   assertEquals(last.actionFinal, "SKIP");
   assertEquals(last.reasonFinal, "shorts_disabled");
+});
+
+Deno.test("findFillOpen: returns the open of the first bar at/after the instant", () => {
+  const fillBars = [
+    bar("2024-06-03T15:00:00.000Z", 100, 100, 100, 100),
+    bar("2024-06-03T15:05:00.000Z", 101, 101, 101, 101),
+    bar("2024-06-03T15:10:00.000Z", 102, 102, 102, 102),
+  ];
+  const instant = Date.parse("2024-06-03T15:07:00.000Z");
+  assertEquals(findFillOpen(fillBars, instant), 102);
+});
+
+Deno.test("findFillOpen: returns null when the instant is after every bar", () => {
+  const fillBars = [bar("2024-06-03T15:00:00.000Z", 100, 100, 100, 100)];
+  const instant = Date.parse("2024-06-03T16:00:00.000Z");
+  assertEquals(findFillOpen(fillBars, instant), null);
+});
+
+Deno.test("emitDecisions: entryRef is the fill-instant 5Min-bar open, not the candidate's stale close", () => {
+  const bars = [
+    bar("2016-01-04T14:00:00.000Z", 100, 100.5, 99.5, 100.2),
+    bar("2016-01-04T15:00:00.000Z", 100, 101.3, 95, 101), // candidate close = 101 (stale)
+  ];
+  // Action instant = 15:00 (bar end) + 60min(period) ... wait period IS 60 already
+  // captured in bar end; the fill window is bar_end(16:00) + 7min = 16:07.
+  const fillBars = [
+    bar("2016-01-04T16:05:00.000Z", 103, 103, 103, 103),
+    bar("2016-01-04T16:10:00.000Z", 104, 104, 104, 104), // first bar >= 16:07 -> open 104
+  ];
+  const rows = emitDecisions(bars, { periodMinutes: 60, fillBars });
+  const last = rows[rows.length - 1];
+  assertEquals(last.actionRaw, "LONG");
+  assertEquals(last.entryRef, 104);
+  assertNotEquals(last.entryRef, 101); // NOT the candidate bar's own close
+});
+
+Deno.test("emitDecisions: entryRef falls back to the candidate's close when fillBars is omitted", () => {
+  const bars = [
+    bar("2016-01-04T14:00:00.000Z", 100, 100.5, 99.5, 100.2),
+    bar("2016-01-04T15:00:00.000Z", 100, 101.3, 95, 101),
+  ];
+  const rows = emitDecisions(bars, { periodMinutes: 60 });
+  const last = rows[rows.length - 1];
+  assertEquals(last.entryRef, 101);
 });
 
 Deno.test("emitDecisions: no detector fire is SKIP/no_detectors_fired with no geometry", () => {

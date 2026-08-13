@@ -27,6 +27,19 @@
 // all -- only the target price does. So one emitter run per cadence (60m,
 // 30m) suffices for the whole 3-R grid; Python replays it three times, one
 // per R, applying its own state machine on top.
+//
+// entryRef fidelity (sub-plan "Risks": "live geometry uses the pre-fill
+// latest-trade price ... the study uses next-5Min-bar opens"): the live bot
+// calls `getLatestTradePrice()` at scan time (bar close + 7min), a fresh quote
+// essentially contemporaneous with the fill. This module's proxy for that
+// quote is the SAME 5Min bar whose open is the fill price (the first 5Min bar
+// at/after the action instant) -- passing `fillBars` wires this in; entryRef
+// falls back to the candidate bar's own close only when no 5Min bar covers the
+// action instant (data-end edge, disclosed). Using the candidate bar's own
+// (up to ~1h07m-stale) close instead would materially misstate a stop-distance
+// -denominated R, since the tight hourly stop buffer is easily crossed by
+// ordinary drift over that gap -- this is why the fill-instant price, not the
+// signal-bar close, is the correct entryRef.
 import type { Bar } from "../supabase/functions/_shared/candlestick.ts";
 import {
   computeBracketGeometry,
@@ -54,6 +67,10 @@ export interface Session {
 // the target price does -- so every R is computed per candidate bar in one
 // pass rather than one emitter run per R.
 export const R_MULTIPLES: readonly number[] = [1.0, 1.5, 2.0];
+
+// The live scan-cadence offset (bar close -> scan instant), frozen across
+// every cadence -- see the entryRef fidelity note above.
+const SCAN_OFFSET_MIN = 7;
 
 // Standard NYSE regular-session hours, assumed for every trading date this
 // module infers from the data (disclosed modeling limitation, pre-registration
@@ -187,15 +204,41 @@ function toCandlestickBar(b: RawBar): Bar {
 }
 
 // ---------------------------------------------------------------------------
+// Fill-instant price lookup (entryRef fidelity -- see module docstring). Finds
+// the open of the first `fillBars` bar at/after `actionInstantMs`, the same
+// "first 5Min bar open at/after the action instant" convention the actual
+// entry fill uses (Q3) -- so entryRef and the executed fill both key off the
+// SAME price point, not a stale signal-bar close.
+// ---------------------------------------------------------------------------
+
+export function findFillOpen(
+  fillBars: readonly RawBar[],
+  actionInstantMs: number,
+): number | null {
+  // fillBars is assumed sorted ascending by timestamp (the staged CSVs are).
+  let lo = 0;
+  let hi = fillBars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (new Date(fillBars[mid].timestamp).getTime() < actionInstantMs) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo < fillBars.length ? fillBars[lo].open : null;
+}
+
+// ---------------------------------------------------------------------------
 // The per-bar decision + geometry/sizing pass (stateless -- see module
 // docstring for what is deliberately left to backtest/hourly_geometry.py).
 // ---------------------------------------------------------------------------
 
 export function emitDecisions(
   bars: readonly RawBar[],
-  opts: { periodMinutes: number; shortsEnabled?: boolean },
+  opts: { periodMinutes: number; shortsEnabled?: boolean; fillBars?: readonly RawBar[] },
 ): DecisionRow[] {
-  const { periodMinutes } = opts;
+  const { periodMinutes, fillBars } = opts;
   const shortsEnabled = opts.shortsEnabled ?? false; // HOURLY_SHORTS_ENABLED=false, Q3
   const sessionsByDate = buildSessionsByDate(bars, periodMinutes);
 
@@ -267,10 +310,15 @@ export function emitDecisions(
     // LONG (or an enabled SHORT, dead branch at shortsEnabled=false -- kept
     // symmetric rather than special-cased, since computeBracketGeometry/
     // computeSizing already handle both sides).
-    const entryRef = b.close; // proxy for the live pre-fill latest-trade price
-    // (disclosed modeling gap -- see the pre-registration/verdict docs'
-    // concordance/fidelity notes; the study's fills come from the next 5Min
-    // bar's open regardless, per Q3).
+    //
+    // entryRef = the fill-instant price (the same 5Min-bar-open the actual
+    // entry executes at), not the candidate bar's own close -- see the
+    // module docstring's "entryRef fidelity" note. Falls back to the
+    // candidate's close only when no fillBars bar covers the action instant
+    // (fillBars omitted, or the data ends before the fill instant).
+    const actionInstantMs = new Date(b.timestamp).getTime() +
+      periodMinutes * 60_000 + SCAN_OFFSET_MIN * 60_000;
+    const entryRef = fillBars ? (findFillOpen(fillBars, actionInstantMs) ?? b.close) : b.close;
     const geomByR = R_MULTIPLES.map((r) => ({
       r,
       geom: computeBracketGeometry(decision.action as "LONG" | "SHORT", b, entryRef, {
@@ -395,7 +443,13 @@ export function decisionsToCsv(rows: readonly DecisionRow[]): string {
 
 function parseArgs(
   argv: string[],
-): { bars: string; out: string; periodMinutes: number; shortsEnabled: boolean } {
+): {
+  bars: string;
+  out: string;
+  periodMinutes: number;
+  shortsEnabled: boolean;
+  bars5?: string;
+} {
   const get = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
     return i === -1 ? undefined : argv[i + 1];
@@ -405,21 +459,29 @@ function parseArgs(
   const periodRaw = get("--period-minutes") ?? "60";
   if (!bars || !out) {
     throw new Error(
-      "usage: emit_hourly_decisions.ts --bars <csv> --out <csv> [--period-minutes 60|30] [--shorts-enabled]",
+      "usage: emit_hourly_decisions.ts --bars <csv> --out <csv> [--period-minutes 60|30] " +
+        "[--bars5 <csv>] [--shorts-enabled]",
     );
   }
   const periodMinutes = Number(periodRaw);
   if (!Number.isFinite(periodMinutes) || periodMinutes <= 0) {
     throw new Error(`--period-minutes must be a positive number, got ${JSON.stringify(periodRaw)}`);
   }
-  return { bars, out, periodMinutes, shortsEnabled: argv.includes("--shorts-enabled") };
+  return {
+    bars,
+    out,
+    periodMinutes,
+    shortsEnabled: argv.includes("--shorts-enabled"),
+    bars5: get("--bars5"),
+  };
 }
 
 async function main(argv: string[]): Promise<void> {
-  const { bars: barsPath, out, periodMinutes, shortsEnabled } = parseArgs(argv);
+  const { bars: barsPath, out, periodMinutes, shortsEnabled, bars5: bars5Path } = parseArgs(argv);
   const text = await Deno.readTextFile(barsPath);
   const bars = parseBarsCsv(text);
-  const rows = emitDecisions(bars, { periodMinutes, shortsEnabled });
+  const fillBars = bars5Path ? parseBarsCsv(await Deno.readTextFile(bars5Path)) : undefined;
+  const rows = emitDecisions(bars, { periodMinutes, shortsEnabled, fillBars });
   await Deno.writeTextFile(out, decisionsToCsv(rows));
   console.log(`wrote ${rows.length} decision rows to ${out} (period=${periodMinutes}m)`);
 }
