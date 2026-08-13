@@ -226,6 +226,27 @@ LEDGER: Tuple[TestedCell, ...] = (
              "twin/always-in) -> the mes_swing family is closed NO_GO; no round 2 "
              "(vol-regime gating) is frozen.",
     ),
+    # --- Hourly bracket-geometry/cadence/sizing study (#566) — never actually run --------
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="hourly", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DATA_BLOCKED, power="NONE",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-data-feasibility.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 60m cadence. No ALPACA_API_KEY_ID/ALPACA_API_SECRET_KEY "
+             "(or TS-side ALPACA_API_KEY/ALPACA_SECRET_KEY) set and no local data/intraday "
+             "drop-in present; egress to data.alpaca.markets is open (HTTP 401, not a "
+             "timeout) -- key-gated, not egress-denied. yfinance fallback confirmed "
+             "insufficient (#422): 60m reaches only DIRECTIONAL (n_w=2).",
+    ),
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="30m", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DATA_BLOCKED, power="NONE",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-data-feasibility.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 30m cadence. Same data gate as the 60m arm above; yfinance "
+             "fallback measured UNDERPOWERED (60 sessions, n_w=0), confirming #422's "
+             "on-record 30m depth cap and disqualifying it as a stand-in for this arm.",
+    ),
 )
 
 

@@ -142,6 +142,23 @@ def test_is_tested_false_for_something_never_tried():
     assert not tc.is_tested("vol_regime_gating", "daily", "SPY")
 
 
+def test_is_tested_false_for_the_hourly_geometry_data_blocked_cells():
+    """#566: never run (DATA_BLOCKED) -- not evidence, still open for a re-attempt."""
+    assert not tc.is_tested("hourly_bracket_geometry_sizing", "hourly", "SPY")
+    assert not tc.is_tested("hourly_bracket_geometry_sizing", "30m", "SPY")
+
+
+def test_hourly_geometry_rows_are_data_blocked_with_no_power_claim():
+    """#566: both cadence arms (60m/30m) are on the ledger as DATA_BLOCKED, power=NONE."""
+    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY")
+    assert len(rows) == 2
+    assert {r.cadence for r in rows} == {"hourly", "30m"}
+    for row in rows:
+        assert row.verdict == tc.DATA_BLOCKED
+        assert row.power == "NONE"
+        assert row.n_cells == 3
+
+
 # ---------------------------------------------------------------------------
 # check_novel
 # ---------------------------------------------------------------------------
@@ -216,6 +233,11 @@ def test_cumulative_trials_sums_multiple_run_records():
 
 def test_cumulative_trials_of_an_unknown_family_is_zero():
     assert tc.cumulative_trials("no_such_family") == 0
+
+
+def test_cumulative_trials_excludes_the_hourly_geometry_data_blocked_rows():
+    """#566: DATA_BLOCKED means never run -- consumed no multiplicity."""
+    assert tc.cumulative_trials("hourly_bracket_geometry_sizing") == 0
 
 
 # ---------------------------------------------------------------------------
