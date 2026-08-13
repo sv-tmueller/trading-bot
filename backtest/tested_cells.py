@@ -257,9 +257,10 @@ LEDGER: Tuple[TestedCell, ...] = (
         note="R{1.0,1.5,2.0} at 60m cadence. Expectancy -0.535R..-0.538R, 0/3 clear; every "
              "cell breaches the -15% equity floor at every sizing cap {0.10,0.25,0.50,1.00}. "
              "Dominant mechanism: the frozen HOURLY_STOP_BUFFER_PCT geometry's stop distance "
-             "(median $0.95-0.96) is tight enough that the frozen SLIPPAGE_BPS/COMMISSION_BPS "
-             "=5bps cost model consumes ~19% of it per side. n_w=10 < 13 -- DIRECTIONAL "
-             "checkpoint input, not gate-eligible; re-testable at full power.",
+             "(median $0.95-0.96) is tight enough that a single side's slippage alone (the "
+             "SLIPPAGE_BPS=5bps leg, not the whole cost model) consumes ~19% of it; the full "
+             "round-trip cost (plus COMMISSION_BPS=5bps) consumes more. n_w=10 < 13 -- "
+             "DIRECTIONAL checkpoint input, not gate-eligible; re-testable at full power.",
     ),
     TestedCell(
         family="hourly_bracket_geometry_sizing", cadence="30m", vehicle="SPY",
@@ -269,8 +270,10 @@ LEDGER: Tuple[TestedCell, ...] = (
         date="2026-08-13",
         note="R{1.0,1.5,2.0} at 30m cadence. Expectancy -0.739R..-0.767R, 0/3 clear -- worse "
              "than the 60m arm at every R (tighter stop distance, ~2.2x the trade count). "
-             "Same equity-floor breach and cost-drag mechanism as the 60m row. DIRECTIONAL "
-             "power (n_w=10 < 13), not gate-eligible; re-testable at full power.",
+             "Same mechanism as the 60m row, tighter still: a single side's slippage alone is "
+             "~25% of the (shorter) stop distance here; the full round-trip cost consumes "
+             "more. Same equity-floor breach. DIRECTIONAL power (n_w=10 < 13), not "
+             "gate-eligible; re-testable at full power.",
     ),
 )
 

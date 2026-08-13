@@ -163,6 +163,11 @@ negative expectancy across every cell, ahead of "the candlestick signal has no e
 target/stop balance at R=1.0 does not, by itself, support) and ahead of pure winner-truncation
 (§5 below bounds that effect and shows it does not close the gap either).
 
+This "unviable" verdict is scoped strictly to **this study's frozen backtest cost model**
+(`SLIPPAGE_BPS`/`COMMISSION_BPS=5`) and is not an attribution of, or claim about, the live paper
+bot's own ~5-trade record over 2026-08-06 through 08-12 (§2): those live fills carry real but
+different, unmeasured costs.
+
 ---
 
 ## §4 30m vs 60m comparison
@@ -209,6 +214,11 @@ noisier) after-hours/next-session price action gives back a little of that rathe
 more. Either way, **the effect is small in magnitude (well under 0.1R at every cell) and never
 flips the sign positive** — winner truncation is a second-order effect here, not the driver of
 the deeply negative headline numbers in §3; §3.1's cost-geometry interaction is.
+
+Disclosed caveat: `_resolve_bar` continues the no-flatten counterfactual on the 5Min bar series
+regardless of session hours, so part of this resolution happens on extended-hours bars where a
+live bracket leg would not actually execute; given the effect's magnitude above (<0.1R, already
+second-order), this does not change the conclusion.
 
 ---
 
