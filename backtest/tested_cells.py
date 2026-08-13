@@ -247,6 +247,31 @@ LEDGER: Tuple[TestedCell, ...] = (
              "fallback measured UNDERPOWERED (60 sessions, n_w=0), confirming #422's "
              "on-record 30m depth cap and disqualifying it as a stand-in for this arm.",
     ),
+    # --- Hourly bracket-geometry/cadence/sizing study (#571) -- 0/6, DIRECTIONAL_NO_GO ------
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="hourly", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-verdict.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 60m cadence. Expectancy -0.535R..-0.538R, 0/3 clear; every "
+             "cell breaches the -15% equity floor at every sizing cap {0.10,0.25,0.50,1.00}. "
+             "Dominant mechanism: the frozen HOURLY_STOP_BUFFER_PCT geometry's stop distance "
+             "(median $0.95-0.96) is tight enough that the frozen SLIPPAGE_BPS/COMMISSION_BPS "
+             "=5bps cost model consumes ~19% of it per side. n_w=10 < 13 -- DIRECTIONAL "
+             "checkpoint input, not gate-eligible; re-testable at full power.",
+    ),
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="30m", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-verdict.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 30m cadence. Expectancy -0.739R..-0.767R, 0/3 clear -- worse "
+             "than the 60m arm at every R (tighter stop distance, ~2.2x the trade count). "
+             "Same equity-floor breach and cost-drag mechanism as the 60m row. DIRECTIONAL "
+             "power (n_w=10 < 13), not gate-eligible; re-testable at full power.",
+    ),
 )
 
 

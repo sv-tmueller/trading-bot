@@ -25,6 +25,17 @@ input bars match what ``decideHourly``/``computeBracketGeometry`` actually see l
 this corrects an inverted claim in the issue #566 SUB_PLAN text ("recommend raw — matches
 what the live bot sees"), which has it backwards: adjusted, not raw, is what the live bot
 sees. Documented as a discovered discrepancy, not silently followed.
+
+Two defect fixes (#571, found at data-staging time, unreachable by this module's own
+mocked tests since they never called the real Alpaca host):
+
+1. ``timeframe="60Min"`` 400s against the real API (valid grammar is 1-59Min or 1Hour) --
+   ``_api_timeframe`` remaps it to ``"1Hour"`` at request time only; every output-facing
+   name (the ``SPY_60min.csv`` stem, this module's own ``DEFAULT_TIMEFRAMES``, every
+   caller/test) keeps spelling it ``"60Min"``.
+2. The CLI's default ``end`` (today, UTC) 403s on ``feed=sip`` for this account tier (a
+   recent-SIP embargo); the default is now the previous UTC date, which succeeds for the
+   full 2016-01-01-> window.
 """
 from __future__ import annotations
 
@@ -50,6 +61,17 @@ DEFAULT_TIMEFRAMES = ("60Min", "30Min", "5Min")
 DEFAULT_FEED = "sip"
 DEFAULT_ADJUSTMENT = "all"
 _PAGE_LIMIT = 10_000
+
+# #571 defect fix: Alpaca's bars endpoint grammar is 1-59Min or 1Hour (an exact
+# "60Min" 400s). "60Min" is kept as this module's public-facing/output-naming
+# timeframe string (the SPY_60min.csv convention predates this fix and every
+# caller/test spells it that way) -- only the wire request is remapped.
+_API_TIMEFRAME_OVERRIDES = {"60Min": "1Hour"}
+
+
+def _api_timeframe(timeframe: str) -> str:
+    """The timeframe string Alpaca's REST grammar actually accepts for the request."""
+    return _API_TIMEFRAME_OVERRIDES.get(timeframe, timeframe)
 
 
 class FetchUnavailableError(RuntimeError):
@@ -122,7 +144,7 @@ def fetch_bars(
     page_token: Optional[str] = None
     while True:
         params = {
-            "timeframe": timeframe,
+            "timeframe": _api_timeframe(timeframe),
             "start": start,
             "end": end,
             "limit": str(_PAGE_LIMIT),
@@ -236,7 +258,11 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--timeframes", default=",".join(DEFAULT_TIMEFRAMES),
                     help="comma-separated Alpaca timeframe strings, e.g. 60Min,30Min,5Min")
     ap.add_argument("--start", default=DEFAULT_START)
-    ap.add_argument("--end", default=None, help="defaults to today (UTC)")
+    ap.add_argument(
+        "--end", default=None,
+        help="defaults to yesterday (UTC) -- feed=sip 403s on today's date for this "
+             "account tier (#571, the recent-SIP embargo)",
+    )
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--feed", default=DEFAULT_FEED)
     ap.add_argument("--adjustment", default=DEFAULT_ADJUSTMENT)
@@ -244,8 +270,10 @@ def main(argv: Optional[list] = None) -> int:
 
     end = args.end
     if end is None:
-        from datetime import date
-        end = date.today().isoformat()
+        from datetime import date, timedelta
+        # #571 defect fix: today's date 403s on feed=sip (recent-data embargo);
+        # the previous UTC date succeeds for the full 2016-01-01+ window.
+        end = (date.today() - timedelta(days=1)).isoformat()
 
     timeframes = [tf.strip() for tf in args.timeframes.split(",") if tf.strip()]
     blocked = 0

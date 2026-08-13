@@ -150,13 +150,29 @@ def test_is_tested_false_for_the_hourly_geometry_data_blocked_cells():
 
 def test_hourly_geometry_rows_are_data_blocked_with_no_power_claim():
     """#566: both cadence arms (60m/30m) are on the ledger as DATA_BLOCKED, power=NONE."""
-    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY")
+    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.DATA_BLOCKED)
     assert len(rows) == 2
     assert {r.cadence for r in rows} == {"hourly", "30m"}
     for row in rows:
         assert row.verdict == tc.DATA_BLOCKED
         assert row.power == "NONE"
         assert row.n_cells == 3
+
+
+def test_hourly_geometry_directional_no_go_rows_from_571_are_recorded():
+    """#571: the data-staged follow-up ran the frozen 6-cell grid and recorded its own
+    DIRECTIONAL_NO_GO pair (0/6 clear), distinct from #566's DATA_BLOCKED pair on the same
+    family/vehicle -- a weaker-than-NO_GO verdict since power is DIRECTIONAL, not PROMOTABLE.
+    """
+    rows = tc.find(
+        family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.DIRECTIONAL_NO_GO,
+    )
+    assert len(rows) == 2
+    assert {r.cadence for r in rows} == {"hourly", "30m"}
+    for row in rows:
+        assert row.power == "DIRECTIONAL"
+        assert row.n_cells == 3
+        assert not row.is_closed()  # DIRECTIONAL_NO_GO never closes a family
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +251,11 @@ def test_cumulative_trials_of_an_unknown_family_is_zero():
     assert tc.cumulative_trials("no_such_family") == 0
 
 
-def test_cumulative_trials_excludes_the_hourly_geometry_data_blocked_rows():
-    """#566: DATA_BLOCKED means never run -- consumed no multiplicity."""
-    assert tc.cumulative_trials("hourly_bracket_geometry_sizing") == 0
+def test_cumulative_trials_counts_571s_run_but_not_566s_data_blocked_rows():
+    """#566's DATA_BLOCKED pair never ran -- consumed no multiplicity. #571's
+    DIRECTIONAL_NO_GO pair actually ran the 6-cell grid, so it counts: 3+3=6.
+    """
+    assert tc.cumulative_trials("hourly_bracket_geometry_sizing") == 6
 
 
 # ---------------------------------------------------------------------------
