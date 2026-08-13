@@ -105,8 +105,8 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `STATUS_TOKEN` | — | `x-status-token` header value for the read-only status function; no default — unset/blank throws |
 | `NOTIFY_WEBHOOK_URL` | — (optional) | Discord incoming-webhook URL; unset = notifications skipped |
 | `HOURLY_BOT_TICKER` | `SPY` | Instrument the hourly-candlestick bot trades (#475) |
-| `SIZING_RISK_PCT` | `0.01` | Hourly bot risk budget per trade as a fraction of equity (0, 0.05] |
-| `SIZING_NOTIONAL_CAP_PCT` | `0.10` | Hourly bot notional cap per position as a fraction of equity (0, 1.0] |
+| `SIZING_RISK_PCT` | `0.01` | Hourly bot risk budget per trade as a fraction of equity (0, 0.05]. Upper bound only: binds only when `stopDistance > (SIZING_RISK_PCT / SIZING_NOTIONAL_CAP_PCT) x entryRef` (10% of price at the defaults), which SPY hourly bars do not reach; `SIZING_NOTIONAL_CAP_PCT` is the operative sizer for SPY (#499) |
+| `SIZING_NOTIONAL_CAP_PCT` | `0.10` | Hourly bot notional cap per position as a fraction of equity (0, 1.0]; the operative sizer for SPY-class instruments (#499) |
 | `HOURLY_BRACKET_R_MULTIPLE` | `2` | Bracket target multiple; fixed at 2 for v1 (spec revision required to change) |
 | `HOURLY_STOP_BUFFER_PCT` | `0.05` | Stop buffer as a fraction of the signal bar's range (0, 0.5] |
 | `HOURLY_MIN_STOP_DISTANCE` | `0.05` | Minimum entry/stop distance in USD; below this `skipped:geometry_invalid` |
