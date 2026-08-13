@@ -166,12 +166,18 @@ ingredient is credentials or a local file.
 ## §4 Verification
 
 - `venv/bin/python -m pytest tests/test_run_fetch_spy_intraday.py` — 12 passed.
-- `venv/bin/python -m pytest tests/` — full suite green (904 passed, pre-existing 892 + 12 new),
-  confirming this package changes nothing else in the Python research path.
+- `venv/bin/python -m pytest tests/` — full suite green (911 passed, pre-existing 892 + 12
+  fetch-helper tests + 7 `tested_cells`-related instances: the two new ledger records add one
+  parametrized instance each to `test_every_record_has_a_valid_schema` and
+  `test_every_cited_source_document_exists`, plus the three new standalone tests
+  `test_is_tested_false_for_the_hourly_geometry_data_blocked_cells`,
+  `test_hourly_geometry_rows_are_data_blocked_with_no_power_claim`, and
+  `test_cumulative_trials_excludes_the_hourly_geometry_data_blocked_rows`), confirming this
+  package changes nothing else in the Python research path.
 - `git diff main --stat` (this PR) touches only `backtest/run_fetch_spy_intraday.py`,
-  `tests/test_run_fetch_spy_intraday.py`, `backtest/tested_cells.py`, and this doc — nothing
-  under `supabase/functions/`, `supabase/migrations/`, `.env.example`, or any README config
-  table.
+  `tests/test_run_fetch_spy_intraday.py`, `tests/test_tested_cells.py`,
+  `backtest/tested_cells.py`, and this doc — nothing under `supabase/functions/`,
+  `supabase/migrations/`, `.env.example`, or any README config table.
 - No broker order endpoint is referenced anywhere in this package (grep confirms no
   `/v2/orders`, no `positions` DELETE, no `createAlpacaClient` — none of these Python modules
   import `supabase/functions/_shared/alpaca.ts` at all; it is a TS module, out of Python's import

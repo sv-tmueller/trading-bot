@@ -9,10 +9,13 @@ Purpose (issue #566, SUB_PLAN Q1/step 1 — the study's hard data-feasibility ga
 SPY 60Min/30Min/5Min SIP bars from 2016-01-01 to ``data/intraday/SPY_<tf>.csv`` (local,
 gitignored — never committed) and report each frame's power via
 ``intraday_data.describe_power`` so the study doc can cite row counts + SHA256 instead of
-committing bar data. When no keys are available (env unset) or the fetch otherwise fails,
-``fetch_and_save`` reports ``source="none"`` and an ``UNDERPOWERED`` ``PowerReport`` — the
-caller (the pre-registration/feasibility doc) treats that as DATA-BLOCKED and stops,
-per the module docstring in ``intraday_data.py`` and the issue's own stop condition.
+committing bar data. When no keys are available (env unset), ``fetch_and_save`` reports
+``source="none"`` and an ``UNDERPOWERED`` ``PowerReport`` — the caller (the
+pre-registration/feasibility doc) treats that as DATA-BLOCKED and stops, per the module
+docstring in ``intraday_data.py`` and the issue's own stop condition. A fetch that reaches
+the network but fails there (bad keys, rate limit, server error) raises
+``urllib.error.HTTPError``/``URLError`` instead — the caller must handle that case
+separately; it is not converted to a DATA-BLOCKED report by this module.
 
 Fidelity note (adjustment parameter): the live ``hourly-check`` bot's
 ``marketdata.getHourlyBars`` fetches with ``adjustment=all`` (fully split/dividend
@@ -106,8 +109,9 @@ def fetch_bars(
     UTC timestamp — a malformed bar (NaN, non-positive, High/Low not bracketing
     Open/Close) raises ``DataQualityError`` here rather than downstream.
     """
-    key = key or resolve_keys()[0]
-    secret = secret or resolve_keys()[1]
+    env_key, env_secret = resolve_keys()
+    key = key or env_key
+    secret = secret or env_secret
     if not (key and secret):
         raise FetchUnavailableError(
             "Alpaca data keys not set (ALPACA_API_KEY_ID/ALPACA_API_KEY + "
