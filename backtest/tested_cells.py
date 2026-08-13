@@ -247,6 +247,24 @@ LEDGER: Tuple[TestedCell, ...] = (
              "fallback measured UNDERPOWERED (60 sessions, n_w=0), confirming #422's "
              "on-record 30m depth cap and disqualifying it as a stand-in for this arm.",
     ),
+    # --- Hourly bracket-geometry/cadence/sizing study (#571) -- data staged, grid PENDING ---
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="hourly", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=PENDING, power="NONE",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-preregistration.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 60m cadence. Data staged locally (operator-approved fetch, "
+             "feed=sip, adjustment=all, 2016-01-01..2026-08-12, 2738 sessions, n_w=10 < 13 "
+             "DIRECTIONAL) -- grid frozen, awaiting the simulator run.",
+    ),
+    TestedCell(
+        family="hourly_bracket_geometry_sizing", cadence="30m", vehicle="SPY",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=PENDING, power="NONE",
+        source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-preregistration.md",
+        date="2026-08-13",
+        note="R{1.0,1.5,2.0} at 30m cadence. Same staged-data anchor as the 60m arm above -- "
+             "grid frozen, awaiting the simulator run.",
+    ),
 )
 
 
