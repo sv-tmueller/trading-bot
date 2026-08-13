@@ -60,6 +60,7 @@ def run_cell(decisions_path: str, r_multiple: float, period_minutes: int, bars5)
         "exit_distribution": exit_distribution(trades),
         "expectancy_r": expectancy_r(trades),
         "n_flattened": len(flattened),
+        "flattened_expectancy_r": expectancy_r(flattened) if flattened else float("nan"),
         "counterfactual_expectancy_r": expectancy_r(counterfactual) if counterfactual else float("nan"),
         "replays": replays,
         "cost_drag": cost_drag_diagnostic(trades),
@@ -73,6 +74,7 @@ def render_cell(cadence_label: str, r_multiple: float, cell: dict) -> str:
         f"trades: {len(cell['trades'])}  expectancy(R): {cell['expectancy_r']:.4f}",
         f"exit distribution: {cell['exit_distribution']}",
         f"no-flatten counterfactual: {cell['n_flattened']} flattened trades, "
+        f"as-flattened expectancy(R): {cell['flattened_expectancy_r']:.4f}, "
         f"counterfactual expectancy(R): {cell['counterfactual_expectancy_r']:.4f}",
         f"cost drag: median stop_distance=${cd['median_stop_distance']:.4f} "
         f"median entry-slippage cost=${cd['median_entry_slippage_cost']:.4f} "
