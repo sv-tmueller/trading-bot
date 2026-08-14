@@ -9,9 +9,14 @@ trade dict builders below use the real snake_case field names from
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 
 import pandas as pd
 import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import backtest.reflection as rfl
 
@@ -950,6 +955,78 @@ def test_compute_reflection_is_deterministic_across_two_runs(tmp_path):
     e1 = json.dumps(rfl.compute_reflection("2026-08-06", digest, bars_path, []))
     e2 = json.dumps(rfl.compute_reflection("2026-08-06", digest, bars_path, []))
     assert e1 == e2
+
+
+# ---------------------------------------------------------------------------
+# CLI determinism (step 7): backtest/run_nightly_reflection.py over committed
+# fixture files -- two runs, byte-identical stdout; envelope parses; markdown
+# matches the golden.
+# ---------------------------------------------------------------------------
+
+FIXTURES_DIR = "tests/fixtures/reflection"
+
+
+def _cli_env():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = REPO_ROOT
+    return env
+
+
+def _run_cli():
+    return subprocess.run(
+        [
+            sys.executable, "backtest/run_nightly_reflection.py",
+            "--date=2026-08-06",
+            f"--digest={FIXTURES_DIR}/digest-2026-08-06.json",
+            f"--bars={FIXTURES_DIR}/bars5-2026-08-06.csv",
+            f"--ledger={FIXTURES_DIR}/ledger-2026-08-06.jsonl",
+        ],
+        capture_output=True, text=True, cwd=REPO_ROOT, env=_cli_env(),
+    )
+
+
+def test_cli_runs_clean_and_matches_golden_markdown():
+    result = _run_cli()
+    assert result.returncode == 0, result.stderr
+    envelope = json.loads(result.stdout)
+    assert envelope["date"] == "2026-08-06"
+    assert envelope["reflection"]["error"] is None
+    with open(f"{FIXTURES_DIR}/golden-2026-08-06.md", "r", encoding="utf-8") as f:
+        golden = f.read()
+    assert envelope["markdown"] == golden
+
+
+def test_cli_is_deterministic_across_two_runs():
+    r1 = _run_cli()
+    r2 = _run_cli()
+    assert r1.returncode == 0 and r2.returncode == 0
+    assert r1.stdout == r2.stdout
+
+
+def test_cli_exits_1_on_malformed_digest_json(tmp_path):
+    bad_digest = tmp_path / "bad.json"
+    bad_digest.write_text("{not json")
+    result = subprocess.run(
+        [
+            sys.executable, "backtest/run_nightly_reflection.py",
+            "--date=2026-08-06",
+            f"--digest={bad_digest}",
+            f"--bars={FIXTURES_DIR}/bars5-2026-08-06.csv",
+            f"--ledger={FIXTURES_DIR}/ledger-2026-08-06.jsonl",
+        ],
+        capture_output=True, text=True, cwd=REPO_ROOT, env=_cli_env(),
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
+def test_cli_exits_1_on_missing_required_arg():
+    result = subprocess.run(
+        [sys.executable, "backtest/run_nightly_reflection.py", "--date=2026-08-06"],
+        capture_output=True, text=True, cwd=REPO_ROOT, env=_cli_env(),
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
 
 
 def test_missing_scan_row_degrades_r_multiple_with_reason():

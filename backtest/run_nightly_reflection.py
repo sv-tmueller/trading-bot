@@ -1,11 +1,15 @@
 """CLI for the nightly reflection engine (#578). See ``backtest/reflection.py`` module
 docstring for the frozen input/output contract this thin wrapper implements.
 
-    venv/bin/python backtest/run_nightly_reflection.py \\
+    PYTHONPATH=. venv/bin/python backtest/run_nightly_reflection.py \\
         --date=YYYY-MM-DD \\
         --digest=digest.json \\
         --bars=bars5.csv \\
         --ledger=docs/trading-journal/daily-verification.jsonl
+
+``PYTHONPATH=.`` (run from the repo root) is the same convention every other ``backtest/run_*.py``
+script in this repo uses when invoked by file path rather than ``python -m`` (see
+``docs/research/2026-06-06-regime-vs-spy-longrun-backtest.md``'s ``run_longrun.py`` invocation).
 
 Prints one line of JSON (``{date, markdown, reflection}``) to stdout. Exit 0 once the CLI's own
 arguments and input files parse; exit 1 (nothing printed) only on malformed input -- a

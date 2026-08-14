@@ -1,0 +1,131 @@
+{
+  "verification": {
+    "scans": [
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T13:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T14:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T15:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T16:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T17:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T18:30:00Z",
+        "decision": "SKIP",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": null,
+        "stop_price": null,
+        "target_price": null,
+        "risk_per_share": null,
+        "equity_usd": 1000000.0,
+        "qty": 0,
+        "entry_order_id": null
+      },
+      {
+        "symbol": "UPRO",
+        "bar_ts": "2026-08-06T14:30:00Z",
+        "decision": "LONG",
+        "skip_reason": null,
+        "detectors_fired": [],
+        "context_mode": "normal",
+        "entry_ref_price": 80.0,
+        "stop_price": 79.0,
+        "target_price": 82.0,
+        "risk_per_share": 1.0,
+        "equity_usd": 1000000.0,
+        "qty": 100,
+        "entry_order_id": "entry-1"
+      }
+    ],
+    "trades": [
+      {
+        "symbol": "UPRO",
+        "side": "BUY",
+        "qty": 100,
+        "fill_price": 80.04,
+        "fill_time": "2026-08-06T15:40:00Z",
+        "reason": "hourly_long_entry",
+        "broker_order_id": "entry-1"
+      },
+      {
+        "symbol": "UPRO",
+        "side": "SELL",
+        "qty": 100,
+        "fill_price": 81.959,
+        "fill_time": "2026-08-06T16:30:00Z",
+        "reason": "hourly_bracket_exit",
+        "broker_order_id": "exit-1"
+      }
+    ]
+  }
+}
