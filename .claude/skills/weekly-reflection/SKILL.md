@@ -21,9 +21,8 @@ writes -- everything this skill touches is a Markdown file or a GitHub issue.
 - `<week>` (required) -- the ISO week to critique, e.g. `2026-W32`. Use `date +%G-W%V` for "this
   week" if the operator says "run the weekly critique" without naming one; critique the last
   *completed* ISO week (Monday-Friday) unless told otherwise.
-- `<dry-run scratch path>` (optional) -- see [Dry-run mode](#dry-run-mode). Dry-run mode is keyed
-  on the operator's stated intent, not on whether this path is given; a path is only where the
-  dry-run writes its output, not what triggers it. Absent a dry-run request, run live: write to
+- `<dry-run scratch path>` (optional) -- see [Dry-run mode](#dry-run-mode) for exactly what enters
+  dry-run mode. Absent both a dry-run request and a scratch path, run live: write to
   `docs/trading-journal/reflections/<week>.md` and use `gh issue` for real.
 
 ## Sources (read all of these before writing anything)
@@ -155,10 +154,11 @@ One source of truth for the issue shape -- this section, not duplicated anywhere
 
 ## Dry-run mode
 
-Dry-run mode is keyed on the operator's **stated intent**, never on whether a scratch path happens
-to be present. Any request phrased as a dry-run (including this skill's own invocation phrase,
-"dry-run the weekly reflection") enters dry-run mode -- a dry-run request must never fall through
-to live mode for lack of a path:
+Dry-run mode is keyed on the operator's **stated intent**: either an explicit dry-run request or a
+supplied scratch path enters dry-run mode, and neither direction falls through to live. Any request
+phrased as a dry-run (including this skill's own invocation phrase, "dry-run the weekly reflection")
+enters dry-run mode even with no path given; a supplied scratch path enters dry-run mode even with
+no dry-run phrasing given:
 
 - If the operator gives a scratch path, write the reflections doc there.
 - If no scratch path is given, default to the invoking session's scratchpad directory. Stop and ask
