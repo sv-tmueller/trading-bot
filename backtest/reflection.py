@@ -900,10 +900,22 @@ def compute_triggers(window: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # be the one with no real edge over ITS OWN live_r, while the other candidate's
     # smaller cf_r is a genuine improvement over its own (smaller) live_r. Raw-cf_r
     # selection would false-negative in exactly that case.
+    # ROUND-3 REVIEWER RECORD-AND-SHIP NIT: an empty pairing (n=0) always has a paired
+    # improvement of exactly 0.0 (live_r == cf_r == 0.0 trivially), which can beat a
+    # populated-but-worse pairing's genuinely negative improvement under plain max-by-diff --
+    # selecting the empty pairing and displaying its zeros instead of the populated pairing's
+    # real diagnostics. Tie-break: an actually-improving candidate (diff > 0) always wins
+    # first, since that is the only thing `fired` can depend on; among non-improving
+    # candidates, prefer the one with n > 0 so a non-fired record still carries real data.
     paired_1_0 = _paired_cumulative_r(window, "target_1_0r")
     paired_1_5 = _paired_cumulative_r(window, "target_1_5r")
     best_r_multiple, best_pair = max(
-        [(1.0, paired_1_0), (1.5, paired_1_5)], key=lambda p: p[1]["cf_r"] - p[1]["live_r"],
+        [(1.0, paired_1_0), (1.5, paired_1_5)],
+        key=lambda p: (
+            p[1]["cf_r"] - p[1]["live_r"] > 0,
+            p[1]["n"] > 0,
+            p[1]["cf_r"] - p[1]["live_r"],
+        ),
     )
     best_r = best_pair["cf_r"]
     live_r = best_pair["live_r"]

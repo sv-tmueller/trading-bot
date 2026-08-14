@@ -21,8 +21,9 @@ writes -- everything this skill touches is a Markdown file or a GitHub issue.
 - `<week>` (required) -- the ISO week to critique, e.g. `2026-W32`. Use `date +%G-W%V` for "this
   week" if the operator says "run the weekly critique" without naming one; critique the last
   *completed* ISO week (Monday-Friday) unless told otherwise.
-- `<dry-run scratch path>` (optional) -- see [Dry-run mode](#dry-run-mode). When absent, run live:
-  write to `docs/trading-journal/reflections/<week>.md` and use `gh issue` for real.
+- `<dry-run scratch path>` (optional) -- see [Dry-run mode](#dry-run-mode) for exactly what enters
+  dry-run mode. Absent both a dry-run request and a scratch path, run live: write to
+  `docs/trading-journal/reflections/<week>.md` and use `gh issue` for real.
 
 ## Sources (read all of these before writing anything)
 
@@ -153,10 +154,16 @@ One source of truth for the issue shape -- this section, not duplicated anywhere
 
 ## Dry-run mode
 
-When the operator gives a scratch path instead of running live:
+Dry-run mode is keyed on the operator's **stated intent**: either an explicit dry-run request or a
+supplied scratch path enters dry-run mode, and neither direction falls through to live. Any request
+phrased as a dry-run (including this skill's own invocation phrase, "dry-run the weekly reflection")
+enters dry-run mode even with no path given; a supplied scratch path enters dry-run mode even with
+no dry-run phrasing given:
 
-- Write the reflections doc to that scratch path, **never** to
-  `docs/trading-journal/reflections/<week>.md`.
+- If the operator gives a scratch path, write the reflections doc there.
+- If no scratch path is given, default to the invoking session's scratchpad directory. Stop and ask
+  the operator for a path only if the session has no scratchpad directory.
+- Write the reflections doc to that path, **never** to `docs/trading-journal/reflections/<week>.md`.
 - **No mutating `gh` command runs** -- no `gh issue create`, `gh issue comment`, `gh issue close`,
   `gh label create`, or similar. Read-only `gh issue list ... --state all` still runs, because the
   lifecycle rules need real issue state to reason about correctly, even in a dry run.

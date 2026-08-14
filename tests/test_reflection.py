@@ -1131,6 +1131,31 @@ def test_trigger2_selects_by_paired_improvement_not_raw_cf_r():
     assert t2["threshold"] == pytest.approx(0.5)
 
 
+def test_trigger2_ties_toward_the_populated_pairing_when_neither_improves():
+    # PR #581 REVIEW ROUND-3 RECORD-AND-SHIP NIT: when neither candidate improves and one
+    # pairing is empty (n=0, so live_r == cf_r == 0.0 trivially), the naive max-by-paired-
+    # improvement selection picks the empty pairing's diff of exactly 0.0 over the populated
+    # pairing's genuinely worse (but real) diff -- displaying zeros instead of the populated
+    # pairing's diagnostics. Here the 1.0R candidate has no ok data at all (n=0, diff=0.0);
+    # the 1.5R candidate is populated but worse than live (live_r=2.0 > cf_r=1.0, diff=-1.0).
+    # Neither improves, so `fired` must stay False regardless of which is selected -- but the
+    # record should carry the POPULATED 1.5R pairing's value/threshold/n, not the empty
+    # pairing's zeros.
+    window = [
+        _synthetic_trade_record(
+            "2026-08-06T16:00:00Z", realized_r=2.0,
+            target_1_0r_r=None, target_1_0r_data="unavailable",
+            target_1_5r_r=1.0, target_1_5r_data="ok",
+        ),
+    ]
+    triggers = rfl.compute_triggers(window)
+    t2 = triggers[1]
+    assert t2["fired"] is False
+    assert t2["n"] == 1
+    assert t2["value"] == pytest.approx(1.0)
+    assert t2["threshold"] == pytest.approx(2.0)
+
+
 def _cost_window(bps):
     return [_synthetic_trade_record(
         "2026-08-06T16:00:00Z", entry_slippage_bps=bps, exit_slippage_bps=bps,
