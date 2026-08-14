@@ -232,6 +232,26 @@ def test_classify_kill_switch_exit_is_kill_switch():
     assert deviation == "flatten"
 
 
+def test_classify_bracket_exit_between_levels_classifies_to_nearest():
+    # fill=81.0 sits strictly between stop=79.0 and target=82.0, nearer to target (1.0 away)
+    # than stop (2.0 away) -- neither beyond-stop nor tie, so it classifies to the nearest.
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_bracket_exit", fill_price=81.0, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "target"
+    assert deviation == "slippage"
+
+
+def test_classify_bracket_exit_exact_halfway_tie_resolves_to_stop():
+    # fill=80.5 is exactly equidistant from stop=79.0 and target=82.0 (1.5 each) -- the
+    # documented <= tie-break resolves ties to stop, not target.
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_bracket_exit", fill_price=80.5, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "stop"
+    assert deviation == "slippage"
+
+
 # ---------------------------------------------------------------------------
 # Entry/exit slippage bps and nominal R (step 3): signed bps, adverse positive
 # by side; nominal R is what the exit "should" have realized with no
@@ -450,6 +470,28 @@ def test_stop_width_counterfactual_does_not_survive_when_still_touched():
     )
     assert cf["survived"] is False
     assert cf["exit_reason"] == "stop"
+
+
+def test_stop_width_counterfactual_r_denominated_in_original_risk_per_share():
+    # Pinned interpretation 1: the counterfactual R stays in the ORIGINAL risk_per_share
+    # unit, never the scaled stop's own (wider) distance. multiple=2.0 scales the stop
+    # distance to 2.0 (a widened stop of 78.0, distinct from risk_per_share=1.0) -- if r were
+    # wrongly divided by the scaled distance instead, it would be exactly half this value.
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 82.05, 80.00, 82.00),  # touches target; stop untouched
+    ])
+    cf = rfl.stop_width_counterfactual(
+        b5, side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        entry_ref_price=80.0, stop_price=79.0, target_price=82.0, risk_per_share=1.0,
+        multiple=2.0,
+    )
+    assert cf["data"] == "ok"
+    assert cf["exit_reason"] == "target"
+    expected_r = (82.00 * (1 - 5 / 10_000) - 80.04) / 1.0  # denominator = original risk_per_share
+    wrong_r_if_scaled_distance_used = (82.00 * (1 - 5 / 10_000) - 80.04) / 2.0
+    assert cf["r"] == pytest.approx(expected_r)
+    assert cf["r"] != pytest.approx(wrong_r_if_scaled_distance_used)
 
 
 def test_mae_beyond_stop_r_zero_when_never_touched():
