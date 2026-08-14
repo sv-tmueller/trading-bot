@@ -198,3 +198,16 @@ set for the position-before-clock ordering -- both corrections #535 folded in.
   post-#514; check 1 is what silence cannot prove.
 - `daily-check` has zero rows by design (cron retired in migration 0013); do not report it as
   stale.
+
+## Weekly reflections (#579)
+
+`reflections/` holds the stage-2 output of the self-reflection loop described in
+`docs/superpowers/specs/2026-08-14-reflection-loop-design.md` -- one
+`reflections/YYYY-Www.md` per critiqued ISO week, written by the
+`.claude/skills/weekly-reflection/SKILL.md` skill from the week's daily digests
+(above), `daily-verification.jsonl`, the rendered weekly journal entry, and open
+and closed `hypothesis`-labeled issues. `reflections/TEMPLATE.md` is the format
+contract: three fixed sections (evidence, deterministic triggers, ranked
+recommendations). See the skill and the "Weekly critique and hypothesis gate"
+section of `docs/runbooks/weekly-review.md` for the full operator workflow and
+the hypothesis-issue lifecycle.
