@@ -1,0 +1,47 @@
+{
+  "date": "2026-08-06",
+  "markdown": "Reflection: error -- no intraday data file at /no/such/file.csv",
+  "reflection": {
+    "engine_version": "reflection-v1",
+    "no_closed_trades": true,
+    "error": "no intraday data file at /no/such/file.csv",
+    "trades": [],
+    "cost_check": {
+      "n": 0,
+      "median_abs_slippage_bps": null,
+      "model_bps": 5.0,
+      "ratio": null
+    },
+    "trailing20": {
+      "n": 0,
+      "cumulative_r": {
+        "live": {
+          "r": 0.0,
+          "n": 0
+        },
+        "target_1_0r": {
+          "r": 0.0,
+          "n": 0
+        },
+        "target_1_5r": {
+          "r": 0.0,
+          "n": 0
+        }
+      },
+      "stop_survival": {
+        "stop_1_25x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        },
+        "stop_1_5x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        }
+      },
+      "cost_ratio": null
+    },
+    "triggers": []
+  }
+}

@@ -5,8 +5,11 @@ ritual that used to be run by hand after each trading day (#535's closing
 question). It fetches the `status?verify=YYYY-MM-DD` digest (#546), pipes it
 through the pure evaluator `scripts/daily_verify.ts` (#547), commits the two
 artifacts the evaluator writes, posts one Discord line, and opens a dated
-issue when the day fails. See
-`docs/superpowers/specs/2026-08-06-daily-verification-design.md` for the full
+issue when the day fails. Since #583, it additionally wires the frozen
+nightly-reflection engine (`backtest/reflection.py`, #578) onto those same
+two artifacts -- see "Nightly reflection" below. See
+`docs/superpowers/specs/2026-08-06-daily-verification-design.md` and
+`docs/superpowers/specs/2026-08-14-reflection-loop-design.md` for the full
 design and decision log.
 
 ## What it verifies
@@ -104,6 +107,88 @@ row for the date, per-check verdicts and metrics) and
 #535's original seven-check layout). WARN opens no issue -- it is worth a
 look in the digest, not an incident.
 
+## Nightly reflection (#583)
+
+After the evaluator writes the day's ledger row and digest doc, four gated,
+**never-red** workflow steps wire the frozen nightly-reflection engine
+(`backtest/reflection.py`, #578) onto those same two artifacts:
+
+1. **Setup Python** (`actions/setup-python@v5`, 3.9) + `pip install -r
+   requirements.txt` -- matches `deploy-dev.yml`'s test job. `continue-on-error:
+   true`: a pip flake degrades the day's reflection, never the run.
+2. **Fetch SPY 5Min bars** -- `backtest/run_fetch_spy_intraday.py --symbol SPY
+   --timeframes 5Min --start=<date> --end=<date>T21:00:00Z`, using the
+   optional `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` secrets below (mapped to
+   this step only). The explicit `21:00Z` end (rather than the helper's own
+   "previous UTC day" CLI default, which would exclude the target day
+   entirely) covers the last regular-session 5Min bar in both DST regimes
+   while staying 75+ minutes clear of the recent-SIP embargo at this
+   workflow's own 22:15Z schedule.
+3. **Run reflection engine** -- first filters
+   `docs/trading-journal/daily-verification.jsonl` down to the rows strictly
+   before the target date (`scripts/apply_reflection.ts`'s
+   `selectPriorLedgerRows` -- the engine's own trailing-20 fold has no date
+   cutoff, so the caller must not hand it today's row or any later date's),
+   then runs `backtest/run_nightly_reflection.py` against that filtered
+   ledger plus the fetched bars and the day's digest.
+4. **Apply reflection to today's artifacts** -- `scripts/apply_reflection.ts`
+   appends the `## Reflection` markdown section to the day's digest doc
+   (replacing, not duplicating, any section a prior run already wrote) and
+   merges the `reflection` object onto the ledger row, riding the workflow's
+   existing commit.
+
+**Degraded behaviour, by layer**, from the most to the least specific:
+
+- **Missing/blocked bars, or an unresolvable trade**: the engine's own
+  documented degrade -- the reflection section reads `Reflection: error --
+  <reason>` and the ledger's `reflection.error` field carries the reason.
+  This is the FROZEN engine contract (`backtest/reflection.py`'s module
+  docstring), not workflow-specific vocabulary.
+- **The engine's own output envelope never reaches disk at all** (a pip
+  install failure, Python unavailable, an unexpected engine crash): the glue
+  script writes its OWN fallback section instead --
+  `## Reflection\n\nReflection unavailable: <reason>.` -- and merges nothing
+  onto the ledger row for that date. This is glue vocabulary
+  (`scripts/apply_reflection.ts`'s `fallbackReflectionMarkdown`), disclosed
+  as such in the workflow's own header comment so it is never mistaken for
+  the engine's frozen contract above.
+- **Absent Alpaca keys** (see below): the bars fetch step warns
+  (`::warning::`) and exits 0; the engine step then runs with no bars file,
+  landing on the first bullet's degrade path.
+
+In every case above, the day's own seven-check verdict, Discord line, and
+FAIL issue are unaffected -- reflection is additive, never gating.
+
+### Optional secrets
+
+`ALPACA_API_KEY` / `ALPACA_SECRET_KEY` -- read-only Alpaca **market-data**
+keys (paper keys, per the `.env.capture` precedent), mapped to the bars-fetch
+step only. Never a broker order credential; this workflow never places an
+order. Absent is a fully supported, silent-to-the-verdict state, not a
+misconfiguration -- see "Degraded behaviour" above.
+
+```bash
+gh secret set ALPACA_API_KEY --body "<read-only market-data key id>"
+gh secret set ALPACA_SECRET_KEY --body "<read-only market-data secret>"
+```
+
+### Backfill and embargo caveats (reflection)
+
+Reflection recomputes from the ledger rows strictly **prior** to the target
+date, at render time -- like the digest's own "Changed since the previous
+verified day" section, backfilling out of order changes what a later re-run
+of an earlier date sees in its own trailing-20 window (see "Backfilling a
+specific date" above; the same oldest-first advice applies here). Rows
+verified before this feature shipped have no `reflection` key at all and
+never gain one retroactively (no backfill, by design) -- they simply
+contribute nothing to the trailing window, same as any other pre-ship row.
+A manual `workflow_dispatch` run within roughly 15 minutes of the market
+close risks the same recent-SIP embargo the bars-fetch step's `21:00Z` end
+is chosen to clear on the normal 22:15Z schedule; if the bars fetch 403s on
+a manual near-close run, that run degrades to the engine's error line and
+self-announces via that line, no separate alert needed -- re-running the
+same date later, once the embargo has cleared, is the recovery.
+
 ## Maintenance silence
 
 Set the repo **variable** (not secret) `DAILY_VERIFY_SILENCED` to exactly
@@ -193,3 +278,7 @@ for the corrected, durable copy of the seven queries (originally #535).
   capture-then-branch evaluation, never printing the raw digest).
 - `docs/runbooks/weekly-review.md` -- the weekly strategy-judgment journal;
   this workflow is daily plumbing verification, not strategy review.
+- `docs/superpowers/specs/2026-08-14-reflection-loop-design.md` -- the
+  nightly-reflection engine's design and decision log; `backtest/reflection.py`'s
+  own module docstring is the frozen contract this workflow's reflection
+  steps code against.
