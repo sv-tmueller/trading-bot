@@ -360,6 +360,158 @@ def test_target_r_price_cents_quantized_long():
         pytest.approx(81.00)
 
 
+# ---------------------------------------------------------------------------
+# session_flatten_time (step 4, pinned interpretation 3): the day's ONE
+# flatten-eligible hourly scan, found via is_flatten_scan over every scan on
+# the date -- taking the EARLIEST qualifying bar (the live bot flattens at
+# the first opportunity).
+# ---------------------------------------------------------------------------
+
+DAY_SCAN_GRID = [
+    "2026-08-06T13:30:00Z", "2026-08-06T14:30:00Z", "2026-08-06T15:30:00Z",
+    "2026-08-06T16:30:00Z", "2026-08-06T17:30:00Z", "2026-08-06T18:30:00Z",
+]
+
+
+def test_session_flatten_time_picks_earliest_qualifying_bar():
+    scans = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID]
+    b5 = bars5([
+        ("2026-08-06T19:35:00Z", 80.0, 80.1, 79.9, 80.0),
+        ("2026-08-06T19:40:00Z", 80.0, 80.1, 79.9, 80.0),  # first bar at/after 19:37 action instant
+    ])
+    flatten_time = rfl.session_flatten_time("2026-08-06", scans, b5.index)
+    assert str(flatten_time) == "2026-08-06 19:40:00+00:00"
+
+
+def test_session_flatten_time_none_when_no_scan_qualifies():
+    scans = [scan_row(bar_ts="2026-08-06T13:30:00Z")]  # far from close, never flattens
+    b5 = bars5([("2026-08-06T14:00:00Z", 80.0, 80.1, 79.9, 80.0)])
+    assert rfl.session_flatten_time("2026-08-06", scans, b5.index) is None
+
+
+# ---------------------------------------------------------------------------
+# Per-trade counterfactuals (step 4): R-target, stop-width, MAE-beyond-stop,
+# no-flatten.
+# ---------------------------------------------------------------------------
+
+def test_r_target_counterfactual_resolves_earlier_than_2r():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 81.10, 80.00, 81.00),  # touches 1.0R target (81.00)
+    ])
+    cf = rfl.r_target_counterfactual(
+        b5, side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        entry_ref_price=80.0, stop_price=79.0, risk_per_share=1.0, r_multiple=1.0,
+    )
+    assert cf["data"] == "ok"
+    assert cf["exit_reason"] == "target"
+    assert cf["r"] == pytest.approx((81.00 * (1 - 5 / 10_000) - 80.04) / 1.0)
+
+
+def test_r_target_counterfactual_unavailable_when_data_ends():
+    b5 = bars5([("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05)])
+    cf = rfl.r_target_counterfactual(
+        b5, side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        entry_ref_price=80.0, stop_price=79.0, risk_per_share=1.0, r_multiple=1.0,
+    )
+    assert cf["data"] == "unavailable"
+
+
+def test_stop_width_counterfactual_survives_when_widened_stop_not_touched():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.20, 78.90, 80.15),  # dips to 78.90: hits tight stop
+        ("2026-08-06T15:50:00Z", 80.15, 82.05, 80.10, 82.00),  # then rallies to target
+    ])
+    cf = rfl.stop_width_counterfactual(
+        b5, side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        entry_ref_price=80.0, stop_price=79.0, target_price=82.0, risk_per_share=1.0,
+        multiple=1.25,  # widened stop = 78.75, so the 78.90 dip does NOT touch it
+    )
+    assert cf["data"] == "ok"
+    assert cf["survived"] is True
+    assert cf["exit_reason"] == "target"
+
+
+def test_stop_width_counterfactual_does_not_survive_when_still_touched():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.20, 78.00, 80.15),  # dips well past any scaled stop
+    ])
+    cf = rfl.stop_width_counterfactual(
+        b5, side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        entry_ref_price=80.0, stop_price=79.0, target_price=82.0, risk_per_share=1.0,
+        multiple=1.25,
+    )
+    assert cf["survived"] is False
+    assert cf["exit_reason"] == "stop"
+
+
+def test_mae_beyond_stop_r_zero_when_never_touched():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 82.05, 80.10, 82.00),
+    ])
+    r = rfl.mae_beyond_stop_r(
+        b5, side="LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, risk_per_share=1.0,
+    )
+    assert r == pytest.approx(0.0)
+
+
+def test_mae_beyond_stop_r_positive_when_price_dips_past_stop():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 79.20, 77.50, 78.00),  # low 77.50, 1.5R beyond stop(79)
+    ])
+    r = rfl.mae_beyond_stop_r(
+        b5, side="LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, risk_per_share=1.0,
+    )
+    assert r == pytest.approx(1.5)
+
+
+def test_mae_beyond_stop_r_none_when_no_bars_after_entry():
+    b5 = bars5([("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05)])
+    r = rfl.mae_beyond_stop_r(
+        b5, side="LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, risk_per_share=1.0,
+    )
+    assert r is None
+
+
+def test_no_flatten_counterfactual_replays_a_flattened_long_to_resolution():
+    b5 = bars5([
+        ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.55),  # the flatten bar itself
+        ("2026-08-06T19:45:00Z", 80.55, 82.05, 80.50, 82.00),  # runs on to target after flatten
+    ])
+    cf = rfl.no_flatten_counterfactual_for_trade(
+        side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        exit_fill_time="2026-08-06T19:40:00Z", exit_fill_price=80.53,
+        stop_price=79.0, target_price=82.0, risk_per_share=1.0, exit_type="flatten", bars5=b5,
+    )
+    assert cf["applicable"] is True
+    assert cf["data"] == "ok"
+    assert cf["exit_reason"] == "target"
+
+
+def test_no_flatten_counterfactual_not_applicable_for_a_target_exit():
+    cf = rfl.no_flatten_counterfactual_for_trade(
+        side="LONG", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=80.04,
+        exit_fill_time="2026-08-06T16:35:00Z", exit_fill_price=81.959,
+        stop_price=79.0, target_price=82.0, risk_per_share=1.0, exit_type="target",
+        bars5=bars5([("2026-08-06T16:35:00Z", 81.9, 82.0, 81.8, 82.0)]),
+    )
+    assert cf["applicable"] is False
+
+
+def test_no_flatten_counterfactual_unavailable_for_a_short_flatten():
+    cf = rfl.no_flatten_counterfactual_for_trade(
+        side="SHORT", entry_fill_time="2026-08-06T15:40:00Z", entry_fill_price=79.96,
+        exit_fill_time="2026-08-06T19:40:00Z", exit_fill_price=79.5,
+        stop_price=81.0, target_price=78.0, risk_per_share=1.0, exit_type="flatten",
+        bars5=bars5([("2026-08-06T19:40:00Z", 79.5, 79.6, 79.4, 79.5)]),
+    )
+    assert cf["data"] == "unavailable"
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(

@@ -113,6 +113,9 @@ import numpy as np
 import pandas as pd
 
 from backtest.bracket import LONG, SHORT, _resolve_bar
+from backtest.hourly_geometry import SCAN_OFFSET_MIN, is_flatten_scan
+from backtest.hourly_geometry import Trade as _GeometryTrade
+from backtest.hourly_geometry import no_flatten_counterfactual as _no_flatten_counterfactual
 from backtest.regime import SLIPPAGE_BPS
 
 ENGINE_VERSION = "reflection-v1"
@@ -246,7 +249,10 @@ def _direction(side: str) -> str:
 
 
 def _to_utc_index(df: pd.DataFrame) -> pd.DatetimeIndex:
-    idx = df.index
+    return _ensure_utc_index(df.index)
+
+
+def _ensure_utc_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return idx.tz_localize("UTC") if idx.tz is None else idx
 
 
@@ -322,6 +328,191 @@ def walk_bracket_to_resolution(
             fill = level * (1 - slip) if direction == LONG else level * (1 + slip)
             return {"exit_price": float(fill), "exit_reason": reason, "exit_time": idx[i]}
     return None
+
+
+def session_flatten_time(
+    date_str: str,
+    scans_for_date: List[Dict[str, Any]],
+    bars_index: pd.DatetimeIndex,
+    *,
+    period_minutes: int = 60,
+) -> Optional[pd.Timestamp]:
+    """The day's ONE flatten-eligible hourly scan's fill time, or ``None``.
+
+    Reuses ``is_flatten_scan``/``session_close_utc_ms`` (imported, never re-derived) over
+    every scan bar_ts on the date -- more than one bar can technically qualify (headroom
+    keeps shrinking as the day goes on), so this takes the EARLIEST qualifying bar: the
+    live bot flattens at the first opportunity, so later-qualifying scans are moot.
+    """
+    seen: set = set()
+    candidate_bar_ends: List[int] = []
+    for s in scans_for_date:
+        bar_ts = s.get("bar_ts")
+        if not bar_ts or bar_ts in seen:
+            continue
+        seen.add(bar_ts)
+        bar_start_ms = int(pd.Timestamp(bar_ts).value // 1_000_000)
+        bar_end_ms = bar_start_ms + period_minutes * 60_000
+        if is_flatten_scan(date_str, bar_end_ms, period_minutes):
+            candidate_bar_ends.append(bar_end_ms)
+    if not candidate_bar_ends:
+        return None
+    action_instant_ms = min(candidate_bar_ends) + SCAN_OFFSET_MIN * 60_000
+    idx = _ensure_utc_index(bars_index)
+    ts_ms = idx.asi8 // 1_000_000
+    pos = int(np.searchsorted(ts_ms, action_instant_ms, side="left"))
+    if pos >= len(ts_ms):
+        return None
+    return idx[pos]
+
+
+def r_target_counterfactual(
+    bars5: pd.DataFrame,
+    *,
+    side: str,
+    entry_fill_time: Any,
+    entry_fill_price: float,
+    entry_ref_price: float,
+    stop_price: float,
+    risk_per_share: float,
+    r_multiple: float,
+    flatten_time: Any = None,
+) -> Dict[str, Any]:
+    """Same entry, alternate (closer) R-target -- stop unchanged (pinned interpretation 2)."""
+    target_k = target_r_price(side, entry_ref_price, stop_price, r_multiple)
+    res = walk_bracket_to_resolution(
+        bars5, side, entry_fill_time, stop_price, target_k, flatten_time=flatten_time,
+    )
+    if res is None:
+        return {"r_multiple": r_multiple, "data": "unavailable"}
+    sign = 1 if side == "LONG" else -1
+    r = sign * (res["exit_price"] - entry_fill_price) / risk_per_share
+    return {
+        "r_multiple": r_multiple,
+        "exit_price": res["exit_price"],
+        "exit_reason": res["exit_reason"],
+        "exit_time": str(res["exit_time"]),
+        "r": r,
+        "data": "ok",
+    }
+
+
+def stop_width_counterfactual(
+    bars5: pd.DataFrame,
+    *,
+    side: str,
+    entry_fill_time: Any,
+    entry_fill_price: float,
+    entry_ref_price: float,
+    stop_price: float,
+    target_price: float,
+    risk_per_share: float,
+    multiple: float,
+    flatten_time: Any = None,
+) -> Dict[str, Any]:
+    """Same entry and target, alternate (wider) stop (pinned interpretation 1). ``survived``
+    is true iff the widened stop was NOT the counterfactual's own exit."""
+    stop_k = scaled_stop_price(side, entry_ref_price, stop_price, multiple)
+    res = walk_bracket_to_resolution(
+        bars5, side, entry_fill_time, stop_k, target_price, flatten_time=flatten_time,
+    )
+    if res is None:
+        return {"multiple": multiple, "data": "unavailable"}
+    sign = 1 if side == "LONG" else -1
+    # Counterfactual R stays in the ORIGINAL risk_per_share unit (never the scaled stop's
+    # own distance) -- pinned interpretation 1.
+    r = sign * (res["exit_price"] - entry_fill_price) / risk_per_share
+    return {
+        "multiple": multiple,
+        "stop_price": stop_k,
+        "exit_price": res["exit_price"],
+        "exit_reason": res["exit_reason"],
+        "exit_time": str(res["exit_time"]),
+        "r": r,
+        "survived": res["exit_reason"] != "stop",
+        "data": "ok",
+    }
+
+
+def mae_beyond_stop_r(
+    bars5: pd.DataFrame,
+    *,
+    side: str,
+    after_time: Any,
+    stop_price: float,
+    risk_per_share: float,
+) -> Optional[float]:
+    """Worst excursion past the ORIGINAL stop level, in R units, seen in any bar strictly
+    after ``after_time`` through the end of the supplied window (pinned interpretation 4).
+
+    Computed uniformly for every trade, not only realized stop-outs: by construction of
+    ``_resolve_bar``'s own STOP-first tie-break, a trade whose real exit was "target" never
+    touched its stop on any earlier bar either, so this naturally reports ``0.0`` for it.
+    """
+    idx = _to_utc_index(bars5)
+    ts_ms = idx.asi8 // 1_000_000
+    after_ms = int(pd.Timestamp(after_time).value // 1_000_000)
+    start_i = int(np.searchsorted(ts_ms, after_ms, side="right"))
+    if start_i >= len(ts_ms):
+        return None
+    if side == "LONG":
+        worst = float(np.min(bars5["Low"].to_numpy(dtype=float)[start_i:]))
+        beyond = max(0.0, stop_price - worst)
+    else:
+        worst = float(np.max(bars5["High"].to_numpy(dtype=float)[start_i:]))
+        beyond = max(0.0, worst - stop_price)
+    return beyond / risk_per_share
+
+
+def no_flatten_counterfactual_for_trade(
+    *,
+    side: str,
+    entry_fill_time: Any,
+    entry_fill_price: float,
+    exit_fill_time: Any,
+    exit_fill_price: float,
+    stop_price: float,
+    target_price: float,
+    risk_per_share: float,
+    exit_type: str,
+    bars5: pd.DataFrame,
+) -> Dict[str, Any]:
+    """Delegates to ``backtest.hourly_geometry.no_flatten_counterfactual`` (the registered
+    "let a flattened trade run to resolution" diagnostic) -- never re-derived here.
+
+    Only applicable to an actual ``"flatten"`` exit (a scheduled session-close, not a
+    kill-switch liquidation, which is risk- not time-based). ``no_flatten_counterfactual``
+    itself is LONG-only (it hardcodes ``LONG`` into ``_resolve_bar``, per its own module) --
+    a short flatten degrades to ``data: "unavailable"`` rather than silently mis-simulating
+    a mirrored exit the reused function was never written to support.
+    """
+    if exit_type != "flatten":
+        return {"applicable": False}
+    if side != "LONG":
+        return {"applicable": True, "data": "unavailable"}
+    geom_trade = _GeometryTrade(
+        entry_time=pd.Timestamp(entry_fill_time),
+        exit_time=pd.Timestamp(exit_fill_time),
+        entry_price=entry_fill_price,
+        exit_price=exit_fill_price,
+        stop_price=stop_price,
+        target_price=target_price,
+        exit_reason="flatten",
+        stop_distance=risk_per_share,
+        r_realized=(exit_fill_price - entry_fill_price) / risk_per_share if risk_per_share else float("nan"),
+    )
+    results = _no_flatten_counterfactual([geom_trade], bars5)
+    if not results:
+        return {"applicable": True, "data": "unavailable"}
+    r = results[0]
+    return {
+        "applicable": True,
+        "data": "ok",
+        "exit_price": r.exit_price,
+        "exit_reason": r.exit_reason,
+        "exit_time": str(r.exit_time),
+        "r": r.r_realized,
+    }
 
 
 def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]) -> PairingResult:
