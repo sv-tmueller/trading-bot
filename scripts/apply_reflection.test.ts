@@ -4,12 +4,14 @@
 // file's own header comment for the CLI/permission split. Fixtures under
 // scripts/testdata/reflection/ were generated once by running the
 // deterministic engine (backtest/reflection.py::compute_reflection) against
-// tests/fixtures/reflection/'s own committed inputs and committed here
-// verbatim -- no network, no subprocess, no Python in this test file itself.
+// tests/fixtures/reflection/'s own committed inputs. The committed copies are
+// content-identical to the engine's stdout, pretty-printed for readability --
+// no network, no subprocess, no Python in this test file itself.
 import { assertEquals, assertMatch, assertThrows } from "@std/assert";
 import { parseLedgerJsonl } from "./daily_verify.ts";
 import {
   applyReflectionSection,
+  DuplicateLedgerRowError,
   fallbackReflectionMarkdown,
   mergeReflectionIntoLedger,
   MissingLedgerRowError,
@@ -141,6 +143,17 @@ Deno.test("mergeReflectionIntoLedger throws when the target date has no ledger r
   assertThrows(
     () => mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-09", TRADES_ENVELOPE.reflection),
     MissingLedgerRowError,
+  );
+});
+
+Deno.test("mergeReflectionIntoLedger throws when more than one ledger row matches the target date", () => {
+  const duplicateDateLedger = [
+    JSON.stringify({ date: "2026-08-06", equity: 1000 }),
+    JSON.stringify({ date: "2026-08-06", equity: 1001 }),
+  ].join("\n") + "\n";
+  assertThrows(
+    () => mergeReflectionIntoLedger(duplicateDateLedger, "2026-08-06", TRADES_ENVELOPE.reflection),
+    DuplicateLedgerRowError,
   );
 });
 

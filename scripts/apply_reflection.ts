@@ -105,6 +105,10 @@ export class MissingLedgerRowError extends Error {
   override name = "MissingLedgerRowError";
 }
 
+export class DuplicateLedgerRowError extends Error {
+  override name = "DuplicateLedgerRowError";
+}
+
 /**
  * Merges `reflection` onto the ledger row for `date`, adding it as the
  * row's trailing key (a re-merge keeps it in its existing, already-trailing
@@ -116,7 +120,12 @@ export class MissingLedgerRowError extends Error {
  * order and values unchanged since nothing but the target row is touched).
  * Throws `MissingLedgerRowError` if no row for `date` exists -- merging a
  * reflection onto a date scripts/daily_verify.ts never evaluated would be a
- * caller bug, not a degrade case.
+ * caller bug, not a degrade case. Throws `DuplicateLedgerRowError` if more
+ * than one row matches `date` -- scripts/daily_verify.ts's own
+ * upsertLedgerJsonl never produces this on the workflow path, so surfacing
+ * it here rather than silently merging onto every matching row is safe: the
+ * workflow's capture-then-warn around this whole step already contains the
+ * throw without redding the run (see this file's own header comment).
  */
 export function mergeReflectionIntoLedger(
   ledgerText: string,
@@ -124,10 +133,17 @@ export function mergeReflectionIntoLedger(
   reflection: unknown,
 ): string {
   const rows = parseLedgerJsonl(ledgerText);
-  if (!rows.some((row) => row.date === date)) {
+  const matches = rows.filter((row) => row.date === date).length;
+  if (matches === 0) {
     throw new MissingLedgerRowError(
       `apply_reflection: no ledger row for date ${JSON.stringify(date)} -- ` +
         "scripts/daily_verify.ts must run (and write the ledger) before reflection merges onto it",
+    );
+  }
+  if (matches > 1) {
+    throw new DuplicateLedgerRowError(
+      `apply_reflection: ${matches} ledger rows for date ${JSON.stringify(date)} -- ` +
+        "refusing to merge reflection onto more than one row",
     );
   }
   const merged = rows
