@@ -110,6 +110,39 @@ uses for its 4-week/30-trade stopping rule. A proposal rendered here is **never*
 automatically; it is an input to a human-approved version bump (a new spec revision + a new ADR),
 exactly like every other parameter change in this repo.
 
+## Weekly critique and hypothesis gate (#579)
+
+Stage 2/3 of the self-reflection loop, spec
+[`docs/superpowers/specs/2026-08-14-reflection-loop-design.md`](../superpowers/specs/2026-08-14-reflection-loop-design.md)
+§2. Separate from rendering the journal entry above -- this is a qualitative critique, not a
+data aggregation.
+
+**Trigger.** After rendering the week's journal entry (above), the operator (or an advisor
+session) invokes the `weekly-reflection` skill
+(`.claude/skills/weekly-reflection/SKILL.md`) for the week just closed. Not a cron, not an
+Edge Function -- like the render step, this is operator-initiated.
+
+**What it produces.** `docs/trading-journal/reflections/YYYY-Www.md`, and where the week's
+deterministic triggers warrant it, new or updated `hypothesis`-labeled GitHub issues. See the
+skill for the full source list, the three-section doc contract, and the hypothesis-issue
+format and lifecycle rules -- not restated here.
+
+**The gate.** At the weekly review the operator disposes each open `hypothesis` issue:
+
+- **Approved** -- the hypothesis moves through the normal advisor/kickoff pipeline as a study
+  package (the #571 harness is reusable), then, on a positive verdict, an ADR plus a config
+  change PR. Once that PR is merged, bump the trial counter via this runbook's **existing**
+  `--record-accepted-bump --ref <ADR-path-or-issue>` mode (above) -- the same mechanism, no
+  second counter path.
+- **Rejected** -- close the issue with the stated reason as a comment. The next weekly
+  critique respects the closure and will not re-file the same premise on the same evidence
+  (see the skill's lifecycle rules).
+
+**No action most weeks.** The expected outcome of most weekly critiques is "no action" --
+treat a week with nothing to dispose of as normal, not as a gap in the process. The
+pre-registered ~2026-08-26/28 experiment checkpoint (spec §11) is unaffected either way; the
+critique and gate run alongside it, not in place of it.
+
 ## Recording an accepted version bump
 
 `--record-accepted-bump` is a **separate mode**, mutually exclusive with the render flags above.
