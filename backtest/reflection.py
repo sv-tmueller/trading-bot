@@ -497,7 +497,10 @@ def mae_beyond_stop_r(
     exit type is bounded at its own fill). Computed uniformly for every trade, not only
     realized stop-outs: by construction of ``_resolve_bar``'s own STOP-first tie-break, a
     trade whose real exit was "target" never touched its stop on any earlier bar either, so
-    this naturally reports ``0.0`` for it even unbounded.
+    this naturally reports ``0.0`` for it even unbounded. The ``until_time`` boundary is
+    inclusive at bar granularity (``searchsorted`` with ``side="right"``): the bar
+    containing the exit fill itself is still part of the scan window, not only bars
+    strictly after it.
     """
     idx = _to_utc_index(bars5)
     ts_ms = idx.asi8 // 1_000_000
@@ -891,10 +894,16 @@ def compute_triggers(window: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # candidate's own counterfactual data is "ok" -- never live-over-everything vs
     # cf-over-its-own-subset, which would let a trade the counterfactual can't speak to
     # dilute (or inflate) the comparison from only one side.
+    # ROUND-2 REVIEWER SHOULD-FIX FINDING 2: select the "best" candidate by its PAIRED
+    # improvement (cf_r - live_r), not by raw cf_r -- the two candidates' pairings can
+    # have different intersections, so the candidate with the higher raw cf_r can still
+    # be the one with no real edge over ITS OWN live_r, while the other candidate's
+    # smaller cf_r is a genuine improvement over its own (smaller) live_r. Raw-cf_r
+    # selection would false-negative in exactly that case.
     paired_1_0 = _paired_cumulative_r(window, "target_1_0r")
     paired_1_5 = _paired_cumulative_r(window, "target_1_5r")
     best_r_multiple, best_pair = max(
-        [(1.0, paired_1_0), (1.5, paired_1_5)], key=lambda p: p[1]["cf_r"],
+        [(1.0, paired_1_0), (1.5, paired_1_5)], key=lambda p: p[1]["cf_r"] - p[1]["live_r"],
     )
     best_r = best_pair["cf_r"]
     live_r = best_pair["live_r"]
@@ -1225,7 +1234,11 @@ def compute_reflection(
         reason = str(exc)
         reflection = build_reflection_object(
             date, [], {"n": 0, "median_abs_slippage_bps": None, "model_bps": COST_MODEL_BPS, "ratio": None},
-            {"n": 0, "cumulative_r": {"live": 0.0, "target_1_0r": 0.0, "target_1_5r": 0.0},
+            {"n": 0, "cumulative_r": {
+                "live": {"r": 0.0, "n": 0},
+                "target_1_0r": {"r": 0.0, "n": 0},
+                "target_1_5r": {"r": 0.0, "n": 0},
+            },
              "stop_survival": {"stop_1_25x": {"survived": 0, "total": 0, "pct": None},
                                "stop_1_5x": {"survived": 0, "total": 0, "pct": None}},
              "cost_ratio": None},

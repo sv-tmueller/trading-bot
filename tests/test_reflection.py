@@ -1101,6 +1101,36 @@ def test_trigger2_is_paired_not_diluted_by_cf_unavailable_trades():
     assert t2["threshold"] == pytest.approx(2.0)
 
 
+def test_trigger2_selects_by_paired_improvement_not_raw_cf_r():
+    # ROUND-2 REVIEWER SHOULD-FIX FINDING 2: the two candidates' pairings can have
+    # different intersections, so picking the "best" candidate by raw cf_r (ignoring its
+    # own live_r) is the same mismatched-subset class of bug as round-1 finding 3, just in
+    # the false-negative direction. Here the 1.0R candidate has the higher raw cf_r (10.0)
+    # but over a pairing where live_r (20.0) is even higher -- no improvement, no fire. The
+    # 1.5R candidate has a lower raw cf_r (2.0) but over its OWN pairing shows a real
+    # improvement over live_r (0.5) -- it should fire. Selecting by raw cf_r picks the 1.0R
+    # candidate and false-negatives; selecting by paired improvement (cf_r - live_r) picks
+    # the 1.5R candidate and fires.
+    window = [
+        _synthetic_trade_record(
+            "2026-08-06T16:00:00Z", realized_r=20.0,
+            target_1_0r_r=10.0, target_1_0r_data="ok",
+            target_1_5r_r=None, target_1_5r_data="unavailable",
+        ),
+        _synthetic_trade_record(
+            "2026-08-06T17:00:00Z", realized_r=0.5,
+            target_1_0r_r=None, target_1_0r_data="unavailable",
+            target_1_5r_r=2.0, target_1_5r_data="ok",
+        ),
+    ]
+    triggers = rfl.compute_triggers(window)
+    t2 = triggers[1]
+    assert t2["fired"] is True
+    assert t2["n"] == 1
+    assert t2["value"] == pytest.approx(2.0)
+    assert t2["threshold"] == pytest.approx(0.5)
+
+
 def _cost_window(bps):
     return [_synthetic_trade_record(
         "2026-08-06T16:00:00Z", entry_slippage_bps=bps, exit_slippage_bps=bps,
@@ -1206,6 +1236,18 @@ def test_compute_reflection_degrades_on_missing_bars_file():
     envelope = rfl.compute_reflection("2026-08-06", digest, "/no/such/file.csv", [])
     assert envelope["reflection"]["error"] is not None
     assert envelope["markdown"].startswith("Reflection: error --")
+
+
+def test_compute_reflection_error_day_cumulative_r_columns_are_r_n_shape():
+    # ROUND-2 REVIEWER MUST-FIX FINDING 1: the error-path fallback must emit the same
+    # {"r", "n"} shape as the happy-path trailing20.cumulative_r columns, never a bare
+    # float -- error days are designed output (a missing bars file lands here by
+    # contract), so the frozen JSONL shape must hold on exactly these rows too.
+    digest = {"verification": {"scans": [], "trades": []}}
+    envelope = rfl.compute_reflection("2026-08-06", digest, "/no/such/file.csv", [])
+    cr = envelope["reflection"]["trailing20"]["cumulative_r"]
+    for column in ("live", "target_1_0r", "target_1_5r"):
+        assert cr[column] == {"r": 0.0, "n": 0}
 
 
 def test_compute_reflection_no_trades_day(tmp_path):
