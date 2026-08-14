@@ -77,8 +77,9 @@ Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`,
   `broker_order_id`, `reason`).
 - `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`,
-  `outcome`, `notes`). `outcome` is written before exit so a crashed run leaves a forensic row.
-  `status` deliberately writes no row here — it only reads this table.
+  `outcome`, `notes`). `updateAuditLog` sets `finished_at`, `outcome`, and `notes`
+  in a single UPDATE, so a crashed run leaves a row with both null. `status`
+  deliberately writes no row here — it only reads this table.
 - `bot_config` — key/value config; holds the runtime `paused` flag.
 
 All tables are RLS-deny-all; the Edge Functions connect with the service-role key (which bypasses
