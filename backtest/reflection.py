@@ -515,6 +515,144 @@ def no_flatten_counterfactual_for_trade(
     }
 
 
+TARGET_R_MULTIPLES = (1.0, 1.5)
+STOP_WIDTH_MULTIPLES = (1.25, 1.5)
+
+
+def _bar_open_at(bars5: pd.DataFrame, ts: Any) -> Optional[float]:
+    """The Open of the bar at exactly ``ts``, or ``None`` when that bar isn't present
+    (missing/partial bars degrade gracefully -- spec sec 4)."""
+    idx = _to_utc_index(bars5)
+    target_ms = int(pd.Timestamp(ts).value // 1_000_000)
+    ts_ms = idx.asi8 // 1_000_000
+    pos = int(np.searchsorted(ts_ms, target_ms, side="left"))
+    if pos >= len(ts_ms) or int(ts_ms[pos]) != target_ms:
+        return None
+    return float(bars5["Open"].to_numpy(dtype=float)[pos])
+
+
+def compute_trade_record(
+    ct: ClosedTrade,
+    bars5: pd.DataFrame,
+    date_str: str,
+    day_scans: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Assembles one closed trade's full reflection record: classification, slippage,
+    nominal/realized R, deviation reason, and all six counterfactuals (pinned interpretations
+    1-4). Degrades gracefully (never raises) when the entry's scan row or the bars needed for
+    a given counterfactual are unavailable -- each counterfactual reports its own
+    ``data: "unavailable"`` rather than failing the whole trade record.
+    """
+    record: Dict[str, Any] = {
+        "entry_order_id": ct.entry_order_id,
+        "symbol": ct.symbol,
+        "side": ct.side,
+        "qty": ct.qty,
+        "entry_fill_price": ct.entry_fill_price,
+        "entry_fill_time": ct.entry_fill_time,
+        "exit_fill_price": ct.exit_fill_price,
+        "exit_fill_time": ct.exit_fill_time,
+        "exit_order_reason": ct.exit_reason,
+        "realized_r": ct.r_multiple,
+    }
+    if ct.r_multiple_na_reason is not None:
+        record["r_multiple_na_reason"] = ct.r_multiple_na_reason
+
+    scan = ct.scan
+    if scan is None or scan.get("stop_price") is None or scan.get("target_price") is None:
+        record["exit_type"] = "unknown"
+        record["deviation_reason"] = None
+        record["nominal_r"] = None
+        record["entry_slippage_bps"] = None
+        record["exit_slippage_bps"] = None
+        record["detectors_fired"] = []
+        record["counterfactuals"] = {"data": "unavailable"}
+        return record
+
+    entry_ref_price = scan["entry_ref_price"]
+    stop_price = scan["stop_price"]
+    target_price = scan["target_price"]
+    risk_per_share = scan.get("risk_per_share")
+    record["detectors_fired"] = scan.get("detectors_fired") or []
+
+    exit_type, deviation_reason = classify_exit(
+        ct.side, ct.exit_reason, ct.exit_fill_price, stop_price, target_price,
+    )
+    record["exit_type"] = exit_type
+    record["deviation_reason"] = deviation_reason
+
+    if entry_ref_price is not None:
+        record["entry_slippage_bps"] = entry_slippage_bps(ct.side, ct.entry_fill_price, entry_ref_price)
+    else:
+        record["entry_slippage_bps"] = None
+
+    if exit_type == "target":
+        reference = target_price
+    elif exit_type == "stop":
+        reference = stop_price
+    else:  # flatten / kill_switch: reference is the bar open at the exit's own fill time.
+        reference = _bar_open_at(bars5, ct.exit_fill_time)
+    record["exit_slippage_bps"] = (
+        exit_slippage_bps(ct.side, ct.exit_fill_price, reference) if reference is not None else None
+    )
+
+    record["nominal_r"] = (
+        nominal_r(exit_type, ct.side, stop_price, target_price, risk_per_share)
+        if risk_per_share else None
+    )
+
+    if risk_per_share is None or risk_per_share <= 0:
+        record["counterfactuals"] = {"data": "unavailable"}
+        return record
+
+    flatten_time = None
+    if exit_type in ("flatten", "kill_switch"):
+        flatten_time = ct.exit_fill_time
+    else:
+        flatten_time = session_flatten_time(date_str, day_scans, bars5.index)
+
+    counterfactuals: Dict[str, Any] = {}
+    all_ok = True
+    for r_multiple in TARGET_R_MULTIPLES:
+        key = f"target_{str(r_multiple).replace('.', '_')}r"
+        cf = r_target_counterfactual(
+            bars5, side=ct.side, entry_fill_time=ct.entry_fill_time,
+            entry_fill_price=ct.entry_fill_price, entry_ref_price=entry_ref_price,
+            stop_price=stop_price, risk_per_share=risk_per_share, r_multiple=r_multiple,
+            flatten_time=flatten_time,
+        )
+        counterfactuals[key] = cf
+        all_ok = all_ok and cf.get("data") == "ok"
+
+    for multiple in STOP_WIDTH_MULTIPLES:
+        key = f"stop_{str(multiple).replace('.', '_')}x"
+        cf = stop_width_counterfactual(
+            bars5, side=ct.side, entry_fill_time=ct.entry_fill_time,
+            entry_fill_price=ct.entry_fill_price, entry_ref_price=entry_ref_price,
+            stop_price=stop_price, target_price=target_price, risk_per_share=risk_per_share,
+            multiple=multiple, flatten_time=flatten_time,
+        )
+        counterfactuals[key] = cf
+        all_ok = all_ok and cf.get("data") == "ok"
+
+    counterfactuals["no_flatten"] = no_flatten_counterfactual_for_trade(
+        side=ct.side, entry_fill_time=ct.entry_fill_time, entry_fill_price=ct.entry_fill_price,
+        exit_fill_time=ct.exit_fill_time, exit_fill_price=ct.exit_fill_price,
+        stop_price=stop_price, target_price=target_price, risk_per_share=risk_per_share,
+        exit_type=exit_type, bars5=bars5,
+    )
+
+    mae = mae_beyond_stop_r(
+        bars5, side=ct.side, after_time=ct.entry_fill_time, stop_price=stop_price,
+        risk_per_share=risk_per_share,
+    )
+    counterfactuals["mae_beyond_stop_r"] = mae
+    all_ok = all_ok and mae is not None
+    counterfactuals["data"] = "ok" if all_ok else "unavailable"
+    record["counterfactuals"] = counterfactuals
+    return record
+
+
 def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]) -> PairingResult:
     """Python port of scripts/render_weekly_journal.ts's pairHourlyTrades (lines 364-431).
 

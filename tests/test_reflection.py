@@ -512,6 +512,176 @@ def test_no_flatten_counterfactual_unavailable_for_a_short_flatten():
     assert cf["data"] == "unavailable"
 
 
+# ---------------------------------------------------------------------------
+# compute_trade_record (step 3+4 tie-together): assembles pairing +
+# classification + slippage + nominal/realized R + all six counterfactuals
+# into the per-trade record the JSONL/markdown renderers consume. Three
+# scenario fixtures per the sub-plan: target-ish, stop, flatten.
+# ---------------------------------------------------------------------------
+
+TARGET_DAY_BARS = bars5([
+    ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar
+    ("2026-08-06T15:45:00Z", 80.05, 80.20, 80.00, 80.15),
+    ("2026-08-06T15:50:00Z", 80.15, 80.40, 80.10, 80.35),
+    ("2026-08-06T15:55:00Z", 80.35, 80.60, 80.30, 80.55),
+    ("2026-08-06T16:00:00Z", 80.55, 80.80, 80.50, 80.75),
+    ("2026-08-06T16:05:00Z", 80.75, 81.00, 80.70, 80.95),
+    ("2026-08-06T16:10:00Z", 80.95, 81.20, 80.90, 81.15),
+    ("2026-08-06T16:15:00Z", 81.15, 81.40, 81.10, 81.35),
+    ("2026-08-06T16:20:00Z", 81.35, 81.60, 81.30, 81.55),
+    ("2026-08-06T16:25:00Z", 81.55, 81.80, 81.50, 81.75),
+    ("2026-08-06T16:30:00Z", 81.75, 82.05, 81.70, 82.00),  # touches target 82.00
+    ("2026-08-06T16:35:00Z", 82.00, 82.05, 81.90, 82.00),
+])
+
+TARGET_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
+    scan_row(
+        bar_ts="2026-08-06T14:30:00Z", decision="LONG",
+        entry_ref_price=80.00, stop_price=79.00, target_price=82.00,
+        risk_per_share=1.00, qty=100, entry_order_id="entry-1",
+    ),
+]
+
+
+def _target_day_closed_trade():
+    result = rfl.pair_hourly_trades(
+        [
+            trade_row(
+                side="BUY", qty=100, fill_price=80.04, fill_time="2026-08-06T15:40:00Z",
+                reason="hourly_long_entry", broker_order_id="entry-1",
+            ),
+            trade_row(
+                side="SELL", qty=100, fill_price=81.959, fill_time="2026-08-06T16:30:00Z",
+                reason="hourly_bracket_exit", broker_order_id="exit-1",
+            ),
+        ],
+        TARGET_DAY_SCANS,
+    )
+    return result.closed_trades[0]
+
+
+def test_compute_trade_record_target_day():
+    ct = _target_day_closed_trade()
+    rec = rfl.compute_trade_record(ct, TARGET_DAY_BARS, "2026-08-06", TARGET_DAY_SCANS)
+    assert rec["entry_order_id"] == "entry-1"
+    assert rec["exit_type"] == "target"
+    assert rec["deviation_reason"] == "slippage"
+    assert rec["entry_slippage_bps"] == pytest.approx(5.0)
+    assert rec["exit_slippage_bps"] == pytest.approx(5.0)
+    assert rec["nominal_r"] == pytest.approx(2.0)
+    assert rec["realized_r"] == pytest.approx((81.959 - 80.04) / 1.0)
+    cf = rec["counterfactuals"]
+    assert cf["data"] == "ok"
+    assert cf["target_1_0r"]["exit_reason"] == "target"
+    assert cf["stop_1_25x"]["survived"] is True
+    assert cf["no_flatten"]["applicable"] is False
+    assert cf["mae_beyond_stop_r"] == pytest.approx(0.0)
+
+
+STOP_DAY_BARS = bars5([
+    ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar
+    ("2026-08-06T15:45:00Z", 80.05, 80.10, 78.50, 78.60),  # gap through stop (78.50 < 79.00)
+    ("2026-08-06T15:50:00Z", 78.60, 78.80, 78.40, 78.70),
+])
+
+STOP_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
+    scan_row(
+        bar_ts="2026-08-06T14:30:00Z", decision="LONG",
+        entry_ref_price=80.00, stop_price=79.00, target_price=82.00,
+        risk_per_share=1.00, qty=100, entry_order_id="entry-stop",
+    ),
+]
+
+
+def _stop_day_closed_trade():
+    result = rfl.pair_hourly_trades(
+        [
+            trade_row(
+                side="BUY", qty=100, fill_price=80.04, fill_time="2026-08-06T15:40:00Z",
+                reason="hourly_long_entry", broker_order_id="entry-stop",
+            ),
+            trade_row(
+                side="SELL", qty=100, fill_price=78.50, fill_time="2026-08-06T15:45:00Z",
+                reason="hourly_bracket_exit", broker_order_id="exit-stop",
+            ),
+        ],
+        STOP_DAY_SCANS,
+    )
+    return result.closed_trades[0]
+
+
+def test_compute_trade_record_stop_day_gap_through_stop():
+    ct = _stop_day_closed_trade()
+    rec = rfl.compute_trade_record(ct, STOP_DAY_BARS, "2026-08-06", STOP_DAY_SCANS)
+    assert rec["exit_type"] == "stop"
+    assert rec["deviation_reason"] == "gap"
+    assert rec["nominal_r"] == pytest.approx(-1.0)
+    assert rec["realized_r"] == pytest.approx((78.50 - 80.04) / 1.0)
+    assert rec["counterfactuals"]["mae_beyond_stop_r"] > 0
+
+
+FLATTEN_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
+    scan_row(
+        bar_ts="2026-08-06T14:30:00Z", decision="LONG",
+        entry_ref_price=80.00, stop_price=79.00, target_price=82.00,
+        risk_per_share=1.00, qty=100, entry_order_id="entry-flatten",
+    ),
+]
+
+FLATTEN_DAY_BARS = bars5([
+    ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar
+    ("2026-08-06T15:45:00Z", 80.05, 80.30, 80.00, 80.25),
+    ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.55),  # flatten fill bar
+    ("2026-08-06T19:45:00Z", 80.55, 82.05, 80.50, 82.00),  # runs on after flatten (no_flatten cf)
+])
+
+
+def _flatten_day_closed_trade():
+    result = rfl.pair_hourly_trades(
+        [
+            trade_row(
+                side="BUY", qty=100, fill_price=80.04, fill_time="2026-08-06T15:40:00Z",
+                reason="hourly_long_entry", broker_order_id="entry-flatten",
+            ),
+            trade_row(
+                side="SELL", qty=100, fill_price=80.45975, fill_time="2026-08-06T19:40:00Z",
+                reason="hourly_session_close_exit", broker_order_id="exit-flatten",
+            ),
+        ],
+        FLATTEN_DAY_SCANS,
+    )
+    return result.closed_trades[0]
+
+
+def test_compute_trade_record_flatten_day():
+    ct = _flatten_day_closed_trade()
+    rec = rfl.compute_trade_record(ct, FLATTEN_DAY_BARS, "2026-08-06", FLATTEN_DAY_SCANS)
+    assert rec["exit_type"] == "flatten"
+    assert rec["deviation_reason"] == "flatten"
+    assert rec["nominal_r"] is None
+    assert rec["exit_slippage_bps"] == pytest.approx(5.0, abs=0.01)
+    assert rec["counterfactuals"]["no_flatten"]["applicable"] is True
+    assert rec["counterfactuals"]["no_flatten"]["exit_reason"] == "target"
+
+
+def test_compute_trade_record_degrades_when_scan_missing():
+    trades = [
+        trade_row(
+            side="BUY", qty=100, fill_price=80.0, fill_time="2026-08-06T15:40:00Z",
+            reason="hourly_long_entry", broker_order_id="entry-nomatch",
+        ),
+        trade_row(
+            side="SELL", qty=100, fill_price=81.0, fill_time="2026-08-06T16:00:00Z",
+            reason="hourly_bracket_exit", broker_order_id="exit-nomatch",
+        ),
+    ]
+    ct = rfl.pair_hourly_trades(trades, []).closed_trades[0]
+    rec = rfl.compute_trade_record(ct, TARGET_DAY_BARS, "2026-08-06", [])
+    assert rec["exit_type"] == "unknown"
+    assert rec["counterfactuals"]["data"] == "unavailable"
+    assert "missing scan row" in rec["r_multiple_na_reason"]
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(
