@@ -29,13 +29,24 @@ files, no network, no DB):
   array (this engine's own prior output) -- pre-ship rows have no ``reflection`` key at all
   (no backfill, spec sec 7), so the trailing window starts small.
 
-Output envelope (stdout, one line of JSON): ``{date, markdown, reflection}``. Exit 0 once the
-CLI's own arguments and the three files parse as well-formed JSON/CSV; a reflection-computation
-failure (e.g. a malformed bar frame, an unresolvable trade) degrades to
+Output envelope (stdout, one line of JSON): ``{date, markdown, reflection}``. [CORRECTED, round-1
+reviewer should-fix finding 2] Exit 0 once the CLI's own arguments parse and the ``--digest``/
+``--ledger`` JSON files parse. A malformed ``--bars`` CSV is unambiguously on the exit-0 degrade
+side, matching the tested behaviour: ``load_local`` runs inside ``compute_reflection``'s own
+try/except (see that function's docstring), so it degrades exactly like any other
+reflection-computation failure (a malformed bar frame more generally, an unresolvable trade) to
 ``reflection: {engine_version, error: "<reason>", ...}`` and ``markdown: "Reflection: error --
-<reason>"`` rather than raising (spec sec 4) -- only a CLI argument or JSON-parse failure at the
-input boundary itself exits 1 with nothing printed, mirroring ``scripts/daily_verify.ts``'s own
-CLI discipline.
+<reason>"`` rather than raising (spec sec 4). Only a CLI argument failure, or a ``--digest``/
+``--ledger`` JSON-parse failure, at the input boundary itself exits 1 with nothing printed,
+mirroring ``scripts/daily_verify.ts``'s own CLI discipline.
+
+Each closed trade's ``exit_type`` field (in the per-trade record inside ``reflection.trades``,
+also the input every stop-survival and cumulative-R trigger keys off) is one of five values
+(round-1 reviewer should-fix finding 5): ``"target"``, ``"stop"``, ``"flatten"``,
+``"kill_switch"`` -- see ``classify_exit`` -- or ``"unknown"``, the degrade value
+``compute_trade_record`` assigns when the trade's own scan row cannot be resolved at all (no
+matching ``entry_order_id``, or a null ``stop_price``/``target_price``), so no counterfactual
+geometry can be derived for it either.
 
 Reuse, never re-derive (the load-bearing imports this module must never reimplement):
 
@@ -101,15 +112,31 @@ Trailing-20 (spec sec 2 key decision 2): a STATELESS fold over the ledger's prio
 ``reflection.trades`` records plus today's freshly computed trades, ordered by exit fill time,
 window = ``min(n, 20)`` with ``n`` printed next to every number -- never carried state, since the
 spec fetches only the day's own bars and cannot recompute a prior day's counterfactuals nightly.
+[CORRECTED, round-1 reviewer must-fix finding 3] Each ``trailing20["cumulative_r"]`` column is
+``{"r": <cumulative R>, "n": <trade count>}``, never a bare float: "live" is the unpaired total
+over every trade with a ``realized_r``; each counterfactual column (``target_1_0r``,
+``target_1_5r``) is its own ok-subset total. Recording a per-column ``n`` (rather than a single
+shared ``n``, or a parallel n-map) keeps the number and its denominator physically next to each
+other, so a mismatch between a counterfactual column's subset and "live"'s own subset is visible
+without cross-referencing anything else -- the markdown table prints ``r (n=...)`` per cell for
+the same reason. The render layout itself (two markdown tables plus a bare cost-ratio line, not
+the sub-plan's originally pinned single table) is an intentional, lead-approved deviation
+(round-1 reviewer nit finding 6) -- content and column order are otherwise complete, and no
+golden reshaping was done to force a single-table layout.
 
 Deterministic hypothesis triggers (spec sec 3, exactly three in v1; boundary semantics pinned by
 test): (1) "at least 60%" of the trailing stop-outs would have survived at 1.25x stop width --
-fires at exactly 0.60 (``>=``); (2) a closer R-target (1.0 or 1.5) beats live (2R) cumulatively
-over the trailing window -- fires on a strict cumulative-R improvement; (3) realized cost
-(median absolute per-fill slippage bps) diverges from the frozen 5bps model by more than 2x or
-less than 0.5x -- "more than 2x" does NOT fire at exactly 2.0 (strict ``>``/``<``). No minimum-n
-gate: the engine files no issues (the weekly agent and the operator judge noise), so it evaluates
-whatever window it has and always prints ``n``.
+fires at exactly 0.60 (``>=``); (2) [CORRECTED, round-1 reviewer must-fix finding 3] a closer
+R-target (1.0 or 1.5) beats live (2R) cumulatively -- a PAIRED comparison, cumulative live R vs
+cumulative counterfactual R both summed over the INTERSECTION of trades where the compared
+target's own counterfactual data is "ok", with that intersection's size as the trigger's ``n``
+(never live-over-the-whole-window vs counterfactual-over-its-own-subset, which lets a trade the
+counterfactual has no opinion on dilute or inflate the comparison from only one side) -- fires on
+a strict cumulative-R improvement within that pairing; (3) realized cost (median absolute
+per-fill slippage bps) diverges from the frozen 5bps model by more than 2x or less than 0.5x --
+"more than 2x" does NOT fire at exactly 2.0 (strict ``>``/``<``). No minimum-n gate: the engine
+files no issues (the weekly agent and the operator judge noise), so it evaluates whatever window
+it has and always prints ``n``.
 
 Next-batch pointer (spec sec 8 packaging item 2, out of scope here): wiring this engine into
 ``.github/workflows/daily-verification.yml`` (needs setup-python + pip install), appending the
@@ -768,8 +795,16 @@ def _stop_survival(window: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
     return {"survived": survived, "total": total, "pct": pct}
 
 
-def _cumulative_r(window: List[Dict[str, Any]], key: Optional[str]) -> float:
+def _cumulative_r_column(window: List[Dict[str, Any]], key: Optional[str]) -> Dict[str, Any]:
+    """One ``cumulative_r`` column: ``{"r": <sum>, "n": <count>}`` (round-1 reviewer
+    must-fix finding 3 -- every column carries its own ``n`` so a subset mismatch between
+    columns is always visible, never silently folded into a bare number). ``key is None``
+    (the "live" column) sums every trade's own ``realized_r``; a counterfactual column sums
+    only over its OWN ok-subset (``cf.get("data") == "ok"``) -- this is an unpaired total,
+    for display next to the "live" column; the PAIRED comparison trigger 2 actually
+    evaluates on lives in ``_paired_cumulative_r`` below."""
     total = 0.0
+    n = 0
     for t in window:
         if key is None:
             v = t.get("realized_r")
@@ -778,17 +813,48 @@ def _cumulative_r(window: List[Dict[str, Any]], key: Optional[str]) -> float:
             v = cf.get("r") if cf and cf.get("data") == "ok" else None
         if v is not None:
             total += v
-    return total
+            n += 1
+    return {"r": total, "n": n}
+
+
+def _paired_cumulative_r(window: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
+    """PAIRED live-vs-counterfactual comparison (round-1 reviewer must-fix finding 3, lead
+    ruling): cumulative live R vs cumulative ``key`` counterfactual R, both summed over the
+    SAME intersection -- trades where ``key``'s own data is "ok". Comparing a counterfactual
+    sum restricted to its own ok-subset against a live sum computed over every trade in the
+    window (an unpaired comparison) lets a big loss the counterfactual has no opinion on
+    inflate the counterfactual's apparent edge and fire trigger 2 when it should not. Returns
+    ``{"live_r", "cf_r", "n"}`` -- ``n`` is the size of the intersection, printed next to the
+    trigger so the paired subset is always visible."""
+    live_r = 0.0
+    cf_r = 0.0
+    n = 0
+    for t in window:
+        cf = (t.get("counterfactuals") or {}).get(key)
+        if not cf or cf.get("data") != "ok":
+            continue
+        cf_v = cf.get("r")
+        live_v = t.get("realized_r")
+        if cf_v is None or live_v is None:
+            continue
+        live_r += live_v
+        cf_r += cf_v
+        n += 1
+    return {"live_r": live_r, "cf_r": cf_r, "n": n}
 
 
 def compute_trailing20(window: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The same metrics the day's own numbers sit beside (spec sec 3 "trailing summary")."""
+    """The same metrics the day's own numbers sit beside (spec sec 3 "trailing summary").
+    Each ``cumulative_r`` column is ``{"r", "n"}`` (finding 3) -- "live" is the unpaired
+    total over every trade with a ``realized_r``; each counterfactual column is its own
+    ok-subset total, so comparing its ``n`` against "live"'s ``n`` makes any subset
+    mismatch visible without having to cross-reference the trigger."""
     return {
         "n": len(window),
         "cumulative_r": {
-            "live": _cumulative_r(window, None),
-            "target_1_0r": _cumulative_r(window, "target_1_0r"),
-            "target_1_5r": _cumulative_r(window, "target_1_5r"),
+            "live": _cumulative_r_column(window, None),
+            "target_1_0r": _cumulative_r_column(window, "target_1_0r"),
+            "target_1_5r": _cumulative_r_column(window, "target_1_5r"),
         },
         "stop_survival": {
             "stop_1_25x": _stop_survival(window, "stop_1_25x"),
@@ -820,10 +886,18 @@ def compute_triggers(window: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             f"({survival['survived']}/{survival['total']} trailing stop-outs would have survived)"
         )
 
-    live_r = trailing20["cumulative_r"]["live"]
-    r_1_0 = trailing20["cumulative_r"]["target_1_0r"]
-    r_1_5 = trailing20["cumulative_r"]["target_1_5r"]
-    best_r_multiple, best_r = max([(1.0, r_1_0), (1.5, r_1_5)], key=lambda p: p[1])
+    # PAIRED comparison (round-1 reviewer must-fix finding 3, lead ruling): each candidate
+    # R-target is compared against cumulative live R over the SAME intersection where that
+    # candidate's own counterfactual data is "ok" -- never live-over-everything vs
+    # cf-over-its-own-subset, which would let a trade the counterfactual can't speak to
+    # dilute (or inflate) the comparison from only one side.
+    paired_1_0 = _paired_cumulative_r(window, "target_1_0r")
+    paired_1_5 = _paired_cumulative_r(window, "target_1_5r")
+    best_r_multiple, best_pair = max(
+        [(1.0, paired_1_0), (1.5, paired_1_5)], key=lambda p: p[1]["cf_r"],
+    )
+    best_r = best_pair["cf_r"]
+    live_r = best_pair["live_r"]
     trigger2_fired = best_r > live_r
     trigger2 = {
         "id": 2,
@@ -831,12 +905,13 @@ def compute_triggers(window: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "value": best_r,
         "threshold": live_r,
         "fired": trigger2_fired,
-        "n": trailing20["n"],
+        "n": best_pair["n"],
     }
     if trigger2_fired:
         trigger2["hypothesis"] = (
             f"tighten the hourly bracket's target to {best_r_multiple:g}R "
-            f"(cumulative {best_r:.2f}R vs live {live_r:.2f}R over the trailing window)"
+            f"(cumulative {best_r:.2f}R vs live {live_r:.2f}R over n={best_pair['n']} "
+            f"paired trailing trades)"
         )
 
     cost_ratio = trailing20["cost_ratio"]
@@ -1013,12 +1088,18 @@ def _render_trailing20(trailing20: Dict[str, Any]) -> str:
             return "n/a (0/0)"
         return f"{s['pct'] * 100:.0f}% ({s['survived']}/{s['total']})"
 
+    def _r_col(col: Dict[str, Any]) -> str:
+        # Per-column n (round-1 reviewer must-fix finding 3) so a subset mismatch between
+        # "live" and a counterfactual column is visible right in the table, not only inside
+        # the trigger.
+        return f"{_fmt(col['r'])} (n={col['n']})"
+
     lines = [
         f"### Trailing-20 (n={n})",
         "",
         "| metric | live (2R) | target 1.0R | target 1.5R |",
         "| --- | --- | --- | --- |",
-        f"| cumulative R | {_fmt(cr['live'])} | {_fmt(cr['target_1_0r'])} | {_fmt(cr['target_1_5r'])} |",
+        f"| cumulative R | {_r_col(cr['live'])} | {_r_col(cr['target_1_0r'])} | {_r_col(cr['target_1_5r'])} |",
         "",
         "| metric | stop 1.25x | stop 1.5x |",
         "| --- | --- | --- |",

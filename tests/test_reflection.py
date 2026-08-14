@@ -908,6 +908,7 @@ def _synthetic_trade_record(
     exit_fill_time, *, exit_type="target", realized_r=1.0,
     target_1_0r_r=0.5, target_1_5r_r=0.8, stop_1_25x_survived=True,
     entry_slippage_bps=5.0, exit_slippage_bps=5.0,
+    target_1_0r_data="ok", target_1_5r_data="ok",
 ):
     return {
         "exit_fill_time": exit_fill_time,
@@ -916,8 +917,8 @@ def _synthetic_trade_record(
         "entry_slippage_bps": entry_slippage_bps,
         "exit_slippage_bps": exit_slippage_bps,
         "counterfactuals": {
-            "target_1_0r": {"data": "ok", "r": target_1_0r_r},
-            "target_1_5r": {"data": "ok", "r": target_1_5r_r},
+            "target_1_0r": {"data": target_1_0r_data, "r": target_1_0r_r},
+            "target_1_5r": {"data": target_1_5r_data, "r": target_1_5r_r},
             "stop_1_25x": {"data": "ok", "survived": stop_1_25x_survived},
             "stop_1_5x": {"data": "ok", "survived": stop_1_25x_survived},
             "no_flatten": {"applicable": False},
@@ -988,8 +989,27 @@ def test_compute_trailing20_cumulative_r_and_stop_survival():
     ]
     t20 = rfl.compute_trailing20(window)
     assert t20["n"] == 2
-    assert t20["cumulative_r"]["live"] == pytest.approx(-2.0)
+    # cumulative_r columns are {"r", "n"} (round-1 reviewer must-fix finding 3): "live" is
+    # the unpaired total over every trade with a realized_r; each cf column is summed over
+    # its OWN ok-subset, so a mismatched n is always visible next to the number.
+    assert t20["cumulative_r"]["live"] == {"r": pytest.approx(-2.0), "n": 2}
+    assert t20["cumulative_r"]["target_1_0r"] == {"r": pytest.approx(-2.0), "n": 2}
     assert t20["stop_survival"]["stop_1_25x"] == {"survived": 1, "total": 2, "pct": 0.5}
+
+
+def test_compute_trailing20_cumulative_r_n_reflects_cf_columns_own_ok_subset():
+    # A trade whose target_1_0r counterfactual is unavailable must not be counted in that
+    # column's n, even though it IS counted in "live"'s own n -- the whole point of
+    # printing a per-column n is to make that subset mismatch visible.
+    window = [
+        _synthetic_trade_record("2026-08-06T16:00:00Z", realized_r=1.0, target_1_0r_r=0.5),
+        _synthetic_trade_record(
+            "2026-08-06T17:00:00Z", realized_r=-5.0, target_1_0r_r=None, target_1_0r_data="unavailable",
+        ),
+    ]
+    t20 = rfl.compute_trailing20(window)
+    assert t20["cumulative_r"]["live"] == {"r": pytest.approx(-4.0), "n": 2}
+    assert t20["cumulative_r"]["target_1_0r"] == {"r": pytest.approx(0.5), "n": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1064,41 @@ def test_trigger2_does_not_fire_on_a_tie():
     ]
     triggers = rfl.compute_triggers(window)
     assert triggers[1]["fired"] is False
+
+
+def test_trigger2_is_paired_not_diluted_by_cf_unavailable_trades():
+    # ROUND-1 REVIEWER MUST-FIX FINDING 3 (lead ruling): trigger 2 compares cumulative live
+    # vs cumulative counterfactual over the INTERSECTION of trades where the compared cf
+    # column is "ok" -- an UNPAIRED comparison (live summed over every trade, cf summed only
+    # over its own ok-subset) would let a big loss the counterfactual has no opinion on
+    # inflate the cf's apparent edge and fire the trigger; the paired comparison must not.
+    window = [
+        _synthetic_trade_record(
+            "2026-08-06T16:00:00Z", realized_r=1.0, target_1_0r_r=0.5, target_1_5r_r=0.5,
+        ),
+        _synthetic_trade_record(
+            "2026-08-06T17:00:00Z", realized_r=1.0, target_1_0r_r=0.5, target_1_5r_r=0.5,
+        ),
+        _synthetic_trade_record(
+            "2026-08-06T18:00:00Z", realized_r=-5.0,
+            target_1_0r_r=None, target_1_0r_data="unavailable",
+            target_1_5r_r=None, target_1_5r_data="unavailable",
+        ),
+    ]
+    # Unpaired (wrong): live = 1+1-5 = -3; best cf = 0.5+0.5 = 1.0 over the 2-trade
+    # ok-subset -> 1.0 > -3 would fire.
+    unpaired_live = sum(t["realized_r"] for t in window)
+    unpaired_best_cf = 1.0
+    assert unpaired_best_cf > unpaired_live  # sanity: the unpaired comparison WOULD fire
+
+    triggers = rfl.compute_triggers(window)
+    t2 = triggers[1]
+    # Paired (correct): live restricted to the SAME 2-trade ok-subset = 1+1 = 2.0; best cf
+    # over that subset = 0.5+0.5 = 1.0 -> 1.0 is NOT > 2.0, so the trigger must not fire.
+    assert t2["fired"] is False
+    assert t2["n"] == 2
+    assert t2["value"] == pytest.approx(1.0)
+    assert t2["threshold"] == pytest.approx(2.0)
 
 
 def _cost_window(bps):

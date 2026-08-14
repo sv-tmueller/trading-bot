@@ -11,10 +11,13 @@ docstring for the frozen input/output contract this thin wrapper implements.
 script in this repo uses when invoked by file path rather than ``python -m`` (see
 ``docs/research/2026-06-06-regime-vs-spy-longrun-backtest.md``'s ``run_longrun.py`` invocation).
 
-Prints one line of JSON (``{date, markdown, reflection}``) to stdout. Exit 0 once the CLI's own
-arguments and input files parse; exit 1 (nothing printed) only on malformed input -- a
-reflection-computation failure degrades into the printed envelope instead (see
-``backtest.reflection.compute_reflection``).
+Prints one line of JSON (``{date, markdown, reflection}``) to stdout. [CORRECTED, round-1
+reviewer should-fix finding 2] Exit 0 once the CLI's own arguments parse and the ``--digest``/
+``--ledger`` JSON files parse; exit 1 (nothing printed) only on a malformed CLI argument or a
+malformed ``--digest``/``--ledger`` JSON file. A malformed ``--bars`` CSV is NOT a CLI-boundary
+failure -- it degrades into the printed envelope exactly like any other reflection-computation
+failure (see ``backtest.reflection.compute_reflection``), because ``load_local`` runs inside that
+function's own try/except, not at this CLI's argument-parsing boundary.
 """
 from __future__ import annotations
 
