@@ -211,9 +211,11 @@ export interface StatusDigest {
 // the live floor enforcement in hourly-check itself.
 const EQUITY_FLOOR_PCT = 0.15;
 
-// A crashed/still-open run leaves outcome NULL in the DB (documented in
-// CLAUDE.md: "outcome is written before exit so a crashed run leaves a row
-// with no finished_at") — group those under this label instead of "null".
+// A crashed/still-open run leaves both finished_at and outcome NULL in the DB
+// (documented in CLAUDE.md: "updateAuditLog sets finished_at, outcome, and
+// notes in a single UPDATE, so a crashed run leaves a row with both
+// finished_at and outcome null") — group those under this label instead of
+// "null".
 const UNFINISHED_LABEL = "(unfinished)";
 
 // #384: pure helper — SPY's % distance from its 200-DMA. Stored/returned

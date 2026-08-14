@@ -142,9 +142,12 @@ operator HTTP + token ─────────→ Edge Fn: panic ────
   position. This replaces `TRADING_PAUSED` env + `.env` writes.
 - **Stale-data guard.** `daily-check` exits `skipped:stale_data` when Alpaca's latest SPY daily
   bar predates today.
-- **Audit discipline.** `audit_log.outcome` is written before exit on every path; outcome
-  strings (`success`, `success:*`, `skipped:*`, `error:*`) are preserved for forensic
-  continuity. `dry_run:*` is retained if a paper/dry-run soak mode is kept (§8).
+- **Audit discipline.** `finish()` calls `updateAuditLog`, which sets `finished_at`,
+  `outcome`, and `notes` in a single UPDATE (called in the catch block, since the code
+  uses try/catch, not finally). On a crash that never reaches `finish()`, both
+  `finished_at` and `outcome` stay null; the row's existence alone records that the run
+  started. Outcome strings (`success`, `success:*`, `skipped:*`, `error:*`) are preserved
+  for forensic continuity. `dry_run:*` is retained if a paper/dry-run soak mode is kept (§8).
 
 ## 6. Database (SQLite → Postgres)
 

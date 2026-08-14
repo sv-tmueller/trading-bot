@@ -151,7 +151,7 @@ or bad print) and exits `error:implausible_drawdown` with an alert instead of li
 Postgres in Supabase (`supabase/migrations/0001_init.sql`). Tables:
 - `regime_state` — one row per trading day with `spy_close`, `spy_sma200`, `target_state`, `current_state`, `position_drawdown_pct`, `kill_switch_active`, `kill_switch_fired_at`.
 - `trades` — broker fills (`symbol`, `side`, `qty`, `fill_price`, `fill_time`, `broker_order_id`, `reason`).
-- `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `outcome` is written before exit so a crashed run leaves a row with no `finished_at`. `status` deliberately writes no row here (reads only), so this table stays a clean record of trading actions.
+- `audit_log` — one row per function invocation (`script_name`, `started_at`, `finished_at`, `outcome`, `notes`). Used for forensics and partial-recovery — `updateAuditLog` sets `finished_at`, `outcome`, and `notes` in a single UPDATE, so a crashed run leaves a row with both `finished_at` and `outcome` null; the row's existence alone is the evidence the run started. `status` deliberately writes no row here (reads only), so this table stays a clean record of trading actions.
 - `bot_config` — key/value config; holds the runtime `paused` flag (replaces the old `TRADING_PAUSED` env var).
 
 All tables are RLS-deny-all; the Edge Functions connect with the **service-role key** (bypasses RLS).
