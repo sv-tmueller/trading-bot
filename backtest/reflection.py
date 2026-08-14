@@ -890,6 +890,161 @@ def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]
     )
 
 
+STANDING_RESTRAINTS = (
+    "Counterfactuals are diagnostic, not trials: nothing is selected on them until a "
+    "hypothesis is pre-registered and studied (spec sec 3, #398). Sample sizes are printed "
+    "next to every number."
+)
+
+NO_TRADES_LINE = "No closed trades; no reflection."
+
+
+def _fmt(value: Optional[float], decimals: int = 2, suffix: str = "") -> str:
+    return "n/a" if value is None else f"{value:.{decimals}f}{suffix}"
+
+
+def _fmt_cf_line(label: str, cf: Dict[str, Any]) -> str:
+    if cf.get("applicable") is False:
+        return f"- Counterfactual {label}: not applicable"
+    if cf.get("data") != "ok":
+        return f"- Counterfactual {label}: data unavailable"
+    exit_reason = cf.get("exit_reason", "n/a")
+    r = _fmt(cf.get("r"))
+    if "survived" in cf:
+        survived = "survived" if cf["survived"] else "stopped out"
+        return f"- Counterfactual {label}: {survived}, exit {exit_reason}, r={r}"
+    return f"- Counterfactual {label}: exit {exit_reason}, r={r}"
+
+
+def _render_trade_block(rec: Dict[str, Any]) -> str:
+    lines = [f"### {rec['entry_order_id']} -- {rec['symbol']} {rec['side']}", ""]
+    detectors = ", ".join(rec.get("detectors_fired") or []) or "none"
+    lines.append(f"- Detectors: {detectors}")
+    lines.append(
+        f"- Entry: {rec['entry_fill_price']:.4f} @ {rec['entry_fill_time']} "
+        f"(slippage {_fmt(rec['entry_slippage_bps'], 2, 'bps')})"
+    )
+    lines.append(
+        f"- Exit: {rec['exit_fill_price']:.4f} @ {rec['exit_fill_time']} "
+        f"({rec['exit_order_reason']} -> {rec['exit_type']}, "
+        f"slippage {_fmt(rec['exit_slippage_bps'], 2, 'bps')})"
+    )
+    lines.append(
+        f"- Nominal R: {_fmt(rec['nominal_r'])} -- Realized R: {_fmt(rec['realized_r'])} "
+        f"(deviation: {rec['deviation_reason'] or 'n/a'})"
+    )
+    cf = rec["counterfactuals"]
+    if cf.get("data") == "unavailable" and len(cf) == 1:
+        lines.append("- Counterfactuals: data unavailable")
+    else:
+        lines.append(_fmt_cf_line("target 1.0R", cf["target_1_0r"]))
+        lines.append(_fmt_cf_line("target 1.5R", cf["target_1_5r"]))
+        lines.append(_fmt_cf_line("stop 1.25x", cf["stop_1_25x"]))
+        lines.append(_fmt_cf_line("stop 1.5x", cf["stop_1_5x"]))
+        lines.append(_fmt_cf_line("no-flatten", cf["no_flatten"]))
+        lines.append(f"- MAE beyond stop: {_fmt(cf.get('mae_beyond_stop_r'))}R")
+    return "\n".join(lines)
+
+
+def _render_cost_check(cost_check: Dict[str, Any]) -> str:
+    return (
+        f"### Cost check\n\n"
+        f"n={cost_check['n']} fill(s), median |slippage| "
+        f"{_fmt(cost_check['median_abs_slippage_bps'], 2, 'bps')} vs "
+        f"{cost_check['model_bps']:.2f}bps model (ratio {_fmt(cost_check['ratio'], 2, 'x')})"
+    )
+
+
+def _render_trailing20(trailing20: Dict[str, Any]) -> str:
+    n = trailing20["n"]
+    cr = trailing20["cumulative_r"]
+    ss = trailing20["stop_survival"]
+
+    def _survival(s: Dict[str, Any]) -> str:
+        if s["total"] == 0:
+            return "n/a (0/0)"
+        return f"{s['pct'] * 100:.0f}% ({s['survived']}/{s['total']})"
+
+    lines = [
+        f"### Trailing-20 (n={n})",
+        "",
+        "| metric | live (2R) | target 1.0R | target 1.5R |",
+        "| --- | --- | --- | --- |",
+        f"| cumulative R | {_fmt(cr['live'])} | {_fmt(cr['target_1_0r'])} | {_fmt(cr['target_1_5r'])} |",
+        "",
+        "| metric | stop 1.25x | stop 1.5x |",
+        "| --- | --- | --- |",
+        f"| stop-out survival | {_survival(ss['stop_1_25x'])} | {_survival(ss['stop_1_5x'])} |",
+        "",
+        f"cost ratio: {_fmt(trailing20['cost_ratio'], 2, 'x')}",
+    ]
+    return "\n".join(lines)
+
+
+def _render_triggers(triggers: List[Dict[str, Any]]) -> str:
+    lines = ["### Triggers", ""]
+    for t in triggers:
+        verdict = "FIRED" if t["fired"] else "not fired"
+        if t["id"] == 1:
+            value = "n/a" if t["value"] is None else f"{t['value'] * 100:.0f}%"
+            detail = f"{value} (threshold {t['threshold'] * 100:.0f}%, n={t['n']})"
+        elif t["id"] == 2:
+            detail = f"best {_fmt(t['value'])}R vs live {_fmt(t['threshold'])}R (n={t['n']})"
+        else:
+            detail = f"{_fmt(t['value'], 2, 'x')} (n={t['n']})"
+        lines.append(f"{t['id']}. {t['name']}: {detail} -- {verdict}")
+        if t.get("hypothesis"):
+            lines.append(f"   - suggested hypothesis: {t['hypothesis']}")
+    return "\n".join(lines)
+
+
+def render_markdown(
+    date: str,
+    trade_records: List[Dict[str, Any]],
+    cost_check: Dict[str, Any],
+    trailing20: Dict[str, Any],
+    triggers: List[Dict[str, Any]],
+) -> str:
+    """Renders the ``## Reflection`` section (spec sec 4's frozen field/section order):
+    standing restraints, one block per closed trade, the cost-check block, the trailing-20
+    table, then ``### Triggers``. ``No closed trades; no reflection.`` for an empty day."""
+    if not trade_records:
+        return f"## Reflection\n\n{NO_TRADES_LINE}"
+
+    sections = ["## Reflection", "", STANDING_RESTRAINTS, ""]
+    for rec in trade_records:
+        sections.append(_render_trade_block(rec))
+        sections.append("")
+    sections.append(_render_cost_check(cost_check))
+    sections.append("")
+    sections.append(_render_trailing20(trailing20))
+    sections.append("")
+    sections.append(_render_triggers(triggers))
+    return "\n".join(sections)
+
+
+def build_reflection_object(
+    date: str,
+    trade_records: List[Dict[str, Any]],
+    cost_check: Dict[str, Any],
+    trailing20: Dict[str, Any],
+    triggers: List[Dict[str, Any]],
+    *,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The structured ``reflection`` object appended to the JSONL ledger row (spec sec 4).
+    Field names here are the frozen contract the wiring batch codes against."""
+    return {
+        "engine_version": ENGINE_VERSION,
+        "no_closed_trades": len(trade_records) == 0,
+        "error": error,
+        "trades": trade_records,
+        "cost_check": cost_check,
+        "trailing20": trailing20,
+        "triggers": triggers,
+    }
+
+
 def load_ledger_jsonl(text: str) -> list[dict]:
     """Parses the daily-verification JSONL ledger text into a list of row dicts.
 

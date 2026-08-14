@@ -855,6 +855,44 @@ def test_trigger3_fires_below_half():
     assert triggers[2]["fired"] is True
 
 
+# ---------------------------------------------------------------------------
+# Renderers (step 6): markdown section + reflection JSON object.
+# ---------------------------------------------------------------------------
+
+def test_render_markdown_no_trades_is_one_liner():
+    md = rfl.render_markdown("2026-08-06", [], rfl.compute_cost_check([]), rfl.compute_trailing20([]), rfl.compute_triggers([]))
+    assert md == "## Reflection\n\nNo closed trades; no reflection."
+
+
+def test_build_reflection_object_no_trades():
+    obj = rfl.build_reflection_object(
+        "2026-08-06", [], rfl.compute_cost_check([]), rfl.compute_trailing20([]), rfl.compute_triggers([]),
+    )
+    assert obj["no_closed_trades"] is True
+    assert obj["error"] is None
+    assert obj["trades"] == []
+    assert obj["engine_version"] == rfl.ENGINE_VERSION
+
+
+def test_build_reflection_object_with_error():
+    obj = rfl.build_reflection_object("2026-08-06", [], {}, {}, [], error="bars file not found")
+    assert obj["error"] == "bars file not found"
+
+
+def test_golden_markdown_render_one_target_trade():
+    ct = _target_day_closed_trade()
+    rec = rfl.compute_trade_record(ct, TARGET_DAY_BARS, "2026-08-06", TARGET_DAY_SCANS)
+    window = rfl.build_trailing_window([], [rec])
+    cost_check = rfl.compute_cost_check(window)
+    trailing20 = rfl.compute_trailing20(window)
+    triggers = rfl.compute_triggers(window)
+    md = rfl.render_markdown("2026-08-06", [rec], cost_check, trailing20, triggers)
+    golden_path = "tests/fixtures/reflection/golden-2026-08-06.md"
+    with open(golden_path, "r", encoding="utf-8") as f:
+        golden = f.read()
+    assert md == golden
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(
