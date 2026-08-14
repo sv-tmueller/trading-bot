@@ -105,6 +105,129 @@ that package codes against, not the caller.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+ENGINE_VERSION = "reflection-v1"
+
+# Cross-referenced with scripts/render_weekly_journal.ts lines 320-325 (pairHourlyTrades'
+# own ENTRY_REASONS/EXIT_REASONS) -- kept in sync manually across the TS/Python boundary,
+# same precedent as EQUITY_FLOOR_PCT in backtest/hourly_geometry.py.
+ENTRY_REASONS = frozenset({"hourly_long_entry", "hourly_short_entry"})
+EXIT_REASONS = frozenset(
+    {"hourly_bracket_exit", "hourly_session_close_exit", "hourly_kill_switch"}
+)
+PANIC_REASON = "panic_cli"
+
+
+def _side_for_entry_reason(reason: str) -> str:
+    return "SHORT" if reason == "hourly_short_entry" else "LONG"
+
+
+@dataclass
+class ClosedTrade:
+    """One paired round-trip -- the Python analogue of pairHourlyTrades' ClosedTradeResult
+    (render_weekly_journal.ts line 327), plus the joined scan row this engine additionally
+    needs for counterfactual geometry (stop/target/risk_per_share/detectors_fired)."""
+
+    symbol: str
+    side: str
+    entry_fill_price: float
+    entry_fill_time: str
+    entry_order_id: str
+    exit_fill_price: float
+    exit_fill_time: str
+    exit_order_id: str
+    exit_reason: str
+    qty: int
+    scan: Optional[Dict[str, Any]]
+    r_multiple: Optional[float]
+    r_multiple_na_reason: Optional[str]
+
+
+@dataclass
+class PairingResult:
+    closed_trades: List[ClosedTrade]
+    open_entries: List[Dict[str, Any]]
+    orphan_exits: List[Dict[str, Any]]
+    manual_interventions: List[Dict[str, Any]]
+
+
+def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]) -> PairingResult:
+    """Python port of scripts/render_weekly_journal.ts's pairHourlyTrades (lines 364-431).
+
+    Same rules, byte-for-byte: entries/exits paired FIFO per symbol keyed off `reason` (not
+    `side` -- BUY/SELL alone can't distinguish a long entry from a short exit); `panic_cli`
+    fills are never paired (reported as manual interventions regardless of any queued entry);
+    the scan join is by `entry_order_id == entry's broker_order_id` (trades has no bar_ts
+    column, so provenance is keyed on the entry's own broker order id, spec sec 9/14).
+    """
+    scan_by_entry_order_id: Dict[str, Dict[str, Any]] = {}
+    for s in scans:
+        eoid = s.get("entry_order_id")
+        if eoid:
+            scan_by_entry_order_id[eoid] = s
+
+    open_queue_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    closed_trades: List[ClosedTrade] = []
+    orphan_exits: List[Dict[str, Any]] = []
+    manual_interventions: List[Dict[str, Any]] = []
+
+    ordered = sorted(trades, key=lambda t: t["fill_time"])
+    for t in ordered:
+        if t["reason"] == PANIC_REASON:
+            manual_interventions.append(t)
+            continue
+        if t["reason"] in ENTRY_REASONS:
+            open_queue_by_symbol.setdefault(t["symbol"], []).append(t)
+            continue
+        if t["reason"] in EXIT_REASONS:
+            queue = open_queue_by_symbol.setdefault(t["symbol"], [])
+            if not queue:
+                orphan_exits.append(t)
+                continue
+            entry_trade = queue.pop(0)
+            scan_row_ = scan_by_entry_order_id.get(entry_trade["broker_order_id"])
+            risk_per_share = scan_row_.get("risk_per_share") if scan_row_ else None
+            r_multiple: Optional[float] = None
+            r_multiple_na_reason: Optional[str] = None
+            if scan_row_ is None:
+                r_multiple_na_reason = (
+                    f"missing scan row for entry {entry_trade['broker_order_id']}"
+                )
+            elif risk_per_share is None or risk_per_share <= 0:
+                r_multiple_na_reason = "risk_per_share unavailable"
+            else:
+                sign = 1 if _side_for_entry_reason(entry_trade["reason"]) == "LONG" else -1
+                r_multiple = sign * (t["fill_price"] - entry_trade["fill_price"]) / risk_per_share
+            closed_trades.append(
+                ClosedTrade(
+                    symbol=t["symbol"],
+                    side=_side_for_entry_reason(entry_trade["reason"]),
+                    entry_fill_price=entry_trade["fill_price"],
+                    entry_fill_time=entry_trade["fill_time"],
+                    entry_order_id=entry_trade["broker_order_id"],
+                    exit_fill_price=t["fill_price"],
+                    exit_fill_time=t["fill_time"],
+                    exit_order_id=t["broker_order_id"],
+                    exit_reason=t["reason"],
+                    qty=entry_trade["qty"],
+                    scan=scan_row_,
+                    r_multiple=r_multiple,
+                    r_multiple_na_reason=r_multiple_na_reason,
+                )
+            )
+
+    open_entries: List[Dict[str, Any]] = []
+    for queue in open_queue_by_symbol.values():
+        open_entries.extend(queue)
+
+    return PairingResult(
+        closed_trades=closed_trades,
+        open_entries=open_entries,
+        orphan_exits=orphan_exits,
+        manual_interventions=manual_interventions,
+    )
 
 
 def load_ledger_jsonl(text: str) -> list[dict]:
