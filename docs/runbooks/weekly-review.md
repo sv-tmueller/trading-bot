@@ -132,7 +132,7 @@ format and lifecycle rules -- not restated here.
 - **Approved** -- the hypothesis moves through the normal advisor/kickoff pipeline as a study
   package (the #571 harness is reusable), then, on a positive verdict, an ADR plus a config
   change PR. Once that PR is merged, bump the trial counter via this runbook's **existing**
-  `--record-accepted-bump --ref <ADR-path-or-issue>` mode (above) -- the same mechanism, no
+  `--record-accepted-bump --ref <ADR-path-or-issue>` mode (below) -- the same mechanism, no
   second counter path.
 - **Rejected** -- close the issue with the stated reason as a comment. The next weekly
   critique respects the closure and will not re-file the same premise on the same evidence

@@ -29,7 +29,11 @@ writes -- everything this skill touches is a Markdown file or a GitHub issue.
 1. **The week's daily digests**, `docs/trading-journal/daily/<date>.md` for every trading day in
    `<week>` (Monday through Friday, skipping days the market was closed) -- specifically each
    digest's `## Reflection` section (stage 1 output). A day with no `## Reflection` section means
-   stage 1 has not run for that day yet; see [Data-availability rule](#data-availability-rule).
+   stage 1 has not run for that day yet; see [Data-availability rule](#data-availability-rule). If
+   the digest file itself does not exist for a trading day in the week -- distinct from a day the
+   market was closed, which is already skipped above -- because that day has not yet closed or been
+   verified (a mid-week invocation), note it as "not yet verified" in section 1's data-availability
+   line, read nothing for that day, invent nothing for it, and file nothing on its account.
 2. **`docs/trading-journal/daily-verification.jsonl`** -- the per-day machine-readable record
    (entries, fills, closed trades, R-multiples where present). Use it to fill in the per-trade table
    even in weeks with no `## Reflection` sections yet -- it is the only source that predates stage 1.
