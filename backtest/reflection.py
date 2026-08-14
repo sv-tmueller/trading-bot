@@ -81,6 +81,16 @@ Pinned interpretations (architect calls, batch #577 lead-approved):
    level (a gap-through-stop), ``"flatten"`` for ``hourly_session_close_exit``/
    ``hourly_kill_switch`` exits, ``"slippage"`` for every other (clean stop/target) fill -- the
    frozen ``SLIPPAGE_BPS`` cost is the only source of nominal-vs-realized divergence there.
+6. **The per-trade `counterfactuals.data` aggregate flag is a three-value enum**, folded over
+   ALL six sub-computations (`target_1_0r`, `target_1_5r`, `stop_1_25x`, `stop_1_5x`,
+   `no_flatten`, `mae_beyond_stop_r`): ``"ok"`` when every sub-computation's own data is
+   available, ``"partial"`` when some but not all are unavailable, ``"unavailable"`` when all
+   are. A `no_flatten` that is simply not applicable to this trade (any non-flatten exit)
+   counts neither way -- it is excluded from the fold, not treated as unavailable. The
+   canonical case that forces ``"partial"``: a SHORT flatten exit, where
+   `no_flatten_counterfactual` is LONG-only and always degrades to ``data: "unavailable"``
+   even when the other five sub-computations resolve cleanly (round-1 tester finding 1). This
+   is the frozen shape the wiring batch codes against.
 
 Trailing-20 (spec sec 2 key decision 2): a STATELESS fold over the ledger's prior
 ``reflection.trades`` records plus today's freshly computed trades, ordered by exit fill time,
@@ -613,7 +623,11 @@ def compute_trade_record(
         flatten_time = session_flatten_time(date_str, day_scans, bars5.index)
 
     counterfactuals: Dict[str, Any] = {}
-    all_ok = True
+    # Folded over ALL SIX sub-computations (module docstring pinned interpretation 6): a
+    # `statuses` entry per sub-computation, "ok" or "unavailable" -- a not-applicable
+    # `no_flatten` (a non-flatten exit) is excluded rather than counted "unavailable", since
+    # it never had data to be missing in the first place.
+    statuses: List[str] = []
     for r_multiple in TARGET_R_MULTIPLES:
         key = f"target_{str(r_multiple).replace('.', '_')}r"
         cf = r_target_counterfactual(
@@ -623,7 +637,7 @@ def compute_trade_record(
             flatten_time=flatten_time,
         )
         counterfactuals[key] = cf
-        all_ok = all_ok and cf.get("data") == "ok"
+        statuses.append(cf.get("data"))
 
     for multiple in STOP_WIDTH_MULTIPLES:
         key = f"stop_{str(multiple).replace('.', '_')}x"
@@ -634,22 +648,31 @@ def compute_trade_record(
             multiple=multiple, flatten_time=flatten_time,
         )
         counterfactuals[key] = cf
-        all_ok = all_ok and cf.get("data") == "ok"
+        statuses.append(cf.get("data"))
 
-    counterfactuals["no_flatten"] = no_flatten_counterfactual_for_trade(
+    no_flatten_cf = no_flatten_counterfactual_for_trade(
         side=ct.side, entry_fill_time=ct.entry_fill_time, entry_fill_price=ct.entry_fill_price,
         exit_fill_time=ct.exit_fill_time, exit_fill_price=ct.exit_fill_price,
         stop_price=stop_price, target_price=target_price, risk_per_share=risk_per_share,
         exit_type=exit_type, bars5=bars5,
     )
+    counterfactuals["no_flatten"] = no_flatten_cf
+    if no_flatten_cf.get("applicable") is not False:
+        statuses.append(no_flatten_cf.get("data"))
 
     mae = mae_beyond_stop_r(
         bars5, side=ct.side, after_time=ct.entry_fill_time, stop_price=stop_price,
         risk_per_share=risk_per_share,
     )
     counterfactuals["mae_beyond_stop_r"] = mae
-    all_ok = all_ok and mae is not None
-    counterfactuals["data"] = "ok" if all_ok else "unavailable"
+    statuses.append("ok" if mae is not None else "unavailable")
+
+    if all(s == "ok" for s in statuses):
+        counterfactuals["data"] = "ok"
+    elif all(s == "unavailable" for s in statuses):
+        counterfactuals["data"] = "unavailable"
+    else:
+        counterfactuals["data"] = "partial"
     record["counterfactuals"] = counterfactuals
     return record
 

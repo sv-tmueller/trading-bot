@@ -669,6 +669,60 @@ def test_compute_trade_record_flatten_day():
     assert rec["counterfactuals"]["no_flatten"]["exit_reason"] == "target"
 
 
+SHORT_FLATTEN_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
+    scan_row(
+        bar_ts="2026-08-06T14:30:00Z", decision="SHORT",
+        entry_ref_price=80.00, stop_price=81.00, target_price=78.00,
+        risk_per_share=1.00, qty=100, entry_order_id="entry-short-flatten",
+    ),
+]
+
+# Neither the widened stops (81.25/81.5) nor the tightened targets (79.0/78.5) are ever
+# touched; the position flattens cleanly at 19:40, so target/stop/mae all resolve "ok" --
+# only no_flatten degrades, because no_flatten_counterfactual is LONG-only (see
+# no_flatten_counterfactual_for_trade's own docstring).
+SHORT_FLATTEN_DAY_BARS = bars5([
+    ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.90, 80.00),  # entry bar
+    ("2026-08-06T15:45:00Z", 80.00, 80.10, 79.90, 80.00),
+    ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.50),  # flatten fill bar
+])
+
+
+def _short_flatten_day_closed_trade():
+    result = rfl.pair_hourly_trades(
+        [
+            trade_row(
+                side="SELL", qty=100, fill_price=79.96, fill_time="2026-08-06T15:40:00Z",
+                reason="hourly_short_entry", broker_order_id="entry-short-flatten",
+            ),
+            trade_row(
+                side="BUY", qty=100, fill_price=80.5, fill_time="2026-08-06T19:40:00Z",
+                reason="hourly_session_close_exit", broker_order_id="exit-short-flatten",
+            ),
+        ],
+        SHORT_FLATTEN_DAY_SCANS,
+    )
+    return result.closed_trades[0]
+
+
+def test_compute_trade_record_short_flatten_aggregate_data_is_partial():
+    # FINDING 1 (round 1): a SHORT flatten exit's own no_flatten sub-field degrades to
+    # "unavailable" (no_flatten_counterfactual is LONG-only), but every other counterfactual
+    # resolves cleanly -- the aggregate flag must fold in no_flatten and report "partial",
+    # never "ok".
+    ct = _short_flatten_day_closed_trade()
+    rec = rfl.compute_trade_record(ct, SHORT_FLATTEN_DAY_BARS, "2026-08-06", SHORT_FLATTEN_DAY_SCANS)
+    cf = rec["counterfactuals"]
+    assert cf["no_flatten"]["applicable"] is True
+    assert cf["no_flatten"]["data"] == "unavailable"
+    assert cf["target_1_0r"]["data"] == "ok"
+    assert cf["target_1_5r"]["data"] == "ok"
+    assert cf["stop_1_25x"]["data"] == "ok"
+    assert cf["stop_1_5x"]["data"] == "ok"
+    assert cf["mae_beyond_stop_r"] is not None
+    assert cf["data"] == "partial"
+
+
 def test_compute_trade_record_degrades_when_scan_missing():
     trades = [
         trade_row(
