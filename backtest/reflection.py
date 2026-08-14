@@ -531,13 +531,16 @@ STOP_WIDTH_MULTIPLES = (1.25, 1.5)
 
 
 def _bar_open_at(bars5: pd.DataFrame, ts: Any) -> Optional[float]:
-    """The Open of the bar at exactly ``ts``, or ``None`` when that bar isn't present
+    """The Open of the first bar AT OR AFTER ``ts`` (round-1 reviewer must-fix finding 1):
+    real Alpaca ``filled_at`` values are never bar-aligned, so an exact-match lookup would
+    silently degrade every flatten/kill-switch exit's slippage reference to ``None`` on live
+    data. ``None`` only when ``ts`` is at/after the end of the supplied bar window
     (missing/partial bars degrade gracefully -- spec sec 4)."""
     idx = _to_utc_index(bars5)
     target_ms = int(pd.Timestamp(ts).value // 1_000_000)
     ts_ms = idx.asi8 // 1_000_000
     pos = int(np.searchsorted(ts_ms, target_ms, side="left"))
-    if pos >= len(ts_ms) or int(ts_ms[pos]) != target_ms:
+    if pos >= len(ts_ms):
         return None
     return float(bars5["Open"].to_numpy(dtype=float)[pos])
 

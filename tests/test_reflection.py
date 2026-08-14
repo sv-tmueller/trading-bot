@@ -560,6 +560,37 @@ def test_no_flatten_counterfactual_unavailable_for_a_short_flatten():
 
 
 # ---------------------------------------------------------------------------
+# _bar_open_at (used for the flatten/kill-switch exit-slippage reference):
+# at/after semantics, not exact-match -- real Alpaca filled_at values are
+# never bar-aligned (round-1 reviewer must-fix finding 1).
+# ---------------------------------------------------------------------------
+
+def test_bar_open_at_exact_match():
+    b5 = bars5([
+        ("2026-08-06T19:35:00Z", 80.00, 80.10, 79.90, 80.00),
+        ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.55),
+    ])
+    assert rfl._bar_open_at(b5, "2026-08-06T19:40:00Z") == pytest.approx(80.50)
+
+
+def test_bar_open_at_non_aligned_time_returns_next_bars_open():
+    b5 = bars5([
+        ("2026-08-06T19:35:00Z", 80.00, 80.10, 79.90, 80.00),
+        ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.55),
+        ("2026-08-06T19:45:00Z", 80.55, 80.65, 80.45, 80.60),
+    ])
+    # A real Alpaca filled_at is never bar-aligned -- 19:37:02.364 sits strictly between
+    # the 19:35 and 19:40 bars, so the reference must be the FIRST bar at/after it (19:40),
+    # never None from a failed exact-match equality check.
+    assert rfl._bar_open_at(b5, "2026-08-06T19:37:02.364Z") == pytest.approx(80.50)
+
+
+def test_bar_open_at_none_when_past_end_of_window():
+    b5 = bars5([("2026-08-06T19:35:00Z", 80.00, 80.10, 79.90, 80.00)])
+    assert rfl._bar_open_at(b5, "2026-08-06T19:40:00Z") is None
+
+
+# ---------------------------------------------------------------------------
 # compute_trade_record (step 3+4 tie-together): assembles pairing +
 # classification + slippage + nominal/realized R + all six counterfactuals
 # into the per-trade record the JSONL/markdown renderers consume. Three
@@ -709,6 +740,38 @@ def test_compute_trade_record_flatten_day():
     assert rec["exit_slippage_bps"] == pytest.approx(5.0, abs=0.01)
     assert rec["counterfactuals"]["no_flatten"]["applicable"] is True
     assert rec["counterfactuals"]["no_flatten"]["exit_reason"] == "target"
+
+
+def _flatten_day_closed_trade_non_aligned_fill():
+    result = rfl.pair_hourly_trades(
+        [
+            trade_row(
+                side="BUY", qty=100, fill_price=80.04, fill_time="2026-08-06T15:40:00Z",
+                reason="hourly_long_entry", broker_order_id="entry-flatten",
+            ),
+            trade_row(
+                side="SELL", qty=100, fill_price=80.45975, fill_time="2026-08-06T19:37:02.364Z",
+                reason="hourly_session_close_exit", broker_order_id="exit-flatten",
+            ),
+        ],
+        FLATTEN_DAY_SCANS,
+    )
+    return result.closed_trades[0]
+
+
+def test_compute_trade_record_flatten_exit_slippage_reference_at_or_after_non_aligned_fill():
+    # ROUND-1 REVIEWER FINDING 1 (must-fix): real Alpaca filled_at values are never
+    # bar-aligned. An exact-match bar lookup for the flatten/kill-switch exit-slippage
+    # reference would silently degrade this to None. The reference must be the Open of
+    # the first bar at/after the fill time -- here, the 19:40 bar (Open 80.50) -- even
+    # though the fill itself lands at 19:37:02.364, strictly between the 19:35 (implicit,
+    # absent from this fixture) and 19:40 bars.
+    ct = _flatten_day_closed_trade_non_aligned_fill()
+    rec = rfl.compute_trade_record(ct, FLATTEN_DAY_BARS, "2026-08-06", FLATTEN_DAY_SCANS)
+    assert rec["exit_type"] == "flatten"
+    assert rec["exit_slippage_bps"] is not None
+    expected = rfl.exit_slippage_bps("LONG", 80.45975, 80.50)  # 19:40 bar's Open
+    assert rec["exit_slippage_bps"] == pytest.approx(expected)
 
 
 SHORT_FLATTEN_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
