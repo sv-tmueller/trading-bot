@@ -54,6 +54,15 @@
 #   STATUS_URL / STATUS_TOKEN   - dev status function (loud-fail if missing)
 #   NOTIFY_WEBHOOK_URL          - Discord incoming webhook
 #
+# Optional repo secrets (reflection wiring, #583) -- read-only Alpaca
+# market-data keys, mapped to the "Fetch SPY 5Min bars" step ONLY, never a
+# broker order credential:
+#   ALPACA_API_KEY / ALPACA_SECRET_KEY
+# Absent (unset) is a supported, silent-to-the-verdict degrade, not a
+# misconfiguration: the fetch step warns and the day's reflection section
+# degrades to the engine's own error-day markdown. See
+# docs/runbooks/daily-verification.md for the `gh secret set` commands.
+#
 # Prod leg: an INERT NOTICE ONLY, permanently -- this deliberately does NOT
 # mirror deadman-watchdog.yml/heartbeat.yml, whose prod legs become full
 # symmetric pipelines once STATUS_URL_PROD/STATUS_TOKEN_PROD are set. Those
@@ -73,6 +82,35 @@
 # Never prints the raw status digest (it carries account and position data).
 # Only the evaluator's own stdout envelope (verdict, summary, findings,
 # artifact paths) reaches the log.
+#
+# Reflection wiring (#583): between "Evaluate day" and "Commit artifacts", four
+# GATED, NEVER-RED steps wire the frozen nightly-reflection engine
+# (backtest/reflection.py, #578) onto the same two artifacts the evaluator just
+# wrote -- setup-python + pip install, a SPY 5Min bars fetch, the prior-ledger
+# filter + engine run, and the glue apply (scripts/apply_reflection.ts). All
+# four are gated on the "Evaluate day" step's own `reflect` output (off on
+# SKIPPED_WEEKEND -- no artifacts exist to reflect onto) and every one degrades
+# instead of failing the job (continue-on-error on setup-python, capture-then-warn
+# on the rest): a pip/fetch/engine flake never reds a healthy seven-check day,
+# it only costs that day's reflection section, which either degrades to the
+# engine's own frozen error-day markdown or, if the engine's envelope never
+# reaches disk at all, a glue-authored fallback section (scripts/apply_reflection.ts's
+# fallbackReflectionMarkdown) -- a reflection section is never silently dropped.
+# Two deliberate deviations, disclosed here rather than left implicit:
+#   - The bars fetch passes an explicit `--end=<date>T21:00:00Z` rather than
+#     backtest/run_fetch_spy_intraday.py's own "previous UTC day" CLI default --
+#     that default is the multi-year research-study convention and would
+#     exclude the target day entirely here. 21:00Z covers the last regular-session
+#     5Min bar in both DST regimes while sitting 75+ minutes clear of the
+#     recent-SIP embargo at this workflow's own 22:15Z schedule.
+#   - "Reflection unavailable: ..." (scripts/apply_reflection.ts's fallback
+#     wording, used only when the engine's own envelope file never lands) is
+#     GLUE vocabulary, not the frozen engine contract -- never confuse it with
+#     backtest/reflection.py's own `"Reflection: error -- <reason>"` line, which
+#     is the engine's documented degrade output and reaches disk in the
+#     ordinary case (a missing/malformed bars file, an unresolvable trade).
+# See docs/runbooks/daily-verification.md's reflection section for the operator
+# view (required/optional secrets, degraded behaviour, backfill caveats).
 #
 # FAIL dedup: one issue per date, deduped by exact title against
 # `--state all`, following weekly-research-review.yml's idiom (not
@@ -108,7 +146,7 @@ env:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check silence flag
         id: silence
@@ -197,6 +235,117 @@ jobs:
           fi
           echo "$OUT" > verify-result.json
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          # #583: gate the reflection steps off SKIPPED_WEEKEND -- no ledger
+          # row or digest doc exists on that path for reflection to merge onto.
+          VERDICT=$(jq -r '.verdict' verify-result.json)
+          if [ "$VERDICT" = "SKIPPED_WEEKEND" ]; then
+            echo "reflect=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "reflect=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DATE: ${{ steps.date.outputs.date }}
+
+      # -----------------------------------------------------------------
+      # Reflection wiring (#583) -- four gated, never-red steps. See the
+      # header comment above for the full design and the two documented
+      # deviations. None of these steps can red the run: setup-python uses
+      # continue-on-error, the rest use the same set +e capture-then-warn
+      # idiom as "Evaluate day" above, always exiting 0.
+      # -----------------------------------------------------------------
+
+      - name: Setup Python (reflection engine)
+        id: setup_python
+        if: steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.reflect == 'true'
+        continue-on-error: true
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install reflection engine dependencies
+        id: pip_install
+        if: steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.reflect == 'true'
+        continue-on-error: true
+        run: pip install -r requirements.txt
+
+      # Read-only Alpaca market-data GET, mirroring backtest/run_fetch_spy_intraday.py's
+      # own contract: absent keys make the helper exit 1 after printing
+      # DATA_BLOCKED (no file written); a reachable-but-failing network call
+      # raises instead. Either way this step never reds the job -- the engine
+      # step below runs regardless and degrades internally on a missing bars
+      # file (compute_reflection's own documented error envelope, exit 0).
+      - name: Fetch SPY 5Min bars (reflection)
+        id: fetch_bars
+        if: steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.reflect == 'true'
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/reflection"
+          PYTHONPATH=. python backtest/run_fetch_spy_intraday.py \
+            --symbol SPY --timeframes 5Min \
+            --start "$DATE" --end "${DATE}T21:00:00Z" \
+            --out-dir "$RUNNER_TEMP/reflection"
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::daily-verification: SPY 5Min bars fetch failed or was blocked (exit $CODE) for $DATE -- today's reflection will degrade to the engine's error-day line. This does not affect the seven-check verdict."
+          fi
+          exit 0
+        env:
+          DATE: ${{ steps.date.outputs.date }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+
+      # Prior-ledger filter (scripts/apply_reflection.ts's own selectPriorLedgerRows
+      # -- the engine's trailing-20 fold has no date cutoff, so the caller
+      # must not hand it today's row or any later date) then the frozen engine
+      # CLI itself. Both run best-effort inside one set +e block: if the
+      # filter step fails the engine step is skipped (no ledger arg to give
+      # it), and either way a missing envelope.json is exactly the case the
+      # glue apply step's own fallback section handles.
+      - name: Run reflection engine
+        id: run_engine
+        if: steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.reflect == 'true'
+        run: |
+          set +e
+          (
+            set -e
+            deno run --allow-read=docs/trading-journal --allow-write="$RUNNER_TEMP" \
+              scripts/apply_reflection.ts prior-ledger --date="$DATE" \
+              --ledger=docs/trading-journal/daily-verification.jsonl \
+              --out="$RUNNER_TEMP/reflection/prior-ledger.jsonl"
+            PYTHONPATH=. python backtest/run_nightly_reflection.py \
+              --date="$DATE" \
+              --digest=digest.json \
+              --bars="$RUNNER_TEMP/reflection/SPY_5min.csv" \
+              --ledger="$RUNNER_TEMP/reflection/prior-ledger.jsonl" \
+              > "$RUNNER_TEMP/reflection/envelope.json"
+          )
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::daily-verification: reflection engine step failed (exit $CODE) for $DATE -- the glue apply step will fall back to a degraded reflection section. This does not affect the seven-check verdict."
+          fi
+          exit 0
+        env:
+          DATE: ${{ steps.date.outputs.date }}
+
+      # Merges the engine's envelope (or, absent that, a glue-authored
+      # fallback section naming the failure) onto the SAME two artifacts
+      # "Evaluate day" just wrote -- riding the existing commit below.
+      - name: Apply reflection to today's artifacts
+        id: apply_reflection
+        if: steps.silence.outputs.silenced != 'true' && steps.evaluate.outputs.reflect == 'true'
+        run: |
+          set +e
+          deno run --allow-read=docs/trading-journal,"$RUNNER_TEMP" --allow-write=docs/trading-journal \
+            scripts/apply_reflection.ts apply --date="$DATE" \
+            --envelope="$RUNNER_TEMP/reflection/envelope.json"
+          CODE=$?
+          set -e
+          if [ "$CODE" -ne 0 ]; then
+            echo "::warning::daily-verification: glue apply step failed (exit $CODE) for $DATE -- today's reflection section/ledger merge may be incomplete. This does not affect the seven-check verdict."
+          fi
+          exit 0
         env:
           DATE: ${{ steps.date.outputs.date }}
 
