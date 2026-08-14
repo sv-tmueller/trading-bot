@@ -185,9 +185,9 @@ contribute nothing to the trailing window, same as any other pre-ship row.
 A manual `workflow_dispatch` run within roughly 15 minutes of the market
 close risks the same recent-SIP embargo the bars-fetch step's `21:00Z` end
 is chosen to clear on the normal 22:15Z schedule; if the bars fetch 403s on
-a manual near-close run, re-running the same date later degrades to the
-engine's error line and self-announces via that line, no separate alert
-needed.
+a manual near-close run, that run degrades to the engine's error line and
+self-announces via that line, no separate alert needed -- re-running the
+same date later, once the embargo has cleared, is the recovery.
 
 ## Maintenance silence
 
