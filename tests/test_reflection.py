@@ -893,6 +893,65 @@ def test_golden_markdown_render_one_target_trade():
     assert md == golden
 
 
+# ---------------------------------------------------------------------------
+# compute_reflection (step 7): the top-level orchestration the CLI calls.
+# Never raises -- a computation failure degrades into the envelope.
+# ---------------------------------------------------------------------------
+
+def _write_target_day_fixture(tmp_path):
+    digest = {
+        "verification": {
+            "scans": TARGET_DAY_SCANS,
+            "trades": [
+                trade_row(
+                    side="BUY", qty=100, fill_price=80.04, fill_time="2026-08-06T15:40:00Z",
+                    reason="hourly_long_entry", broker_order_id="entry-1",
+                ),
+                trade_row(
+                    side="SELL", qty=100, fill_price=81.959, fill_time="2026-08-06T16:30:00Z",
+                    reason="hourly_bracket_exit", broker_order_id="exit-1",
+                ),
+            ],
+        }
+    }
+    bars_path = tmp_path / "bars5.csv"
+    TARGET_DAY_BARS.reset_index().rename(columns={"index": "timestamp"}).to_csv(bars_path, index=False)
+    return digest, str(bars_path)
+
+
+def test_compute_reflection_envelope_shape(tmp_path):
+    digest, bars_path = _write_target_day_fixture(tmp_path)
+    envelope = rfl.compute_reflection("2026-08-06", digest, bars_path, [])
+    assert envelope["date"] == "2026-08-06"
+    assert envelope["markdown"].startswith("## Reflection")
+    assert envelope["reflection"]["no_closed_trades"] is False
+    assert envelope["reflection"]["error"] is None
+    assert len(envelope["reflection"]["trades"]) == 1
+
+
+def test_compute_reflection_degrades_on_missing_bars_file():
+    digest = {"verification": {"scans": [], "trades": []}}
+    envelope = rfl.compute_reflection("2026-08-06", digest, "/no/such/file.csv", [])
+    assert envelope["reflection"]["error"] is not None
+    assert envelope["markdown"].startswith("Reflection: error --")
+
+
+def test_compute_reflection_no_trades_day(tmp_path):
+    bars_path = tmp_path / "bars5.csv"
+    TARGET_DAY_BARS.reset_index().rename(columns={"index": "timestamp"}).to_csv(bars_path, index=False)
+    digest = {"verification": {"scans": [], "trades": []}}
+    envelope = rfl.compute_reflection("2026-08-06", digest, str(bars_path), [])
+    assert envelope["reflection"]["no_closed_trades"] is True
+    assert envelope["markdown"] == "## Reflection\n\nNo closed trades; no reflection."
+
+
+def test_compute_reflection_is_deterministic_across_two_runs(tmp_path):
+    digest, bars_path = _write_target_day_fixture(tmp_path)
+    e1 = json.dumps(rfl.compute_reflection("2026-08-06", digest, bars_path, []))
+    e2 = json.dumps(rfl.compute_reflection("2026-08-06", digest, bars_path, []))
+    assert e1 == e2
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(

@@ -113,6 +113,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.bracket import LONG, SHORT, _resolve_bar
+from backtest.intraday_data import load_local
 from backtest.hourly_geometry import SCAN_OFFSET_MIN, is_flatten_scan
 from backtest.hourly_geometry import Trade as _GeometryTrade
 from backtest.hourly_geometry import no_flatten_counterfactual as _no_flatten_counterfactual
@@ -1065,5 +1066,41 @@ def compute_reflection(
     bars_path: str,
     ledger_rows: list[dict],
 ) -> dict:
-    """Placeholder -- implemented incrementally per the sub-plan's ordered steps."""
-    raise NotImplementedError
+    """Top-level orchestration (spec sec 4): parses the digest's ``verification`` block,
+    loads the day's bars, pairs and scores every closed trade, folds the trailing-20 window,
+    and renders both output artifacts.
+
+    Never raises: any failure (a missing/malformed bars file, an unresolvable trade) is
+    caught and degrades into ``{"error": "<reason>"}`` on the reflection object and
+    ``"Reflection: error -- <reason>"`` as the markdown, per spec sec 4 -- a reflection
+    failure must never fail the caller's (daily-verification's) own seven-check verdict.
+    """
+    try:
+        verification = digest.get("verification") or {}
+        scans = verification.get("scans") or []
+        trades = verification.get("trades") or []
+        bars5 = load_local(bars_path)
+
+        pairing = pair_hourly_trades(trades, scans)
+        trade_records = [
+            compute_trade_record(ct, bars5, date, scans) for ct in pairing.closed_trades
+        ]
+        window = build_trailing_window(ledger_rows, trade_records)
+        cost_check = compute_cost_check(window)
+        trailing20 = compute_trailing20(window)
+        triggers = compute_triggers(window)
+
+        markdown = render_markdown(date, trade_records, cost_check, trailing20, triggers)
+        reflection = build_reflection_object(date, trade_records, cost_check, trailing20, triggers)
+        return {"date": date, "markdown": markdown, "reflection": reflection}
+    except Exception as exc:  # noqa: BLE001 -- top-level degrade boundary, never re-raises.
+        reason = str(exc)
+        reflection = build_reflection_object(
+            date, [], {"n": 0, "median_abs_slippage_bps": None, "model_bps": COST_MODEL_BPS, "ratio": None},
+            {"n": 0, "cumulative_r": {"live": 0.0, "target_1_0r": 0.0, "target_1_5r": 0.0},
+             "stop_survival": {"stop_1_25x": {"survived": 0, "total": 0, "pct": None},
+                               "stop_1_5x": {"survived": 0, "total": 0, "pct": None}},
+             "cost_ratio": None},
+            [], error=reason,
+        )
+        return {"date": date, "markdown": f"Reflection: error -- {reason}", "reflection": reflection}
