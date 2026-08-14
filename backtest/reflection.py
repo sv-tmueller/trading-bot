@@ -72,10 +72,15 @@ Pinned interpretations (architect calls, batch #577 lead-approved):
    date, taking the EARLIEST bar that qualifies -- the live bot flattens at the first
    opportunity, so later-qualifying scans are moot).
 4. **MAE-beyond-stop is computed uniformly for every closed trade** (not only realized
-   stop-outs): the worst excursion past the ORIGINAL (unscaled) stop level seen in any bar from
-   strictly after entry through the end of the supplied bar window. A trade that never
-   approached its stop reports ``0`` -- by construction of ``_resolve_bar``'s own STOP-first
-   tie-break, a trade that exited at target never touched its stop on any earlier bar either.
+   stop-outs): the worst excursion past the ORIGINAL (unscaled) stop level seen in any bar
+   strictly after entry. [CORRECTED, round-1 reviewer must-fix finding 4] The scan is
+   bounded at the trade's own real exit fill for every non-STOP exit type (target, flatten,
+   kill_switch) -- a bar after the position was already closed is not this trade's
+   excursion, so a post-exit collapse must not be reported as one. A STOP exit keeps the
+   FULL supplied bar window instead: a stopped-then-reversed move is exactly this
+   diagnostic's purpose. A trade that never approached its stop before its own bound
+   reports ``0`` -- by construction of ``_resolve_bar``'s own STOP-first tie-break, a trade
+   that exited at target never touched its stop on any earlier bar either.
 5. **Deviation reason** is exactly one of three words (spec sec 3's own vocabulary --
    "gap, slippage, flatten"): ``"gap"`` when a bracket exit filled strictly beyond the stop
    level (a gap-through-stop), ``"flatten"`` for ``hourly_session_close_exit``/
@@ -452,25 +457,37 @@ def mae_beyond_stop_r(
     after_time: Any,
     stop_price: float,
     risk_per_share: float,
+    until_time: Any = None,
 ) -> Optional[float]:
     """Worst excursion past the ORIGINAL stop level, in R units, seen in any bar strictly
-    after ``after_time`` through the end of the supplied window (pinned interpretation 4).
+    after ``after_time`` (pinned interpretation 4, corrected by round-1 reviewer must-fix
+    finding 4).
 
-    Computed uniformly for every trade, not only realized stop-outs: by construction of
-    ``_resolve_bar``'s own STOP-first tie-break, a trade whose real exit was "target" never
-    touched its stop on any earlier bar either, so this naturally reports ``0.0`` for it.
+    ``until_time`` (the trade's own real exit fill time) bounds the scan for every non-stop
+    exit -- a bar after the position was already closed is not this trade's excursion, so
+    the caller passes ``None`` only for a STOP exit (the diagnostic's whole point is to
+    measure a stopped-then-reversed move, which needs the full supplied window; every other
+    exit type is bounded at its own fill). Computed uniformly for every trade, not only
+    realized stop-outs: by construction of ``_resolve_bar``'s own STOP-first tie-break, a
+    trade whose real exit was "target" never touched its stop on any earlier bar either, so
+    this naturally reports ``0.0`` for it even unbounded.
     """
     idx = _to_utc_index(bars5)
     ts_ms = idx.asi8 // 1_000_000
     after_ms = int(pd.Timestamp(after_time).value // 1_000_000)
     start_i = int(np.searchsorted(ts_ms, after_ms, side="right"))
-    if start_i >= len(ts_ms):
-        return None
+    if until_time is None:
+        end_i = len(ts_ms)
+    else:
+        until_ms = int(pd.Timestamp(until_time).value // 1_000_000)
+        end_i = int(np.searchsorted(ts_ms, until_ms, side="right"))
+    if start_i >= end_i:
+        return None if start_i >= len(ts_ms) else 0.0
     if side == "LONG":
-        worst = float(np.min(bars5["Low"].to_numpy(dtype=float)[start_i:]))
+        worst = float(np.min(bars5["Low"].to_numpy(dtype=float)[start_i:end_i]))
         beyond = max(0.0, stop_price - worst)
     else:
-        worst = float(np.max(bars5["High"].to_numpy(dtype=float)[start_i:]))
+        worst = float(np.max(bars5["High"].to_numpy(dtype=float)[start_i:end_i]))
         beyond = max(0.0, worst - stop_price)
     return beyond / risk_per_share
 
@@ -666,6 +683,10 @@ def compute_trade_record(
     mae = mae_beyond_stop_r(
         bars5, side=ct.side, after_time=ct.entry_fill_time, stop_price=stop_price,
         risk_per_share=risk_per_share,
+        # Round-1 must-fix finding 4: bound at the real exit fill for every non-stop exit;
+        # a STOP exit keeps the full window (stopped-then-reversed is the diagnostic's own
+        # purpose).
+        until_time=None if exit_type == "stop" else ct.exit_fill_time,
     )
     counterfactuals["mae_beyond_stop_r"] = mae
     statuses.append("ok" if mae is not None else "unavailable")

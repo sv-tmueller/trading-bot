@@ -524,6 +524,36 @@ def test_mae_beyond_stop_r_none_when_no_bars_after_entry():
     assert r is None
 
 
+def test_mae_beyond_stop_r_bounded_at_until_time_ignores_post_exit_collapse():
+    # ROUND-1 REVIEWER MUST-FIX FINDING 4: a collapse AFTER the trade's own real exit is
+    # not this trade's excursion -- the position was already closed. With until_time set,
+    # the scan must stop at the exit fill and never see the post-exit collapse below stop.
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T16:30:00Z", 81.75, 82.05, 81.70, 82.00),  # the (target) exit bar
+        ("2026-08-06T16:35:00Z", 82.00, 82.05, 77.00, 77.50),  # post-exit collapse well below stop
+    ])
+    r = rfl.mae_beyond_stop_r(
+        b5, side="LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, risk_per_share=1.0,
+        until_time="2026-08-06T16:30:00Z",
+    )
+    assert r == pytest.approx(0.0)
+
+
+def test_mae_beyond_stop_r_unbounded_when_until_time_omitted_sees_post_exit_reversal():
+    # Stop exits keep the FULL supplied window (stopped-then-reversed is the diagnostic's
+    # own purpose) -- omitting until_time preserves the pre-fix unbounded behavior.
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.10, 78.50, 78.60),  # stops out here
+        ("2026-08-06T15:50:00Z", 78.60, 78.80, 77.50, 78.70),  # reverses further past stop
+    ])
+    r = rfl.mae_beyond_stop_r(
+        b5, side="LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, risk_per_share=1.0,
+    )
+    assert r == pytest.approx(1.5)
+
+
 def test_no_flatten_counterfactual_replays_a_flattened_long_to_resolution():
     b5 = bars5([
         ("2026-08-06T19:40:00Z", 80.50, 80.60, 80.40, 80.55),  # the flatten bar itself
@@ -656,6 +686,26 @@ def test_compute_trade_record_target_day():
     assert cf["mae_beyond_stop_r"] == pytest.approx(0.0)
 
 
+TARGET_DAY_BARS_WITH_POST_EXIT_COLLAPSE = bars5([
+    ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar
+    ("2026-08-06T16:30:00Z", 81.75, 82.05, 81.70, 82.00),  # touches target 82.00 -- the real exit
+    ("2026-08-06T16:35:00Z", 82.00, 82.05, 70.00, 71.00),  # post-exit collapse well below stop 79.00
+])
+
+
+def test_compute_trade_record_target_exit_mae_bounded_ignores_post_exit_collapse():
+    # ROUND-1 REVIEWER MUST-FIX FINDING 4: for a non-stop exit, MAE-beyond-stop must be
+    # bounded at the trade's own real exit fill -- a post-exit collapse far below the
+    # original stop happened after the position was already closed, so it must not be
+    # reported as this trade's excursion.
+    ct = _target_day_closed_trade()
+    rec = rfl.compute_trade_record(
+        ct, TARGET_DAY_BARS_WITH_POST_EXIT_COLLAPSE, "2026-08-06", TARGET_DAY_SCANS,
+    )
+    assert rec["exit_type"] == "target"
+    assert rec["counterfactuals"]["mae_beyond_stop_r"] == pytest.approx(0.0)
+
+
 STOP_DAY_BARS = bars5([
     ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar
     ("2026-08-06T15:45:00Z", 80.05, 80.10, 78.50, 78.60),  # gap through stop (78.50 < 79.00)
@@ -695,7 +745,10 @@ def test_compute_trade_record_stop_day_gap_through_stop():
     assert rec["deviation_reason"] == "gap"
     assert rec["nominal_r"] == pytest.approx(-1.0)
     assert rec["realized_r"] == pytest.approx((78.50 - 80.04) / 1.0)
-    assert rec["counterfactuals"]["mae_beyond_stop_r"] > 0
+    # A stop exit keeps the FULL supplied window (round-1 reviewer must-fix finding 4):
+    # the 15:50 bar (low 78.40, AFTER the 15:45 exit) reverses 0.6R further past the
+    # original stop, and that post-exit reversal measurement must still be reported.
+    assert rec["counterfactuals"]["mae_beyond_stop_r"] == pytest.approx(0.6)
 
 
 FLATTEN_DAY_SCANS = [scan_row(bar_ts=ts) for ts in DAY_SCAN_GRID] + [
