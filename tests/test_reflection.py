@@ -167,6 +167,105 @@ def test_exit_with_no_open_entry_is_an_orphan():
     assert result.closed_trades == []
 
 
+# ---------------------------------------------------------------------------
+# Exit-type classification (step 3): hourly_bracket_exit doesn't say which
+# leg filled; hourly_session_close_exit/hourly_kill_switch are unambiguous.
+# ---------------------------------------------------------------------------
+
+def test_classify_bracket_exit_clean_stop_long():
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_bracket_exit", fill_price=79.0, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "stop"
+    assert deviation == "slippage"
+
+
+def test_classify_bracket_exit_gap_through_stop_long():
+    # fill strictly worse (lower) than the journaled stop -> gap-through-stop.
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_bracket_exit", fill_price=78.50, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "stop"
+    assert deviation == "gap"
+
+
+def test_classify_bracket_exit_clean_target_long():
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_bracket_exit", fill_price=81.959, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "target"
+    assert deviation == "slippage"
+
+
+def test_classify_bracket_exit_short_mirrors_long():
+    exit_type, deviation = rfl.classify_exit(
+        "SHORT", "hourly_bracket_exit", fill_price=81.0, stop_price=81.0, target_price=78.0,
+    )
+    assert exit_type == "stop"
+    assert deviation == "slippage"
+
+    exit_type, deviation = rfl.classify_exit(
+        "SHORT", "hourly_bracket_exit", fill_price=81.50, stop_price=81.0, target_price=78.0,
+    )
+    assert exit_type == "stop"
+    assert deviation == "gap"
+
+
+def test_classify_session_close_exit_is_flatten():
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_session_close_exit", fill_price=80.5, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "flatten"
+    assert deviation == "flatten"
+
+
+def test_classify_kill_switch_exit_is_kill_switch():
+    exit_type, deviation = rfl.classify_exit(
+        "LONG", "hourly_kill_switch", fill_price=77.0, stop_price=79.0, target_price=82.0,
+    )
+    assert exit_type == "kill_switch"
+    assert deviation == "flatten"
+
+
+# ---------------------------------------------------------------------------
+# Entry/exit slippage bps and nominal R (step 3): signed bps, adverse positive
+# by side; nominal R is what the exit "should" have realized with no
+# slippage/gap, given its classified exit_type.
+# ---------------------------------------------------------------------------
+
+def test_entry_slippage_bps_long_adverse_is_positive():
+    # fill above ref for a long entry is adverse (paid more) -> positive bps.
+    bps = rfl.entry_slippage_bps("LONG", fill_price=80.04, entry_ref_price=80.00)
+    assert bps == pytest.approx(5.0)
+
+
+def test_entry_slippage_bps_short_adverse_is_positive():
+    # fill above ref for a short entry (sold at a worse -- lower -- price is adverse;
+    # here fill is LOWER than ref, so it's adverse for a short too).
+    bps = rfl.entry_slippage_bps("SHORT", fill_price=79.96, entry_ref_price=80.00)
+    assert bps == pytest.approx(5.0)
+
+
+def test_exit_slippage_bps_long_worse_fill_is_positive():
+    bps = rfl.exit_slippage_bps("LONG", fill_price=81.959, reference_price=82.00)
+    assert bps == pytest.approx(5.0)
+
+
+def test_nominal_r_target_matches_configured_r_multiple():
+    r = rfl.nominal_r("target", "LONG", stop_price=79.0, target_price=82.0, risk_per_share=1.0)
+    assert r == pytest.approx(2.0)
+
+
+def test_nominal_r_stop_is_minus_one():
+    r = rfl.nominal_r("stop", "LONG", stop_price=79.0, target_price=82.0, risk_per_share=1.0)
+    assert r == pytest.approx(-1.0)
+
+
+def test_nominal_r_flatten_and_kill_switch_are_none():
+    assert rfl.nominal_r("flatten", "LONG", stop_price=79.0, target_price=82.0, risk_per_share=1.0) is None
+    assert rfl.nominal_r("kill_switch", "LONG", stop_price=79.0, target_price=82.0, risk_per_share=1.0) is None
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(

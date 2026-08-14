@@ -153,6 +153,81 @@ class PairingResult:
     manual_interventions: List[Dict[str, Any]]
 
 
+def classify_exit(
+    side: str,
+    exit_reason: str,
+    fill_price: float,
+    stop_price: Optional[float],
+    target_price: Optional[float],
+) -> "tuple[str, str]":
+    """Classifies a paired exit into ``(exit_type, deviation_reason)``.
+
+    ``exit_type`` is one of ``"target" | "stop" | "flatten" | "kill_switch"``.
+    ``hourly_bracket_exit`` alone doesn't say which OCO leg filled (pinned rule): a fill
+    at or beyond the journaled ``stop_price`` on the adverse side is classified STOP (a fill
+    strictly beyond it is a gap-through-stop); otherwise the exit is classified by whichever
+    of ``stop_price``/``target_price`` the fill landed nearest to.
+
+    ``deviation_reason`` is exactly one of the three words spec sec 3 uses for "the
+    mechanical reason for the deviation" between nominal and realized R: ``"gap"`` (a
+    gap-through-stop), ``"flatten"`` (session-close or kill-switch -- both are time/risk
+    forced exits, not a bracket leg), or ``"slippage"`` (every other, clean stop/target
+    fill -- the frozen SLIPPAGE_BPS cost is the only source of divergence there).
+    """
+    if exit_reason == "hourly_session_close_exit":
+        return "flatten", "flatten"
+    if exit_reason == "hourly_kill_switch":
+        return "kill_switch", "flatten"
+
+    # hourly_bracket_exit: disambiguate the OCO leg from the fill price alone.
+    is_long = side == "LONG"
+    beyond_stop = fill_price <= stop_price if is_long else fill_price >= stop_price
+    if beyond_stop:
+        gapped = fill_price < stop_price if is_long else fill_price > stop_price
+        return "stop", ("gap" if gapped else "slippage")
+
+    d_stop = abs(fill_price - stop_price)
+    d_target = abs(fill_price - target_price)
+    exit_type = "stop" if d_stop <= d_target else "target"
+    return exit_type, "slippage"
+
+
+def entry_slippage_bps(side: str, fill_price: float, entry_ref_price: float) -> float:
+    """Signed bps of the entry fill vs the journaled reference, adverse positive by side."""
+    adverse = (fill_price - entry_ref_price) if side == "LONG" else (entry_ref_price - fill_price)
+    return adverse / entry_ref_price * 10_000.0
+
+
+def exit_slippage_bps(side: str, fill_price: float, reference_price: float) -> float:
+    """Signed bps of the exit fill vs its classified reference level, adverse positive."""
+    adverse = (reference_price - fill_price) if side == "LONG" else (fill_price - reference_price)
+    return adverse / reference_price * 10_000.0
+
+
+def nominal_r(
+    exit_type: str,
+    side: str,
+    stop_price: float,
+    target_price: float,
+    risk_per_share: float,
+) -> Optional[float]:
+    """What the exit "should" have realized (no slippage/gap) given its classified type.
+
+    ``None`` for flatten/kill_switch exits: there is no fixed nominal outcome for a
+    time/risk-forced exit, only for a bracket leg. For a stop exit this is always exactly
+    ``-1.0`` (the unit-risk definition of ``risk_per_share``). For a target exit,
+    ``entry_ref_price`` is not needed: since ``risk_per_share = |entry_ref - stop_price|``
+    and ``target_price = entry_ref +/- R * risk_per_share`` (``computeBracketGeometry``'s own
+    identity), ``R`` recovers algebraically from stop/target/risk_per_share alone.
+    """
+    if exit_type == "stop":
+        return -1.0
+    if exit_type == "target":
+        sign = 1 if side == "LONG" else -1
+        return sign * (target_price - stop_price) / risk_per_share - 1.0
+    return None
+
+
 def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]) -> PairingResult:
     """Python port of scripts/render_weekly_journal.ts's pairHourlyTrades (lines 364-431).
 
