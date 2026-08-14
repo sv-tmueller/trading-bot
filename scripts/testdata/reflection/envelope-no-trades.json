@@ -1,0 +1,75 @@
+{
+  "date": "2026-08-06",
+  "markdown": "## Reflection\n\nNo closed trades; no reflection.",
+  "reflection": {
+    "engine_version": "reflection-v1",
+    "no_closed_trades": true,
+    "error": null,
+    "trades": [],
+    "cost_check": {
+      "n": 0,
+      "median_abs_slippage_bps": null,
+      "model_bps": 5.0,
+      "ratio": null
+    },
+    "trailing20": {
+      "n": 0,
+      "cumulative_r": {
+        "live": {
+          "r": 0.0,
+          "n": 0
+        },
+        "target_1_0r": {
+          "r": 0.0,
+          "n": 0
+        },
+        "target_1_5r": {
+          "r": 0.0,
+          "n": 0
+        }
+      },
+      "stop_survival": {
+        "stop_1_25x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        },
+        "stop_1_5x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        }
+      },
+      "cost_ratio": null
+    },
+    "triggers": [
+      {
+        "id": 1,
+        "name": "stop-width survival",
+        "value": null,
+        "threshold": 0.6,
+        "fired": false,
+        "n": 0
+      },
+      {
+        "id": 2,
+        "name": "closer R-target",
+        "value": 0.0,
+        "threshold": 0.0,
+        "fired": false,
+        "n": 0
+      },
+      {
+        "id": 3,
+        "name": "cost divergence",
+        "value": null,
+        "threshold": [
+          0.5,
+          2.0
+        ],
+        "fired": false,
+        "n": 0
+      }
+    ]
+  }
+}

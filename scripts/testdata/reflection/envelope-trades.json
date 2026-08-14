@@ -1,0 +1,137 @@
+{
+  "date": "2026-08-06",
+  "markdown": "## Reflection\n\nCounterfactuals are diagnostic, not trials: nothing is selected on them until a hypothesis is pre-registered and studied (spec sec 3, #398). Sample sizes are printed next to every number.\n\n### entry-1 -- UPRO LONG\n\n- Detectors: none\n- Entry: 80.0400 @ 2026-08-06T15:40:00Z (slippage 5.00bps)\n- Exit: 81.9590 @ 2026-08-06T16:30:00Z (hourly_bracket_exit -> target, slippage 5.00bps)\n- Nominal R: 2.00 -- Realized R: 1.92 (deviation: slippage)\n- Counterfactual target 1.0R: exit target, r=0.92\n- Counterfactual target 1.5R: exit target, r=1.42\n- Counterfactual stop 1.25x: survived, exit target, r=1.92\n- Counterfactual stop 1.5x: survived, exit target, r=1.92\n- Counterfactual no-flatten: not applicable\n- MAE beyond stop: 0.00R\n\n### Cost check\n\nn=2 fill(s), median |slippage| 5.00bps vs 5.00bps model (ratio 1.00x)\n\n### Trailing-20 (n=1)\n\n| metric | live (2R) | target 1.0R | target 1.5R |\n| --- | --- | --- | --- |\n| cumulative R | 1.92 (n=1) | 0.92 (n=1) | 1.42 (n=1) |\n\n| metric | stop 1.25x | stop 1.5x |\n| --- | --- | --- |\n| stop-out survival | n/a (0/0) | n/a (0/0) |\n\ncost ratio: 1.00x\n\n### Triggers\n\n1. stop-width survival: n/a (threshold 60%, n=0) -- not fired\n2. closer R-target: best 1.42R vs live 1.92R (n=1) -- not fired\n3. cost divergence: 1.00x (n=2) -- not fired",
+  "reflection": {
+    "engine_version": "reflection-v1",
+    "no_closed_trades": false,
+    "error": null,
+    "trades": [
+      {
+        "entry_order_id": "entry-1",
+        "symbol": "UPRO",
+        "side": "LONG",
+        "qty": 100,
+        "entry_fill_price": 80.04,
+        "entry_fill_time": "2026-08-06T15:40:00Z",
+        "exit_fill_price": 81.959,
+        "exit_fill_time": "2026-08-06T16:30:00Z",
+        "exit_order_reason": "hourly_bracket_exit",
+        "realized_r": 1.918999999999997,
+        "detectors_fired": [],
+        "exit_type": "target",
+        "deviation_reason": "slippage",
+        "entry_slippage_bps": 5.000000000000782,
+        "exit_slippage_bps": 4.999999999999612,
+        "nominal_r": 2.0,
+        "counterfactuals": {
+          "target_1_0r": {
+            "r_multiple": 1.0,
+            "exit_price": 80.9595,
+            "exit_reason": "target",
+            "exit_time": "2026-08-06 16:05:00+00:00",
+            "r": 0.9194999999999993,
+            "data": "ok"
+          },
+          "target_1_5r": {
+            "r_multiple": 1.5,
+            "exit_price": 81.45925000000001,
+            "exit_reason": "target",
+            "exit_time": "2026-08-06 16:20:00+00:00",
+            "r": 1.4192500000000052,
+            "data": "ok"
+          },
+          "stop_1_25x": {
+            "multiple": 1.25,
+            "stop_price": 78.75,
+            "exit_price": 81.959,
+            "exit_reason": "target",
+            "exit_time": "2026-08-06 16:30:00+00:00",
+            "r": 1.918999999999997,
+            "survived": true,
+            "data": "ok"
+          },
+          "stop_1_5x": {
+            "multiple": 1.5,
+            "stop_price": 78.5,
+            "exit_price": 81.959,
+            "exit_reason": "target",
+            "exit_time": "2026-08-06 16:30:00+00:00",
+            "r": 1.918999999999997,
+            "survived": true,
+            "data": "ok"
+          },
+          "no_flatten": {
+            "applicable": false
+          },
+          "mae_beyond_stop_r": 0.0,
+          "data": "ok"
+        }
+      }
+    ],
+    "cost_check": {
+      "n": 2,
+      "median_abs_slippage_bps": 5.000000000000197,
+      "model_bps": 5.0,
+      "ratio": 1.0000000000000395
+    },
+    "trailing20": {
+      "n": 1,
+      "cumulative_r": {
+        "live": {
+          "r": 1.918999999999997,
+          "n": 1
+        },
+        "target_1_0r": {
+          "r": 0.9194999999999993,
+          "n": 1
+        },
+        "target_1_5r": {
+          "r": 1.4192500000000052,
+          "n": 1
+        }
+      },
+      "stop_survival": {
+        "stop_1_25x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        },
+        "stop_1_5x": {
+          "survived": 0,
+          "total": 0,
+          "pct": null
+        }
+      },
+      "cost_ratio": 1.0000000000000395
+    },
+    "triggers": [
+      {
+        "id": 1,
+        "name": "stop-width survival",
+        "value": null,
+        "threshold": 0.6,
+        "fired": false,
+        "n": 0
+      },
+      {
+        "id": 2,
+        "name": "closer R-target",
+        "value": 1.4192500000000052,
+        "threshold": 1.918999999999997,
+        "fired": false,
+        "n": 1
+      },
+      {
+        "id": 3,
+        "name": "cost divergence",
+        "value": 1.0000000000000395,
+        "threshold": [
+          0.5,
+          2.0
+        ],
+        "fired": false,
+        "n": 2
+      }
+    ]
+  }
+}
