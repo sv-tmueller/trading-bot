@@ -105,8 +105,15 @@ that package codes against, not the caller.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+from backtest.bracket import LONG, SHORT, _resolve_bar
+from backtest.regime import SLIPPAGE_BPS
 
 ENGINE_VERSION = "reflection-v1"
 
@@ -225,6 +232,95 @@ def nominal_r(
     if exit_type == "target":
         sign = 1 if side == "LONG" else -1
         return sign * (target_price - stop_price) / risk_per_share - 1.0
+    return None
+
+
+def _round_to_cents(value: float) -> float:
+    """Mirrors supabase/functions/_shared/num.ts's roundToCents (Math.round semantics --
+    round-half-up-toward-+Infinity, not Python's round()'s banker's rounding)."""
+    return math.floor(value * 100 + 0.5) / 100
+
+
+def _direction(side: str) -> str:
+    return LONG if side == "LONG" else SHORT
+
+
+def _to_utc_index(df: pd.DataFrame) -> pd.DatetimeIndex:
+    idx = df.index
+    return idx.tz_localize("UTC") if idx.tz is None else idx
+
+
+def scaled_stop_price(
+    side: str, entry_ref_price: float, stop_price: float, multiple: float
+) -> float:
+    """Pinned interpretation 1: scale the journaled stop DISTANCE, not the buffer alone.
+
+    ``stop_k = entry_ref -/+ multiple * (entry_ref - stop_price)`` (long; short mirrored).
+    Not cents-quantized (this is a diagnostic distance scaling, not a value that ever
+    reaches computeBracketGeometry's own rounding step -- see pinned interpretation 2,
+    which applies only to the R-target counterfactual's derived price).
+    """
+    distance = entry_ref_price - stop_price if side == "LONG" else stop_price - entry_ref_price
+    scaled = distance * multiple
+    return entry_ref_price - scaled if side == "LONG" else entry_ref_price + scaled
+
+
+def target_r_price(
+    side: str, entry_ref_price: float, stop_price: float, r_multiple: float
+) -> float:
+    """Pinned interpretation 2: derive the counterfactual target from ``entry_ref_price``
+    exactly like ``computeBracketGeometry`` (raw target, then cents-quantized)."""
+    stop_distance = abs(entry_ref_price - stop_price)
+    raw_target = (
+        entry_ref_price + r_multiple * stop_distance
+        if side == "LONG"
+        else entry_ref_price - r_multiple * stop_distance
+    )
+    return _round_to_cents(raw_target)
+
+
+def walk_bracket_to_resolution(
+    bars5: pd.DataFrame,
+    side: str,
+    after_time: Any,
+    stop_price: float,
+    target_price: Optional[float],
+    *,
+    flatten_time: Any = None,
+    slippage_bps: float = SLIPPAGE_BPS,
+) -> Optional[Dict[str, Any]]:
+    """Replays a bracket strictly after ``after_time`` until ``backtest.bracket._resolve_bar``
+    fires or ``flatten_time`` is reached, whichever comes first (pinned interpretation 3).
+
+    Reuses ``_resolve_bar`` unchanged -- the open-gap-first / STOP-first tie-break / D3
+    target-cap conventions are frozen there, never re-derived here. Returns
+    ``{"exit_price", "exit_reason", "exit_time"}`` or ``None`` when the supplied bar window
+    ends with the position still open (the caller degrades that counterfactual to
+    ``data: "unavailable"`` rather than raising).
+    """
+    direction = _direction(side)
+    slip = slippage_bps / 10_000.0
+    idx = _to_utc_index(bars5)
+    ts_ms = idx.asi8 // 1_000_000
+    opens = bars5["Open"].to_numpy(dtype=float)
+    highs = bars5["High"].to_numpy(dtype=float)
+    lows = bars5["Low"].to_numpy(dtype=float)
+
+    after_ms = int(pd.Timestamp(after_time).value // 1_000_000)
+    flatten_ms = (
+        int(pd.Timestamp(flatten_time).value // 1_000_000) if flatten_time is not None else None
+    )
+    start_i = int(np.searchsorted(ts_ms, after_ms, side="right"))
+
+    for i in range(start_i, len(ts_ms)):
+        if flatten_ms is not None and ts_ms[i] >= flatten_ms:
+            fill = opens[i] * (1 - slip) if direction == LONG else opens[i] * (1 + slip)
+            return {"exit_price": float(fill), "exit_reason": "flatten", "exit_time": idx[i]}
+        res = _resolve_bar(opens[i], highs[i], lows[i], stop_price, target_price, direction)
+        if res is not None:
+            level, reason = res
+            fill = level * (1 - slip) if direction == LONG else level * (1 + slip)
+            return {"exit_price": float(fill), "exit_reason": reason, "exit_time": idx[i]}
     return None
 
 

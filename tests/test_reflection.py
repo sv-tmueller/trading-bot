@@ -266,6 +266,100 @@ def test_nominal_r_flatten_and_kill_switch_are_none():
     assert rfl.nominal_r("kill_switch", "LONG", stop_price=79.0, target_price=82.0, risk_per_share=1.0) is None
 
 
+# ---------------------------------------------------------------------------
+# walk_bracket_to_resolution (step 4): the shared bar-walker every
+# counterfactual (R-target, stop-width) replays through. Reuses
+# backtest.bracket._resolve_bar unchanged -- tie-break/gap/D3-cap are already
+# frozen there; this only locks the flatten-cutoff and data-ends behavior
+# this module adds on top.
+# ---------------------------------------------------------------------------
+
+def test_walk_bracket_resolves_at_target():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),  # entry bar (not tested)
+        ("2026-08-06T15:45:00Z", 80.05, 80.20, 80.00, 80.15),
+        ("2026-08-06T15:50:00Z", 80.15, 82.05, 80.10, 82.00),  # touches target
+    ])
+    res = rfl.walk_bracket_to_resolution(
+        b5, "LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, target_price=82.0,
+    )
+    assert res is not None
+    assert res["exit_reason"] == "target"
+    assert res["exit_price"] == pytest.approx(82.00 * (1 - 5 / 10_000))
+    assert str(res["exit_time"]) == "2026-08-06 15:50:00+00:00"
+
+
+def test_walk_bracket_stop_first_tie_break():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 82.10, 78.90, 80.15),  # both touched -> stop-first
+    ])
+    res = rfl.walk_bracket_to_resolution(
+        b5, "LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, target_price=82.0,
+    )
+    assert res["exit_reason"] == "stop"
+    assert res["exit_price"] == pytest.approx(79.0 * (1 - 5 / 10_000))
+
+
+def test_walk_bracket_flattens_at_cutoff_before_resolution():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.20, 80.00, 80.15),
+        ("2026-08-06T18:40:00Z", 80.60, 80.70, 80.50, 80.65),  # neither level touched
+    ])
+    res = rfl.walk_bracket_to_resolution(
+        b5, "LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, target_price=82.0,
+        flatten_time="2026-08-06T18:40:00Z",
+    )
+    assert res["exit_reason"] == "flatten"
+    assert res["exit_price"] == pytest.approx(80.60 * (1 - 5 / 10_000))
+    assert str(res["exit_time"]) == "2026-08-06 18:40:00+00:00"
+
+
+def test_walk_bracket_returns_none_when_data_ends_unresolved():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.20, 80.00, 80.15),
+    ])
+    res = rfl.walk_bracket_to_resolution(
+        b5, "LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, target_price=82.0,
+    )
+    assert res is None
+
+
+def test_walk_bracket_short_mirrors_long():
+    b5 = bars5([
+        ("2026-08-06T15:40:00Z", 80.00, 80.10, 79.95, 80.05),
+        ("2026-08-06T15:45:00Z", 80.05, 80.10, 77.95, 78.00),  # low touches target for a short
+    ])
+    res = rfl.walk_bracket_to_resolution(
+        b5, "SHORT", after_time="2026-08-06T15:40:00Z", stop_price=81.0, target_price=78.0,
+    )
+    assert res["exit_reason"] == "target"
+    assert res["exit_price"] == pytest.approx(78.0 * (1 + 5 / 10_000))
+
+
+# ---------------------------------------------------------------------------
+# Counterfactual geometry helpers (step 4, pinned interpretations 1/2).
+# ---------------------------------------------------------------------------
+
+def test_scaled_stop_price_scales_distance_long():
+    # entry_ref=80, stop=79 -> distance 1.0; 1.25x -> stop 78.75.
+    assert rfl.scaled_stop_price("LONG", entry_ref_price=80.0, stop_price=79.0, multiple=1.25) == \
+        pytest.approx(78.75)
+
+
+def test_scaled_stop_price_scales_distance_short():
+    assert rfl.scaled_stop_price("SHORT", entry_ref_price=80.0, stop_price=81.0, multiple=1.5) == \
+        pytest.approx(81.5)
+
+
+def test_target_r_price_cents_quantized_long():
+    # entry_ref=80, stop=79 -> distance 1.0; 1.0R -> raw target 81.00 (already whole cents).
+    assert rfl.target_r_price("LONG", entry_ref_price=80.0, stop_price=79.0, r_multiple=1.0) == \
+        pytest.approx(81.00)
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(
