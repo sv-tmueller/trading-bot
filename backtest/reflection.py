@@ -653,6 +653,166 @@ def compute_trade_record(
     return record
 
 
+TRAILING_WINDOW = 20
+COST_MODEL_BPS = float(SLIPPAGE_BPS)  # frozen 5bps assumption (spec sec 3)
+
+# Boundary semantics pinned by test (module docstring): trigger 1 fires AT the threshold
+# ("at least"); trigger 3 fires strictly beyond its thresholds ("more than"/"less than").
+TRIGGER_1_THRESHOLD = 0.60
+TRIGGER_3_HIGH_MULTIPLE = 2.0
+TRIGGER_3_LOW_MULTIPLE = 0.5
+
+
+def build_trailing_window(
+    ledger_rows: List[Dict[str, Any]], today_records: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Stateless fold (spec sec 2 key decision 2): prior ledger rows' own
+    ``reflection.trades`` records plus today's freshly computed ones, ordered by exit fill
+    time, window = ``min(n, 20)``. A pre-ship ledger row with no ``reflection`` key
+    contributes nothing (no backfill) rather than raising.
+    """
+    all_records: List[Dict[str, Any]] = []
+    for row in ledger_rows:
+        reflection = row.get("reflection") or {}
+        all_records.extend(reflection.get("trades") or [])
+    all_records.extend(today_records)
+    all_records.sort(key=lambda t: t["exit_fill_time"])
+    return all_records[-TRAILING_WINDOW:]
+
+
+def compute_cost_check(window: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Median absolute per-fill slippage bps (entry + exit, 2 fills/trade) over the
+    trailing window vs the frozen 5bps model."""
+    fills = []
+    for t in window:
+        if t.get("entry_slippage_bps") is not None:
+            fills.append(abs(t["entry_slippage_bps"]))
+        if t.get("exit_slippage_bps") is not None:
+            fills.append(abs(t["exit_slippage_bps"]))
+    if not fills:
+        return {"n": 0, "median_abs_slippage_bps": None, "model_bps": COST_MODEL_BPS, "ratio": None}
+    median = float(np.median(fills))
+    return {
+        "n": len(fills),
+        "median_abs_slippage_bps": median,
+        "model_bps": COST_MODEL_BPS,
+        "ratio": median / COST_MODEL_BPS,
+    }
+
+
+def _stop_survival(window: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
+    """Denominator is REAL stop-outs only (trigger 1's own wording) -- the stop-width
+    counterfactual is computed uniformly for every trade (pinned interpretation 4), but a
+    trade that actually exited at target trivially "survives" a wider stop and would
+    otherwise inflate the denominator with a vacuous result."""
+    survived = 0
+    total = 0
+    for t in window:
+        if t.get("exit_type") != "stop":
+            continue
+        cf = (t.get("counterfactuals") or {}).get(key)
+        if cf is None or cf.get("data") != "ok":
+            continue
+        total += 1
+        if cf.get("survived"):
+            survived += 1
+    pct = (survived / total) if total > 0 else None
+    return {"survived": survived, "total": total, "pct": pct}
+
+
+def _cumulative_r(window: List[Dict[str, Any]], key: Optional[str]) -> float:
+    total = 0.0
+    for t in window:
+        if key is None:
+            v = t.get("realized_r")
+        else:
+            cf = (t.get("counterfactuals") or {}).get(key)
+            v = cf.get("r") if cf and cf.get("data") == "ok" else None
+        if v is not None:
+            total += v
+    return total
+
+
+def compute_trailing20(window: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The same metrics the day's own numbers sit beside (spec sec 3 "trailing summary")."""
+    return {
+        "n": len(window),
+        "cumulative_r": {
+            "live": _cumulative_r(window, None),
+            "target_1_0r": _cumulative_r(window, "target_1_0r"),
+            "target_1_5r": _cumulative_r(window, "target_1_5r"),
+        },
+        "stop_survival": {
+            "stop_1_25x": _stop_survival(window, "stop_1_25x"),
+            "stop_1_5x": _stop_survival(window, "stop_1_5x"),
+        },
+        "cost_ratio": compute_cost_check(window)["ratio"],
+    }
+
+
+def compute_triggers(window: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The three deterministic hypothesis triggers (spec sec 3), evaluated over whatever
+    window it is given (no minimum-n gate -- the engine files nothing, spec sec 2/7)."""
+    trailing20 = compute_trailing20(window)
+
+    survival = trailing20["stop_survival"]["stop_1_25x"]
+    trigger1_value = survival["pct"]
+    trigger1_fired = trigger1_value is not None and trigger1_value >= TRIGGER_1_THRESHOLD
+    trigger1 = {
+        "id": 1,
+        "name": "stop-width survival",
+        "value": trigger1_value,
+        "threshold": TRIGGER_1_THRESHOLD,
+        "fired": trigger1_fired,
+        "n": survival["total"],
+    }
+    if trigger1_fired:
+        trigger1["hypothesis"] = (
+            f"widen the hourly bracket's stop to 1.25x its current width "
+            f"({survival['survived']}/{survival['total']} trailing stop-outs would have survived)"
+        )
+
+    live_r = trailing20["cumulative_r"]["live"]
+    r_1_0 = trailing20["cumulative_r"]["target_1_0r"]
+    r_1_5 = trailing20["cumulative_r"]["target_1_5r"]
+    best_r_multiple, best_r = max([(1.0, r_1_0), (1.5, r_1_5)], key=lambda p: p[1])
+    trigger2_fired = best_r > live_r
+    trigger2 = {
+        "id": 2,
+        "name": "closer R-target",
+        "value": best_r,
+        "threshold": live_r,
+        "fired": trigger2_fired,
+        "n": trailing20["n"],
+    }
+    if trigger2_fired:
+        trigger2["hypothesis"] = (
+            f"tighten the hourly bracket's target to {best_r_multiple:g}R "
+            f"(cumulative {best_r:.2f}R vs live {live_r:.2f}R over the trailing window)"
+        )
+
+    cost_ratio = trailing20["cost_ratio"]
+    trigger3_fired = cost_ratio is not None and (
+        cost_ratio > TRIGGER_3_HIGH_MULTIPLE or cost_ratio < TRIGGER_3_LOW_MULTIPLE
+    )
+    trigger3 = {
+        "id": 3,
+        "name": "cost divergence",
+        "value": cost_ratio,
+        "threshold": [TRIGGER_3_LOW_MULTIPLE, TRIGGER_3_HIGH_MULTIPLE],
+        "fired": trigger3_fired,
+        "n": compute_cost_check(window)["n"],
+    }
+    if trigger3_fired:
+        direction = "above" if cost_ratio > TRIGGER_3_HIGH_MULTIPLE else "below"
+        trigger3["hypothesis"] = (
+            f"re-examine the frozen {COST_MODEL_BPS:g}bps cost model "
+            f"(realized median slippage is {direction} it by {cost_ratio:.2f}x)"
+        )
+
+    return [trigger1, trigger2, trigger3]
+
+
 def pair_hourly_trades(trades: List[Dict[str, Any]], scans: List[Dict[str, Any]]) -> PairingResult:
     """Python port of scripts/render_weekly_journal.ts's pairHourlyTrades (lines 364-431).
 

@@ -682,6 +682,179 @@ def test_compute_trade_record_degrades_when_scan_missing():
     assert "missing scan row" in rec["r_multiple_na_reason"]
 
 
+# ---------------------------------------------------------------------------
+# Trailing-20 fold (step 5): stateless -- ledger's prior reflection.trades
+# plus today's, ordered by exit fill time, window = min(n, 20).
+# ---------------------------------------------------------------------------
+
+def _synthetic_trade_record(
+    exit_fill_time, *, exit_type="target", realized_r=1.0,
+    target_1_0r_r=0.5, target_1_5r_r=0.8, stop_1_25x_survived=True,
+    entry_slippage_bps=5.0, exit_slippage_bps=5.0,
+):
+    return {
+        "exit_fill_time": exit_fill_time,
+        "exit_type": exit_type,
+        "realized_r": realized_r,
+        "entry_slippage_bps": entry_slippage_bps,
+        "exit_slippage_bps": exit_slippage_bps,
+        "counterfactuals": {
+            "target_1_0r": {"data": "ok", "r": target_1_0r_r},
+            "target_1_5r": {"data": "ok", "r": target_1_5r_r},
+            "stop_1_25x": {"data": "ok", "survived": stop_1_25x_survived},
+            "stop_1_5x": {"data": "ok", "survived": stop_1_25x_survived},
+            "no_flatten": {"applicable": False},
+            "mae_beyond_stop_r": 0.0,
+            "data": "ok",
+        },
+    }
+
+
+def test_build_trailing_window_takes_last_20_across_ledger_and_today():
+    # 19 prior ledger records (days 1-19) + 2 today's records (days 20-21) -> window
+    # drops the OLDEST (day 1), keeping days 2-21 (20 records).
+    prior_rows = []
+    for day in range(1, 20):
+        prior_rows.append({
+            "date": f"2026-07-{day:02d}",
+            "reflection": {"trades": [_synthetic_trade_record(f"2026-07-{day:02d}T16:00:00Z")]},
+        })
+    today_records = [
+        _synthetic_trade_record("2026-08-06T16:00:00Z"),
+        _synthetic_trade_record("2026-08-06T19:00:00Z"),
+    ]
+    window = rfl.build_trailing_window(prior_rows, today_records)
+    assert len(window) == 20
+    assert window[0]["exit_fill_time"] == "2026-07-02T16:00:00Z"  # day 1 dropped
+    assert window[-1]["exit_fill_time"] == "2026-08-06T19:00:00Z"
+
+
+def test_build_trailing_window_smaller_than_20_uses_all_available():
+    today_records = [_synthetic_trade_record("2026-08-06T16:00:00Z")]
+    window = rfl.build_trailing_window([], today_records)
+    assert len(window) == 1
+
+
+def test_build_trailing_window_ignores_pre_reflection_ledger_rows():
+    # A pre-ship ledger row has no "reflection" key at all -- must not raise.
+    prior_rows = [{"date": "2026-07-01", "verdict": "PASS"}]
+    window = rfl.build_trailing_window(prior_rows, [_synthetic_trade_record("2026-08-06T16:00:00Z")])
+    assert len(window) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cost check + trailing20 aggregates (step 5).
+# ---------------------------------------------------------------------------
+
+def test_compute_cost_check_median_over_fills():
+    window = [
+        _synthetic_trade_record("2026-08-06T16:00:00Z", entry_slippage_bps=5.0, exit_slippage_bps=5.0),
+        _synthetic_trade_record("2026-08-06T17:00:00Z", entry_slippage_bps=15.0, exit_slippage_bps=5.0),
+    ]
+    cc = rfl.compute_cost_check(window)
+    assert cc["n"] == 4
+    assert cc["median_abs_slippage_bps"] == pytest.approx(5.0)
+    assert cc["model_bps"] == pytest.approx(5.0)
+    assert cc["ratio"] == pytest.approx(1.0)
+
+
+def test_compute_trailing20_cumulative_r_and_stop_survival():
+    window = [
+        _synthetic_trade_record(
+            "2026-08-06T16:00:00Z", exit_type="stop", realized_r=-1.0,
+            target_1_0r_r=-1.0, target_1_5r_r=-1.0, stop_1_25x_survived=True,
+        ),
+        _synthetic_trade_record(
+            "2026-08-06T17:00:00Z", exit_type="stop", realized_r=-1.0,
+            target_1_0r_r=-1.0, target_1_5r_r=-1.0, stop_1_25x_survived=False,
+        ),
+    ]
+    t20 = rfl.compute_trailing20(window)
+    assert t20["n"] == 2
+    assert t20["cumulative_r"]["live"] == pytest.approx(-2.0)
+    assert t20["stop_survival"]["stop_1_25x"] == {"survived": 1, "total": 2, "pct": 0.5}
+
+
+# ---------------------------------------------------------------------------
+# Triggers (step 5) -- boundary semantics pinned exactly by test.
+# ---------------------------------------------------------------------------
+
+def _stop_out_window(n_survived, n_total):
+    window = []
+    for i in range(n_total):
+        window.append(_synthetic_trade_record(
+            f"2026-08-06T{16+i}:00:00Z", exit_type="stop", realized_r=-1.0,
+            stop_1_25x_survived=(i < n_survived),
+        ))
+    return window
+
+
+def test_trigger1_fires_at_exactly_60_pct():
+    window = _stop_out_window(3, 5)  # 60.0%
+    triggers = rfl.compute_triggers(window)
+    t1 = triggers[0]
+    assert t1["value"] == pytest.approx(0.6)
+    assert t1["fired"] is True
+
+
+def test_trigger1_does_not_fire_below_60_pct():
+    window = _stop_out_window(2, 5)  # 40%
+    triggers = rfl.compute_triggers(window)
+    assert triggers[0]["fired"] is False
+
+
+def test_trigger1_no_denominator_when_no_stop_outs():
+    window = [_synthetic_trade_record("2026-08-06T16:00:00Z", exit_type="target")]
+    triggers = rfl.compute_triggers(window)
+    t1 = triggers[0]
+    assert t1["value"] is None
+    assert t1["fired"] is False
+
+
+def test_trigger2_fires_when_closer_target_beats_live_cumulative():
+    window = [
+        _synthetic_trade_record("2026-08-06T16:00:00Z", realized_r=0.5, target_1_0r_r=1.0, target_1_5r_r=0.9),
+        _synthetic_trade_record("2026-08-06T17:00:00Z", realized_r=0.5, target_1_0r_r=1.0, target_1_5r_r=0.9),
+    ]
+    triggers = rfl.compute_triggers(window)
+    t2 = triggers[1]
+    assert t2["fired"] is True
+
+
+def test_trigger2_does_not_fire_on_a_tie():
+    window = [
+        _synthetic_trade_record("2026-08-06T16:00:00Z", realized_r=1.0, target_1_0r_r=1.0, target_1_5r_r=1.0),
+    ]
+    triggers = rfl.compute_triggers(window)
+    assert triggers[1]["fired"] is False
+
+
+def _cost_window(bps):
+    return [_synthetic_trade_record(
+        "2026-08-06T16:00:00Z", entry_slippage_bps=bps, exit_slippage_bps=bps,
+    )]
+
+
+def test_trigger3_does_not_fire_at_exactly_2x():
+    triggers = rfl.compute_triggers(_cost_window(10.0))  # ratio exactly 2.0
+    assert triggers[2]["fired"] is False
+
+
+def test_trigger3_fires_above_2x():
+    triggers = rfl.compute_triggers(_cost_window(10.01))
+    assert triggers[2]["fired"] is True
+
+
+def test_trigger3_does_not_fire_at_exactly_half():
+    triggers = rfl.compute_triggers(_cost_window(2.5))  # ratio exactly 0.5
+    assert triggers[2]["fired"] is False
+
+
+def test_trigger3_fires_below_half():
+    triggers = rfl.compute_triggers(_cost_window(2.49))
+    assert triggers[2]["fired"] is True
+
+
 def test_missing_scan_row_degrades_r_multiple_with_reason():
     trades = [
         trade_row(
