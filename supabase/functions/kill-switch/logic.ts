@@ -49,7 +49,12 @@ export interface KillSwitchDeps {
       fillPrice: number;
       fillTime: string;
       brokerOrderId: string;
-      reason: "regime_flip_long" | "regime_flip_cash" | "kill_switch" | "panic_cli";
+      reason:
+        | "regime_flip_long"
+        | "regime_flip_cash"
+        | "kill_switch"
+        | "hourly_kill_switch"
+        | "panic_cli";
     }) => Promise<number>;
     insertAuditLog: (p: { scriptName: string; startedAt: string }) => Promise<number>;
     updateAuditLog: (
@@ -267,7 +272,11 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         fillPrice: fill.fillPrice,
         fillTime: fill.fillTime,
         brokerOrderId: fill.orderId,
-        reason: "kill_switch",
+        // #543: the hourly (non-legacy) LONG fire attributes its trade as
+        // "hourly_kill_switch" so the weekly journal and dashboard hourly_*
+        // filters match it; the legacy botTicker fire keeps "kill_switch" so
+        // retired-daily-bot trades do NOT leak into hourly-only views.
+        reason: isLegacy ? "kill_switch" : "hourly_kill_switch",
       });
       await notifications.notifyKillSwitchFired({
         ticker: position.symbol,
@@ -404,7 +413,9 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
         fillPrice: fill.fillPrice,
         fillTime: fill.fillTime,
         brokerOrderId: fill.orderId,
-        reason: "kill_switch",
+        // #543: a short is never the legacy branch (always hourly), so its
+        // trade attributes as "hourly_kill_switch".
+        reason: "hourly_kill_switch",
       });
       await notifications.notifyKillSwitchFired({
         ticker: position.symbol,

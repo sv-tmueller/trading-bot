@@ -852,8 +852,40 @@ Deno.test("#474: non-botTicker LONG fire writes hourly keys, no regime_state wri
   );
   assertEquals(setConfigCalls.some((c) => c.key === "hourly_kill_switch_fired_at"), true);
   assertEquals((calls.insertTrade as { side: string; reason: string }).side, "SELL");
-  assertEquals((calls.insertTrade as { side: string; reason: string }).reason, "kill_switch");
+  // #543: the hourly (non-legacy) LONG fire attributes its trade as
+  // "hourly_kill_switch" so the weekly journal and dashboard hourly_* filters
+  // match it; retired-daily-bot kill_switch trades must NOT leak into the
+  // hourly-only views.
+  assertEquals(
+    (calls.insertTrade as { side: string; reason: string }).reason,
+    "hourly_kill_switch",
+  );
   assertEquals((calls.firedPayload as { side: string }).side, "LONG");
+});
+
+Deno.test("#543: legacy botTicker LONG fire still attributes reason kill_switch (unchanged)", async () => {
+  // Regression guard: the legacy (retired-daily-bot) UPRO fire MUST keep
+  // writing reason "kill_switch" — only the hourly branches change. Pinning
+  // this prevents a future careless widening from leaking retired-daily-bot
+  // trades into the hourly-only dashboard/journal views.
+  const { deps, calls } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+    } as unknown as KillSwitchDeps["alpaca"],
+    marketdata: {
+      getDailyCloses: () => Promise.resolve(bars([100, 100, 100, 100, 100])),
+      getLatestTradePrice: () => Promise.resolve(70),
+      getLatestQuote: () => Promise.resolve(breachingQuote(70)),
+    } as unknown as KillSwitchDeps["marketdata"],
+  });
+  assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
+  assertEquals((calls.insertTrade as { side: string; reason: string }).side, "SELL");
+  assertEquals(
+    (calls.insertTrade as { side: string; reason: string }).reason,
+    "kill_switch",
+  );
+  // Legacy fire writes regime_state, not hourly keys.
+  assertEquals((calls.setConfigCalls as unknown[]).length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -906,9 +938,11 @@ Deno.test("#474: short breach confirmed on ask -> BUY cover, hourly keys written
   assertEquals(calls.liquidate, true);
   assertEquals((calls.insertTrade as { side: string; qty: number; reason: string }).side, "BUY");
   assertEquals((calls.insertTrade as { side: string; qty: number; reason: string }).qty, 30);
+  // #543: a short is never the legacy branch (always hourly), so its trade
+  // attributes as "hourly_kill_switch".
   assertEquals(
     (calls.insertTrade as { side: string; qty: number; reason: string }).reason,
-    "kill_switch",
+    "hourly_kill_switch",
   );
   const setConfigCalls = calls.setConfigCalls as Array<{ key: string; value: string }>;
   assertEquals(setConfigCalls.length, 3);
