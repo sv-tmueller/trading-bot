@@ -587,6 +587,14 @@ async function reconcile(
         ? await db.getHourlyScanByEntryOrderId(symbol, lastEntry.broker_order_id)
         : null;
       let relegged = false;
+      // #497: capture the re-leg failure's message so the flatten alert
+      // below can distinguish "provenance absent" (lookup found nothing)
+      // from "provenance present but rejected" (e.g. a pre-#494
+      // hourly_scans row whose numeric(14,4) stop_price/target_price
+      // round-trips sub-penny and is now refused by requireWholeCentPrice).
+      // The catch stays bare in the control-flow sense: no re-raise, no
+      // gating -- protecting the position outranks naming the cause.
+      let relegFailureMsg: string | null = null;
       if (provenance?.stop_price != null && provenance?.target_price != null) {
         try {
           await alpaca.placeOcoExitPair({
@@ -597,8 +605,9 @@ async function reconcile(
             stopLossPrice: provenance.stop_price,
           });
           relegged = true;
-        } catch (_e) {
+        } catch (e) {
           // fall through to the fail-toward-protection flatten below
+          relegFailureMsg = String((e as Error)?.message ?? e);
         }
       }
       if (relegged) {
@@ -623,10 +632,17 @@ async function reconcile(
         brokerOrderId: fill.orderId,
         reason: "hourly_bracket_exit",
       });
+      // #497: the alert message distinguishes the two causes that converge
+      // on this flatten. When provenance was found but the re-leg threw
+      // (SubPennyPriceError, broker reject, etc.), the operator needs to
+      // see WHY it was refused -- not the misleading "no re-leggable
+      // provenance" which implies the lookup found nothing.
+      const flattenReason = relegFailureMsg !== null
+        ? `provenance rejected (${relegFailureMsg})`
+        : "no re-leggable provenance";
       await notifications.notifyBrokerError({
         context: "hourly-check:naked_position_flattened",
-        errorMsg:
-          `position qty=${positionQty} had no resting legs and no re-leggable provenance; flattened`,
+        errorMsg: `position qty=${positionQty} had no resting legs and ${flattenReason}; flattened`,
       });
       return { terminalOutcome: "error:naked_position_flattened" };
     }

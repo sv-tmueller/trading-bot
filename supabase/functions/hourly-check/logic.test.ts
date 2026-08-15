@@ -518,12 +518,70 @@ Deno.test("gate 4: naked position (no resting legs, no provenance) -> error:nake
   const { deps, rec } = buildDeps();
   deps.alpaca.getPosition = () => Promise.resolve(18); // open long position
   deps.alpaca.listOpenOrderIds = () => Promise.resolve([]); // no resting legs
+  let alerted: { context: string; errorMsg: string } | null = null;
+  deps.notifications.notifyBrokerError = (p) => {
+    alerted = p;
+    return Promise.resolve();
+  };
   const outcome = await runHourlyCheck(deps);
   assertEquals(outcome, "error:naked_position_flattened");
   // market-closed the naked long via a SELL, journaled as hourly_bracket_exit.
   assertEquals(rec.trades.length, 1);
   assertEquals(rec.trades[0].side, "SELL");
   assertEquals(rec.trades[0].reason, "hourly_bracket_exit");
+  // #497: provenance-absent case still says "no re-leggable provenance"
+  const sent = alerted as unknown as { context: string; errorMsg: string } | null;
+  assertEquals(sent?.errorMsg.includes("no re-leggable provenance"), true);
+  assertEquals(sent?.errorMsg.includes("provenance rejected"), false);
+});
+
+Deno.test("#497: naked position, provenance present but re-leg rejected -> alert says 'provenance rejected', not 'no re-leggable provenance'", async () => {
+  const { deps } = buildDeps();
+  deps.alpaca.getPosition = () => Promise.resolve(18); // open long position
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve([]); // no resting legs
+  deps.db.getTradesSince = () =>
+    Promise.resolve([{
+      symbol: "SPY",
+      side: "BUY",
+      qty: 18,
+      fill_price: 550,
+      fill_time: "2026-07-27T14:05:00Z",
+      reason: "hourly_long_entry",
+      broker_order_id: "bracket1",
+    }]);
+  deps.db.getHourlyScanByEntryOrderId = () =>
+    Promise.resolve({
+      symbol: "SPY",
+      bar_ts: "2026-07-27T14:00:00Z",
+      decision: "LONG",
+      skip_reason: null,
+      detectors_fired: ["bullish_marubozu"],
+      context_mode: "none",
+      entry_ref_price: 550,
+      stop_price: 547.7501, // sub-penny -- pre-#494 numeric(14,4) round-trip
+      target_price: 554.4999,
+      risk_per_share: 2.25,
+      equity_usd: 100000,
+      qty: 18,
+      entry_order_id: "bracket1",
+    });
+  // Simulate requireWholeCentPrice rejecting the sub-penny prices
+  deps.alpaca.placeOcoExitPair = () => {
+    throw new SubPennyPriceError("takeProfitPrice must be a whole-cent price, got 554.4999");
+  };
+  let alerted: { context: string; errorMsg: string } | null = null;
+  deps.notifications.notifyBrokerError = (p) => {
+    alerted = p;
+    return Promise.resolve();
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "error:naked_position_flattened");
+  const sent = alerted as unknown as { context: string; errorMsg: string } | null;
+  assertEquals(sent?.context, "hourly-check:naked_position_flattened");
+  // The alert must distinguish "provenance rejected" from "no re-leggable provenance"
+  assertEquals(sent?.errorMsg.includes("provenance rejected"), true);
+  assertEquals(sent?.errorMsg.includes("whole-cent"), true);
+  assertEquals(sent?.errorMsg.includes("no re-leggable provenance"), false);
 });
 
 Deno.test("gate 4: naked position WITH provenance -> success:legs_replaced, supersedes the ordinary outcome", async () => {
