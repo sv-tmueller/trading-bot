@@ -275,6 +275,14 @@ Development decisions that affect the safety stack or trading logic are recorded
 
 _Rationale: deterministic rules engines are auditable; LLM outputs are not. The v1.14 incident history showed that even with deterministic guardrails wrapped around an LLM, the LLM's non-determinism leaked through at the points where it set sizes, picked instruments, or narrated outcomes. The post-pivot bot has none of that surface area — there is no decision the LLM can corrupt because there is no LLM in the path._
 
+## Writing conventions
+
+Em dashes (`—`) appear extensively in existing research docs, module docstrings, and runbooks. As of the #573 policy decision:
+
+- **Existing em-dashes are grandfathered.** No repo-wide sweep. Rewriting 180+ files is high-churn, risks merge conflicts, and provides no functional benefit. Pre-registration and verdict docs under `docs/research/` are frozen evidence artifacts and must never be edited for style.
+- **New text should use `--` or parentheses** instead of em dashes. This is a forward-looking rule enforced on new lines, not retroactively.
+- **Frozen-record exemption.** Files under `docs/research/` (pre-registrations, verdicts, data-feasibility docs) are evidence artifacts. Their prose style is part of the record and is never altered, including for em-dash compliance.
+
 ## Team
 
 The operating model is `/tm-advisor` → `/tm-kickoff` → specialist subagents. You never need to switch sessions.
