@@ -19,6 +19,7 @@ import {
   getLatestEquitySnapshot,
   getLatestHourlyScan,
   getLatestRegimeState,
+  getPgNetTimeoutCount,
   getRegimeStatesSince,
   getTradesInWindow,
   getTradesSince,
@@ -59,6 +60,8 @@ function buildDeps(): StatusDeps {
       getHourlyScansInWindow: (sinceIso, untilIso) =>
         getHourlyScansInWindow(sb, sinceIso, untilIso),
       getTradesInWindow: (sinceIso, untilIso) => getTradesInWindow(sb, sinceIso, untilIso),
+      // #554: pg_net stall check RPC (migration 0016).
+      getPgNetTimeoutCount: (sinceIso, untilIso) => getPgNetTimeoutCount(sb, sinceIso, untilIso),
     },
   };
 }

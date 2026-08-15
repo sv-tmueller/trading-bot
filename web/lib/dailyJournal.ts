@@ -38,6 +38,7 @@ export interface LedgerMetrics {
 
 export interface LedgerRow {
   date: string;
+  environment: string;
   verdict: Verdict;
   checks: Record<string, Verdict>;
   metrics: LedgerMetrics;
@@ -52,6 +53,12 @@ function isVerdict(value: unknown): value is Verdict {
 // metrics, findings) is checked. A line that fails this check is skipped with
 // a console.warn rather than failing the whole build; #547 (the producer)
 // may still be stabilizing its output.
+//
+// #555: the `environment` field is optional in the tolerant reader -- rows
+// without it (pre-migration history) are treated as "dev", matching the
+// one-time migration that added `"environment": "dev"` to all existing rows.
+// The dashboard currently shows dev-only history; when a prod leg is
+// activated, the reader can be extended to filter by a query param.
 function asLedgerRow(value: unknown): LedgerRow | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -62,6 +69,7 @@ function asLedgerRow(value: unknown): LedgerRow | null {
   if (!Array.isArray(v.findings)) return null;
   return {
     date: v.date,
+    environment: typeof v.environment === "string" ? v.environment : "dev",
     verdict: v.verdict,
     checks: v.checks as Record<string, Verdict>,
     metrics: v.metrics as LedgerMetrics,
@@ -97,17 +105,25 @@ function ledgerPath(): string {
   );
 }
 
+// #555: digests are namespaced per environment under daily/{env}/. The
+// dashboard currently serves the dev environment only (the only one with
+// committed history). When a prod leg is activated, this function can be
+// parameterized by environment.
+const DASHBOARD_ENV = "dev";
+
 function dailyDigestDir(): string {
   return resolveExisting(
-    path.join(process.cwd(), "content", "daily"),
-    path.join(process.cwd(), "..", "docs", "trading-journal", "daily"),
+    path.join(process.cwd(), "content", "daily", DASHBOARD_ENV),
+    path.join(process.cwd(), "..", "docs", "trading-journal", "daily", DASHBOARD_ENV),
   );
 }
 
 // Reads the full ledger (docs/trading-journal/daily-verification.jsonl),
-// ascending by date per D6. Returns [] when the file does not exist yet
-// (#547 has not landed, or no day has been verified yet) rather than
-// throwing: the empty state is a first-class case, not a fallback.
+// ascending by date per D6. #555: filters to the dashboard's environment
+// (dev) -- the ledger is a single file shared across environments, so the
+// reader partitions by the `environment` field. Returns [] when the file
+// does not exist yet (#547 has not landed, or no day has been verified yet)
+// rather than throwing: the empty state is a first-class case, not a fallback.
 export function readLedger(): LedgerRow[] {
   let raw: string;
   try {
@@ -132,6 +148,7 @@ export function readLedger(): LedgerRow[] {
       console.warn(`dailyJournal: skipping ledger line with unexpected shape: ${trimmed.slice(0, 80)}`);
       continue;
     }
+    if (row.environment !== DASHBOARD_ENV) continue;
     rows.push(row);
   }
   return rows;

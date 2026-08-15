@@ -783,3 +783,24 @@ export async function claimBar(
   if (error.code === "23505") return false;
   throw new Error(`claimBar: ${error.message}`);
 }
+
+// #554: Calls the security-definer RPC (migration 0016) that wraps
+// `select count(*) from net._http_response where timed_out and
+// extract(minute from created) = 7 and created >= $1 and created < $2`.
+// Returns the count of pg_net timeouts at the :07 hourly-check slots
+// within the given [start, end) timestamptz range. The RPC is in the
+// public schema, callable by anon/authenticated, and exposes nothing
+// else from the net schema.
+export async function getPgNetTimeoutCount(
+  sb: SupabaseClient,
+  sinceIso: string,
+  untilIso: string,
+): Promise<number> {
+  const { data, error } = await sb
+    .rpc("pg_net_timeout_count", {
+      start_ts: sinceIso,
+      end_ts: untilIso,
+    });
+  if (error) throw new Error(`getPgNetTimeoutCount: ${error.message}`);
+  return typeof data === "number" ? data : Number(data ?? 0);
+}

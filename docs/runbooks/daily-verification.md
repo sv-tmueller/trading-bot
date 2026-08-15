@@ -17,7 +17,7 @@ design and decision log.
 The evaluation logic (thresholds, expectations, pass/fail rules) lives in the
 pure, unit-tested `scripts/daily_verify.ts` -- the workflow only resolves a
 date, fetches the digest, pipes it through the script, and acts on the
-result. The seven checks (from spec §5.3, replacing #535's manual queries of
+result. The eight checks (from spec §5.3, replacing #535's manual queries of
 the same numbers):
 
 | Check | Replaces (#535) | Rule |
@@ -29,6 +29,7 @@ the same numbers):
 | `journal` | check 4 | Every hourly fill must join a scan row via `entry_order_id` (`findUnmatchedEntryTrades`). An unmatched fill FAILs. |
 | `state` | check 6 | `bot_config.paused` must be `"false"`; the equity baseline and its "verified" marker must be byte-identical to each other and to the previous verified day's baseline. An unset baseline WARNs (day-zero); any other breach FAILs. |
 | `kill_switch` | check 7 | 108 kill-switch runs, every outcome `success:*`/`skipped:*`, and a uniform `success:no_position` alongside a LONG scan row is a contradiction. Any breach FAILs. |
+| `pg_net_timeouts` | check 5 (original, restored by #554) | Counts `net._http_response` rows where `timed_out` is true at the `:07` hourly-check slots, via a `security definer` RPC (migration 0016). Catches HTTP-response-level timeouts the latency check cannot see (the function completed and wrote its audit row, but `pg_net` recorded a timeout). A nonzero count FAILs, naming the slot to investigate. Distinct from the latency check, which catches slow runs that did not time out. |
 
 A day's verdict is the highest severity across its checks: PASS, WARN (worth
 a look, not broken -- opens no issue), or FAIL (opens the dated issue). A
@@ -234,21 +235,16 @@ which always evaluates the day that just closed.
 
 ## Known caveats
 
-- **The prod leg is inert, permanently, not just pre-go-live.** Unlike
-  `deadman-watchdog.yml` and `heartbeat.yml`, whose prod legs become full
-  symmetric pipelines the moment `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` are
-  set, this workflow's prod leg is a `::notice::` and nothing more, even
-  once those secrets exist. The reason is the artifact schema: both
-  `docs/trading-journal/daily-verification.jsonl` and
-  `docs/trading-journal/daily/YYYY-MM-DD.md` are keyed by **date alone, with
-  no environment dimension**. A live prod leg would write the same
-  date-keyed ledger row and digest file as the dev leg for the same calendar
-  day, and whichever leg ran second would silently clobber the other --
-  nobody would notice until the ledger was used for the trend analysis it
-  exists for. Activating a real prod leg needs the artifact schema
-  namespaced per environment first, which is out of scope for this workflow
-  and is filed as a follow-up that must land before anyone flips the prod
-  switch at #230.
+- **The prod leg is inert until the environment namespacing is deployed.** The
+  artifact schema now carries an `environment` dimension (#555): ledger rows
+  include `"environment": "dev"|"prod"` and digests live under
+  `docs/trading-journal/daily/{env}/YYYY-MM-DD.md`. The dev leg passes
+  `--environment=dev` explicitly. The prod leg remains a `::notice::` until
+  someone wires it up with `--environment=prod` and separate
+  `STATUS_URL_PROD`/`STATUS_TOKEN_PROD` secrets -- but the collision risk that
+  motivated the inert design is now eliminated by the namespaced schema.
+  Activating the prod leg is a workflow-only change (add the `--environment=prod`
+  flag and point at the prod status URL/token); no further schema work is needed.
 - **End-to-end verification needs three packages, not one.** The fetch step
   targets `status?verify=`, which the deployed `status` function does not
   recognise until #546 is merged **and deployed**. The full operator
