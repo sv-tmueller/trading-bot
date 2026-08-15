@@ -38,6 +38,28 @@ import {
 import { DataError } from "./num.ts";
 
 const RUN = Deno.env.get("RUN_DB_TESTS") === "1";
+/**
+ * Compare timestamptz strings by epoch millis so either "Z" or "+00:00"
+ * spelling round-trips equal. PostgREST renders timestamptz as "+00:00", but
+ * our fixtures use "Z"; comparing as instants (via {@link Date.parse})
+ * accepts both spellings. Tracked in #491.
+ */
+function assertEpochEquals(
+  actual: string | undefined | null,
+  expected: string,
+): void {
+  assertEquals(
+    actual != null ? Date.parse(actual) : NaN,
+    Date.parse(expected),
+  );
+}
+
+function assertEpochArrayEquals(actual: string[], expected: string[]): void {
+  assertEquals(
+    actual.map((ts: string) => Date.parse(ts)),
+    expected.map((ts: string) => Date.parse(ts)),
+  );
+}
 
 // Every `ignore: !RUN` test below is destructive: it inserts into, updates and
 // deletes from the shared tables the live bot uses. They are local-stack-only
@@ -1001,7 +1023,7 @@ Deno.test({
       entryOrderId: "o2",
     });
     const row = await getHourlyScanByEntryOrderId(sb, "SPY", "o2");
-    assertEquals(row?.bar_ts, "2030-01-02T14:00:00Z");
+    assertEpochEquals(row?.bar_ts, "2030-01-02T14:00:00Z");
     assertEquals(row?.entry_order_id, "o2");
     assertEquals(row?.qty, 18);
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").eq(
@@ -1059,7 +1081,7 @@ Deno.test({
       entryOrderId: "o1",
     });
     const latest = await getLatestHourlyScan(sb);
-    assertEquals(latest?.bar_ts, newerTs);
+    assertEpochEquals(latest?.bar_ts, newerTs);
     assertEquals(latest?.decision, "LONG");
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [olderTs, newerTs]);
   },
@@ -1096,7 +1118,7 @@ Deno.test({
     await upsertHourlyScan(sb, { ...base, barTs: olderTs });
     await upsertHourlyScan(sb, { ...base, barTs: newerTs });
     const rows = await getHourlyScansSince(sb, "2030-01-01T00:00:00Z");
-    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [newerTs, olderTs]);
+    assertEpochArrayEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [newerTs, olderTs]);
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
       belowTs,
       olderTs,
@@ -1147,7 +1169,7 @@ Deno.test({
       "2030-02-05T00:00:00.000Z",
       "2030-02-05T23:59:59.999Z",
     );
-    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [olderTs, newerTs]);
+    assertEpochArrayEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [olderTs, newerTs]);
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
       belowTs,
       olderTs,
@@ -1297,7 +1319,7 @@ Deno.test({
       entryOrderId: null,
     });
     const rows = await getHourlyScansPendingEntry(sb, "SPY", "2030-01-01T00:00:00Z");
-    assertEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [barTsPending]);
+    assertEpochArrayEquals(rows.map((r: { bar_ts: string }) => r.bar_ts), [barTsPending]);
     await sb.from("hourly_scans").delete().eq("symbol", "SPY").in("bar_ts", [
       barTsPending,
       barTsJournaled,

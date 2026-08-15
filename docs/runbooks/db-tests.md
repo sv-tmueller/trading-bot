@@ -39,10 +39,19 @@ supabase start
 ```
 
 First run pulls images and takes a few minutes. It applies every migration in `supabase/migrations/`,
-so the schema the tests need is created for you. No `grant` step is required on CLI 2.110.0; an
-earlier claim that a bare local stack needed
-`grant all on all tables in schema public to service_role` did not reproduce and was retracted (see
-`docs/runbooks/hourly-bot-rollout.md`'s T8(b) row, and #491).
+so the schema the tests need is created for you. On Supabase CLI 2.110.0 a fresh `supabase start`
+grants everything the gated suite needs automatically, and no manual `grant` is required. However, on
+a bare local stack (an initdb bootstrap that did not run the CLI's seed grants, or a restored dump
+without default privileges), the `service_role` can lack table privileges and the gated suite fails
+with `permission denied for table hourly_scans` before any assertion runs. In that case, connect to
+the `postgres` database and run:
+
+```sql
+grant all on all tables in schema public to service_role;
+```
+
+before re-running the suite. This is a one-time bootstrap fix for an ad-hoc local stack, not a
+migration — do not add it to `supabase/migrations/`.
 
 Then export the service-role key from the running stack and run the suite:
 
@@ -73,12 +82,17 @@ supabase stop
 
 As of `6a1a67b` (2026-08-07): **52 passed, 5 failed.**
 
-The five failures are known test-side defects tracked in **#491**, not production defects. Each
+~~The five failures are known test-side defects tracked in **#491**, not production defects. Each
 asserts that a round-tripped `timestamptz` equals the `"...Z"` spelling it was written with, while
 PostgREST renders it as `+00:00`. Nothing in a trading path compares `bar_ts` as a string, so
-production is unaffected.
+production is unaffected.~~
 
-| Failing test | Line |
+**Resolved by #491's fix** (branch `fix/491-timestamptz-spelling`): the five gated assertions now
+compare `timestamptz` values by epoch millis (`Date.parse`) via `assertEpochEquals` /
+`assertEpochArrayEquals`, so either `"Z"` or `"+00:00"` spelling round-trips equal. Once that fix
+lands, the gated suite is expected to pass clean (modulo unrelated environmental issues).
+
+| Previously-failing test | Line |
 |---|---|
 | `hourly_scans: upsert + getHourlyScanByEntryOrderId roundtrip` | `db.test.ts:963` |
 | `getLatestHourlyScan: returns the newest row by bar_ts` | `db.test.ts:1023` |
@@ -118,5 +132,5 @@ reapplies them to the local stack.
 ## Related
 
 - `docs/runbooks/hourly-bot-rollout.md`, T8(b), the first recorded run of this suite.
-- #491, the open `timestamptz` assertion defect.
+- #491, the `timestamptz` assertion defect (resolved by PR fix/491-timestamptz-spelling, which switched the five gated assertions to epoch-millis comparison).
 - #545, the batch whose pre-merge action produced the current expected-result numbers above.
