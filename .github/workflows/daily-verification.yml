@@ -222,7 +222,7 @@ jobs:
         run: |
           set +e
           OUT=$(deno run --allow-read=docs/trading-journal --allow-write=docs/trading-journal \
-            scripts/daily_verify.ts --date="$DATE" < digest.json)
+            scripts/daily_verify.ts --date="$DATE" --environment=dev < digest.json)
           CODE=$?
           set -e
           if [ "$CODE" -eq 1 ]; then

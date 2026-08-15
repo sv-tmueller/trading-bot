@@ -42,7 +42,7 @@
 // path. This script's own replace-not-duplicate logic exists for glue-only
 // re-runs (re-applying the same envelope without re-running daily_verify.ts)
 // and for the fixture test below.
-import { parseLedgerJsonl } from "./daily_verify.ts";
+import { type Environment, parseLedgerJsonl } from "./daily_verify.ts";
 
 // ---------------------------------------------------------------------------
 // applyReflectionSection -- append or replace the ## Reflection section at
@@ -84,15 +84,24 @@ export function applyReflectionSection(docText: string, markdown: string): strin
 
 /**
  * Rows from `ledgerText` (scripts/daily_verify.ts's own JSONL ledger shape)
- * with `date` strictly before `date`, re-serialized as JSONL text ready to
- * write as the engine's own `--ledger` argument. On the nightly path this is
+ * with `date` strictly before `date` AND matching `env`, re-serialized as
+ * JSONL text ready to write as the engine's own `--ledger` argument. #555:
+ * the prior-ledger filter is scoped to the same environment -- a dev leg's
+ * reflection sees only prior dev rows, never prod rows, so the trailing-20
+ * window stays within-environment. On the nightly path this is
  * behavior-identical to handing the engine the whole ledger (today's
  * just-rewritten row has no `reflection` key yet), but it makes a backfill
  * re-run byte-reproduce its original reflection instead of contaminating the
  * trailing-20 window with later dates' trades.
  */
-export function selectPriorLedgerRows(ledgerText: string, date: string): string {
-  const rows = parseLedgerJsonl(ledgerText).filter((row) => row.date < date);
+export function selectPriorLedgerRows(
+  ledgerText: string,
+  date: string,
+  env: Environment,
+): string {
+  const rows = parseLedgerJsonl(ledgerText).filter(
+    (row) => row.environment === env && row.date < date,
+  );
   if (rows.length === 0) return "";
   return rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
 }
@@ -110,46 +119,56 @@ export class DuplicateLedgerRowError extends Error {
 }
 
 /**
- * Merges `reflection` onto the ledger row for `date`, adding it as the
+ * Merges `reflection` onto the ledger row for `(date, env)`, adding it as the
  * row's trailing key (a re-merge keeps it in its existing, already-trailing
- * position). Every row is re-serialized in ascending date order -- matching
- * scripts/daily_verify.ts's own upsertLedgerJsonl convention -- so an
- * unmerged re-run of this function is byte-identical and the workflow's
+ * position). Every row is re-serialized in ascending (date, environment) order
+ * -- matching scripts/daily_verify.ts's own upsertLedgerJsonl convention --
+ * so an unmerged re-run of this function is byte-identical and the workflow's
  * commit step's no-op check keeps working. Every OTHER row's own bytes are
  * unaffected (`JSON.parse` then `JSON.stringify` round-trips a row's own key
  * order and values unchanged since nothing but the target row is touched).
- * Throws `MissingLedgerRowError` if no row for `date` exists -- merging a
- * reflection onto a date scripts/daily_verify.ts never evaluated would be a
+ * Throws `MissingLedgerRowError` if no row for `(date, env)` exists -- merging
+ * a reflection onto a date scripts/daily_verify.ts never evaluated would be a
  * caller bug, not a degrade case. Throws `DuplicateLedgerRowError` if more
- * than one row matches `date` -- scripts/daily_verify.ts's own
+ * than one row matches `(date, env)` -- scripts/daily_verify.ts's own
  * upsertLedgerJsonl never produces this on the workflow path, so surfacing
  * it here rather than silently merging onto every matching row is safe: the
  * workflow's capture-then-warn around this whole step already contains the
  * throw without redding the run (see this file's own header comment).
+ *
+ * #555: the match key is now (date, environment), not date alone -- a dev
+ * reflection merges onto the dev row, a prod reflection onto the prod row,
+ * and neither touches the other environment's row for the same date.
  */
 export function mergeReflectionIntoLedger(
   ledgerText: string,
   date: string,
+  env: Environment,
   reflection: unknown,
 ): string {
   const rows = parseLedgerJsonl(ledgerText);
-  const matches = rows.filter((row) => row.date === date).length;
+  const matches = rows.filter((row) => row.date === date && row.environment === env).length;
   if (matches === 0) {
     throw new MissingLedgerRowError(
-      `apply_reflection: no ledger row for date ${JSON.stringify(date)} -- ` +
-        "scripts/daily_verify.ts must run (and write the ledger) before reflection merges onto it",
+      `apply_reflection: no ledger row for date ${JSON.stringify(date)} environment ${
+        JSON.stringify(env)
+      } -- scripts/daily_verify.ts must run (and write the ledger) before reflection merges onto it`,
     );
   }
   if (matches > 1) {
     throw new DuplicateLedgerRowError(
-      `apply_reflection: ${matches} ledger rows for date ${JSON.stringify(date)} -- ` +
-        "refusing to merge reflection onto more than one row",
+      `apply_reflection: ${matches} ledger rows for date ${JSON.stringify(date)} environment ${
+        JSON.stringify(env)
+      } -- refusing to merge reflection onto more than one row`,
     );
   }
   const merged = rows
     .slice()
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((row) => (row.date === date ? { ...row, reflection } : row));
+    .sort((a, b) => {
+      const cmp = a.date.localeCompare(b.date);
+      return cmp !== 0 ? cmp : a.environment.localeCompare(b.environment);
+    })
+    .map((row) => row.date === date && row.environment === env ? { ...row, reflection } : row);
   return merged.map((row) => JSON.stringify(row)).join("\n") + "\n";
 }
 
@@ -198,6 +217,7 @@ function isReflectionEnvelope(value: unknown): value is ReflectionEnvelope {
 
 export function planApply(
   date: string,
+  env: Environment,
   envelopeRaw: string | null,
   docText: string,
   ledgerText: string,
@@ -231,7 +251,7 @@ export function planApply(
 
   return {
     docText: applyReflectionSection(docText, parsed.markdown),
-    ledgerText: mergeReflectionIntoLedger(ledgerText, date, parsed.reflection),
+    ledgerText: mergeReflectionIntoLedger(ledgerText, date, env, parsed.reflection),
   };
 }
 
@@ -243,10 +263,14 @@ export function planApply(
 // ---------------------------------------------------------------------------
 
 const LEDGER_PATH = "docs/trading-journal/daily-verification.jsonl";
-const DIGEST_DIR = "docs/trading-journal/daily";
+const DIGEST_BASE_DIR = "docs/trading-journal/daily";
 
-function digestPath(date: string): string {
-  return `${DIGEST_DIR}/${date}.md`;
+function digestDir(env: Environment): string {
+  return `${DIGEST_BASE_DIR}/${env}`;
+}
+
+function digestPath(env: Environment, date: string): string {
+  return `${digestDir(env)}/${date}.md`;
 }
 
 function parseFlag(argv: string[], flag: string): string | undefined {
@@ -265,6 +289,15 @@ function requireFlag(argv: string[], flag: string): string {
   return value;
 }
 
+function parseEnvironmentFlag(argv: string[]): Environment {
+  const val = parseFlag(argv, "environment");
+  if (val === undefined) return "dev";
+  if (val !== "dev" && val !== "prod") {
+    throw new Error(`apply_reflection: invalid --environment=${val} (must be "dev" or "prod")`);
+  }
+  return val;
+}
+
 async function readTextIfExists(path: string): Promise<string | null> {
   try {
     return await Deno.readTextFile(path);
@@ -276,10 +309,11 @@ async function readTextIfExists(path: string): Promise<string | null> {
 
 async function runPriorLedger(argv: string[]): Promise<void> {
   const date = requireFlag(argv, "date");
+  const env = parseEnvironmentFlag(argv);
   const ledgerPath = requireFlag(argv, "ledger");
   const outPath = requireFlag(argv, "out");
   const ledgerText = (await readTextIfExists(ledgerPath)) ?? "";
-  const priorText = selectPriorLedgerRows(ledgerText, date);
+  const priorText = selectPriorLedgerRows(ledgerText, date, env);
   await Deno.mkdir(outPath.slice(0, outPath.lastIndexOf("/")), { recursive: true }).catch(
     () => {},
   );
@@ -288,15 +322,17 @@ async function runPriorLedger(argv: string[]): Promise<void> {
 
 async function runApply(argv: string[]): Promise<void> {
   const date = requireFlag(argv, "date");
+  const env = parseEnvironmentFlag(argv);
   const envelopePath = requireFlag(argv, "envelope");
   const envelopeRaw = await readTextIfExists(envelopePath);
-  const docText = (await readTextIfExists(digestPath(date))) ?? "";
+  const docText = (await readTextIfExists(digestPath(env, date))) ?? "";
   const ledgerText = (await readTextIfExists(LEDGER_PATH)) ?? "";
 
-  const plan = planApply(date, envelopeRaw, docText, ledgerText);
+  const plan = planApply(date, env, envelopeRaw, docText, ledgerText);
 
-  await Deno.mkdir(DIGEST_DIR, { recursive: true });
-  await Deno.writeTextFile(digestPath(date), plan.docText);
+  const dir = digestDir(env);
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(digestPath(env, date), plan.docText);
   await Deno.writeTextFile(LEDGER_PATH, plan.ledgerText);
 }
 

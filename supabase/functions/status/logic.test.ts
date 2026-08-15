@@ -152,6 +152,11 @@ function makeDeps(
       calls.tradesInWindowArgs = [sinceIso, untilIso];
       return Promise.resolve<TradeRow[]>([]);
     },
+    // #554: pg_net stall check RPC mock -- returns 0 (no timeouts) by default.
+    getPgNetTimeoutCount: (_sinceIso: string, _untilIso: string) => {
+      calls.pgNetTimeoutCountCalled = true;
+      return Promise.resolve(0);
+    },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
     getClock: () => Promise.resolve({ isOpen: true }),
@@ -938,6 +943,7 @@ Deno.test("verification: shape-lock - exact keys", async () => {
       "date",
       "hourly_check_runs",
       "kill_switch_runs",
+      "pg_net_timeouts",
       "scans",
       "shorts_enabled",
       "trades",

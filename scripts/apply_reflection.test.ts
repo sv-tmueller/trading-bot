@@ -84,20 +84,59 @@ Deno.test("applyReflectionSection renders a no-trades envelope's markdown verbat
 // trailing-20 window.
 // ---------------------------------------------------------------------------
 
-Deno.test("selectPriorLedgerRows keeps only rows strictly before the target date", () => {
-  const priorText = selectPriorLedgerRows(LEDGER_3_ROWS, "2026-08-06");
+Deno.test("selectPriorLedgerRows keeps only rows strictly before the target date (same env)", () => {
+  const priorText = selectPriorLedgerRows(LEDGER_3_ROWS, "2026-08-06", "dev");
   const rows = parseLedgerJsonl(priorText);
   assertEquals(rows.map((r) => r.date), ["2026-08-04", "2026-08-05"]);
 });
 
 Deno.test("selectPriorLedgerRows excludes the target date's own row", () => {
-  const priorText = selectPriorLedgerRows(LEDGER_3_ROWS, "2026-08-04");
+  const priorText = selectPriorLedgerRows(LEDGER_3_ROWS, "2026-08-04", "dev");
   assertEquals(parseLedgerJsonl(priorText).length, 0);
 });
 
 Deno.test("selectPriorLedgerRows on an empty ledger returns no rows", () => {
-  const priorText = selectPriorLedgerRows("", "2026-08-06");
+  const priorText = selectPriorLedgerRows("", "2026-08-06", "dev");
   assertEquals(parseLedgerJsonl(priorText).length, 0);
+});
+
+Deno.test("#555: selectPriorLedgerRows excludes rows from a different environment", () => {
+  const mixedEnvLedger = [
+    JSON.stringify({
+      date: "2026-08-04",
+      environment: "dev",
+      verdict: "PASS",
+      checks: {},
+      metrics: {},
+      findings: [],
+    }),
+    JSON.stringify({
+      date: "2026-08-05",
+      environment: "prod",
+      verdict: "PASS",
+      checks: {},
+      metrics: {},
+      findings: [],
+    }),
+    JSON.stringify({
+      date: "2026-08-06",
+      environment: "dev",
+      verdict: "PASS",
+      checks: {},
+      metrics: {},
+      findings: [],
+    }),
+  ].join("\n") + "\n";
+  // Asking for dev rows before 2026-08-07 -> only the two dev rows
+  const devPrior = selectPriorLedgerRows(mixedEnvLedger, "2026-08-07", "dev");
+  const devRows = parseLedgerJsonl(devPrior);
+  assertEquals(devRows.map((r) => r.date), ["2026-08-04", "2026-08-06"]);
+  assertEquals(devRows.every((r) => r.environment === "dev"), true);
+  // Asking for prod rows -> only the one prod row
+  const prodPrior = selectPriorLedgerRows(mixedEnvLedger, "2026-08-07", "prod");
+  const prodRows = parseLedgerJsonl(prodPrior);
+  assertEquals(prodRows.map((r) => r.date), ["2026-08-05"]);
+  assertEquals(prodRows.every((r) => r.environment === "prod"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -105,7 +144,12 @@ Deno.test("selectPriorLedgerRows on an empty ledger returns no rows", () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("mergeReflectionIntoLedger adds reflection as the target row's trailing key", () => {
-  const merged = mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-06", TRADES_ENVELOPE.reflection);
+  const merged = mergeReflectionIntoLedger(
+    LEDGER_3_ROWS,
+    "2026-08-06",
+    "dev",
+    TRADES_ENVELOPE.reflection,
+  );
   const lines = merged.trimEnd().split("\n");
   const targetLine = lines.find((l: string) => JSON.parse(l).date === "2026-08-06")!;
   const keys = Object.keys(JSON.parse(targetLine));
@@ -114,7 +158,12 @@ Deno.test("mergeReflectionIntoLedger adds reflection as the target row's trailin
 });
 
 Deno.test("mergeReflectionIntoLedger leaves the other rows byte-untouched", () => {
-  const merged = mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-06", TRADES_ENVELOPE.reflection);
+  const merged = mergeReflectionIntoLedger(
+    LEDGER_3_ROWS,
+    "2026-08-06",
+    "dev",
+    TRADES_ENVELOPE.reflection,
+  );
   const originalLines = LEDGER_3_ROWS.trimEnd().split("\n");
   const mergedLines = merged.trimEnd().split("\n");
   const untouched = originalLines.filter((l: string) => JSON.parse(l).date !== "2026-08-06");
@@ -123,10 +172,11 @@ Deno.test("mergeReflectionIntoLedger leaves the other rows byte-untouched", () =
   }
 });
 
-Deno.test("mergeReflectionIntoLedger preserves ascending date order", () => {
+Deno.test("mergeReflectionIntoLedger preserves ascending (date, environment) order", () => {
   const merged = mergeReflectionIntoLedger(
     LEDGER_3_ROWS,
     "2026-08-05",
+    "dev",
     NO_TRADES_ENVELOPE.reflection,
   );
   const dates = merged.trimEnd().split("\n").map((l: string) => JSON.parse(l).date);
@@ -134,27 +184,79 @@ Deno.test("mergeReflectionIntoLedger preserves ascending date order", () => {
 });
 
 Deno.test("mergeReflectionIntoLedger is idempotent on re-merge with the same reflection", () => {
-  const once = mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-06", TRADES_ENVELOPE.reflection);
-  const twice = mergeReflectionIntoLedger(once, "2026-08-06", TRADES_ENVELOPE.reflection);
+  const once = mergeReflectionIntoLedger(
+    LEDGER_3_ROWS,
+    "2026-08-06",
+    "dev",
+    TRADES_ENVELOPE.reflection,
+  );
+  const twice = mergeReflectionIntoLedger(once, "2026-08-06", "dev", TRADES_ENVELOPE.reflection);
   assertEquals(twice, once);
 });
 
 Deno.test("mergeReflectionIntoLedger throws when the target date has no ledger row", () => {
   assertThrows(
-    () => mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-09", TRADES_ENVELOPE.reflection),
+    () => mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-09", "dev", TRADES_ENVELOPE.reflection),
     MissingLedgerRowError,
   );
 });
 
-Deno.test("mergeReflectionIntoLedger throws when more than one ledger row matches the target date", () => {
+Deno.test("#555: mergeReflectionIntoLedger throws when the target date exists but in a different environment", () => {
+  assertThrows(
+    () =>
+      mergeReflectionIntoLedger(LEDGER_3_ROWS, "2026-08-06", "prod", TRADES_ENVELOPE.reflection),
+    MissingLedgerRowError,
+  );
+});
+
+Deno.test("mergeReflectionIntoLedger throws when more than one ledger row matches (date, env)", () => {
   const duplicateDateLedger = [
-    JSON.stringify({ date: "2026-08-06", equity: 1000 }),
-    JSON.stringify({ date: "2026-08-06", equity: 1001 }),
+    JSON.stringify({ date: "2026-08-06", environment: "dev", equity: 1000 }),
+    JSON.stringify({ date: "2026-08-06", environment: "dev", equity: 1001 }),
   ].join("\n") + "\n";
   assertThrows(
-    () => mergeReflectionIntoLedger(duplicateDateLedger, "2026-08-06", TRADES_ENVELOPE.reflection),
+    () =>
+      mergeReflectionIntoLedger(
+        duplicateDateLedger,
+        "2026-08-06",
+        "dev",
+        TRADES_ENVELOPE.reflection,
+      ),
     DuplicateLedgerRowError,
   );
+});
+
+Deno.test("#555: mergeReflectionIntoLedger targets the correct row when dev and prod share a date", () => {
+  const dualEnvLedger = [
+    JSON.stringify({
+      date: "2026-08-06",
+      environment: "dev",
+      verdict: "PASS",
+      checks: {},
+      metrics: {},
+      findings: [],
+    }),
+    JSON.stringify({
+      date: "2026-08-06",
+      environment: "prod",
+      verdict: "PASS",
+      checks: {},
+      metrics: {},
+      findings: [],
+    }),
+  ].join("\n") + "\n";
+  // Merge onto the prod row
+  const merged = mergeReflectionIntoLedger(
+    dualEnvLedger,
+    "2026-08-06",
+    "prod",
+    TRADES_ENVELOPE.reflection,
+  );
+  const lines = merged.trimEnd().split("\n").map((l: string) => JSON.parse(l));
+  const prodRow = lines.find((r) => r.environment === "prod")!;
+  const devRow = lines.find((r) => r.environment === "dev")!;
+  assertEquals(prodRow.reflection, TRADES_ENVELOPE.reflection);
+  assertEquals("reflection" in devRow, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -175,7 +277,7 @@ Deno.test("fallbackReflectionMarkdown names the failure under a ## Reflection he
 
 Deno.test("planApply merges the doc and ledger when the envelope parses cleanly", () => {
   const raw = JSON.stringify(TRADES_ENVELOPE);
-  const plan = planApply("2026-08-06", raw, BASE_DOC, LEDGER_3_ROWS);
+  const plan = planApply("2026-08-06", "dev", raw, BASE_DOC, LEDGER_3_ROWS);
   assertMatch(plan.docText, /## Reflection\n\nCounterfactuals are diagnostic/);
   assertEquals(
     JSON.parse(plan.ledgerText.trimEnd().split("\n")[2]).reflection,
@@ -184,18 +286,18 @@ Deno.test("planApply merges the doc and ledger when the envelope parses cleanly"
 });
 
 Deno.test("planApply writes a fallback section and leaves the ledger untouched when the envelope is absent", () => {
-  const plan = planApply("2026-08-06", null, BASE_DOC, LEDGER_3_ROWS);
+  const plan = planApply("2026-08-06", "dev", null, BASE_DOC, LEDGER_3_ROWS);
   assertMatch(plan.docText, /## Reflection\n\nReflection unavailable: /);
   assertEquals(plan.ledgerText, LEDGER_3_ROWS);
 });
 
 Deno.test("planApply degrades gracefully when the envelope file is present but not valid JSON", () => {
-  const plan = planApply("2026-08-06", "{not json", BASE_DOC, LEDGER_3_ROWS);
+  const plan = planApply("2026-08-06", "dev", "{not json", BASE_DOC, LEDGER_3_ROWS);
   assertMatch(plan.docText, /## Reflection\n\nReflection unavailable: /);
   assertEquals(plan.ledgerText, LEDGER_3_ROWS);
 });
 
 Deno.test("planApply throws when the envelope's own date does not match --date", () => {
   const raw = JSON.stringify(TRADES_ENVELOPE);
-  assertThrows(() => planApply("2026-08-07", raw, BASE_DOC, LEDGER_3_ROWS));
+  assertThrows(() => planApply("2026-08-07", "dev", raw, BASE_DOC, LEDGER_3_ROWS));
 });

@@ -714,6 +714,7 @@ Deno.test("evaluateVerification: a clean day -> PASS with every check PASS", () 
     journal: "PASS",
     state: "PASS",
     kill_switch: "PASS",
+    pg_net_timeouts: "PASS",
   });
   assertEquals(result.findings, []);
 });
@@ -814,7 +815,7 @@ Deno.test("evaluateVerification: metrics.entries/fills/closed_trades/r_multiples
 
 Deno.test("buildLedgerRow: carries date/verdict/checks/metrics/findings straight from the evaluation", () => {
   const evaluation = evaluateVerification(cleanDayVerification(), null);
-  const row = buildLedgerRow("2026-08-05", evaluation);
+  const row = buildLedgerRow("2026-08-05", "dev", evaluation);
   assertEquals(row.date, "2026-08-05");
   assertEquals(row.verdict, "PASS");
   assertEquals(row.checks, evaluation.checks);
@@ -823,7 +824,7 @@ Deno.test("buildLedgerRow: carries date/verdict/checks/metrics/findings straight
 
 function ledgerRow(date: string, overrides: Partial<LedgerRow> = {}): LedgerRow {
   const evaluation = evaluateVerification(cleanDayVerification(), null);
-  return { ...buildLedgerRow(date, evaluation), ...overrides };
+  return { ...buildLedgerRow(date, "dev", evaluation), ...overrides };
 }
 
 Deno.test("upsertLedgerJsonl: inserts into an empty ledger", () => {
@@ -862,23 +863,23 @@ Deno.test("upsertLedgerJsonl: re-running the same date with the same row is byte
 
 Deno.test("selectPreviousRow: the newest row strictly before the target date", () => {
   const rows = [ledgerRow("2026-08-03"), ledgerRow("2026-08-04"), ledgerRow("2026-08-05")];
-  assertEquals(selectPreviousRow(rows, "2026-08-05")?.date, "2026-08-04");
+  assertEquals(selectPreviousRow(rows, "2026-08-05", "dev")?.date, "2026-08-04");
 });
 
 Deno.test("selectPreviousRow: skips a gap day correctly (no row exactly one day back)", () => {
   const rows = [ledgerRow("2026-08-01"), ledgerRow("2026-08-05")];
-  assertEquals(selectPreviousRow(rows, "2026-08-06")?.date, "2026-08-05");
+  assertEquals(selectPreviousRow(rows, "2026-08-06", "dev")?.date, "2026-08-05");
 });
 
 Deno.test("selectPreviousRow: a backfilled out-of-order write is still found by date, not insertion order", () => {
   const rows = [ledgerRow("2026-08-05"), ledgerRow("2026-08-01")];
-  assertEquals(selectPreviousRow(rows, "2026-08-05")?.date, "2026-08-01");
+  assertEquals(selectPreviousRow(rows, "2026-08-05", "dev")?.date, "2026-08-01");
 });
 
 Deno.test("selectPreviousRow: no row strictly before the target -> null (day zero)", () => {
   const rows = [ledgerRow("2026-08-05")];
-  assertEquals(selectPreviousRow(rows, "2026-08-05"), null);
-  assertEquals(selectPreviousRow([], "2026-08-05"), null);
+  assertEquals(selectPreviousRow(rows, "2026-08-05", "dev"), null);
+  assertEquals(selectPreviousRow([], "2026-08-05", "dev"), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -1072,7 +1073,7 @@ Deno.test("fixture kill-switch-missing-slot: FAIL via the kill_switch check, fin
     true,
   );
 
-  const ledgerRow = buildLedgerRow(v.date, result);
+  const ledgerRow = buildLedgerRow(v.date, "dev", result);
   assertEquals(
     ledgerRow.findings.includes("kill_switch: expected 108 runs, found 107 (missing: 19:05Z)"),
     true,

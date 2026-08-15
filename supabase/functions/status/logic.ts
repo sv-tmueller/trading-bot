@@ -64,6 +64,9 @@ export interface StatusDeps {
     // documented at the top of this file still holds.
     getHourlyScansInWindow: (sinceIso: string, untilIso: string) => Promise<HourlyScanRow[]>;
     getTradesInWindow: (sinceIso: string, untilIso: string) => Promise<TradeRow[]>;
+    // #554: pg_net stall check -- security-definer RPC (migration 0016).
+    // Only called when `verifyDate` is passed.
+    getPgNetTimeoutCount: (sinceIso: string, untilIso: string) => Promise<number>;
   };
 }
 
@@ -199,6 +202,10 @@ export interface StatusDigest {
       hourly_experiment_start_equity: string | null;
       hourly_experiment_baseline_verified: string | null;
     };
+    // #554: count of pg_net timeouts at the :07 hourly-check slots,
+    // from the security-definer RPC (migration 0016). Catches HTTP-
+    // response-level timeouts the latency check cannot see.
+    pg_net_timeouts: number;
   };
 }
 
@@ -347,6 +354,7 @@ export async function runStatus(
     verifyScans,
     verifyTrades,
     hourlyBaselineVerifiedRaw,
+    pgNetTimeoutCount,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -376,6 +384,9 @@ export async function runStatus(
     verifying ? db.getHourlyScansInWindow(verifySince!, verifyUntil!) : Promise.resolve(undefined),
     verifying ? db.getTradesInWindow(verifySince!, verifyUntil!) : Promise.resolve(undefined),
     verifying ? db.getConfig("hourly_experiment_baseline_verified") : Promise.resolve(undefined),
+    // #554: pg_net stall check -- security-definer RPC (migration 0016)
+    // counting timed_out rows at the :07 hourly-check slots.
+    verifying ? db.getPgNetTimeoutCount(verifySince!, verifyUntil!) : Promise.resolve(undefined),
   ]);
 
   const outcome_counts: Record<string, number> = {};
@@ -470,6 +481,10 @@ export async function runStatus(
         hourly_experiment_start_equity: hourlyFloorBaselineRaw,
         hourly_experiment_baseline_verified: hourlyBaselineVerifiedRaw ?? null,
       },
+      // #554: scalar count from the security-definer RPC (migration 0016).
+      // Undefined when not verifying (the Promise.all resolved to undefined);
+      // coerced to 0 defensively -- the RPC is only called when verifying.
+      pg_net_timeouts: pgNetTimeoutCount ?? 0,
     };
   }
 

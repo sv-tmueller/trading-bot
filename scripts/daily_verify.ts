@@ -13,11 +13,12 @@
 // (#549) is written against this exact shape):
 //
 //   deno run --allow-read=docs/trading-journal --allow-write=docs/trading-journal \
-//     scripts/daily_verify.ts --date=YYYY-MM-DD < digest.json
+//     scripts/daily_verify.ts --date=YYYY-MM-DD [--environment=dev|prod] < digest.json
 //
 // stdin: the full `status` response; only `.verification` is read. stdout: a
 // single JSON envelope (see `main` below). Exit 0 (PASS/WARN/SKIPPED_WEEKEND),
 // 2 (FAIL), 1 (malformed input -- nothing printed, nothing written).
+// `--environment` defaults to "dev" (#555); the workflow passes it explicitly.
 //
 // D9: imports pairHourlyTrades/findUnmatchedEntryTrades from
 // render_weekly_journal.ts rather than reimplementing them, per the spec's
@@ -64,6 +65,12 @@ export interface VerificationBlock {
   scans: HourlyScanRow[];
   trades: TradeRow[];
   config: VerifyConfig;
+  // #554: the day's pg_net timeout count at the :07 hourly-check slots,
+  // from the security-definer RPC (migration 0016). Optional -- absent
+  // when an older deployed `status` hasn't been upgraded yet (backward
+  // compat: evaluateVerification treats absence as 0 / PASS, same as
+  // kill_switch_runs.started_at's own optional pattern in #562).
+  pg_net_timeouts?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +467,32 @@ export function checkKillSwitch(
 }
 
 // ---------------------------------------------------------------------------
+// #554: pg_net stall check (check 8). Detects HTTP-response-level timeouts
+// that the latency check (check 5) cannot see: the function completed and
+// wrote its audit row, so latency looks fine, but pg_net recorded a timeout
+// on the cron's HTTP POST. The count comes from the security-definer RPC
+// (migration 0016), filtered to the :07 hourly-check slots only. A nonzero
+// count FAILs the day, with the finding naming the slot to investigate.
+//
+// Absent pg_net_timeouts (older deployed status that hasn't been upgraded
+// yet) is treated as 0 / PASS for backward compat -- same pattern as
+// kill_switch_runs.started_at's optional handling in #562.
+// ---------------------------------------------------------------------------
+
+export function checkPgNetTimeouts(count: number | undefined): CheckOutcome {
+  const c = count ?? 0;
+  if (c === 0) {
+    return { status: "PASS", findings: [] };
+  }
+  return {
+    status: "FAIL",
+    findings: [
+      `pg_net_timeouts: ${c} timed-out HTTP response(s) at the :07 hourly-check slots -- investigate the audit_log row for the affected slot(s)`,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Metrics (§6.1) -- a straight function of the verification block, key order
 // fixed to match the ledger row's own §6.1 example (D6: no clock-derived
 // field anywhere here).
@@ -504,6 +537,7 @@ export interface Metrics {
   headroom_pct: number | null;
   kill_switch_runs: number;
   kill_switch_outcome_counts: Record<string, number>;
+  pg_net_timeouts: number;
 }
 
 /**
@@ -617,6 +651,7 @@ function computeMetrics(v: VerificationBlock): Metrics {
     headroom_pct,
     kill_switch_runs: v.kill_switch_runs.count,
     kill_switch_outcome_counts: v.kill_switch_runs.outcome_counts,
+    pg_net_timeouts: v.pg_net_timeouts ?? 0,
   };
 }
 
@@ -636,6 +671,7 @@ export interface EvaluationChecks {
   journal: CheckStatus;
   state: CheckStatus;
   kill_switch: CheckStatus;
+  pg_net_timeouts: CheckStatus;
 }
 
 export interface EvaluationResult {
@@ -661,6 +697,12 @@ export function evaluateVerification(
   const state = checkState(v.config, previousRow);
   const killSwitch = checkKillSwitch(v.kill_switch_runs, v.scans);
 
+  // #554: pg_net stall check -- detects HTTP-response-level timeouts that
+  // the latency check cannot see (function completed and wrote its audit
+  // row, but pg_net recorded a timeout). Absent pg_net_timeouts (older
+  // deployed status) is treated as 0/PASS for backward compat.
+  const pgNetTimeouts = checkPgNetTimeouts(v.pg_net_timeouts);
+
   const checks: EvaluationChecks = {
     slots: slots.status,
     latency: latency.status,
@@ -669,6 +711,7 @@ export function evaluateVerification(
     journal: journal.status,
     state: state.status,
     kill_switch: killSwitch.status,
+    pg_net_timeouts: pgNetTimeouts.status,
   };
 
   const verdict = mergeStatus(Object.values(checks));
@@ -680,6 +723,7 @@ export function evaluateVerification(
     ...journal.findings,
     ...state.findings,
     ...killSwitch.findings,
+    ...pgNetTimeouts.findings,
   ];
 
   return { verdict, checks, metrics: computeMetrics(v), findings };
@@ -691,17 +735,33 @@ export function evaluateVerification(
 // functions, not of the workflow that calls them.
 // ---------------------------------------------------------------------------
 
+/**
+ * #555: the environment dimension. Every ledger row carries an `environment`
+ * field ("dev" or "prod"), and the (date, environment) pair is the unique key.
+ * This lets a dev leg and a prod leg write the same calendar date without
+ * collision -- the original schema keyed on date alone, which meant whoever
+ * ran second silently overwrote the other. Existing rows were migrated to
+ * `"environment": "dev"` (all committed history is dev-only).
+ */
+export type Environment = "dev" | "prod";
+
 export interface LedgerRow {
   date: string;
+  environment: Environment;
   verdict: CheckStatus;
   checks: EvaluationChecks;
   metrics: Metrics;
   findings: string[];
 }
 
-export function buildLedgerRow(date: string, evaluation: EvaluationResult): LedgerRow {
+export function buildLedgerRow(
+  date: string,
+  environment: Environment,
+  evaluation: EvaluationResult,
+): LedgerRow {
   return {
     date,
+    environment,
     verdict: evaluation.verdict,
     checks: evaluation.checks,
     metrics: evaluation.metrics,
@@ -709,34 +769,63 @@ export function buildLedgerRow(date: string, evaluation: EvaluationResult): Ledg
   };
 }
 
+/**
+ * Parses the JSONL ledger text into `LedgerRow[]`. #555: rows without an
+ * `environment` field (pre-migration history) are treated as `"dev"` --
+ * matching the one-time migration that added `"environment": "dev"` to all
+ * existing committed rows. This tolerant read keeps a locally-backfilled
+ * or partially-migrated ledger from crashing the evaluator.
+ */
 export function parseLedgerJsonl(text: string): LedgerRow[] {
   return text
     .split("\n")
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as LedgerRow);
+    .map((line) => {
+      const row = JSON.parse(line) as Partial<LedgerRow>;
+      return { ...row, environment: (row.environment ?? "dev") as Environment } as LedgerRow;
+    });
 }
 
 /**
  * Upserts `newRow` into the JSONL ledger text: replaces any existing line for
- * the same date, inserts otherwise, and always re-serializes every row in
- * ascending date order (D6: makes backfill order-independent and a repeat
- * run byte-identical). Pure text in, text out -- main() owns the disk read
- * and write around this call.
+ * the same (date, environment) pair, inserts otherwise, and always
+ * re-serializes every row in ascending (date, environment) order (D6: makes
+ * backfill order-independent and a repeat run byte-identical). #555: the
+ * environment dimension means a dev row and a prod row for the same date
+ * coexist rather than overwriting each other. Pure text in, text out --
+ * main() owns the disk read and write around this call.
  */
 export function upsertLedgerJsonl(existingText: string, newRow: LedgerRow): string {
   const rows = parseLedgerJsonl(existingText);
-  const byDate = new Map<string, LedgerRow>();
-  for (const row of rows) byDate.set(row.date, row);
-  byDate.set(newRow.date, newRow);
-  const sorted = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const byKey = new Map<string, LedgerRow>();
+  for (const row of rows) byKey.set(`${row.date}|${row.environment}`, row);
+  byKey.set(`${newRow.date}|${newRow.environment}`, newRow);
+  const sorted = [...byKey.values()].sort((a, b) => {
+    const cmp = a.date.localeCompare(b.date);
+    return cmp !== 0 ? cmp : a.environment.localeCompare(b.environment);
+  });
   return sorted.map((row) => JSON.stringify(row)).join("\n") + "\n";
 }
 
-/** The newest ledger row with a date strictly before `targetDate`, or null (day zero). */
-export function selectPreviousRow(rows: LedgerRow[], targetDate: string): LedgerRow | null {
+/**
+ * The newest ledger row with a date strictly before `targetDate` AND the same
+ * `environment` as `env`, or null (day zero). #555: the previous-row lookup
+ * is scoped to the same environment -- a dev leg's state check compares
+ * against the previous dev day, never a prod day, preserving the
+ * cross-day baseline continuity within each environment independently.
+ */
+export function selectPreviousRow(
+  rows: LedgerRow[],
+  targetDate: string,
+  env: Environment,
+): LedgerRow | null {
   let best: LedgerRow | null = null;
   for (const row of rows) {
-    if (row.date < targetDate && (best === null || row.date > best.date)) {
+    if (
+      row.environment === env &&
+      row.date < targetDate &&
+      (best === null || row.date > best.date)
+    ) {
       best = row;
     }
   }
@@ -760,6 +849,7 @@ const CHECK_TITLES: Array<{ key: keyof EvaluationChecks; title: string }> = [
   { key: "latency", title: "5. Latency" },
   { key: "state", title: "6. State" },
   { key: "kill_switch", title: "7. Kill-switch" },
+  { key: "pg_net_timeouts", title: "8. pg_net stalls" },
 ];
 
 function fmtMoneyOrNa(n: number | null): string {
@@ -801,6 +891,8 @@ function checkNumbers(key: keyof EvaluationChecks, metrics: Metrics): string {
         "verified day.";
     case "kill_switch":
       return `${metrics.kill_switch_runs}/${KILL_SWITCH_SLOTS_PER_WEEKDAY} runs.`;
+    case "pg_net_timeouts":
+      return `${metrics.pg_net_timeouts} timed-out HTTP response(s) at the :07 slots.`;
   }
 }
 
@@ -889,6 +981,7 @@ export type Verdict = CheckStatus | "SKIPPED_WEEKEND";
 
 export interface StdoutEnvelope {
   date: string;
+  environment: Environment;
   verdict: Verdict;
   summary: string;
   findings: string[];
@@ -989,13 +1082,26 @@ export function parseVerificationBlock(raw: unknown): VerificationBlock {
 // above this point is unit-tested with explicit inputs, per
 // deadman_check.ts's own documented convention. main() is the only code in
 // this file that touches stdin/stdout/disk.
+//
+// #555: the ledger is still a single JSONL file
+// (docs/trading-journal/daily-verification.jsonl) shared across environments
+// -- rows are disambiguated by the `environment` field, not by filename. But
+// digests are namespaced into per-environment subdirectories:
+//   docs/trading-journal/daily/{env}/YYYY-MM-DD.md
+// This keeps dev and prod digests from colliding on the same calendar date
+// while maintaining a single queryable ledger (the environment field is the
+// partition key within it).
 // ---------------------------------------------------------------------------
 
 const LEDGER_PATH = "docs/trading-journal/daily-verification.jsonl";
-const DIGEST_DIR = "docs/trading-journal/daily";
+const DIGEST_BASE_DIR = "docs/trading-journal/daily";
 
-function digestPath(date: string): string {
-  return `${DIGEST_DIR}/${date}.md`;
+function digestDir(env: Environment): string {
+  return `${DIGEST_BASE_DIR}/${env}`;
+}
+
+function digestPath(env: Environment, date: string): string {
+  return `${digestDir(env)}/${date}.md`;
 }
 
 function parseDateArg(argv: string[]): string {
@@ -1003,6 +1109,25 @@ function parseDateArg(argv: string[]): string {
     if (arg.startsWith("--date=")) return arg.slice("--date=".length);
   }
   throw new MalformedVerificationError("missing required --date=YYYY-MM-DD argument");
+}
+
+function parseEnvironmentArg(argv: string[]): Environment {
+  for (const arg of argv) {
+    if (arg.startsWith("--environment=")) {
+      const val = arg.slice("--environment=".length);
+      if (val !== "dev" && val !== "prod") {
+        throw new MalformedVerificationError(
+          `invalid --environment=${val} (must be "dev" or "prod")`,
+        );
+      }
+      return val;
+    }
+  }
+  // Default: "dev" -- the only environment with committed history, and the
+  // only environment the workflow's dev leg writes. Keeps backward
+  // compatibility with invocations that omit the flag (local backfills, the
+  // workflow's existing dev leg before it passes the flag explicitly).
+  return "dev";
 }
 
 async function readTextIfExists(path: string): Promise<string> {
@@ -1016,8 +1141,10 @@ async function readTextIfExists(path: string): Promise<string> {
 
 async function main(): Promise<void> {
   let date: string;
+  let environment: Environment;
   try {
     date = parseDateArg(Deno.args);
+    environment = parseEnvironmentArg(Deno.args);
   } catch (e) {
     console.error(`daily_verify: ${(e as Error).message}`);
     Deno.exit(1);
@@ -1028,6 +1155,7 @@ async function main(): Promise<void> {
   if (isWeekendYmd(date)) {
     const envelope: StdoutEnvelope = {
       date,
+      environment,
       verdict: "SKIPPED_WEEKEND",
       summary: "weekend -- not evaluated",
       findings: [],
@@ -1052,26 +1180,28 @@ async function main(): Promise<void> {
   try {
     const existingLedgerText = await readTextIfExists(LEDGER_PATH);
     const existingRows = parseLedgerJsonl(existingLedgerText);
-    const previousRow = selectPreviousRow(existingRows, date);
+    const previousRow = selectPreviousRow(existingRows, date, environment);
     const previousForState = previousRow === null
       ? null
       : { floor_baseline_raw: previousRow.metrics.floor_baseline_raw };
 
     const evaluation = evaluateVerification(verification, previousForState);
-    const ledgerRow = buildLedgerRow(date, evaluation);
+    const ledgerRow = buildLedgerRow(date, environment, evaluation);
     const newLedgerText = upsertLedgerJsonl(existingLedgerText, ledgerRow);
     const markdown = renderMarkdownDigest(date, evaluation, previousRow);
 
-    await Deno.mkdir(DIGEST_DIR, { recursive: true });
+    const dir = digestDir(environment);
+    await Deno.mkdir(dir, { recursive: true });
     await Deno.writeTextFile(LEDGER_PATH, newLedgerText);
-    await Deno.writeTextFile(digestPath(date), markdown);
+    await Deno.writeTextFile(digestPath(environment, date), markdown);
 
     const envelope: StdoutEnvelope = {
       date,
+      environment,
       verdict: evaluation.verdict,
       summary: buildSummary(evaluation.metrics),
       findings: evaluation.findings,
-      artifacts: { ledger: LEDGER_PATH, digest: digestPath(date) },
+      artifacts: { ledger: LEDGER_PATH, digest: digestPath(environment, date) },
     };
     console.log(JSON.stringify(envelope));
     Deno.exit(evaluation.verdict === "FAIL" ? 2 : 0);
