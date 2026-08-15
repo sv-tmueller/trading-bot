@@ -735,6 +735,30 @@ export async function getHourlyScansPendingEntry(
   return ((data ?? []) as Record<string, unknown>[]).map(coerceHourlyScanRow);
 }
 
+// #513: returns every non-null entry_order_id for `symbol` so the recovery
+// step can exclude fills already claimed by another scan row. This keys
+// adoption to the entry_order_id / broker_order_id relationship rather than
+// a time window -- a fill is adoptable only by the scan row that produced
+// it, independent of when it lands. SELECT-only, no joins: the table is small
+// (one row per scan, 5-day lookback at hourly cadence << 1000 rows), so a
+// single-column scan with a defensive .limit(5000) cap suffices without an
+// index on entry_order_id.
+export async function getHourlyScanClaimedOrderIds(
+  sb: SupabaseClient,
+  symbol: string,
+): Promise<Set<string>> {
+  const { data, error } = await sb
+    .from("hourly_scans")
+    .select("entry_order_id")
+    .eq("symbol", symbol)
+    .not("entry_order_id", "is", null);
+  if (error) throw new Error(`getHourlyScanClaimedOrderIds: ${error.message}`);
+  return new Set(
+    ((data ?? []) as { entry_order_id: string }[])
+      .map((r) => r.entry_order_id),
+  );
+}
+
 // Bar-level concurrency guard (spec §8.4), mirroring claimTradeDate exactly
 // but keyed on (script_name, bar_ts) instead of (script_name, trade_date) --
 // an hourly bot placing multiple entries/day cannot be expressed at date

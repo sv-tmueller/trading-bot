@@ -13,6 +13,7 @@ import {
   getEarliestEquitySnapshot,
   getEquitySnapshotsSince,
   getHourlyScanByEntryOrderId,
+  getHourlyScanClaimedOrderIds,
   getHourlyScansInWindow,
   getHourlyScansPendingEntry,
   getHourlyScansSince,
@@ -1326,6 +1327,66 @@ Deno.test({
       barTsSkip,
     ]);
   },
+});
+
+// ---------------------------------------------------------------------------
+// #513: getHourlyScanClaimedOrderIds -- returns every non-null entry_order_id
+// for a symbol so reconcile()'s recovery step can exclude fills already
+// claimed by another scan row (entry-keyed adoption, not time-window).
+// ---------------------------------------------------------------------------
+
+function claimedOrderIdsBuilder(
+  response: { data: unknown[] | null; error: { message: string } | null },
+) {
+  const calls: { eq?: [string, unknown]; not?: [string, string, unknown] } = {};
+  // deno-lint-ignore no-explicit-any
+  const builder: any = {
+    select: () => builder,
+    eq: (col: string, val: unknown) => {
+      calls.eq = [col, val];
+      return builder;
+    },
+    not: (col: string, op: string, val: unknown) => {
+      calls.not = [col, op, val];
+      return Promise.resolve(response);
+    },
+  };
+  return { calls, sb: { from: () => builder } };
+}
+
+Deno.test("getHourlyScanClaimedOrderIds: returns a Set of non-null entry_order_ids for the symbol", async () => {
+  const { calls, sb } = claimedOrderIdsBuilder({
+    data: [
+      { entry_order_id: "order-A" },
+      { entry_order_id: "order-B" },
+    ],
+    error: null,
+  });
+  // deno-lint-ignore no-explicit-any
+  const result = await getHourlyScanClaimedOrderIds(sb as any, "SPY");
+  assertEquals(result instanceof Set, true);
+  assertEquals(result.size, 2);
+  assertEquals(result.has("order-A"), true);
+  assertEquals(result.has("order-B"), true);
+  assertEquals(result.has("order-C"), false);
+  assertEquals(calls.eq, ["symbol", "SPY"]);
+});
+
+Deno.test("getHourlyScanClaimedOrderIds: empty table -> empty Set", async () => {
+  const { sb } = claimedOrderIdsBuilder({ data: [], error: null });
+  // deno-lint-ignore no-explicit-any
+  const result = await getHourlyScanClaimedOrderIds(sb as any, "SPY");
+  assertEquals(result.size, 0);
+});
+
+Deno.test("getHourlyScanClaimedOrderIds: throws on a DB error", async () => {
+  const { sb } = claimedOrderIdsBuilder({ data: null, error: { message: "boom" } });
+  await assertRejects(
+    // deno-lint-ignore no-explicit-any
+    () => getHourlyScanClaimedOrderIds(sb as any, "SPY"),
+    Error,
+    "getHourlyScanClaimedOrderIds",
+  );
 });
 
 // ---------------------------------------------------------------------------
