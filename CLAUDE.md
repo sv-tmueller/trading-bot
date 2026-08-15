@@ -132,19 +132,26 @@ Account value is read in **USD** (Alpaca accounts are USD-denominated). Wraps th
 
 ### Intraday kill-switch
 
-`kill-switch` runs every 5 minutes during US market hours (`pg_cron` `*/5 13-21 * * 1-5` UTC; it
-calls Alpaca `/v2/clock` and early-exits when the market is closed, so US DST is handled without
-changing the cron expression). If UPRO drawdown from its `KILL_SWITCH_LOOKBACK_DAYS` rolling high —
-including today's running high / last trade — exceeds `KILL_SWITCH_DRAWDOWN_PCT`, it liquidates and
-sets `kill_switch_active=true` in `regime_state`.
+`kill-switch` runs every 5 minutes during US market hours (`pg_cron` `*/5 13-21 * * 1-5` UTC; US DST
+is handled without changing the cron expression). Positions are checked **before** the clock: it calls
+`getOpenPositions()` first and exits `success:no_position` when the account is flat (`logic.ts:110-114`),
+so a flat account never evaluates `/v2/clock`. The `/v2/clock` gate lives inside `checkOnePosition`
+(`logic.ts:453`) and is only reached when at least one open position exists — it exits
+`skipped:market_closed` when the market is closed. If UPRO drawdown from its
+`KILL_SWITCH_LOOKBACK_DAYS` rolling high — including today's running high / last trade — exceeds
+`KILL_SWITCH_DRAWDOWN_PCT`, it liquidates.
 
-It sources the position from the broker (`getPosition`), **not** `regime_state.current_state`, so a
-DB/broker desync can't leave a real position unprotected: a position the DB recorded as CASH (or has
-no `regime_state` row for at all) is still protected — the run raises `notifyStateDesync`, records a
-`state_desync` note in `audit_log`, and continues the drawdown check on the live position; only the
-`regime_state` upserts are skipped when there is no row to carry forward (daily-check resyncs the DB
-on its next run). A >2x refHigh/lastPrice ratio is treated as implausible (unadjusted corporate action
-or bad print) and exits `error:implausible_drawdown` with an alert instead of liquidating.
+It sources positions from the broker (`getOpenPositions`), **not** `regime_state.current_state`, so a
+DB/broker desync can't leave a real position unprotected: a position the DB recorded as CASH (or has no
+`regime_state` row for at all) is still protected. The desync check, `regime_state` upserts, and the
+`kill_switch_active=true` persistence path are gated behind an `isLegacy` check (`logic.ts:436` — a
+LONG position in `config.botTicker`, i.e. the incumbent UPRO-regime bot's own position); non-legacy
+positions fire `hourly_kill_switch_*` config keys instead. On the legacy path the run raises
+`notifyStateDesync`, records a `state_desync` note in `audit_log`, and continues the drawdown check on
+the live position; only the `regime_state` upserts are skipped when there is no row to carry forward
+(daily-check resyncs the DB on its next run). A >2x refHigh/lastPrice ratio is treated as implausible
+(unadjusted corporate action or bad print) and exits `error:implausible_drawdown` with an alert instead
+of liquidating.
 
 ### Database
 
