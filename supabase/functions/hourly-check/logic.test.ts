@@ -198,6 +198,16 @@ function buildDeps(nowIso = "2026-07-27T15:07:00Z"): { deps: HourlyCheckDeps; re
       },
       getHourlyScanByEntryOrderId: (_symbol, _orderId) =>
         Promise.resolve(null as HourlyScanRow | null),
+      // #513: default mock -- reflects the fake scanRows table so any seeded
+      // row with a non-null entryOrderId is automatically "claimed". Tests
+      // that need a different claimed set override this dep.
+      getHourlyScanClaimedOrderIds: (_symbol) => {
+        const claimed = new Set<string>();
+        for (const row of rec.scanRows.values()) {
+          if (row.entryOrderId !== null) claimed.add(row.entryOrderId);
+        }
+        return Promise.resolve(claimed);
+      },
       getHourlyScansPendingEntry: (_symbol, _sinceIso) => Promise.resolve([] as HourlyScanRow[]),
       claimBar: (_scriptName, barTs) => {
         rec.claimCalls.push(barTs);
@@ -1825,6 +1835,165 @@ Deno.test("recovery: an adoption's discovered-fills read is reused by exit-fill 
   deps.config.hourlyMaxEntriesPerDay = 0; // keep this run's own decision out of the way
   await runHourlyCheck(deps);
   assertEquals(calls, 1);
+});
+
+// ---------------------------------------------------------------------------
+// #513: entry-keyed adoption. A fill is adopted only by the scan row that
+// produced it (matched by entry_order_id / broker_order_id), not by a time
+// window. An off-cadence or manual invocation cannot cause a neighbouring
+// bar's fill to be adopted by a stale row.
+// ---------------------------------------------------------------------------
+
+Deno.test("#513: a fill is NOT adopted by a pending row when another scan row already claims that orderId as entry_order_id", async () => {
+  const { deps, rec } = buildDeps();
+  // Bar A (14:00Z) already has a successful entry with orderId "entry-A".
+  seedScanRow(rec, { barTs: "2026-07-26T14:00:00Z", entryOrderId: "entry-A" });
+  // Bar B (13:00Z) is pending -- entry_order_id is NULL.
+  const pendingB = pendingScanRow({
+    bar_ts: "2026-07-26T13:00:00Z",
+    decision: "LONG",
+  });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pendingB]);
+  // The broker returns fill "entry-A" (bar A's fill) at 14:05Z -- inside
+  // bar B's OLD time window [14:00Z, 15:00Z). Under the old code this fill
+  // could have been wrongly adopted by bar B. Under #513 it is excluded
+  // because bar A's scan row already claims "entry-A" as entry_order_id.
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "entry-A",
+        side: "BUY",
+        qty: 18,
+        fillPrice: 550,
+        fillTime: "2026-07-26T14:05:00Z", // inside bar B's old [14:00Z, 15:00Z) window
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(18); // open
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  deps.config.hourlyMaxEntriesPerDay = 0;
+
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  // The fill "entry-A" is claimed by bar A's scan row, so bar B cannot adopt it.
+  assertEquals(rec.trades.length, 0);
+  // Bar B's row stays pending -- no upsert with entryOrderId for bar B.
+  const barBScan = rec.scans.find((s) => s.barTs === pendingB.bar_ts && s.entryOrderId !== null);
+  assertEquals(barBScan, undefined);
+});
+
+Deno.test("#513: a fill IS adopted by a pending row when no other scan row claims it (ordinary recovery, no time window needed)", async () => {
+  const { deps, rec } = buildDeps();
+  const pending = pendingScanRow({
+    bar_ts: "2026-07-26T14:00:00Z",
+    decision: "LONG",
+  });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  // Fill lands FAR outside the old [15:00Z, 16:00Z) window -- e.g. 3 hours later.
+  // Under the old code this would NOT be adopted. Under #513 it IS adopted
+  // because no scan row claims this orderId.
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "recovered-late",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T18:30:00Z", // well outside any [bar+1h, bar+2h) window
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  deps.config.hourlyMaxEntriesPerDay = 0;
+
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.trades[0].brokerOrderId, "recovered-late");
+  const recoveredScan = rec.scans.find((s) =>
+    s.barTs === pending.bar_ts && s.entryOrderId === "recovered-late"
+  );
+  assertEquals(recoveredScan?.entryOrderId, "recovered-late");
+});
+
+Deno.test("#513: two pending rows -- each adopts its own fill, no cross-adoption even if both fills are same-side", async () => {
+  const { deps, rec } = buildDeps();
+  const pendingA = pendingScanRow({
+    bar_ts: "2026-07-26T13:00:00Z",
+    decision: "LONG",
+  });
+  const pendingB = pendingScanRow({
+    bar_ts: "2026-07-26T14:00:00Z",
+    decision: "LONG",
+  });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pendingA, pendingB]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "fill-A",
+        side: "BUY",
+        qty: 10,
+        fillPrice: 550,
+        fillTime: "2026-07-26T14:05:00Z", // inside A's old window AND B's old window
+      },
+      {
+        orderId: "fill-B",
+        side: "BUY",
+        qty: 8,
+        fillPrice: 551,
+        fillTime: "2026-07-26T15:05:00Z", // inside B's old window only
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(18);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  deps.config.hourlyMaxEntriesPerDay = 0;
+
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  // Both fills adopted, each by a distinct pending row (earliest-fill-first).
+  assertEquals(rec.trades.length, 2);
+  const adoptedA = rec.scans.find((s) => s.barTs === pendingA.bar_ts && s.entryOrderId !== null);
+  const adoptedB = rec.scans.find((s) => s.barTs === pendingB.bar_ts && s.entryOrderId !== null);
+  assertEquals(adoptedA?.entryOrderId, "fill-A");
+  assertEquals(adoptedB?.entryOrderId, "fill-B");
+});
+
+Deno.test("#513: #480 recovery preserved -- a genuinely-pending row (clobbered by same-bar SKIP re-scan) is still adopted", async () => {
+  // #487 ensures the SKIP-clobber guard preserves genuinely-pending rows.
+  // #513 ensures recovery still adopts them. Together: a pending row that
+  // survived a same-bar SKIP re-scan is still adoptable by its own fill.
+  const { deps, rec } = buildDeps();
+  // Simulate: bar B had a LONG entry, the journal group failed (entry_order_id
+  // stayed NULL), then a re-scan tried to SKIP on the same bar -- #487's guard
+  // preserved the LONG row. Now recovery should adopt the fill.
+  const pending = pendingScanRow({
+    bar_ts: "2026-07-26T14:00:00Z",
+    decision: "LONG",
+  });
+  // Seed the fake table with the preserved LONG row (entry_order_id NULL).
+  seedScanRow(rec, { barTs: pending.bar_ts, decision: "LONG", entryOrderId: null });
+  deps.db.getHourlyScansPendingEntry = () => Promise.resolve([pending]);
+  deps.alpaca.listFilledOrdersSince = () =>
+    Promise.resolve([
+      {
+        orderId: "preserved-fill",
+        side: "BUY",
+        qty: 12,
+        fillPrice: 549.5,
+        fillTime: "2026-07-26T15:20:00Z",
+      },
+    ] as ClosedOrderFill[]);
+  deps.alpaca.getPosition = () => Promise.resolve(12);
+  deps.alpaca.listOpenOrderIds = () => Promise.resolve(["leg-tp", "leg-sl"]);
+  deps.config.hourlyMaxEntriesPerDay = 0;
+
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(typeof outcome, "string");
+  assertEquals(rec.trades.length, 1);
+  assertEquals(rec.trades[0].brokerOrderId, "preserved-fill");
+  const recoveredScan = rec.scans.find((s) =>
+    s.barTs === pending.bar_ts && s.entryOrderId === "preserved-fill"
+  );
+  assertEquals(recoveredScan?.entryOrderId, "preserved-fill");
 });
 
 // ---------------------------------------------------------------------------

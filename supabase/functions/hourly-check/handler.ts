@@ -17,6 +17,7 @@ import {
   claimBar,
   getConfig,
   getHourlyScanByEntryOrderId,
+  getHourlyScanClaimedOrderIds,
   getHourlyScansPendingEntry,
   getTradesSince,
   insertAuditLog,
@@ -60,6 +61,7 @@ export function buildDeps(): HourlyCheckDeps {
       upsertHourlyScanUnlessEntered: (p) => upsertHourlyScanUnlessEntered(sb, p),
       getHourlyScanByEntryOrderId: (symbol, orderId) =>
         getHourlyScanByEntryOrderId(sb, symbol, orderId),
+      getHourlyScanClaimedOrderIds: (symbol) => getHourlyScanClaimedOrderIds(sb, symbol),
       getHourlyScansPendingEntry: (symbol, sinceIso) =>
         getHourlyScansPendingEntry(sb, symbol, sinceIso),
       claimBar: (scriptName, barTs) => claimBar(sb, scriptName, barTs),

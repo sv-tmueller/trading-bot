@@ -198,6 +198,9 @@ export interface HourlyCheckDeps {
     // records a LONG/SHORT decision; returns false when it preserved one.
     upsertHourlyScanUnlessEntered: (p: HourlyScanSkipUpsert) => Promise<boolean>;
     getHourlyScanByEntryOrderId: (symbol: string, orderId: string) => Promise<HourlyScanRow | null>;
+    // #513: all non-null entry_order_ids for a symbol, so the recovery step
+    // can exclude fills already claimed by another scan row.
+    getHourlyScanClaimedOrderIds: (symbol: string) => Promise<Set<string>>;
     // #480 T2: pending-entry scans (decision LONG/SHORT, entry_order_id NULL)
     // consumed by reconcile()'s recovery step.
     getHourlyScansPendingEntry: (symbol: string, sinceIso: string) => Promise<HourlyScanRow[]>;
@@ -435,31 +438,27 @@ async function reconcile(
   // decision IN ('LONG','SHORT') with entry_order_id NULL; if every post-fill
   // write group then exhausted its retries, that row is the exact signature
   // left behind. Match each such pending row against a broker fill that is
-  // (a) on the matching side, (b) inside a [bar_ts+1h, bar_ts+2h) window
-  // (the fill lands roughly an hour after the signal bar closes -- see the
-  // spec's own bar-to-fill timing; should-fix finding 5 -- this window is
-  // deliberately generous relative to the ~bar+1h07m real fill time under
-  // the pinned cron minute, and is only INFORMALLY coupled to
-  // HOURLY_STALENESS_TOLERANCE_MIN (validated up to 60): raising that
-  // tolerance beyond roughly 50 minutes requires revisiting this window.
-  // Deriving the window from the tolerance was considered and rejected --
-  // at the default tolerance of 10 it would leave about three minutes of
-  // slack and start excluding real fills; a recovery window must fail wide
-  // (disclosed residual below), never narrow (silent non-recovery)), and
-  // (c) either unjournaled OR already journaled under THIS row's own entry
-  // reason (must-fix round 1 finding 2 -- a fill journaled under an EXIT
-  // reason must never be adopted as entry provenance; the "journaled under
-  // its own reason" half keeps a partial-fault replay working, where the
-  // insert_trade group already landed the row before the journal group
-  // failed). Adopt the earliest eligible match at most once, and restore
-  // entry_order_id. Idempotent/convergent: a DB failure during recovery
-  // itself just retries next scan (should-fix finding 3 -- the whole step is
-  // additionally wrapped below so a bookkeeping-only throw here can never
-  // abort the scan ahead of this function's protection duties). Documented
-  // residual (nit 6): any other same-side fill on the symbol not placed by
-  // this bar's own entry path (manual, another tool, ...) inside the same
-  // window would also be adopted here -- out of contract for the paper
-  // experiment.
+  // (a) on the matching side, (b) NOT already claimed as entry_order_id by
+  // another scan row (#513 -- replaces the former [bar_ts+1h, bar_ts+2h) time
+  // window, which could adopt a neighbouring bar's fill on an off-cadence or
+  // manual invocation; a fill is now adoptable only by the scan row that
+  // produced it, independent of when it lands), and (c) either unjournaled OR
+  // already journaled under THIS row's own entry reason (must-fix round 1
+  // finding 2 -- a fill journaled under an EXIT reason must never be adopted
+  // as entry provenance; the "journaled under its own reason" half keeps a
+  // partial-fault replay working, where the insert_trade group already landed
+  // the row before the journal group failed). Adopt the earliest eligible
+  // match at most once, and restore entry_order_id. Idempotent/convergent: a
+  // DB failure during recovery itself just retries next scan (should-fix
+  // finding 3 -- the whole step is additionally wrapped below so a
+  // bookkeeping-only throw here can never abort the scan ahead of this
+  // function's protection duties).
+  //
+  // #513 residual (was nit 6, narrowed): a same-side fill on the symbol not
+  // placed by any hourly-check entry path (manual, another tool) can still be
+  // adopted if no scan row has claimed its orderId -- but it can no longer be
+  // adopted by the WRONG row, which was the bug. This is the same class of
+  // residual as the pre-fix code, just without the cross-bar confusion.
   //
   // Deliberately NEVER clears hourly_kill_switch_* here. §5's atomic
   // clear+enter is a decision-scoped act (this bar's own decision clearing
@@ -474,20 +473,18 @@ async function reconcile(
     const pending = await db.getHourlyScansPendingEntry(symbol, lookbackIso);
     if (pending.length > 0) {
       const discovered = await getDiscoveredFills();
+      // #513: fills already claimed as entry_order_id by another scan row
+      // are not adoptable. This keys adoption to the entry_order_id /
+      // broker_order_id relationship rather than a time window.
+      const claimedOrderIds = await db.getHourlyScanClaimedOrderIds(symbol);
       const adoptedOrderIds = new Set<string>();
       for (const row of pending) {
         const wantSide = row.decision === "LONG" ? "BUY" : "SELL";
         const reason = row.decision === "LONG" ? "hourly_long_entry" : "hourly_short_entry";
-        const barStartMs = new Date(row.bar_ts).getTime();
-        const windowStart = barStartMs + HOUR_MS;
-        const windowEnd = barStartMs + 2 * HOUR_MS;
         const match = discovered
           .filter((f) => f.side === wantSide)
           .filter((f) => !adoptedOrderIds.has(f.orderId))
-          .filter((f) => {
-            const fillMs = new Date(f.fillTime).getTime();
-            return fillMs >= windowStart && fillMs < windowEnd;
-          })
+          .filter((f) => !claimedOrderIds.has(f.orderId))
           .filter((f) => {
             const existing = allSymbolTrades.find((t) => t.broker_order_id === f.orderId);
             return existing === undefined || existing.reason === reason;
