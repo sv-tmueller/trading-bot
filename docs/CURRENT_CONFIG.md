@@ -52,6 +52,40 @@ Read-only Next.js status page on Vercel. Env vars (Vercel -> Settings -> Environ
 server-side only): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Point at dev during the soak; switch
 to prod at go-live. See `web/.env.example`.
 
+## Hourly-check bot settings (dev/paper)
+
+The hourly candlestick bot (`hourly-check`, #475/#477) has been live on the dev/paper
+project (`qdaxxsuicyiscdvsdowc`) since 2026-07-30. Its settings are stored as Supabase
+secrets, same as the daily bot's above. Below is the deployed value of every `HOURLY_*`
+and `SIZING_*` setting, with the source each value was derived from.
+
+> **Note: `supabase secrets list` returns SHA-256 digests, not plaintext values.**
+> Supabase stores secret values hashed; `supabase secrets list` shows only the digest,
+> so a deployed value cannot be read back directly from the project. The values below
+> are inferred from the code defaults, `.env.example`, and the rollout runbook's
+> `supabase secrets set` command — not read from the live project. A future operator
+> should not assume `supabase secrets list` will echo the value they (or a predecessor)
+> set.
+
+| Setting | Value | Source |
+|---|---|---|
+| `HOURLY_BOT_TICKER` | `SPY` | Code default (`config.ts` `strEnv("HOURLY_BOT_TICKER", "SPY")`); `.env.example` agrees; runbook §4 `supabase secrets set` command sets `HOURLY_BOT_TICKER=SPY` |
+| `HOURLY_BOT_PAPER_ONLY` | `true` | Code default: `getHourlyConfig()` throws unless explicitly `"true"` (`config.ts`); `.env.example` documents `HOURLY_BOT_PAPER_ONLY=true`; runbook §4 sets `HOURLY_BOT_PAPER_ONLY=true` |
+| `HOURLY_SHORTS_ENABLED` | `false` | Code default: `getHourlyShortsEnabled()` defaults to `"false"`, fail-closed (`config.ts`); `.env.example` documents `HOURLY_SHORTS_ENABLED=false`; runbook §1 states `false` is non-negotiable; runbook §4 sets `HOURLY_SHORTS_ENABLED=false`; runbook §9 gate 7 closes on operator attestation (2026-07-29, #479) |
+| `HOURLY_BRACKET_R_MULTIPLE` | `2` | Code default (`config.ts` `floatEnv("HOURLY_BRACKET_R_MULTIPLE", 2)`); code enforces exactly `2` for v1 (spec §7); `.env.example` agrees; runbook §4 sets `HOURLY_BRACKET_R_MULTIPLE=2` |
+| `HOURLY_STOP_BUFFER_PCT` | `0.05` | Code default (`config.ts` `floatEnv("HOURLY_STOP_BUFFER_PCT", 0.05)`); `.env.example` agrees; runbook §4 sets `HOURLY_STOP_BUFFER_PCT=0.05` |
+| `HOURLY_MIN_STOP_DISTANCE` | `0.05` | Code default (`config.ts` `floatEnv("HOURLY_MIN_STOP_DISTANCE", 0.05)`); `.env.example` agrees; runbook §4 sets `HOURLY_MIN_STOP_DISTANCE=0.05` |
+| `HOURLY_MAX_ENTRIES_PER_DAY` | `3` | Code default (`config.ts` `intEnv("HOURLY_MAX_ENTRIES_PER_DAY", 3)`); `.env.example` agrees; runbook §4 sets `HOURLY_MAX_ENTRIES_PER_DAY=3` |
+| `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | Code default (`config.ts` `intEnv("HOURLY_STALENESS_TOLERANCE_MIN", 10)`); `.env.example` agrees; runbook §4 sets `HOURLY_STALENESS_TOLERANCE_MIN=10`; runbook §8 T10 verified `7 + 1 = 8 < 10` with 2 min headroom |
+| `HOURLY_CONTEXT_MODE` | `none` | Code default (`config.ts` `strEnv("HOURLY_CONTEXT_MODE", "none")`); `.env.example` agrees; runbook §4 sets `HOURLY_CONTEXT_MODE=none` |
+| `SIZING_RISK_PCT` | `0.01` | Code default (`config.ts` `floatEnv("SIZING_RISK_PCT", 0.01)`); `.env.example` agrees; runbook §4 sets `SIZING_RISK_PCT=0.01` |
+| `SIZING_NOTIONAL_CAP_PCT` | `0.10` | Code default (`config.ts` `floatEnv("SIZING_NOTIONAL_CAP_PCT", 0.10)`); `.env.example` agrees; runbook §4 sets `SIZING_NOTIONAL_CAP_PCT=0.10` |
+
+All three derivation sources (code default, `.env.example`, runbook §4 `supabase secrets set`
+command) agree on every value. No source contradicts another. The runbook's §4 command
+was executed against `qdaxxsuicyiscdvsdowc` on 2026-07-29 (§2 ledger, "Capture evidence"
+comment on #479).
+
 ## Operational state
 
 - Deployment: dev (`qdaxxsuicyiscdvsdowc`) paper, soaking; prod not yet deployed.
