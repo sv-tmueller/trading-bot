@@ -190,9 +190,9 @@ export function formatMissingSlots(slots: string[]): string {
 
 // Dual WARN thresholds based on ledger data (#618): scan-only days (no
 // entries) are consistently faster than entry days.
-//   Scan-only observed max: 2.2-3.4s (2026-08-03..08-05, 08-07) ->
+//   Scan-only observed max: 2.2-3.4s (2026-08-03..08-05, 08-10, 08-14) ->
 //     5000ms gives ~1.5s headroom.
-//   Entry-day observed max: 4.3-8.1s (2026-08-06, 08-08, 08-11..08-13) ->
+//   Entry-day observed max: 4.3-8.1s (2026-08-06, 08-07, 08-11, 08-13) ->
 //     12000ms gives ~4s headroom.
 export const LATENCY_WARN_SCAN_MS = 5_000;
 export const LATENCY_WARN_ENTRY_MS = 12_000;
