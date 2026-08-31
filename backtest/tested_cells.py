@@ -156,9 +156,11 @@ LEDGER: Tuple[TestedCell, ...] = (
     ),
     TestedCell(
         family="opening_range_breakout", cadence="5m", vehicle="SPY",
-        exit_style="bracket_OR_RxRisk", n_cells=18, verdict=PENDING, power="NONE",
-        source="docs/research/2026-07-24-orb-longshort-preregistration.md", date="2026-07-24",
-        note="Long/short grid: 2 dir x or_bars{1,3,6} x target{close,5R,10R}. Frozen, awaiting data.",
+        exit_style="bracket_OR_RxRisk", n_cells=18, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-07-24-orb-longshort-preregistration.md", date="2026-08-31",
+        note="0/18 cells cleared the bar. CAGR -30% to -34%, max DD -98%. n_w=10, "
+             "below n_w=13 promotion bar.",
     ),
     # --- Candlestick patterns v1, context-free (#435) --------------------------------
     TestedCell(
