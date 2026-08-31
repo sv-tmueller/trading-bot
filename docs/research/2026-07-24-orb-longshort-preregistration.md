@@ -172,11 +172,47 @@ path 3 is worth funding — but it cannot promote anything on its own.
 
 ## §7 Results
 
-**EMPTY — not yet run. DATA-BLOCKED per §6.**
+**Power-gate assessment:** DIRECTIONAL — 242601 bars / 2667 sessions / n_w=10
+(2016-01-04 → 2026-08-12). n_w=10 is below the n_w=13 promotion bar (§5), so this is a
+directional read only, NOT gate-eligible. No cell can promote on this data regardless of
+performance.
 
-No numbers appear here because none exist. When data is supplied, this section is filled in
-a **strictly later commit** than the one that froze §2–§5, provable from git history, and
-§2–§5 are not edited afterward.
+Source: `local:data/intraday/SPY_5min.csv`
+Grid: 18 cells (direction × or_bars[1, 3, 6] × target['close', 'R=5', 'R=10']) — all
+disclosed for multiplicity
+Bar: after-tax US Calmar > 1.3085 (SPY B&H median window, n_w=13)
+Always-in benchmark: after-tax US Calmar 0.386
+
+| dir | or_bars | target | CalmarUS | CAGR | maxDD | #trades | random | > bar? |
+|---|---|---|---|---|---|---|---|---|
+| long | 1 | close | nan | -32.5% | -98.5% | 2245 | nan | no |
+| long | 1 | R=5 | nan | -32.3% | -98.4% | 2245 | nan | no |
+| long | 1 | R=10 | nan | -32.5% | -98.5% | 2245 | nan | no |
+| long | 3 | close | nan | -30.5% | -97.9% | 2099 | nan | no |
+| long | 3 | R=5 | nan | -30.4% | -97.9% | 2099 | nan | no |
+| long | 3 | R=10 | nan | -30.5% | -97.9% | 2099 | nan | no |
+| long | 6 | close | nan | -30.5% | -97.9% | 1983 | nan | no |
+| long | 6 | R=5 | nan | -30.3% | -97.8% | 1983 | nan | no |
+| long | 6 | R=10 | nan | -30.5% | -97.9% | 1983 | nan | no |
+| short | 1 | close | nan | -34.1% | -98.8% | 2151 | nan | no |
+| short | 1 | R=5 | nan | -33.5% | -98.7% | 2151 | nan | no |
+| short | 1 | R=10 | nan | -33.9% | -98.8% | 2151 | nan | no |
+| short | 3 | close | nan | -33.0% | -98.6% | 2003 | nan | no |
+| short | 3 | R=5 | nan | -32.6% | -98.5% | 2003 | nan | no |
+| short | 3 | R=10 | nan | -33.0% | -98.6% | 2003 | nan | no |
+| short | 6 | close | nan | -31.2% | -98.2% | 1833 | nan | no |
+| short | 6 | R=5 | nan | -30.7% | -98.0% | 1833 | nan | no |
+| short | 6 | R=10 | nan | -31.0% | -98.1% | 1833 | nan | no |
+
+Cells clearing the bar: 0 / 18
+
+**Verdict: DIRECTIONAL_NO_GO.** All 18 cells show catastrophic performance — CAGR ranges
+from −30.3% to −34.1%, maximum drawdown from −97.8% to −98.8%, and after-tax Calmar is
+`nan` across every cell (negative CAGR makes Calmar undefined). The random-entry twins
+are likewise `nan`, so the timing-edge comparison is unreadable — though irrelevant given
+the primary metric's total failure. Even on a purely directional basis (ignoring the
+n_w=13 gate), no cell remotely approaches the 1.3085 Calmar bar or the 0.386 always-in
+benchmark. ORB long/short on SPY 5-min is a decisive negative.
 
 Reproduce with:
 
