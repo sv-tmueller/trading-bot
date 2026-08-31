@@ -247,30 +247,58 @@ Deno.test("checkSlots: a run with outcome starting error: -> FAIL", () => {
 // checkLatency (§5.3 check 5)
 // ---------------------------------------------------------------------------
 
-Deno.test("checkLatency: every run well under the warn threshold -> PASS", () => {
+Deno.test("checkLatency: every run well under the scan warn threshold -> PASS", () => {
   const runs = [hourlyRun({
     started_at: "2026-08-05T13:07:00.000Z",
     finished_at: "2026-08-05T13:07:02.000Z",
   })];
-  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+  assertEquals(checkLatency(runs, 0), { status: "PASS", findings: [] });
 });
 
-Deno.test("checkLatency: just over the 10s warn threshold -> WARN", () => {
+Deno.test("checkLatency: just over the 5s scan warn threshold -> WARN (scan-only day)", () => {
   const runs = [hourlyRun({
     started_at: "2026-08-05T13:07:00.000Z",
-    finished_at: "2026-08-05T13:07:10.001Z",
+    finished_at: "2026-08-05T13:07:05.001Z",
   })];
-  const result = checkLatency(runs);
+  const result = checkLatency(runs, 0);
   assertEquals(result.status, "WARN");
   assertEquals(result.findings.length, 1);
 });
 
-Deno.test("checkLatency: exactly at the 10s warn threshold -> PASS (boundary is exclusive)", () => {
+Deno.test("checkLatency: exactly at the 5s scan warn threshold -> PASS (boundary is exclusive)", () => {
   const runs = [hourlyRun({
     started_at: "2026-08-05T13:07:00.000Z",
-    finished_at: "2026-08-05T13:07:10.000Z",
+    finished_at: "2026-08-05T13:07:05.000Z",
   })];
-  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+  assertEquals(checkLatency(runs, 0), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkLatency: scan-only day at 6s -> WARN (over 5000ms scan threshold)", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:06.000Z",
+  })];
+  const result = checkLatency(runs, 0);
+  assertEquals(result.status, "WARN");
+  assertEquals(result.findings.length, 1);
+});
+
+Deno.test("checkLatency: entry day at 11s -> PASS (under 12000ms entry threshold)", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:11.000Z",
+  })];
+  assertEquals(checkLatency(runs, 1), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkLatency: entry day at 13s -> WARN (over 12000ms entry threshold)", () => {
+  const runs = [hourlyRun({
+    started_at: "2026-08-05T13:07:00.000Z",
+    finished_at: "2026-08-05T13:07:13.000Z",
+  })];
+  const result = checkLatency(runs, 1);
+  assertEquals(result.status, "WARN");
+  assertEquals(result.findings.length, 1);
 });
 
 Deno.test("checkLatency: just over the 120s fail threshold -> FAIL", () => {
@@ -278,26 +306,26 @@ Deno.test("checkLatency: just over the 120s fail threshold -> FAIL", () => {
     started_at: "2026-08-05T13:07:00.000Z",
     finished_at: "2026-08-05T13:09:00.001Z",
   })];
-  assertEquals(checkLatency(runs).status, "FAIL");
+  assertEquals(checkLatency(runs, 0).status, "FAIL");
 });
 
 Deno.test("checkLatency: a FAIL run alongside a WARN run -> overall FAIL (highest severity wins)", () => {
   const runs = [
     hourlyRun({
       started_at: "2026-08-05T13:07:00.000Z",
-      finished_at: "2026-08-05T13:07:10.001Z",
+      finished_at: "2026-08-05T13:07:06.001Z",
     }),
     hourlyRun({
       started_at: "2026-08-05T14:07:00.000Z",
       finished_at: "2026-08-05T14:09:00.001Z",
     }),
   ];
-  assertEquals(checkLatency(runs).status, "FAIL");
+  assertEquals(checkLatency(runs, 0).status, "FAIL");
 });
 
 Deno.test("checkLatency: unfinished run (finished_at null) is skipped, not a latency finding", () => {
   const runs = [hourlyRun({ finished_at: null, outcome: null })];
-  assertEquals(checkLatency(runs), { status: "PASS", findings: [] });
+  assertEquals(checkLatency(runs, 0), { status: "PASS", findings: [] });
 });
 
 // ---------------------------------------------------------------------------
