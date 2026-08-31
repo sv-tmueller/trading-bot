@@ -81,3 +81,27 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      # #602: post-deploy smoke test. Calls the status Edge Function with
+      # `?verify=<yesterday>` to exercise the full verification path (including
+      # the pg_net_timeout_count RPC). Fails the deploy job on any non-2xx,
+      # catching regressions where a function is deployed but its migration
+      # wasn't applied (the original #602 bug: the RPC crashed because pg_net
+      # was missing). Uses the same STATUS_URL/STATUS_TOKEN secrets as
+      # daily-verification.yml and heartbeat.yml. Silent skip when the secrets
+      # are unset (pre-go-live, dev-only) so this never blocks a first deploy.
+      - name: Smoke test -- status?verify=<yesterday>
+        run: |
+          if [ -z "$STATUS_URL" ] || [ -z "$STATUS_TOKEN" ]; then
+            echo "::notice::Smoke test skipped -- STATUS_URL and/or STATUS_TOKEN repo secrets are not set. See docs/runbooks/status-check.md."
+            exit 0
+          fi
+          YESTERDAY="$(date -u -d yesterday +%F)"
+          echo "Smoking status?verify=$YESTERDAY ..."
+          curl --fail-with-body -sS --max-time 60 \
+            -H "x-status-token: $STATUS_TOKEN" \
+            "$STATUS_URL?verify=$YESTERDAY" >/dev/null
+          echo "Smoke test passed."
+        env:
+          STATUS_URL: ${{ secrets.STATUS_URL }}
+          STATUS_TOKEN: ${{ secrets.STATUS_TOKEN }}

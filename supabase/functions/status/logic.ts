@@ -65,8 +65,9 @@ export interface StatusDeps {
     getHourlyScansInWindow: (sinceIso: string, untilIso: string) => Promise<HourlyScanRow[]>;
     getTradesInWindow: (sinceIso: string, untilIso: string) => Promise<TradeRow[]>;
     // #554: pg_net stall check -- security-definer RPC (migration 0016).
-    // Only called when `verifyDate` is passed.
-    getPgNetTimeoutCount: (sinceIso: string, untilIso: string) => Promise<number>;
+    // Only called when `verifyDate` is passed. Resolves to undefined when
+    // the RPC is unavailable (#602); logic.ts coerces via `?? 0`.
+    getPgNetTimeoutCount: (sinceIso: string, untilIso: string) => Promise<number | undefined>;
   };
 }
 

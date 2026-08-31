@@ -1,0 +1,13 @@
+-- Enable the pg_net extension (#602).
+--
+-- Migration 0016 created a security-definer RPC (`pg_net_timeout_count`)
+-- that queries `net._http_response`. That RPC crashes at call time when
+-- the `pg_net` extension is not installed on the project, surfacing as an
+-- HTTP 500 on the status Edge Function's `?verify=DATE` endpoint. This
+-- migration ensures the extension is present before the RPC is invoked.
+--
+-- `CREATE EXTENSION IF NOT EXISTS` is idempotent: re-running it on a
+-- project where pg_net is already enabled is a no-op. On Supabase, pg_net
+-- is a whitelisted extension available to all projects (it powers
+-- `pg_cron`'s HTTP requests and the `net` schema).
+CREATE EXTENSION IF NOT EXISTS pg_net;
