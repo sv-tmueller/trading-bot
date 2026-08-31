@@ -23,6 +23,7 @@ import {
   getLatestHourlyScan,
   getLatestRegimeState,
   getPendingNotifications,
+  getPgNetTimeoutCount,
   getRegimeStatesSince,
   getTradesInWindow,
   getTradesSince,
@@ -1753,5 +1754,70 @@ Deno.test({
       "bar_ts",
       [barTs1, barTs2],
     );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #602: getPgNetTimeoutCount resilience. The status Edge Function returns
+// HTTP 500 on `?verify=DATE` when the underlying `pg_net_timeout_count` RPC
+// fails (e.g. the pg_net extension is not enabled, or the RPC is missing).
+// The helper must catch the RPC error and return undefined (degrading to 0
+// via `pgNetTimeoutCount ?? 0` in logic.ts) instead of letting the rejection
+// propagate and crash the entire endpoint. A console.warn is emitted so the
+// degradation is visible in the function logs.
+// ---------------------------------------------------------------------------
+
+function fakeRpcClient(
+  rpcName: string,
+  response: { data: unknown; error: { message: string } | null },
+  // deno-lint-ignore no-explicit-any
+): any {
+  const calls: Array<{ name: string; args: unknown }> = [];
+  return {
+    calls,
+    sb: {
+      rpc: (name: string, args: unknown) => {
+        if (name !== rpcName) throw new Error(`unexpected rpc ${name}`);
+        calls.push({ name, args });
+        return Promise.resolve(response);
+      },
+    },
+  };
+}
+
+Deno.test("getPgNetTimeoutCount: returns the count when the RPC succeeds (numeric data)", async () => {
+  const { sb } = fakeRpcClient("pg_net_timeout_count", { data: 3, error: null });
+  const count = await getPgNetTimeoutCount(sb, "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z");
+  assertEquals(count, 3);
+});
+
+Deno.test("getPgNetTimeoutCount: returns the count when the RPC succeeds (bigint-as-number data)", async () => {
+  const { sb } = fakeRpcClient("pg_net_timeout_count", { data: 7, error: null });
+  const count = await getPgNetTimeoutCount(sb, "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z");
+  assertEquals(count, 7);
+});
+
+Deno.test({
+  name:
+    "getPgNetTimeoutCount: RPC error -> returns undefined instead of throwing (does not crash the status endpoint)",
+  // Suppress the expected console.warn from this test so it does not pollute
+  // the test runner output.
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_timeout_count", {
+        data: null,
+        error: { message: "extension pg_net does not exist" },
+      });
+      const result = await getPgNetTimeoutCount(sb, "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z");
+      assertEquals(result, undefined);
+      // The degradation is logged so operators can spot it in the function logs.
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetTimeoutCount"), true);
+    } finally {
+      console.warn = origWarn;
+    }
   },
 });

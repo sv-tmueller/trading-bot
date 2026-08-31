@@ -791,16 +791,27 @@ export async function claimBar(
 // within the given [start, end) timestamptz range. The RPC is in the
 // public schema, callable by anon/authenticated, and exposes nothing
 // else from the net schema.
+//
+// #602: If the RPC fails (e.g. the pg_net extension is not enabled, or
+// the function is missing), the helper resolves to undefined and logs a
+// console.warn rather than throwing. The status digest degrades
+// gracefully via `pgNetTimeoutCount ?? 0` in logic.ts, so the endpoint
+// returns 200 (reporting 0 timeouts) instead of 500. This is defense-
+// in-depth on top of migration 0017_enable_pg_net.sql (the root-cause
+// fix that ensures the extension is present).
 export async function getPgNetTimeoutCount(
   sb: SupabaseClient,
   sinceIso: string,
   untilIso: string,
-): Promise<number> {
+): Promise<number | undefined> {
   const { data, error } = await sb
     .rpc("pg_net_timeout_count", {
-      start_ts: sinceIso,
-      end_ts: untilIso,
+      range_start: sinceIso,
+      range_end: untilIso,
     });
-  if (error) throw new Error(`getPgNetTimeoutCount: ${error.message}`);
+  if (error) {
+    console.warn(`getPgNetTimeoutCount: RPC failed, degrading to undefined: ${error.message}`);
+    return undefined;
+  }
   return typeof data === "number" ? data : Number(data ?? 0);
 }

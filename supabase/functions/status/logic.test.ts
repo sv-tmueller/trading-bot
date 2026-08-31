@@ -153,6 +153,7 @@ function makeDeps(
       return Promise.resolve<TradeRow[]>([]);
     },
     // #554: pg_net stall check RPC mock -- returns 0 (no timeouts) by default.
+    // #602: aligned with the `number | undefined` return type.
     getPgNetTimeoutCount: (_sinceIso: string, _untilIso: string) => {
       calls.pgNetTimeoutCountCalled = true;
       return Promise.resolve(0);
@@ -1188,6 +1189,24 @@ Deno.test("verification: empty day -> scans/trades/hourly_check_runs [], kill_sw
     outcome_counts: {},
     started_at: [],
   });
+});
+
+// #602: when the pg_net_timeout_count RPC fails (e.g. the pg_net extension is
+// not enabled), getPgNetTimeoutCount resolves to undefined instead of rejecting.
+// The status digest must degrade gracefully: pg_net_timeouts falls back to 0
+// (via `pgNetTimeoutCount ?? 0`), and the endpoint returns 200, not 500.
+Deno.test({
+  name:
+    "verification: pg_net_timeouts falls back to 0 when getPgNetTimeoutCount resolves to undefined (RPC unavailable)",
+  fn: async () => {
+    const { deps } = makeDeps({
+      db: {
+        getPgNetTimeoutCount: () => Promise.resolve(undefined),
+      } as unknown as StatusDeps["db"],
+    });
+    const digest = await runStatus(deps, undefined, VERIFY_DATE);
+    assertEquals(digest.verification?.pg_net_timeouts, 0);
+  },
 });
 
 Deno.test("composition: verifyDate + windowDays both present -> both blocks correct and independent", async () => {
