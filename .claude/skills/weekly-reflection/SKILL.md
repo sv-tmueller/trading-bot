@@ -27,7 +27,7 @@ writes -- everything this skill touches is a Markdown file or a GitHub issue.
 
 ## Sources (read all of these before writing anything)
 
-1. **The week's daily digests**, `docs/trading-journal/daily/<date>.md` for every trading day in
+1. **The week's daily digests**, `docs/trading-journal/daily/dev/<date>.md` for every trading day in
    `<week>` (Monday through Friday, skipping days the market was closed) -- specifically each
    digest's `## Reflection` section (stage 1 output). A day with no `## Reflection` section means
    stage 1 has not run for that day yet; see [Data-availability rule](#data-availability-rule). If
@@ -72,13 +72,27 @@ week** (realized R cumulative, 1.0R/1.5R counterfactual cumulative, stop-width s
 vs the 5bps model). Print the sample size next to every number (design §3's restraint: sample sizes
 are printed next to every number, never implied).
 
+If the latest day in the week that has a `## Reflection` section contains no trailing-20 table
+(no closed trades that day -- e.g. W33 Aug 14, which has a reflection section but no table),
+walk backwards to the most recent earlier day in the week whose `## Reflection` section *does*
+contain the table (W33 Aug 13 has one). Carry that table over verbatim. If no day in the week has
+a trailing-20 table in its digest, fall back to the JSONL trailing-20 data from Source 2
+(`daily-verification.jsonl`) and say so plainly in the data-availability line -- never omit the
+table, never fabricate one.
+
 #### Data-availability rule
 
 If no daily digest in the week has a `## Reflection` section yet (the pre-engine period, true for
 every week before #578 ships), write one explicit line stating that: only entries, fills, and
 R-multiples from `daily-verification.jsonl` and the daily digests are available for this week, and
 that every counterfactual column (R-target replay, stop-width survival, cost-vs-5bps) is `n/a`. Do
-not compute or estimate counterfactuals from data that was not designed to carry them.
+do not compute or estimate counterfactuals from data that was not designed to carry them.
+
+If the week is a **partial-coverage week** -- some daily digests have a `## Reflection` section
+and others do not (as in the W33 dry-run: Aug 10-12 have no reflection, Aug 13-14 do) -- use the
+reflection data from the days that have it, and for each day without one write "reflection engine
+not yet wired / not yet verified". Never infer or fabricate reflection content for the missing
+days; never extrapolate the present days' conclusions onto the absent ones.
 
 ### `## 2. Deterministic triggers`
 
