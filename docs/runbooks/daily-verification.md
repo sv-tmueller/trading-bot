@@ -23,7 +23,7 @@ the same numbers):
 | Check | Replaces (#535) | Rule |
 | --- | --- | --- |
 | `slots` | check 1 | All 9 `hourly-check` runs for the day exist, every row has a non-null `finished_at`/`outcome`, and no `outcome` starts `error:`. Any breach FAILs. |
-| `latency` | check 5 | Per run, `finished_at - started_at`. WARN above 10s (the per-request deadline, #511), FAIL above 120s (migration 0015's `pg_net` budget). |
+| `latency` | check 5 | Per run, `finished_at - started_at`. WARN above 5s on scan-only days or 12s on entry days (dual thresholds from ledger data, #618), FAIL above 120s (migration 0015's `pg_net` budget). |
 | `scans` | check 2 | The number of `hourly_scans` rows must match the number of runs whose outcome actually scans (see `NON_SCANNING_OUTCOMES` in `scripts/daily_verify.ts`). A SHORT decision while `shorts_enabled` is false FAILs; a LONG row with no `entry_order_id` WARNs; a NEUTRAL-only `detectors_fired` alongside `no_detectors_fired` is never a finding (the `inside_bar` adjudication). |
 | `geometry` | check 3 | Every bracket `stop_price`/`target_price` must be a whole cent. Any breach FAILs (vacuous pass on a no-trade day). |
 | `journal` | check 4 | Every hourly fill must join a scan row via `entry_order_id` (`findUnmatchedEntryTrades`). An unmatched fill FAILs. |
