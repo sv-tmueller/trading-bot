@@ -135,12 +135,33 @@ jobs:
           STATUS_URL_PROD: ${{ secrets.STATUS_URL_PROD }}
           STATUS_TOKEN_PROD: ${{ secrets.STATUS_TOKEN_PROD }}
 
+      # Interim pre-go-live keep-alive. Prod is not deployed yet (#230), so
+      # the prod project may be paused or the KEEPALIVE_URL_PROD secret may
+      # point at a hostname that does not resolve. A DNS/connection failure
+      # (curl exit codes 6 = could-not-resolve-host, 7 = failed-to-connect)
+      # is informational before go-live, not an outage -- the dev ping (the
+      # one that protects the live paper bot) ran green. Degrade those two
+      # codes to ::warning:: and continue; any other HTTP error (non-2xx,
+      # timeout, etc.) still fails the run red. At go-live (#230) the status
+      # secrets supersede this pair and this step is removed entirely.
       - name: Ping prod (keep-alive)
         if: ${{ !cancelled() && steps.check_prod.outputs.mode == 'keepalive' }}
         run: |
+          set +e
           curl --fail-with-body -sS --max-time 60 \
             -H "apikey: $KEEPALIVE_ANON_KEY_PROD" \
-            "$KEEPALIVE_URL_PROD"
+            "$KEEPALIVE_URL_PROD" -o /tmp/keepalive-response.json
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::notice::Prod keep-alive OK"
+            cat /tmp/keepalive-response.json
+          elif [ "$code" -eq 6 ] || [ "$code" -eq 7 ]; then
+            echo "::warning::Prod keep-alive DNS/connection failure (curl exit $code) -- prod project may be paused or KEEPALIVE_URL_PROD is stale. Informational before go-live (#230); dev ping succeeded."
+          else
+            echo "::error::Prod keep-alive failed with curl exit code $code"
+            exit "$code"
+          fi
         env:
           KEEPALIVE_URL_PROD: ${{ secrets.KEEPALIVE_URL_PROD }}
           KEEPALIVE_ANON_KEY_PROD: ${{ secrets.KEEPALIVE_ANON_KEY_PROD }}
