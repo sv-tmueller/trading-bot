@@ -1,3 +1,45 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+:root {
+  --bg: #0c0b0a;
+  --bg-glow: #1a1713;
+  --fg: #e8eae6;
+  --fg-2: #bdb8af;
+  --muted: #8a847a;
+  --accent: #e8b05a;
+  --accent-border: #3a3025;
+  --border: #211e1a;
+  --dot-dim: #3a352d;
+  /* semantic data-viz */
+  --pos: #3fb950;
+  --neg: #f85149;
+  --warn: #d29922;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-glow: var(--bg-glow);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-border: var(--accent-border);
+  --color-border: var(--border);
+  --color-dot-dim: var(--dot-dim);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-warn: var(--warn);
+  --font-display: var(--font-space-grotesk);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+body {
+  background-color: var(--bg);
+  background-image: radial-gradient(
+    ellipse 80% 60% at 50% -10%,
+    var(--bg-glow) 0%,
+    transparent 70%
+  );
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}

@@ -239,31 +239,31 @@ export default async function Page() {
     <main className="mx-auto max-w-5xl space-y-6 p-6">
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Trading Bot — Status</h1>
-        <span className="text-xs text-zinc-500">read-only · refresh to update</span>
+        <span className="text-xs text-muted">read-only · refresh to update</span>
       </header>
 
       {dbError && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/15 px-4 py-2 text-sm text-red-300">
+        <div className="rounded-md border border-neg/40 bg-neg/15 px-4 py-2 text-sm text-neg">
           ⚠ Data load partially failed — one or more Supabase reads errored. Values
           below may be stale or missing; do not treat blanks as “all clear”.
         </div>
       )}
 
       {isStale && ageText && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm text-amber-300">
+        <div className="rounded-md border border-warn/40 bg-warn/15 px-4 py-2 text-sm text-warn">
           ⚠ Newest scan is {ageText} (older than the {STALE_HOURS_THRESHOLD}h threshold) — the bot may
           be stalled. A frozen dashboard should read as frozen, not as “all clear”.
         </div>
       )}
 
       {!latestScan && !dbError && (
-        <div className="rounded-md border border-zinc-700 bg-zinc-900/50 px-4 py-2 text-sm text-zinc-400">
+        <div className="rounded-md border border-accent-border bg-bg-glow/50 px-4 py-2 text-sm text-muted">
           No hourly_scans rows yet — the bot has not run, or is pointed at a fresh database.
         </div>
       )}
 
       {paused && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm text-amber-300">
+        <div className="rounded-md border border-warn/40 bg-warn/15 px-4 py-2 text-sm text-warn">
           ⏸ Trading is PAUSED (bot_config.paused = true)
         </div>
       )}
@@ -288,8 +288,8 @@ export default async function Page() {
       </section>
 
       {latestScan && (
-        <p className="text-sm text-zinc-400">
-          Latest scan: <span className="text-zinc-200">{fmt(latestScan.bar_ts)}</span> ({ageText}) ·{" "}
+        <p className="text-sm text-muted">
+          Latest scan: <span className="text-fg-2">{fmt(latestScan.bar_ts)}</span> ({ageText}) ·{" "}
           {latestScan.symbol} {latestScan.decision}
           {latestScan.skip_reason ? ` · skip reason: ${latestScan.skip_reason}` : ""} · equity{" "}
           {money(equity)}
@@ -298,14 +298,14 @@ export default async function Page() {
       )}
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-zinc-300">Open position &amp; bracket levels ({symbol})</h2>
+        <h2 className="text-sm font-medium text-fg-2">Open position &amp; bracket levels ({symbol})</h2>
         {account === null ? (
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
+          <div className="rounded-lg border border-border bg-bg-glow/50 p-4 text-sm text-muted">
             Position unknown — the Alpaca account read failed. This is not a claim of "no
             position"; see the Holdings panel below for the connection details.
           </div>
         ) : openPosition === null ? (
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
+          <div className="rounded-lg border border-border bg-bg-glow/50 p-4 text-sm text-muted">
             No open {symbol} position.
           </div>
         ) : (
@@ -321,7 +321,7 @@ export default async function Page() {
           </div>
         )}
         {bracketUnavailable && (
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted">
             Bracket levels unavailable for this symbol — Alpaca positions carry no back-reference to
             the order that opened them, so this page pairs the open position with the latest entered
             scan by symbol only; no entered scan matches {symbol}.
@@ -330,13 +330,13 @@ export default async function Page() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-zinc-300">
+        <h2 className="text-sm font-medium text-fg-2">
           Holdings — Alpaca {account && account.paper === false ? "LIVE" : "paper"}
         </h2>
         {account === null ? (
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-sm text-zinc-500">
-            Alpaca not connected — set <code className="text-zinc-300">ALPACA_API_KEY</code>,{" "}
-            <code className="text-zinc-300">ALPACA_SECRET_KEY</code> (and <code className="text-zinc-300">ALPACA_PAPER</code>)
+          <div className="rounded-lg border border-border bg-bg-glow/50 p-4 text-sm text-muted">
+            Alpaca not connected — set <code className="text-fg-2">ALPACA_API_KEY</code>,{" "}
+            <code className="text-fg-2">ALPACA_SECRET_KEY</code> (and <code className="text-fg-2">ALPACA_PAPER</code>)
             in the Vercel project to show live equity + positions.
           </div>
         ) : (
@@ -393,18 +393,18 @@ export default async function Page() {
 
       <a
         href="/daily"
-        className="block rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 hover:border-zinc-700"
+        className="block rounded-lg border border-border bg-bg-glow/50 p-4 hover:border-accent-border"
       >
-        <div className="text-[11px] uppercase tracking-wide text-zinc-500">Daily verification</div>
+        <div className="text-[11px] uppercase tracking-wide text-muted">Daily verification</div>
         <div
           className={`mt-1 text-lg font-semibold ${
             latestVerifiedDay?.verdict === "FAIL"
-              ? "text-red-400"
+              ? "text-neg"
               : latestVerifiedDay?.verdict === "WARN"
-              ? "text-amber-400"
+              ? "text-warn"
               : latestVerifiedDay
-              ? "text-emerald-400"
-              : "text-zinc-100"
+              ? "text-pos"
+              : "text-fg"
           }`}
         >
           {latestVerifiedDay ? `${latestVerifiedDay.date} · ${latestVerifiedDay.verdict}` : "No verified days yet"}
@@ -416,15 +416,15 @@ export default async function Page() {
 
 function Stat({ label, value, accent }: { label: string; value: string; accent: string }) {
   const color: Record<string, string> = {
-    emerald: "text-emerald-400",
-    amber: "text-amber-400",
-    red: "text-red-400",
-    zinc: "text-zinc-100",
+    emerald: "text-pos",
+    amber: "text-warn",
+    red: "text-neg",
+    zinc: "text-fg",
   };
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-      <div className="text-[11px] uppercase tracking-wide text-zinc-500">{label}</div>
-      <div className={`mt-1 text-lg font-semibold ${color[accent] ?? "text-zinc-100"}`}>{value}</div>
+    <div className="rounded-lg border border-border bg-bg-glow/50 p-4">
+      <div className="text-[11px] uppercase tracking-wide text-muted">{label}</div>
+      <div className={`mt-1 text-lg font-semibold ${color[accent] ?? "text-fg"}`}>{value}</div>
     </div>
   );
 }
@@ -432,26 +432,26 @@ function Stat({ label, value, accent }: { label: string; value: string; accent: 
 function Table({ title, cols, rows, empty }: { title: string; cols: string[]; rows: string[][]; empty: string }) {
   return (
     <section>
-      {title ? <h2 className="mb-2 text-sm font-medium text-zinc-300">{title}</h2> : null}
-      <div className="overflow-x-auto rounded-lg border border-zinc-800">
+      {title ? <h2 className="mb-2 text-sm font-medium text-fg-2">{title}</h2> : null}
+      <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-left text-sm">
-          <thead className="bg-zinc-900/60 text-[11px] uppercase tracking-wide text-zinc-500">
+          <thead className="bg-bg-glow/60 text-[11px] uppercase tracking-wide text-muted">
             <tr>
               {cols.map((c) => (
                 <th key={c} className="px-3 py-2 font-medium">{c}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-zinc-800">
+          <tbody className="divide-y divide-border">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={cols.length} className="px-3 py-4 text-zinc-500">{empty}</td>
+                <td colSpan={cols.length} className="px-3 py-4 text-muted">{empty}</td>
               </tr>
             ) : (
               rows.map((r, i) => (
-                <tr key={i} className="hover:bg-zinc-900/40">
+                <tr key={i} className="hover:bg-bg-glow/40">
                   {r.map((c, j) => (
-                    <td key={j} className="whitespace-nowrap px-3 py-2 text-zinc-300">{c}</td>
+                    <td key={j} className="whitespace-nowrap px-3 py-2 text-fg-2">{c}</td>
                   ))}
                 </tr>
               ))
