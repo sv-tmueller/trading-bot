@@ -38,6 +38,8 @@ const BASE_CONFIG: HourlyConfig = {
   hourlyStalenessToleranceMin: 10,
   hourlyContextMode: "none",
   hourlyShortsEnabled: true,
+  hourlyScanStartHour: 13,
+  hourlyScanEndHour: 21,
   hourlyBotPaperOnly: true,
 };
 
@@ -868,6 +870,46 @@ Deno.test("gate 7: stale candidate bar (beyond tolerance) -> skipped:stale_data,
   assertEquals(rec.scans[0].skipReason, "stale_data");
   assertEquals(rec.scans[0].barTs, "2026-07-27T14:00:00Z");
   assertEquals(rec.scans[0].detectorsFired, []);
+});
+
+// ---------------------------------------------------------------------------
+// #628: scan-window hour-range gate. With defaults (13/21) this is a no-op
+// for the cron's 13-21 envelope. An operator can narrow via supabase secrets.
+// ---------------------------------------------------------------------------
+
+Deno.test("#628: candidate bar outside scan window -> skipped:outside_scan_window", async () => {
+  // Narrow the window to [15, 19) so the 14:00 candidate (normally eligible)
+  // is outside the configured scan range.
+  const { deps, rec } = buildDeps("2026-07-27T15:07:00Z");
+  deps.config.hourlyScanStartHour = 15;
+  deps.config.hourlyScanEndHour = 19;
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:outside_scan_window");
+  assertEquals(rec.scans.length, 1);
+  assertEquals(rec.scans[0].decision, "SKIP");
+  assertEquals(rec.scans[0].skipReason, "outside_scan_window");
+});
+
+Deno.test("#628: default config (13/21) does not reject normal candidate", async () => {
+  // With defaults, the 14:00 candidate (hour 14, inside [13, 21)) passes the
+  // scan-window gate and proceeds normally.
+  const { deps, rec } = buildDeps("2026-07-27T15:07:00Z");
+  // Don't override scan hours -- defaults from BASE_CONFIG (13/21)
+  const outcome = await runHourlyCheck(deps);
+  // Should NOT be outside_scan_window -- it should be some other outcome
+  // (success, no_action, etc.) proving the gate didn't fire.
+  assertEquals(outcome.startsWith("skipped:outside_scan_window"), false);
+});
+
+Deno.test("#628: isFlattenScan fires when currentUtcHour >= scanEndHour", async () => {
+  // Set scan end to 15 so the 15:07 run (hour 15 >= 15) triggers flatten.
+  const { deps, rec } = buildDeps("2026-07-27T15:07:00Z");
+  deps.config.hourlyScanEndHour = 15;
+  const outcome = await runHourlyCheck(deps);
+  // The flatten gate fires before the scan-window gate (step 9 vs the new
+  // gate after step 7), so we get session_close_flatten_only, not
+  // outside_scan_window. Either way, it's a skip, not an entry.
+  assertEquals(outcome, "skipped:session_close_flatten_only");
 });
 
 // ---------------------------------------------------------------------------
