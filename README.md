@@ -115,6 +115,8 @@ Secrets are set per Supabase project via `supabase secrets set` (not a local `.e
 | `HOURLY_STALENESS_TOLERANCE_MIN` | `10` | Minutes past a completed bar's end before it is stale (1 - 60) |
 | `HOURLY_CONTEXT_MODE` | `none` | `none` \| `reversal` \| `continuation` trend-context mask |
 | `HOURLY_SHORTS_ENABLED` | `false` | Short entries; fail-closed, so unset means off and only an explicit `true` enables them (#493); blank or otherwise unparseable throws at function start |
+| `HOURLY_SCAN_START_HOUR` | `13` | Earliest UTC hour for hourly entry scanning (0-23); must be < end hour; cron envelope is 13-21 (#628) |
+| `HOURLY_SCAN_END_HOUR` | `21` | Latest UTC hour (exclusive); hours >= this are flatten-only (0-23); must be > start hour (#628) |
 | `HOURLY_BOT_PAPER_ONLY` | — | MUST be `true`; unset or `false` throws — the mechanical paper-only gate (§8.3) |
 
 See `docs/CURRENT_CONFIG.md` for the current deployed values.

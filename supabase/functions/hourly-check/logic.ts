@@ -710,7 +710,10 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
       return "skipped:market_closed";
     }
     const nowMs = deps.now().getTime();
-    const isFlattenScan = clock.nextClose - nowMs <= HOUR_MS;
+    const currentUtcHour = deps.now().getUTCHours();
+    const isFlattenScan =
+      (clock.nextClose - nowMs <= HOUR_MS) ||
+      (currentUtcHour >= config.hourlyScanEndHour);
 
     // 4-5. Reconciliation contract + flatten-scan close-out (T11).
     const recon = await reconcile(deps, symbol, isFlattenScan);
@@ -960,6 +963,20 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
 
     if (isBarPartial(candidate, todaySession)) {
       return await preDecisionSkip("partial_bar", `candidate bar ${candidate.timestamp}`);
+    }
+    // #628: explicit UTC hour-range gate. With defaults (13/21) this is a
+    // no-op for the cron's 13-21 envelope; it lets operators narrow the
+    // entry window without a migration. isBarPartial stays unchanged --
+    // it handles session-edge data quality independently.
+    const candidateHour = new Date(candidate.timestamp).getUTCHours();
+    if (
+      candidateHour < config.hourlyScanStartHour ||
+      candidateHour >= config.hourlyScanEndHour
+    ) {
+      return await preDecisionSkip(
+        "outside_scan_window",
+        `bar hour ${candidateHour} outside [${config.hourlyScanStartHour}, ${config.hourlyScanEndHour})`,
+      );
     }
     const barEndMs = new Date(candidate.timestamp).getTime() + HOUR_MS;
     const staleMinutes = (nowMs - barEndMs) / 60000;

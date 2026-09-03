@@ -20,6 +20,8 @@ const HOURLY_KEYS = [
   "HOURLY_STALENESS_TOLERANCE_MIN",
   "HOURLY_CONTEXT_MODE",
   "HOURLY_SHORTS_ENABLED",
+  "HOURLY_SCAN_START_HOUR",
+  "HOURLY_SCAN_END_HOUR",
   "HOURLY_BOT_PAPER_ONLY",
 ];
 
@@ -334,6 +336,8 @@ Deno.test("getHourlyConfig: defaults when env is unset (except the mandatory pap
   assertEquals(c.hourlyStalenessToleranceMin, 10);
   assertEquals(c.hourlyContextMode, "none");
   assertEquals(c.hourlyShortsEnabled, false);
+  assertEquals(c.hourlyScanStartHour, 13);
+  assertEquals(c.hourlyScanEndHour, 21);
   assertEquals(c.hourlyBotPaperOnly, true);
   clearHourlyEnv();
 });
@@ -350,6 +354,8 @@ Deno.test("getHourlyConfig: reads valid overrides", () => {
   Deno.env.set("HOURLY_STALENESS_TOLERANCE_MIN", "15");
   Deno.env.set("HOURLY_CONTEXT_MODE", "reversal");
   Deno.env.set("HOURLY_SHORTS_ENABLED", "false");
+  Deno.env.set("HOURLY_SCAN_START_HOUR", "14");
+  Deno.env.set("HOURLY_SCAN_END_HOUR", "20");
   const c = getHourlyConfig();
   assertEquals(c.hourlyBotTicker, "QQQ");
   assertEquals(c.sizingRiskPct, 0.02);
@@ -360,6 +366,8 @@ Deno.test("getHourlyConfig: reads valid overrides", () => {
   assertEquals(c.hourlyStalenessToleranceMin, 15);
   assertEquals(c.hourlyContextMode, "reversal");
   assertEquals(c.hourlyShortsEnabled, false);
+  assertEquals(c.hourlyScanStartHour, 14);
+  assertEquals(c.hourlyScanEndHour, 20);
   clearHourlyEnv();
 });
 
@@ -434,6 +442,38 @@ Deno.test("getHourlyConfig: rejects HOURLY_STALENESS_TOLERANCE_MIN out of [1, 60
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_STALENESS_TOLERANCE_MIN");
   Deno.env.set("HOURLY_STALENESS_TOLERANCE_MIN", "61");
   assertThrows(() => getHourlyConfig(), Error, "HOURLY_STALENESS_TOLERANCE_MIN");
+  clearHourlyEnv();
+});
+
+// #628: scan-window hour validation
+Deno.test("getHourlyConfig: rejects HOURLY_SCAN_START_HOUR out of [0, 23]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SCAN_START_HOUR", "-1");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SCAN_START_HOUR");
+  Deno.env.set("HOURLY_SCAN_START_HOUR", "24");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SCAN_START_HOUR");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_SCAN_END_HOUR out of [0, 23]", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SCAN_END_HOUR", "-1");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SCAN_END_HOUR");
+  Deno.env.set("HOURLY_SCAN_END_HOUR", "24");
+  assertThrows(() => getHourlyConfig(), Error, "HOURLY_SCAN_END_HOUR");
+  clearHourlyEnv();
+});
+
+Deno.test("getHourlyConfig: rejects HOURLY_SCAN_START_HOUR >= HOURLY_SCAN_END_HOUR", () => {
+  clearHourlyEnv();
+  Deno.env.set("HOURLY_BOT_PAPER_ONLY", "true");
+  Deno.env.set("HOURLY_SCAN_START_HOUR", "15");
+  Deno.env.set("HOURLY_SCAN_END_HOUR", "15");
+  assertThrows(() => getHourlyConfig(), Error, "must be <");
+  Deno.env.set("HOURLY_SCAN_END_HOUR", "14");
+  assertThrows(() => getHourlyConfig(), Error, "must be <");
   clearHourlyEnv();
 });
 
