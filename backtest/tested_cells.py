@@ -302,6 +302,20 @@ LEDGER: Tuple[TestedCell, ...] = (
              "than 15m at 26/28 cells but still decisively negative. n_w=10 < 13, "
              "DIRECTIONAL; re-testable at full power.",
     ),
+    # --- NEUTRAL-detector promotion study (#629) — NO-GO, DIRECTIONAL ---------------
+    TestedCell(
+        family="candlestick_pattern_neutral_promotion", cadence="hourly", vehicle="SPY",
+        exit_style="bracket_patternextreme_2R_session_eow", n_cells=16,
+        verdict=DIRECTIONAL_NO_GO, power="DIRECTIONAL",
+        source="docs/research/2026-09-03-neutral-promotion-verdict.md",
+        date="2026-09-03",
+        note="inside_bar & doji on SPY 1Hour, 8-cell grid (breakout-dir x ATR-rank x "
+             "volume-conf). Stage 1: both patterns show long-skew (53.3%/52.2%, p<0.05) -- "
+             "likely vehicle drift, not pattern edge. Stage 2: 0/6 cells beat 33.3% breakeven "
+             "(best 30.2%, all p>=0.99). No volume data (yfinance misaligned); 4 VOL_HIGH "
+             "cells empty. n_w~=10 < 13, DIRECTIONAL only. keep_volume param added to "
+             "run_fetch_spy_intraday.py for future re-test with proper volume.",
+    ),
 )
 
 
