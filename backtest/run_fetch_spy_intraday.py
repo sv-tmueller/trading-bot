@@ -125,6 +125,7 @@ def fetch_bars(
     secret: Optional[str] = None,
     feed: str = DEFAULT_FEED,
     adjustment: str = DEFAULT_ADJUSTMENT,
+    keep_volume: bool = False,
 ) -> pd.DataFrame:
     """Fetch every bar for ``(symbol, timeframe)`` in ``[start, end]``, oldest-first.
 
@@ -133,6 +134,11 @@ def fetch_bars(
     ``resolve_keys()``). Returns a ``validate_ohlc``-clean DataFrame indexed by bar-start
     UTC timestamp — a malformed bar (NaN, non-positive, High/Low not bracketing
     Open/Close) raises ``DataQualityError`` here rather than downstream.
+
+    ``keep_volume=True`` preserves the Alpaca ``'v'`` field as a ``"Volume"`` column
+    alongside the validated OHLC columns. ``validate_ohlc`` strips non-OHLC columns, so
+    the volume Series is extracted before validation and reattached afterward. Default
+    ``False`` = existing behavior (OHLC only, no Volume column). Backward-compatible.
     """
     env_key, env_secret = resolve_keys()
     key = key or env_key
@@ -168,12 +174,27 @@ def fetch_bars(
             break
 
     if not rows:
-        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+        cols = ["Open", "High", "Low", "Close"]
+        if keep_volume:
+            cols.append("Volume")
+        return pd.DataFrame(columns=cols)
 
     raw = pd.DataFrame(rows)
     raw.index = pd.to_datetime(raw["t"], utc=True)
+
+    # Preserve volume before validate_ohlc strips non-OHLC columns (#629).
+    vol_series: Optional[pd.Series] = None
+    if keep_volume and "v" in raw.columns:
+        vol_series = raw["v"].astype(float)
+
     raw = raw.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close"})
-    return validate_ohlc(raw)
+    cleaned = validate_ohlc(raw)
+
+    if keep_volume and vol_series is not None:
+        cleaned = cleaned.copy()
+        cleaned["Volume"] = vol_series.reindex(cleaned.index).fillna(0.0)
+
+    return cleaned
 
 
 def compute_sha256(path: "str | os.PathLike") -> str:
@@ -223,16 +244,21 @@ def fetch_and_save(
     secret: Optional[str] = None,
     feed: str = DEFAULT_FEED,
     adjustment: str = DEFAULT_ADJUSTMENT,
+    keep_volume: bool = False,
 ) -> FetchReport:
     """Fetch one (symbol, timeframe), write it locally, and report row count + SHA256.
 
     On ``FetchUnavailableError`` (no keys), returns a DATA-BLOCKED report — no file is
     written, ``power.verdict`` is ``UNDERPOWERED`` — instead of raising, so a caller
     sweeping every timeframe of the grid can finish the sweep and report each cell.
+
+    ``keep_volume=True`` is passed through to :func:`fetch_bars` so the saved CSV
+    includes a ``"Volume"`` column alongside OHLC (#629). Default ``False`` = existing
+    behavior. Backward-compatible.
     """
     try:
         df = fetch_bars(symbol, timeframe, start, end, key=key, secret=secret, feed=feed,
-                         adjustment=adjustment)
+                        adjustment=adjustment, keep_volume=keep_volume)
     except FetchUnavailableError as e:
         return FetchReport(
             symbol=symbol, timeframe=timeframe, source="none", rows=0, path=None,
@@ -276,6 +302,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--out-dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--feed", default=DEFAULT_FEED)
     ap.add_argument("--adjustment", default=DEFAULT_ADJUSTMENT)
+    ap.add_argument("--keep-volume", action="store_true", default=False,
+                    help="preserve the Alpaca 'v' field as a 'Volume' column (#629)")
     args = ap.parse_args(argv)
 
     end = args.end
@@ -292,7 +320,7 @@ def main(argv: Optional[list] = None) -> int:
     for tf in timeframes:
         report = fetch_and_save(
             args.symbol, tf, args.start, end, out_dir=args.out_dir, feed=args.feed,
-            adjustment=args.adjustment,
+            adjustment=args.adjustment, keep_volume=args.keep_volume,
         )
         print(report.summary())
         if report.error is not None:

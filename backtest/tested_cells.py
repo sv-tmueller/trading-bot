@@ -277,30 +277,19 @@ LEDGER: Tuple[TestedCell, ...] = (
              "more. Same equity-floor breach. DIRECTIONAL power (n_w=10 < 13), not "
              "gate-eligible; re-testable at full power.",
     ),
-    # --- 15-Minute candlestick study (#630) — DIRECTIONAL_NO_GO -----------------------
+    # --- NEUTRAL-detector promotion study (#629) — NO-GO, DIRECTIONAL ---------------
     TestedCell(
-        family="candlestick_pattern", cadence="15m", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk_eodflat", n_cells=28,
+        family="candlestick_pattern_neutral_promotion", cadence="hourly", vehicle="SPY",
+        exit_style="bracket_patternextreme_2R_session_eow", n_cells=16,
         verdict=DIRECTIONAL_NO_GO, power="DIRECTIONAL",
-        source="docs/research/2026-09-03-15min-candlestick-study-verdict.md",
+        source="docs/research/2026-09-03-neutral-promotion-verdict.md",
         date="2026-09-03",
-        note="14 arms x R{2,3}, session_close_out=True (EOD flat). All 28 cells RUINED "
-             "(after-tax Calmar NaN); PF 0.22-0.40, WR 17-27%. 60m baseline uniformly "
-             "less-bad at 26/28 cells. Cost wall: 648%/yr drag at 20bp RT, median stop "
-             "$0.95, slippage 19.4% of stop distance. n_w=10 < 13, DIRECTIONAL; re-testable "
-             "at full power.",
-    ),
-    TestedCell(
-        family="candlestick_pattern", cadence="hourly", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk_eodflat", n_cells=28,
-        verdict=DIRECTIONAL_NO_GO, power="DIRECTIONAL",
-        source="docs/research/2026-09-03-15min-candlestick-study-verdict.md",
-        date="2026-09-03",
-        note="14 arms x R{2,3} hourly BASELINE (individual detectors, not decideHourly "
-             "composite -- first individual-detector hourly read). Most Calmars RUINED; "
-             "surviving finite Calmars -0.13 to -0.27. PF 0.25-0.49, WR 19-32%. Less-bad "
-             "than 15m at 26/28 cells but still decisively negative. n_w=10 < 13, "
-             "DIRECTIONAL; re-testable at full power.",
+        note="inside_bar & doji on SPY 1Hour, 8-cell grid (breakout-dir x ATR-rank x "
+             "volume-conf). Stage 1: both patterns show long-skew (53.3%/52.2%, p<0.05) -- "
+             "likely vehicle drift, not pattern edge. Stage 2: 0/6 cells beat 33.3% breakeven "
+             "(best 30.2%, all p>=0.99). No volume data (yfinance misaligned); 4 VOL_HIGH "
+             "cells empty. n_w~=10 < 13, DIRECTIONAL only. keep_volume param added to "
+             "run_fetch_spy_intraday.py for future re-test with proper volume.",
     ),
 )
 
