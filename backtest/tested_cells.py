@@ -277,31 +277,6 @@ LEDGER: Tuple[TestedCell, ...] = (
              "more. Same equity-floor breach. DIRECTIONAL power (n_w=10 < 13), not "
              "gate-eligible; re-testable at full power.",
     ),
-    # --- 15-Minute candlestick study (#630) — DIRECTIONAL_NO_GO -----------------------
-    TestedCell(
-        family="candlestick_pattern", cadence="15m", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk_eodflat", n_cells=28,
-        verdict=DIRECTIONAL_NO_GO, power="DIRECTIONAL",
-        source="docs/research/2026-09-03-15min-candlestick-study-verdict.md",
-        date="2026-09-03",
-        note="14 arms x R{2,3}, session_close_out=True (EOD flat). All 28 cells RUINED "
-             "(after-tax Calmar NaN); PF 0.22-0.40, WR 17-27%. 60m baseline uniformly "
-             "less-bad at 26/28 cells. Cost wall: 648%/yr drag at 20bp RT, median stop "
-             "$0.95, slippage 19.4% of stop distance. n_w=10 < 13, DIRECTIONAL; re-testable "
-             "at full power.",
-    ),
-    TestedCell(
-        family="candlestick_pattern", cadence="hourly", vehicle="SPY",
-        exit_style="bracket_patternextreme_RxRisk_eodflat", n_cells=28,
-        verdict=DIRECTIONAL_NO_GO, power="DIRECTIONAL",
-        source="docs/research/2026-09-03-15min-candlestick-study-verdict.md",
-        date="2026-09-03",
-        note="14 arms x R{2,3} hourly BASELINE (individual detectors, not decideHourly "
-             "composite -- first individual-detector hourly read). Most Calmars RUINED; "
-             "surviving finite Calmars -0.13 to -0.27. PF 0.25-0.49, WR 19-32%. Less-bad "
-             "than 15m at 26/28 cells but still decisively negative. n_w=10 < 13, "
-             "DIRECTIONAL; re-testable at full power.",
-    ),
     # --- NEUTRAL-detector promotion study (#629) — NO-GO, DIRECTIONAL ---------------
     TestedCell(
         family="candlestick_pattern_neutral_promotion", cadence="hourly", vehicle="SPY",

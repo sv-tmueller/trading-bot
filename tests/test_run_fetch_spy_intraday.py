@@ -94,6 +94,36 @@ def test_fetch_bars_paginates_and_validates(monkeypatch):
     assert df["Close"].iloc[-1] == 202.5
 
 
+def test_fetch_bars_keep_volume_preserves_volume_column(monkeypatch):
+    """#629: keep_volume=True preserves the Alpaca 'v' column as 'Volume'
+    alongside validated OHLC. Default (False) strips it."""
+    page = {
+        "bars": [
+            {"t": "2016-01-04T14:30:00Z", "o": 200.0, "h": 201.0, "l": 199.5, "c": 200.5, "v": 150000},
+            {"t": "2016-01-04T15:30:00Z", "o": 200.5, "h": 202.0, "l": 200.0, "c": 201.5, "v": 220000},
+        ],
+        "next_page_token": None,
+    }
+    monkeypatch.setattr(fetcher, "_fetch_page", lambda *a, **kw: page)
+
+    # keep_volume=True -> Volume column present
+    df_vol = fetcher.fetch_bars(
+        "SPY", "60Min", "2016-01-01", "2016-02-01", key="k", secret="s",
+        keep_volume=True,
+    )
+    assert "Volume" in df_vol.columns
+    assert list(df_vol.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert df_vol["Volume"].iloc[0] == 150000.0
+    assert df_vol["Volume"].iloc[1] == 220000.0
+
+    # Default (keep_volume=False) -> no Volume column
+    df_default = fetcher.fetch_bars(
+        "SPY", "60Min", "2016-01-01", "2016-02-01", key="k", secret="s",
+    )
+    assert "Volume" not in df_default.columns
+    assert list(df_default.columns) == ["Open", "High", "Low", "Close"]
+
+
 def test_fetch_bars_maps_60min_to_1hour_for_the_api_request(monkeypatch):
     """#571 defect fix: Alpaca rejects timeframe=60Min with HTTP 400 (valid grammar is
     1-59Min or 1Hour). The request must carry "1Hour" while the output-file convention
