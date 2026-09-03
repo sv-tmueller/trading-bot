@@ -85,6 +85,12 @@ export interface HourlyConfig {
   hourlyStalenessToleranceMin: number;
   hourlyContextMode: ContextMode;
   hourlyShortsEnabled: boolean;
+  // #628: UTC hour window for entry scanning. The cron (13-21 UTC) is the
+  // outer envelope; these knobs narrow within it. Defaults match the cron
+  // envelope so existing isBarPartial/isFlattenScan logic does the actual
+  // narrowing (behavior-preserving).
+  hourlyScanStartHour: number;
+  hourlyScanEndHour: number;
   // Always `true` when this function returns at all -- getHourlyConfig()
   // throws rather than returning `false` (see the strict-reading note below).
   hourlyBotPaperOnly: true;
@@ -161,6 +167,26 @@ export function getHourlyConfig(): HourlyConfig {
     );
   }
 
+  // #628: scan-window hour knobs. Defaults (13/21) match the cron envelope,
+  // so existing isBarPartial/isFlattenScan logic does the actual narrowing.
+  const hourlyScanStartHour = intEnv("HOURLY_SCAN_START_HOUR", 13);
+  if (hourlyScanStartHour < 0 || hourlyScanStartHour > 23) {
+    throw new Error(
+      `HOURLY_SCAN_START_HOUR=${hourlyScanStartHour} outside safe bounds [0, 23]`,
+    );
+  }
+  const hourlyScanEndHour = intEnv("HOURLY_SCAN_END_HOUR", 21);
+  if (hourlyScanEndHour < 0 || hourlyScanEndHour > 23) {
+    throw new Error(
+      `HOURLY_SCAN_END_HOUR=${hourlyScanEndHour} outside safe bounds [0, 23]`,
+    );
+  }
+  if (hourlyScanStartHour >= hourlyScanEndHour) {
+    throw new Error(
+      `HOURLY_SCAN_START_HOUR=${hourlyScanStartHour} must be < HOURLY_SCAN_END_HOUR=${hourlyScanEndHour}`,
+    );
+  }
+
   const hourlyContextModeRaw = strEnv("HOURLY_CONTEXT_MODE", "none");
   if (!CONTEXT_MODES.includes(hourlyContextModeRaw as ContextMode)) {
     throw new Error(
@@ -201,6 +227,8 @@ export function getHourlyConfig(): HourlyConfig {
     hourlyStalenessToleranceMin,
     hourlyContextMode,
     hourlyShortsEnabled,
+    hourlyScanStartHour,
+    hourlyScanEndHour,
     hourlyBotPaperOnly: true,
   };
 }
