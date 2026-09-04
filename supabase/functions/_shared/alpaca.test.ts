@@ -1422,7 +1422,15 @@ Deno.test("placeOcoExitPair: posts order_class=oco with the closing side and bot
     assertEquals(result.orderId, "oco1");
     assertEquals(postedBody.order_class, "oco");
     assertEquals(postedBody.side, "sell");
-    assertEquals(postedBody.limit_price, "554.5");
+    assertEquals(
+      (postedBody.take_profit as { limit_price: string }).limit_price,
+      "554.5",
+    );
+    assertEquals(
+      "limit_price" in postedBody,
+      false,
+      "OCO body must not carry a top-level limit_price (moved into take_profit)",
+    );
     assertEquals((postedBody.stop_loss as { stop_price: string }).stop_price, "547.75");
   } finally {
     restore();
@@ -1451,6 +1459,61 @@ Deno.test("placeOcoExitPair: guarded (BrokerCallBlockedError before any fetch)",
       BrokerCallBlockedError,
     );
     assertEquals(networkHit, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #635 regression: the OCO body MUST nest the take-profit price inside
+// take_profit.limit_price (mirroring placeBracketOrder). A top-level
+// limit_price causes Alpaca to reject with 422
+// "oco orders require take_profit.limit_price". This test pins the shape
+// independently of the happy-path assertions above.
+// ---------------------------------------------------------------------------
+
+Deno.test("#635 placeOcoExitPair: body nests take_profit.limit_price and omits top-level limit_price", async () => {
+  setKeys();
+  let postedBody: Record<string, unknown> = {};
+  const restore = stubFetch((_i, init) => {
+    postedBody = JSON.parse(String(init?.body));
+    return Promise.resolve(jsonResponse({ id: "oco-regress", status: "accepted" }));
+  });
+  liftBrokerGuard();
+  try {
+    await createAlpacaClient({ paperOnly: false }).placeOcoExitPair({
+      symbol: "UPRO",
+      side: "BUY",
+      qty: 10,
+      takeProfitPrice: 42.25,
+      stopLossPrice: 38.50,
+    });
+
+    // Nested take_profit.limit_price is present and correct.
+    assertEquals(
+      typeof postedBody.take_profit,
+      "object",
+      "take_profit must be a nested object, not absent or scalar",
+    );
+    assertEquals(
+      (postedBody.take_profit as { limit_price: string }).limit_price,
+      "42.25",
+    );
+
+    // Top-level limit_price must NOT be present (was the bug).
+    assertEquals(
+      "limit_price" in postedBody,
+      false,
+      "OCO body must not carry a top-level limit_price -- it belongs inside take_profit",
+    );
+
+    // Sanity: stop_loss and order_class unchanged.
+    assertEquals(postedBody.order_class, "oco");
+    assertEquals(
+      (postedBody.stop_loss as { stop_price: string }).stop_price,
+      "38.5",
+    );
   } finally {
     restore();
     clearKeys();

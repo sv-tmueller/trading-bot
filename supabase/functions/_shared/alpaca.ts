@@ -571,11 +571,13 @@ export function createAlpacaClient(
         symbol: args.symbol,
         qty: String(args.qty),
         side: args.side.toLowerCase(),
-        // An OCO exit is a single order: type="limit" carries the take-profit
-        // price at the top level, paired with a stop_loss sub-order -- unlike
-        // a bracket entry, there is no separate take_profit object here.
+        // An OCO exit is a single order whose take-profit leg is carried in
+        // the nested take_profit.limit_price object (same shape as
+        // placeBracketOrder), paired with a stop_loss sub-order. Alpaca
+        // rejects OCO submissions that omit take_profit.limit_price with
+        // 422 "oco orders require take_profit.limit_price".
         type: "limit",
-        limit_price: String(args.takeProfitPrice),
+        take_profit: { limit_price: String(args.takeProfitPrice) },
         time_in_force: "day",
         order_class: "oco",
         stop_loss: { stop_price: String(args.stopLossPrice) },
