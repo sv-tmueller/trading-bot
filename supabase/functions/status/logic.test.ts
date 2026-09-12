@@ -2,7 +2,7 @@
 // Every dep is a plain injected mock — no network, no client construction,
 // no DB writes. runStatus performs zero writes: StatusDeps has no
 // insert/update/upsert method at all (compile-time enforcement).
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   computeEquityHeadroomPct,
   computeRegimeMarginPct,
@@ -325,13 +325,58 @@ Deno.test("paused: missing row -> false", async () => {
   assertEquals(digest.paused, false);
 });
 
-Deno.test("dep rejection propagates (fail-fast, no partial digest)", async () => {
+// ---------------------------------------------------------------------------
+// #646: Alpaca calls are decoupled from the Promise.all — each is tried
+// individually after the main batch resolves. Failures degrade gracefully
+// (field → null, alpaca_error populated) instead of rejecting the digest.
+// ---------------------------------------------------------------------------
+
+Deno.test("#646: getAccountValue rejects -> digest resolves, alpaca_error set, equity_usd null, market_open & position intact", async () => {
   const { deps } = makeDeps({
     alpaca: {
       getAccountValue: () => Promise.reject(new Error("alpaca down")),
     } as unknown as StatusDeps["alpaca"],
   });
-  await assertRejects(() => runStatus(deps), Error, "alpaca down");
+  const digest = await runStatus(deps);
+  assertEquals(digest.alpaca.equity_usd, null);
+  assertEquals(digest.alpaca_error, "getAccountValue: alpaca down");
+  assertEquals(digest.market_open, true); // getClock still succeeds
+  assertEquals(digest.alpaca.position, { symbol: "UPRO", qty: 120 }); // getPosition still succeeds
+});
+
+Deno.test("#646: getClock rejects -> digest resolves, market_open null, alpaca_error set, other Alpaca fields intact", async () => {
+  const { deps } = makeDeps({
+    alpaca: {
+      getClock: () => Promise.reject(new Error("clock boom")),
+    } as unknown as StatusDeps["alpaca"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.market_open, null);
+  assertEquals(digest.alpaca_error, "getClock: clock boom");
+  assertEquals(digest.alpaca.equity_usd, 100_000); // getAccountValue still succeeds
+  assertEquals(digest.alpaca.position, { symbol: "UPRO", qty: 120 }); // getPosition still succeeds
+});
+
+Deno.test("#646: all 3 Alpaca calls reject -> digest resolves, alpaca_error concatenates all three, last_runs intact", async () => {
+  const { deps } = makeDeps({
+    alpaca: {
+      getClock: () => Promise.reject(new Error("err-clock")),
+      getAccountValue: () => Promise.reject(new Error("err-equity")),
+      getPosition: () => Promise.reject(new Error("err-position")),
+    } as unknown as StatusDeps["alpaca"],
+  });
+  const digest = await runStatus(deps);
+  assertEquals(digest.market_open, null);
+  assertEquals(digest.alpaca.equity_usd, null);
+  assertEquals(digest.alpaca.position, { symbol: "UPRO", qty: null });
+  assertEquals(
+    digest.alpaca_error,
+    "getClock: err-clock; getAccountValue: err-equity; getPosition(UPRO): err-position",
+  );
+  // Dead-man watchdog still gets its data:
+  assertEquals(digest.last_runs.daily_check?.outcome, "success");
+  assertEquals(digest.last_runs.kill_switch?.outcome, "success");
+  assertEquals(digest.last_runs.hourly_check?.outcome, "success");
 });
 
 // ---------------------------------------------------------------------------
@@ -355,6 +400,7 @@ Deno.test("default mode (no windowDays): shape-lock - exact current 10 keys (#39
     Object.keys(digest).sort(),
     [
       "alpaca",
+      "alpaca_error",
       "audit_7d",
       "generated_at",
       // #536: `hourly` — the live hourly bot's digest block, strictly
@@ -718,6 +764,7 @@ Deno.test("regression: every pre-#536 top-level key is still present (strictly a
     "audit_7d",
     "last_trade",
     "alpaca",
+    "alpaca_error",
     "returns",
     "last_runs",
   ];

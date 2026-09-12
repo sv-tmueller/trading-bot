@@ -17,6 +17,7 @@ const DIGEST: StatusDigest = {
   audit_7d: { since: "2026-07-02T15:00:00.000Z", outcome_counts: {}, errors: [] },
   last_trade: null,
   alpaca: { equity_usd: 100_000, position: { symbol: "UPRO", qty: 0 } },
+  alpaca_error: null,
   returns: { since_inception_pct: null, trailing_7d_pct: null, trailing_30d_pct: null },
   last_runs: { daily_check: null, kill_switch: null, hourly_check: null },
   hourly: {
