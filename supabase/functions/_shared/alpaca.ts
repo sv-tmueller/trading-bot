@@ -331,8 +331,61 @@ export function createAlpacaClient(
     return await res.json();
   }
 
+  // #647: retry wrappers for read-only Alpaca calls. Retries on 5xx (detected
+  // from res.status) and BrokerRequestTimeoutError. Max 2 retries (3 total
+  // attempts), exponential backoff 500ms then 1000ms. Mutating calls (POST/DELETE)
+  // are NEVER retried -- they keep using trade/tradeJson directly.
+  const MAX_RETRIES = 2;
+  const INITIAL_BACKOFF_MS = 500;
+
+  async function tradeRetryable(path: string, init?: RequestInit): Promise<Response> {
+    const startTime = Date.now();
+    let attempt = 0;
+    while (true) {
+      try {
+        const res = await trade(path, init);
+        if (res.status >= 500 && res.status <= 599 && attempt < MAX_RETRIES) {
+          await sleep(INITIAL_BACKOFF_MS * Math.pow(2, attempt));
+          attempt++;
+          continue;
+        }
+        if (res.status >= 500 && res.status <= 599 && attempt === MAX_RETRIES) {
+          const body = await res.text();
+          const elapsedMs = Date.now() - startTime;
+          throw new AlpacaServerError(
+            `${init?.method ?? "GET"} ${path} -> ${res.status}: ${body} (retries exhausted: ${MAX_RETRIES} retries, ${elapsedMs}ms total elapsed)`,
+          );
+        }
+        return res;
+      } catch (e) {
+        if (e instanceof BrokerRequestTimeoutError) {
+          if (attempt < MAX_RETRIES) {
+            await sleep(INITIAL_BACKOFF_MS * Math.pow(2, attempt));
+            attempt++;
+            continue;
+          }
+          const elapsedMs = Date.now() - startTime;
+          throw new BrokerRequestTimeoutError(
+            `${e.message} (retries exhausted: ${MAX_RETRIES} retries, ${elapsedMs}ms total elapsed)`,
+          );
+        }
+        throw e;
+      }
+    }
+  }
+
+  async function tradeJsonRetryable(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+    const res = await tradeRetryable(path, init);
+    if (!res.ok) {
+      throw new AlpacaError(
+        `${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`,
+      );
+    }
+    return await res.json();
+  }
+
   async function getClock() {
-    const j = await tradeJson("/v2/clock");
+    const j = await tradeJsonRetryable("/v2/clock");
     // #475 T4 (spec §7 must-fix round 2 finding 1): next_close is asserted,
     // not verified against a live response in this agent session (no paper
     // credentials present -- disclosed in the PR). Missing/unparseable is a
@@ -362,12 +415,12 @@ export function createAlpacaClient(
   }
 
   async function getAccountValue() {
-    const j = await tradeJson("/v2/account");
+    const j = await tradeJsonRetryable("/v2/account");
     return requireNumber(j.equity, "account equity");
   }
 
   async function getPosition(symbol: string): Promise<number> {
-    const res = await trade(`/v2/positions/${encodeURIComponent(symbol)}`);
+    const res = await tradeRetryable(`/v2/positions/${encodeURIComponent(symbol)}`);
     if (res.status === 404) return 0;
     if (!res.ok) {
       const posMsg = `GET position ${symbol} -> ${res.status}: ${await res.text()}`;
@@ -705,7 +758,7 @@ export function createAlpacaClient(
   // [to verify] the exact GET /v2/positions response shape is asserted from
   // the single-position endpoint's own field names, not captured live.
   async function getOpenPositions(): Promise<OpenPosition[]> {
-    const res = await trade("/v2/positions");
+    const res = await tradeRetryable("/v2/positions");
     if (!res.ok) {
       const opsMsg = `GET positions -> ${res.status}: ${await res.text()}`;
       throw res.status >= 500 ? new AlpacaServerError(opsMsg) : new AlpacaError(opsMsg);
@@ -760,7 +813,7 @@ export function createAlpacaClient(
   // non-"PA"-prefixed account_number still throws PaperGuardFailedError.
   async function assertPaperAccount(): Promise<{ equity: number }> {
     guardMutation("assertPaperAccount");
-    const j = await tradeJson("/v2/account");
+    const j = await tradeJsonRetryable("/v2/account");
     const equity = requireNumber(j.equity, "account equity");
     // Nit 11 (fix round 1): mask the raw account_number in this error
     // message -- only the marker prefix (e.g. the "PA" paper-account marker)
