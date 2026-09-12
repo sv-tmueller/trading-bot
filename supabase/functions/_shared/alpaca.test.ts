@@ -1934,6 +1934,7 @@ Deno.test("listOpenOrderIds: empty when no resting orders", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // #645: tradeJson/getPosition classify 5xx as AlpacaServerError (extends
 // AlpacaError), 4xx stays AlpacaError.
 // ---------------------------------------------------------------------------
@@ -1988,6 +1989,93 @@ Deno.test("#645: getPosition 5xx -> throws AlpacaServerError", async () => {
       AlpacaServerError,
     );
     assertEquals(err instanceof AlpacaError, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#647 a: 500 on first call then 200 -> succeeds with 2 fetch calls", async () => {
+  setKeys();
+  let calls = 0;
+  const restore = stubFetch(() => {
+    calls++;
+    if (calls === 1) return Promise.resolve(jsonResponse({ message: "server error" }, 500));
+    return Promise.resolve(jsonResponse({ equity: "42" }));
+  });
+  try {
+    const val = await createAlpacaClient({ paperOnly: false }).getAccountValue();
+    assertEquals(val, 42);
+    assertEquals(calls, 2);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#647 b: three 500s -> throws AlpacaError with retries-exhausted message, 3 fetch calls", async () => {
+  setKeys();
+  let calls = 0;
+  const restore = stubFetch(() => {
+    calls++;
+    return Promise.resolve(jsonResponse({ message: "server error" }, 500));
+  });
+  try {
+    const err = await assertRejects(
+      () => createAlpacaClient({ paperOnly: false }).getAccountValue(),
+      AlpacaError,
+    );
+    assertEquals(calls, 3);
+    assertEquals(typeof err.message, "string");
+    assertEquals(err.message.includes("retries exhausted"), true);
+    assertEquals(err.message.includes("2 retries"), true);
+    assertEquals(err.message.includes("ms total elapsed"), true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#647 c: 4xx -> throws immediately without retry, 1 fetch call", async () => {
+  setKeys();
+  let calls = 0;
+  const restore = stubFetch(() => {
+    calls++;
+    return Promise.resolve(jsonResponse({ message: "bad request" }, 400));
+  });
+  try {
+    await assertRejects(
+      () => createAlpacaClient({ paperOnly: false }).getAccountValue(),
+      AlpacaError,
+    );
+    assertEquals(calls, 1);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#647 d: placeMarketOrder POST 500 -> NOT retried, 1 POST call", async () => {
+  setKeys();
+  let posts = 0;
+  const restore = stubFetch((_i, init) => {
+    if (init?.method === "POST") {
+      posts++;
+      return Promise.resolve(jsonResponse({ message: "server error" }, 500));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  liftBrokerGuard();
+  try {
+    await assertRejects(
+      () =>
+        createAlpacaClient({ paperOnly: false }).placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 100 },
+          { timeoutMs: 5, intervalMs: 1 },
+        ),
+      AlpacaError,
+    );
+    assertEquals(posts, 1);
   } finally {
     restore();
     clearKeys();
