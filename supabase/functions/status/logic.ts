@@ -73,7 +73,7 @@ export interface StatusDeps {
 
 export interface StatusDigest {
   generated_at: string;
-  market_open: boolean;
+  market_open: boolean | null;
   paused: boolean;
   regime: RegimeStateRow | null;
   // #384: SPY's raw (unrounded) % distance from its 200-DMA, derived from
@@ -92,9 +92,14 @@ export interface StatusDigest {
   };
   last_trade: TradeRow | null;
   alpaca: {
-    equity_usd: number;
-    position: { symbol: string; qty: number };
+    equity_usd: number | null;
+    position: { symbol: string; qty: number | null };
   };
+  // #646: aggregated error message from the three Alpaca API calls above.
+  // null when all three succeed; a semicolon-joined string of individual
+  // error messages when one or more fail. The digest still resolves —
+  // callers (dead-man watchdog) rely on `last_runs` regardless of Alpaca.
+  alpaca_error: string | null;
   // #383 T4: trailing portfolio returns computed from equity_snapshots.
   // Top-level, always present in both default and extended (`?days=N`) mode
   // — unlike `trades`/`regime_history` below, presence does not depend on
@@ -338,9 +343,6 @@ export async function runStatus(
     auditRows,
     lastTrade,
     pausedRaw,
-    clock,
-    equity,
-    positionQty,
     trades,
     regimeHistory,
     earliestSnapshot,
@@ -361,9 +363,6 @@ export async function runStatus(
     db.getAuditLogSince(since, until),
     db.getLastTrade(),
     db.getConfig("paused"),
-    alpaca.getClock(),
-    alpaca.getAccountValue(),
-    alpaca.getPosition(config.botTicker),
     extended ? db.getTradesSince(since) : Promise.resolve(undefined),
     // date part of `since` (already UTC via toISOString) is the boundary for
     // the once-a-day regime_state table.
@@ -389,6 +388,21 @@ export async function runStatus(
     // counting timed_out rows at the :07 hourly-check slots.
     verifying ? db.getPgNetTimeoutCount(verifySince!, verifyUntil!) : Promise.resolve(undefined),
   ]);
+
+  // #646: Decouple the status digest from Alpaca clock availability.
+  // Previously these three calls were inside the Promise.all — a single
+  // Alpaca outage rejected the entire digest (HTTP 500), preventing the
+  // dead-man watchdog from reading `last_runs`. Now each call is tried
+  // individually; failures are collected into `alpaca_error` and the
+  // corresponding field degrades to null instead of throwing.
+  let clock: { isOpen: boolean } | null = null;
+  let equity: number | null = null;
+  let positionQty: number | null = null;
+  const alpacaErrors: string[] = [];
+  try { clock = await alpaca.getClock(); } catch (e) { alpacaErrors.push(`getClock: ${(e as Error).message}`); }
+  try { equity = await alpaca.getAccountValue(); } catch (e) { alpacaErrors.push(`getAccountValue: ${(e as Error).message}`); }
+  try { positionQty = await alpaca.getPosition(config.botTicker); } catch (e) { alpacaErrors.push(`getPosition(${config.botTicker}): ${(e as Error).message}`); }
+  const alpaca_error = alpacaErrors.length > 0 ? alpacaErrors.join("; ") : null;
 
   const outcome_counts: Record<string, number> = {};
   const hourlyAuditOutcomeCounts: Record<string, number> = {};
@@ -491,7 +505,7 @@ export async function runStatus(
 
   return {
     generated_at: now.toISOString(),
-    market_open: clock.isOpen,
+    market_open: clock?.isOpen ?? null,
     paused: pausedRaw === "true",
     regime,
     regime_margin_pct: regime ? computeRegimeMarginPct(regime.spy_close, regime.spy_sma200) : null,
@@ -501,6 +515,7 @@ export async function runStatus(
       equity_usd: equity,
       position: { symbol: config.botTicker, qty: positionQty },
     },
+    alpaca_error,
     returns,
     last_runs: {
       daily_check: latestDailyCheckAudit
