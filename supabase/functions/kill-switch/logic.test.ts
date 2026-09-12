@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { type KillSwitchDeps, runKillSwitch } from "./logic.ts";
-import { AlpacaError, OrderTimeoutError } from "../_shared/alpaca.ts";
+import { AlpacaError, AlpacaServerError, OrderTimeoutError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 import { DataError } from "../_shared/num.ts";
 
@@ -1136,4 +1136,23 @@ Deno.test("#474: orphan-leg -- cancel succeeds, note records verified", async ()
   assertEquals(await runKillSwitch(deps), "success:kill_switch_fired");
   const notes = String((calls.audit as { notes: string }).notes);
   assertEquals(notes.includes("cancel=verified"), true);
+});
+
+Deno.test("#645: getClock rejects with AlpacaServerError -> skipped:broker_unavailable + notifyBrokerError", async () => {
+  let brokerError: { context: string; errorMsg: string } | undefined;
+  const { deps } = makeDeps({
+    alpaca: {
+      getOpenPositions: () => Promise.resolve([{ symbol: "UPRO", qty: 99 }]),
+      getClock: () => Promise.reject(new AlpacaServerError("GET /v2/clock -> 503: internal")),
+    } as unknown as KillSwitchDeps["alpaca"],
+    notifications: {
+      notifyBrokerError: (p: { context: string; errorMsg: string }) => {
+        brokerError = p;
+        return Promise.resolve();
+      },
+    } as unknown as KillSwitchDeps["notifications"],
+  });
+  assertEquals(await runKillSwitch(deps), "skipped:broker_unavailable");
+  assertEquals(brokerError?.context, "kill-switch");
+  assertEquals(brokerError?.errorMsg.includes("503"), true);
 });

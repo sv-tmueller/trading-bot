@@ -2,6 +2,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { jsonResponse, stubFetch, urlOf } from "./test_helpers.ts";
 import {
   AlpacaError,
+  AlpacaServerError,
   BrokerCallBlockedError,
   BrokerRequestTimeoutError,
   checkPaperOnly,
@@ -1926,6 +1927,67 @@ Deno.test("listOpenOrderIds: empty when no resting orders", async () => {
   const restore = stubFetch(() => Promise.resolve(jsonResponse([])));
   try {
     assertEquals(await createAlpacaClient({ paperOnly: false }).listOpenOrderIds("SPY"), []);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #645: tradeJson/getPosition classify 5xx as AlpacaServerError (extends
+// AlpacaError), 4xx stays AlpacaError.
+// ---------------------------------------------------------------------------
+
+Deno.test("#645: tradeJson 5xx -> throws AlpacaServerError (instanceof AlpacaError)", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "internal error" }, 503)));
+  liftBrokerGuard();
+  try {
+    const err = await assertRejects(
+      () =>
+        createAlpacaClient({ paperOnly: false }).placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 1 },
+          { timeoutMs: 5000, intervalMs: 1 },
+        ),
+      AlpacaServerError,
+    );
+    assertEquals(err instanceof AlpacaError, true);
+    assertEquals(err instanceof AlpacaServerError, true);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#645: tradeJson 4xx -> throws AlpacaError (NOT AlpacaServerError)", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "bad request" }, 400)));
+  liftBrokerGuard();
+  try {
+    const err = await assertRejects(
+      () =>
+        createAlpacaClient({ paperOnly: false }).placeMarketOrder(
+          { symbol: "UPRO", side: "BUY", qty: 1 },
+          { timeoutMs: 5000, intervalMs: 1 },
+        ),
+      AlpacaError,
+    );
+    assertEquals(err instanceof AlpacaServerError, false);
+  } finally {
+    restore();
+    clearKeys();
+  }
+});
+
+Deno.test("#645: getPosition 5xx -> throws AlpacaServerError", async () => {
+  setKeys();
+  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "internal error" }, 500)));
+  try {
+    const err = await assertRejects(
+      () => createAlpacaClient({ paperOnly: false }).getPosition("UPRO"),
+      AlpacaServerError,
+    );
+    assertEquals(err instanceof AlpacaError, true);
   } finally {
     restore();
     clearKeys();

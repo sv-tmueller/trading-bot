@@ -1,5 +1,5 @@
 import type { Fill, OpenPosition } from "../_shared/alpaca.ts";
-import { AlpacaError } from "../_shared/alpaca.ts";
+import { AlpacaError, AlpacaServerError } from "../_shared/alpaca.ts";
 import type { DailyBar } from "../_shared/marketdata.ts";
 import type { RegimeStateRow } from "../_shared/db.ts";
 import type { StrategyConfig } from "../_shared/config.ts";
@@ -496,6 +496,11 @@ export async function runKillSwitch(deps: KillSwitchDeps): Promise<string> {
     return finalOutcome;
   } catch (e) {
     const err = e as Error;
+    if (err instanceof AlpacaServerError) {
+      await notifications.notifyBrokerError({ context: "kill-switch", errorMsg: err.message });
+      await finish("skipped:broker_unavailable", String(err.message).slice(0, 500));
+      return "skipped:broker_unavailable";
+    }
     if (err instanceof AlpacaError) {
       await notifications.notifyBrokerError({ context: "kill-switch", errorMsg: err.message });
     }
