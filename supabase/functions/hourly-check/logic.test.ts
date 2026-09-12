@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  AlpacaServerError,
   BrokerRequestTimeoutError,
   type ClosedOrderFill,
   type Fill,
@@ -2562,4 +2563,22 @@ Deno.test("#514: zero alerts on a routine skipped:position_open run", async () =
   assertEquals(outcome, "skipped:position_open");
   assertEquals(rec.alerts, []);
   assertEquals(rec.floorAlerts, []);
+});
+
+// #645: a broker 5xx (AlpacaServerError) skips gracefully instead of erroring.
+Deno.test("#645: getClock rejects with AlpacaServerError -> skipped:broker_unavailable + notifyBrokerError", async () => {
+  const { deps, rec } = buildDeps();
+  deps.alpaca.getClock = () =>
+    Promise.reject(new AlpacaServerError("GET /v2/clock -> 503: internal"));
+  let alerted: { context: string; errorMsg: string } | null = null;
+  deps.notifications.notifyBrokerError = (p) => {
+    alerted = p;
+    return Promise.resolve();
+  };
+  const outcome = await runHourlyCheck(deps);
+  assertEquals(outcome, "skipped:broker_unavailable");
+  assertEquals(lastOutcome(rec), "skipped:broker_unavailable");
+  const sent = alerted as unknown as { context: string; errorMsg: string } | null;
+  assertEquals(sent?.context, "hourly-check");
+  assertEquals(sent?.errorMsg.includes("503"), true);
 });

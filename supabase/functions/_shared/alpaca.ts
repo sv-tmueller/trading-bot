@@ -19,6 +19,13 @@ export class AlpacaError extends Error {
 export class OrderTimeoutError extends AlpacaError {
   override name = "OrderTimeoutError";
 }
+// #645: a broker 5xx (server-side outage) -- distinct from a 4xx client error --
+// so callers can skip gracefully (skipped:broker_unavailable) instead of
+// erroring. Extends AlpacaError so existing `instanceof AlpacaError` catches
+// still surface it via notifyBrokerError when not handled explicitly.
+export class AlpacaServerError extends AlpacaError {
+  override name = "AlpacaServerError";
+}
 // Terminal non-fill (rejected/canceled/expired) detected while polling (#267).
 // Carries Alpaca's order status, plus its reason in the message when present.
 export class OrderRejectedError extends Error {
@@ -318,9 +325,8 @@ export function createAlpacaClient(
   async function tradeJson(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
     const res = await trade(path, init);
     if (!res.ok) {
-      throw new AlpacaError(
-        `${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`,
-      );
+      const msg = `${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`;
+      throw res.status >= 500 ? new AlpacaServerError(msg) : new AlpacaError(msg);
     }
     return await res.json();
   }
@@ -345,7 +351,8 @@ export function createAlpacaClient(
   async function getCalendar(start: string, end: string): Promise<string[]> {
     const res = await trade(`/v2/calendar?start=${start}&end=${end}`);
     if (!res.ok) {
-      throw new AlpacaError(`GET calendar -> ${res.status}: ${await res.text()}`);
+      const calMsg = `GET calendar -> ${res.status}: ${await res.text()}`;
+      throw res.status >= 500 ? new AlpacaServerError(calMsg) : new AlpacaError(calMsg);
     }
     const arr = await res.json();
     if (!Array.isArray(arr)) {
@@ -363,7 +370,8 @@ export function createAlpacaClient(
     const res = await trade(`/v2/positions/${encodeURIComponent(symbol)}`);
     if (res.status === 404) return 0;
     if (!res.ok) {
-      throw new AlpacaError(`GET position ${symbol} -> ${res.status}: ${await res.text()}`);
+      const posMsg = `GET position ${symbol} -> ${res.status}: ${await res.text()}`;
+      throw res.status >= 500 ? new AlpacaServerError(posMsg) : new AlpacaError(posMsg);
     }
     const j = await res.json();
     return Math.trunc(requireNumber(j.qty, "position qty"));
@@ -699,7 +707,8 @@ export function createAlpacaClient(
   async function getOpenPositions(): Promise<OpenPosition[]> {
     const res = await trade("/v2/positions");
     if (!res.ok) {
-      throw new AlpacaError(`GET positions -> ${res.status}: ${await res.text()}`);
+      const opsMsg = `GET positions -> ${res.status}: ${await res.text()}`;
+      throw res.status >= 500 ? new AlpacaServerError(opsMsg) : new AlpacaError(opsMsg);
     }
     const arr = await res.json();
     if (!Array.isArray(arr)) return [];

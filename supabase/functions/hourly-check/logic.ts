@@ -33,7 +33,7 @@
 //
 // Residual, disclosed: a crash before insertAuditLog produces no outcome and
 // no alert; runbook §10's no-audit-row triage covers it, out of scope.
-import { AlpacaError, type ClosedOrderFill, type Fill } from "../_shared/alpaca.ts";
+import { AlpacaError, AlpacaServerError, type ClosedOrderFill, type Fill } from "../_shared/alpaca.ts";
 import { CONTEXT_SMA_WINDOW } from "../_shared/candlestick.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
 import type {
@@ -1300,6 +1300,11 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     );
   } catch (e) {
     const err = e as Error;
+    if (err instanceof AlpacaServerError) {
+      await notifications.notifyBrokerError({ context: "hourly-check", errorMsg: err.message });
+      await finish("skipped:broker_unavailable", String(err.message).slice(0, 500));
+      return "skipped:broker_unavailable";
+    }
     if (err instanceof AlpacaError) {
       await notifications.notifyBrokerError({ context: "hourly-check", errorMsg: err.message });
     } else if (!(err as DataError & { alerted?: boolean }).alerted) {
