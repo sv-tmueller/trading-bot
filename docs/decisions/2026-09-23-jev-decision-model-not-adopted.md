@@ -9,8 +9,8 @@ TypeSafe's Jev typed decision model was evaluated after an operator-shared Linke
 
 ## Context
 
-On 2026-09-23, after closing #229 and #230 (paper soak tracking and prod go-live, both parked
-"not going live for now"), the operator asked for an evaluation of TypeSafe's **Jev** "decision
+On 2026-09-23, after closing #229 and #230 (paper soak tracking and prod go-live, both closed as
+not planned "not going live for now"), the operator asked for an evaluation of TypeSafe's **Jev** "decision
 model" and an architecture described in a LinkedIn post, as part of batch #656 (this entry is
 package 1, tracked as #655).
 
@@ -30,12 +30,12 @@ Vendor/documentation links (see Cross-references for the full list):
 - https://vercel.com/kb/guide/typesafe-jev-and-ai-sdk
 
 The LinkedIn post (URL not recorded by the operator at share time) described an architecture
-where a trading program streams telemetry (on the order of ~30 values per second) into Postgres,
+where a trading program streams telemetry (about 30 values per second) into Postgres,
 and Jev scores that telemetry for hold/close judgments on open positions. Protection rules
-(stop-loss, sizing limits) and order execution stay in deterministic code; the post described a
+and order execution stay in deterministic code; the post described a
 shadow-mode rollout as the next step, not a live one.
 
-The repo's current state at evaluation time: the only live bot is the paper-only hourly
+The repo's current state at evaluation time: the only running bot is the paper-only hourly
 candlestick bot driven by `decideHourly` (`supabase/functions/_shared/hourly_signal.ts`), a single
 deterministic decision rule with no model call anywhere in `hourly-check`, `kill-switch`, or
 `panic`.
@@ -45,9 +45,9 @@ deterministic decision rule with no model call anywhere in `hourly-check`, `kill
 Jev, and the Jev-scored hold/close architecture described in the LinkedIn post, are **not
 adopted** in the trading path. No shadow study is started now.
 
-This conflicts with two of this repo's architectural invariants (see
-[../../CLAUDE.md#architectural-invariants](../../CLAUDE.md#architectural-invariants) for the full,
-authoritative text -- cited here by name only, not restated or quoted): "One decision rule" and
+Adopting it would conflict with two of this repo's architectural invariants (see
+[Architectural invariants](../../CLAUDE.md#architectural-invariants) for the full,
+authoritative text): "One decision rule" and
 "No LLM in the trading path."
 
 ### Architecture review
@@ -61,13 +61,12 @@ Sound parts of the proposed architecture, taken on their own terms:
   narrower interface than free-text completion, which is easier to audit and to bound.
 
 Weaknesses, weighed against those sound parts:
-1. Structurally, "deterministic code executes, a model advises on hold/close" is the same shape
-   as the pre-pivot v1.14 "LLM advises, guards control" pattern -- the pattern this repo's own
-   pivot moved away from because the guardrails did not stop the model's non-determinism from
-   leaking into outcomes.
+1. Structurally, this is the same shape as the pre-pivot v1.14 "LLM advises, guards control"
+   pattern -- the pattern this repo's own pivot moved away from because the guardrails did not
+   stop the model's non-determinism from leaking into outcomes.
 2. The vendor's latency and uptime claims are not edge evidence -- infrastructure quality says
    nothing about whether the scored judgment is predictive of hold/close outcomes.
-3. Per-label probabilities from a hosted classifier are not calibrated probabilities. Without a
+3. Per-label probabilities from a hosted classifier are not shown to be calibrated. Without a
    calibration study, a 0.7 "hold" score cannot be read as a 70% chance of a favorable hold.
 4. Any backtest run against a hosted model carries training-data lookahead leakage risk (the model
    may have seen data from the backtest period during its own training or fine-tuning). Only a
@@ -82,20 +81,21 @@ This decision is revisited, not closed permanently. Concretely:
 1. **A forward-only, pre-registered shadow study**, run entirely outside `hourly-check`,
    `kill-switch`, and `panic` (so it can never influence a live decision), with every scored
    judgment logged and never read by the trading path, on a pinned model version, starting no
-   earlier than the existing 30-closed-trade review checkpoint already defined for the hourly bot
-   (design spec "Review checkpoint",
+   earlier than 30 closed trades (the closed-trade leg of the design spec's Review checkpoint,
+   "4 weeks or 30 closed trades, whichever comes first"; `PROPOSAL_MIN_CLOSED_TRADES` = 30; design
+   spec "Review checkpoint",
    [docs/superpowers/specs/2026-07-27-hourly-bot-design.md](../superpowers/specs/2026-07-27-hourly-bot-design.md);
-   `PROPOSAL_MIN_CLOSED_TRADES` = 30 in
+   `PROPOSAL_MIN_CLOSED_TRADES` also defined in
    [docs/runbooks/weekly-review.md](../runbooks/weekly-review.md)). Such a study must pre-register
    its own sample size and pass bar before it starts, the same way the hourly bot's own checkpoint
-   was pre-registered.
+   defaults were pre-registered.
 2. **Any trading-path use** (a live gate on hold/close, sizing, or entry) needs a fresh brainstorm,
    a design spec, and an explicit amendment to the
    [Architectural invariants](../../CLAUDE.md#architectural-invariants) section before it can be
    built, not just a passing shadow study.
 3. **Non-trading tooling use** (for example triage or routing inside verification or reflection
    flows, never inside the trading path) is worth a separate look only if volume or cost ever
-   justifies Jev's pricing model over a constrained-output small model run locally.
+   justifies Jev's pricing model over a constrained-output small model.
 
 ## Consequences
 
@@ -104,19 +104,22 @@ This decision is revisited, not closed permanently. Concretely:
 - The trading path stays on its single, audited decision rule; no new non-determinism is
   introduced into `hourly-check`, `kill-switch`, or `panic`.
 - The evaluation is on record, so a future operator or agent asking "did we look at Jev" finds a
-  dated answer instead of re-deriving it from a Slack thread or a closed issue.
+  dated answer instead of re-deriving it from a closed issue.
 - The revisit conditions give a concrete, falsifiable bar (pre-registered forward shadow study,
-  pinned model version, existing 30-closed-trade checkpoint) rather than a vague "maybe later."
+  pinned model version, the closed-trade leg of the design spec's Review checkpoint) rather than a
+  vague "maybe later."
 
 ### Negative
 
 - `FORBIDDEN_STEMS` in `supabase/functions/_shared/invariants.test.ts` matches on SDK import
-  specifiers (`anthropic`, `openai`, `cohere`, `mistral`, `generative`, `genai`, `langchain`); it
-  would not catch an OpenRouter client import, a Vercel `ai` SDK import, or a raw `fetch` call to
-  a model endpoint. This is stated here as a fact about the current mechanical guard, not as a
+  specifiers (`anthropic`, `openai`, `cohere`, `mistral`, `generative`, `genai`, `langchain`); the
+  `openai` stem catches OpenRouter used via the `openai` npm client and `@ai-sdk/openai`-style
+  packages, but only OpenRouter-specific client packages (for example
+  `@openrouter/ai-sdk-provider`), the bare Vercel `ai` core package, and raw `fetch` calls to
+  a model endpoint would slip through. This is stated here as a fact about the current mechanical guard, not as a
   request for a code change -- the reviewer's invariant check (a human/agent review gate, not a
   mechanical one) is the only barrier against that class of integration today.
-- Revisiting this decision later means someone has to re-read the vendor docs again, since none of
+- Revisiting this decision later means someone has to re-read the vendor docs, since none of
   the vendor claims are independently verified here -- this entry records what was reviewed and
   concluded, not a benchmark result.
 
@@ -124,7 +127,7 @@ This decision is revisited, not closed permanently. Concretely:
 
 | Alternative | Why rejected |
 |---|---|
-| Adopt the Jev hold/close architecture as proposed | Rejected now: reintroduces the pre-pivot "model advises, guards control" pattern and conflicts with the "One decision rule" and "No LLM in the trading path" invariants. |
+| Adopt the Jev hold/close architecture as proposed | Rejected now: reintroduces the pre-pivot "LLM advises, guards control" pattern and conflicts with the "One decision rule" and "No LLM in the trading path" invariants. |
 | Run the shadow study now | Deferred, not rejected: the hourly bot does not yet have a closed-trade sample large enough for a meaningful forward comparison; see Revisit conditions. |
 | Backtest Jev against historical bars instead of a forward shadow study | Rejected: a hosted model's backtest result carries training-data lookahead leakage risk and cannot be trusted as clean evidence. |
 | Self-host Jev via vLLM or SGLang | Only fixes the silent-model-version-drift weakness; does not address the structural "model advises" pattern, the uncalibrated-probability weakness, or the lookahead-leakage weakness of any retrospective test. |
