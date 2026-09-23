@@ -42,4 +42,9 @@ One Markdown file per decision. Use `TEMPLATE.md` as the starting point.
 
 ## Existing decisions
 
-_None yet — the log opens with the entries that will be written as live decisions arise._
+- [2026-07-06](2026-07-06-keep-200dma-regime-signal.md) -- Keep the 200-DMA regime signal; hold the 3x UPRO bot as an absolute-return bet
+- [2026-07-07](2026-07-07-supabase-row-data-backup.md) -- Supabase row-data backup
+- [2026-07-27](2026-07-27-deprecate-upro-regime-bot.md) -- Deprecate the 3x UPRO / 200-DMA regime bot
+- [2026-07-27](2026-07-27-hourly-candlestick-signal.md) -- Replace the 200-DMA regime signal with an hourly candlestick long/short rule on SPY (paper-only)
+- [2026-08-04](2026-08-04-retire-db-backup-workflow.md) -- Retire the DB backup workflow
+- [2026-09-23](2026-09-23-jev-decision-model-not-adopted.md) -- Jev decision model: evaluated, not adopted
