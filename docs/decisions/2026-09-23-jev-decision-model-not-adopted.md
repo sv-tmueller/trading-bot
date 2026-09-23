@@ -10,9 +10,9 @@ TypeSafe's Jev typed decision model was evaluated after an operator-shared Linke
 ## Context
 
 On 2026-09-23, after closing #229 and #230 (paper soak tracking and prod go-live, both closed as
-not planned "not going live for now"), the operator asked for an evaluation of TypeSafe's **Jev** "decision
-model" and an architecture described in a LinkedIn post, as part of batch #656 (this entry is
-package 1, tracked as #655).
+not planned: "not going live for now"), the operator asked for an evaluation of TypeSafe's **Jev**
+"decision model" and an architecture described in a LinkedIn post, as part of batch #656 (this
+entry is package 1, tracked as #655).
 
 Jev is a vendor product (TypeSafe, distributed via OpenRouter and referenced in Vercel's AI SDK
 docs). Per the vendor's own documentation:
@@ -30,10 +30,10 @@ Vendor/documentation links (see Cross-references for the full list):
 - https://vercel.com/kb/guide/typesafe-jev-and-ai-sdk
 
 The LinkedIn post (URL not recorded by the operator at share time) described an architecture
-where a trading program streams telemetry (about 30 values per second) into Postgres,
-and Jev scores that telemetry for hold/close judgments on open positions. Protection rules
-and order execution stay in deterministic code; the post described a
-shadow-mode rollout as the next step, not a live one.
+where a trading program streams telemetry (about 30 values per second) into Postgres, and Jev
+scores that telemetry for hold/close judgments on open positions. Protection rules and order
+execution stay in deterministic code; the post described a shadow-mode rollout as the next step,
+not a live one.
 
 The repo's current state at evaluation time: the only running bot is the paper-only hourly
 candlestick bot driven by `decideHourly` (`supabase/functions/_shared/hourly_signal.ts`), a single
@@ -45,10 +45,9 @@ deterministic decision rule with no model call anywhere in `hourly-check`, `kill
 Jev, and the Jev-scored hold/close architecture described in the LinkedIn post, are **not
 adopted** in the trading path. No shadow study is started now.
 
-Adopting it would conflict with two of this repo's architectural invariants (see
-[Architectural invariants](../../CLAUDE.md#architectural-invariants) for the full,
-authoritative text): "One decision rule" and
-"No LLM in the trading path."
+Adopting it would conflict with two of this repo's architectural invariants (see [Architectural
+invariants](../../CLAUDE.md#architectural-invariants) for the full, authoritative text): "One
+decision rule" and "No LLM in the trading path."
 
 ### Architecture review
 
@@ -81,14 +80,12 @@ This decision is revisited, not closed permanently. Concretely:
 1. **A forward-only, pre-registered shadow study**, run entirely outside `hourly-check`,
    `kill-switch`, and `panic` (so it can never influence a live decision), with every scored
    judgment logged and never read by the trading path, on a pinned model version, starting no
-   earlier than 30 closed trades (the closed-trade leg of the design spec's Review checkpoint,
-   "4 weeks or 30 closed trades, whichever comes first"; `PROPOSAL_MIN_CLOSED_TRADES` = 30; design
-   spec "Review checkpoint",
-   [docs/superpowers/specs/2026-07-27-hourly-bot-design.md](../superpowers/specs/2026-07-27-hourly-bot-design.md);
-   `PROPOSAL_MIN_CLOSED_TRADES` also defined in
-   [docs/runbooks/weekly-review.md](../runbooks/weekly-review.md)). Such a study must pre-register
-   its own sample size and pass bar before it starts, the same way the hourly bot's own checkpoint
-   defaults were pre-registered.
+   earlier than 30 closed trades (the closed-trade leg of the design spec's
+   [Review checkpoint](../superpowers/specs/2026-07-27-hourly-bot-design.md), "4 weeks or 30
+   closed trades, whichever comes first"; matches `PROPOSAL_MIN_CLOSED_TRADES` = 30, documented
+   in [docs/runbooks/weekly-review.md](../runbooks/weekly-review.md)). Such a study must
+   pre-register its own sample size and pass bar before it starts, the same way the hourly bot's
+   own checkpoint defaults were pre-registered.
 2. **Any trading-path use** (a live gate on hold/close, sizing, or entry) needs a fresh brainstorm,
    a design spec, and an explicit amendment to the
    [Architectural invariants](../../CLAUDE.md#architectural-invariants) section before it can be
@@ -112,13 +109,13 @@ This decision is revisited, not closed permanently. Concretely:
 ### Negative
 
 - `FORBIDDEN_STEMS` in `supabase/functions/_shared/invariants.test.ts` matches on SDK import
-  specifiers (`anthropic`, `openai`, `cohere`, `mistral`, `generative`, `genai`, `langchain`); the
-  `openai` stem catches OpenRouter used via the `openai` npm client and `@ai-sdk/openai`-style
+  specifiers (`anthropic`, `openai`, `cohere`, `mistral`, `generative`, `genai`, `langchain`);
+  the `openai` stem catches OpenRouter used via the `openai` npm client and `@ai-sdk/openai`-style
   packages, but only OpenRouter-specific client packages (for example
-  `@openrouter/ai-sdk-provider`), the bare Vercel `ai` core package, and raw `fetch` calls to
-  a model endpoint would slip through. This is stated here as a fact about the current mechanical guard, not as a
-  request for a code change -- the reviewer's invariant check (a human/agent review gate, not a
-  mechanical one) is the only barrier against that class of integration today.
+  `@openrouter/ai-sdk-provider`), the bare Vercel `ai` core package, and raw `fetch` calls to a
+  model endpoint would slip through. This is stated here as a fact about the current mechanical
+  guard, not as a request for a code change -- the reviewer's invariant check (a human/agent
+  review gate, not a mechanical one) is the only barrier against that class of integration today.
 - Revisiting this decision later means someone has to re-read the vendor docs, since none of
   the vendor claims are independently verified here -- this entry records what was reviewed and
   concluded, not a benchmark result.
