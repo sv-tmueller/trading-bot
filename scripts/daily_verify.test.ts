@@ -268,6 +268,20 @@ Deno.test("excerptNote: the Deno 'error sending request for url (...)' shape red
   );
 });
 
+Deno.test("excerptNote: an uppercase HTTPS:// scheme is redacted to [url] (case-insensitive)", () => {
+  assertEquals(
+    excerptNote("GET HTTPS://api.example.com/v2/clock -> timeout"),
+    "GET [url] -> timeout",
+  );
+});
+
+Deno.test("excerptNote: a postgres:// URL with embedded credentials is redacted to [url]", () => {
+  assertEquals(
+    excerptNote("could not connect: postgres://user:pass@host/db"),
+    "could not connect: [url]",
+  );
+});
+
 Deno.test("excerptNote: a bare supabase host with no protocol is redacted to [host]", () => {
   assertEquals(
     excerptNote("could not reach abcproj.supabase.co right now"),
@@ -373,8 +387,13 @@ Deno.test("excerptNote: astral characters (surrogate pairs) are not split by tru
 });
 
 Deno.test("excerptNote: a secret straddling the 200-char cut does not partially appear", () => {
-  const secret = "abcdefghij0123456789ABCDEFGHIJ0123456789"; // 41 chars, 32+ run
-  const padding = "x".repeat(185); // secret starts at codepoint 185, straddles 200
+  const secret = "abcdefghij0123456789ABCDEFGHIJ0123456789"; // 40 chars, 32+ run
+  // Padding alternates "x" with a space so it never merges with the secret
+  // into one contiguous GENERIC_SECRET_RE run (a space isn't in that class'
+  // character set) -- the secret genuinely starts at its own codepoint 185,
+  // straddling the 200-char cut, instead of being absorbed into one giant
+  // redacted run together with the padding.
+  const padding = "x ".repeat(92) + "x"; // 185 codepoints
   const result = excerptNote(padding + secret + " tail")!;
   assertEquals(result.includes(secret), false);
   // No fragment of the raw secret (a run of 8+ of its own characters) survives.

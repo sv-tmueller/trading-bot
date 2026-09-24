@@ -126,15 +126,25 @@ the committed digest and ledger, Discord).
 - **Cap:** 200 codepoints, truncated with a trailing `...` -- never splits a
   multi-byte/astral character. Redaction always runs before truncation, so a
   secret straddling the cut point never appears partially.
-- **Redaction classes:** HTML tags are stripped; URLs and bare
-  `*.supabase.(co|in|net)` hosts become `[url]`/`[host]`; JWTs, `Bearer`
+- **Redaction classes:** HTML tags are stripped; URLs of any scheme (case-
+  insensitive -- `HTTPS://...`, `postgres://user:pass@host/db`, etc.) and
+  bare `*.supabase.(co|in|net)` hosts become `[url]`/`[host]`; JWTs, `Bearer`
   tokens, `key=value`-shaped fields whose key contains `token`, `secret`,
-  `password`, `apikey`, `key_id`, `authorization` or `signature`,
+  `password`, `apikey`, `api_key`, `key_id`, `authorization` or `signature`,
   `sb_secret_`/`sb_publishable_` tokens, Alpaca `PK`/`AK`/`CK`-prefixed key
   ids, and any other 32+ character run of base64-ish characters all become
-  `[redacted]`. Redaction is heuristic and intentionally over-broad -- a
-  short string that merely looks like a token is an accepted false positive,
-  never a false negative on an actual secret.
+  `[redacted]`. Schemeless hostnames that are not a `*.supabase.(co|in|net)`
+  host (e.g. a bare `xyzcompany.example.com` with no `scheme://` prefix) are
+  left visible -- a generic schemeless-host rule is deferred, not in scope
+  here.
+
+  Redaction is heuristic, not a guarantee: it catches this system's known
+  credential shapes (the classes above), and a short string that merely
+  looks like a token is an accepted false positive. It can also miss a
+  secret in a shape none of these patterns anticipates -- e.g. `password:
+  value` with a space instead of `:`/`=`, or a JSON field like
+  `"secret":"abc123"` shorter than the 32+ char catch-all. This is not a
+  "never a false negative" guarantee.
 - **Distinct-message counting:** counted after redaction, so two messages
   differing only in a redacted URL count as one. Null notes are dropped
   before counting; an all-null group (or an absent `error_runs`, from an

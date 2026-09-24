@@ -265,7 +265,15 @@ const SB_TOKEN_RE = /\bsb_(?:secret|publishable)_\S+/g;
 const ALPACA_KEY_RE = /\b(?:PK|AK|CK)[A-Z0-9]{16,}\b/g;
 const GENERIC_SECRET_RE = /[A-Za-z0-9+/=_-]{32,}/g;
 
-const URL_RE = /https?:\/\/[^\s"'()<>\[\]]+/g;
+// Scheme-generic and case-insensitive (#659 round 2) -- catches `HTTPS://`
+// and non-http(s) schemes like `postgres://user:pass@host/db`, not just
+// `http(s)://`. The trailing character class (excludes whitespace, quotes,
+// parens, angle/square brackets) is unchanged from the http(s)-only version,
+// so a URL embedded in "(...)" or wrapped in quotes still redacts only the
+// URL itself, not the surrounding punctuation. Schemeless hostnames (no
+// `scheme://` prefix) are intentionally NOT matched here -- deferred, see
+// docs/runbooks/daily-verification.md.
+const URL_RE = /[a-z][a-z0-9+.-]*:\/\/[^\s"'()<>\[\]]+/gi;
 const BARE_SUPABASE_HOST_RE =
   /\b[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.supabase\.(?:co|in|net)\b/g;
 

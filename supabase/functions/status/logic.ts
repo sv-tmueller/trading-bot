@@ -474,7 +474,11 @@ export async function runStatus(
 
   // #546: `verification` block -- split the day's audit rows into
   // hourly_check_runs (rows, ascending by started_at) and kill_switch_runs
-  // (counts only), per spec §4.3.
+  // (counts, plus started_at timestamps, plus -- #659 -- error_runs: the
+  // day's raw `error:*` kill-switch rows as {started_at, outcome, notes},
+  // notes unredacted here), per spec §4.3. Redaction of error_runs' notes
+  // happens downstream, in the daily-verify evaluator (scripts/daily_verify.ts),
+  // never in this Edge Function.
   let verification: StatusDigest["verification"];
   if (verifying) {
     const dayRows = verifyAuditRows ?? [];
