@@ -13,6 +13,7 @@ import type {
   AuditLogRow,
   EquitySnapshotRow,
   HourlyScanRow,
+  PgNetKillSwitchEvidence,
   RegimeStateRow,
   TradeRow,
 } from "../_shared/db.ts";
@@ -157,6 +158,13 @@ function makeDeps(
     getPgNetTimeoutCount: (_sinceIso: string, _untilIso: string) => {
       calls.pgNetTimeoutCountCalled = true;
       return Promise.resolve(0);
+    },
+    // #660: kill-switch slot pg_net evidence RPC mock -- undefined by
+    // default (degrades to null in the digest, never []); tests that need a
+    // concrete evidence block override this.
+    getPgNetKillSwitchEvidence: (_sinceIso: string, _untilIso: string) => {
+      calls.pgNetKillSwitchEvidenceCalled = true;
+      return Promise.resolve<PgNetKillSwitchEvidence | undefined>(undefined);
     },
   };
   const defaultAlpaca: StatusDeps["alpaca"] = {
@@ -991,6 +999,7 @@ Deno.test("verification: shape-lock - exact keys", async () => {
       "date",
       "hourly_check_runs",
       "kill_switch_runs",
+      "pg_net_kill_switch_evidence",
       "pg_net_timeouts",
       "scans",
       "shorts_enabled",
@@ -1254,6 +1263,42 @@ Deno.test({
     const digest = await runStatus(deps, undefined, VERIFY_DATE);
     assertEquals(digest.verification?.pg_net_timeouts, 0);
   },
+});
+
+// #660: verification.pg_net_kill_switch_evidence -- a thin pass-through of
+// the security-definer RPC (migration 0018), never redacted/transformed
+// here (scripts/daily_verify.ts does the tagging). `null` on RPC failure,
+// never coerced to an empty array/object -- an RPC failure must never look
+// like "checked, no evidence found".
+
+Deno.test("verification.pg_net_kill_switch_evidence: pass-through of a successful RPC result", async () => {
+  const evidence: PgNetKillSwitchEvidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [
+      { created: "2026-08-05T17:10:00.000Z", status_code: 200, timed_out: false },
+    ],
+  };
+  const { deps } = makeDeps({
+    db: { getPgNetKillSwitchEvidence: () => Promise.resolve(evidence) } as unknown as
+      StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.pg_net_kill_switch_evidence, evidence);
+});
+
+Deno.test("verification.pg_net_kill_switch_evidence: undefined (RPC failure) becomes null, never []", async () => {
+  const { deps } = makeDeps({
+    db: { getPgNetKillSwitchEvidence: () => Promise.resolve(undefined) } as unknown as
+      StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.pg_net_kill_switch_evidence, null);
+});
+
+Deno.test("verification.pg_net_kill_switch_evidence: not called when not verifying (no verifyDate)", async () => {
+  const { deps, calls } = makeDeps();
+  await runStatus(deps, undefined, undefined);
+  assertEquals(calls.pgNetKillSwitchEvidenceCalled, undefined);
 });
 
 Deno.test("composition: verifyDate + windowDays both present -> both blocks correct and independent", async () => {

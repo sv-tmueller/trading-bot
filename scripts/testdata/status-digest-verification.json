@@ -194,6 +194,7 @@
       "hourly_experiment_start_equity": "1017330.61",
       "hourly_experiment_baseline_verified": "1017330.61"
     },
+    "pg_net_kill_switch_evidence": null,
     "pg_net_timeouts": 0
   }
 }
