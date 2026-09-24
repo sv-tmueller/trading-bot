@@ -1469,6 +1469,413 @@ Deno.test("renderMarkdownDigest: a clean day with a full started_at grid renders
 });
 
 // ---------------------------------------------------------------------------
+// #661: section summaries state the failure reason. Every case below drives
+// renderMarkdownDigest end to end -- sectionSummary and its helpers are
+// private, so the only observable surface is the rendered "**STATUS** --
+// body" line per section.
+// ---------------------------------------------------------------------------
+
+/** Extracts a section's "**STATUS** -- body" line by its CHECK_TITLES heading. */
+function sectionLine(md: string, title: string): string {
+  const heading = `## ${title}`;
+  const idx = md.indexOf(heading);
+  if (idx === -1) throw new Error(`section heading not found: ${title}`);
+  const rest = md.slice(idx + heading.length).split("\n").map((l) => l.trim()).filter((l) =>
+    l.length > 0
+  );
+  return rest[0];
+}
+
+Deno.test("renderMarkdownDigest section summary: PASS golden -- all 8 lines byte-identical to today's checkNumbers text", () => {
+  const evaluation = evaluateVerification(cleanDayVerification(), null);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(sectionLine(md, "1. Slots"), "**PASS** -- 9/9 hourly-check runs completed cleanly.");
+  assertEquals(sectionLine(md, "2. Scans"), "**PASS** -- 9 scan row(s) (9 evaluated bar(s)).");
+  assertEquals(
+    sectionLine(md, "3. Geometry"),
+    "**PASS** -- Every non-null stop/target price checked for whole-cent quantization.",
+  );
+  assertEquals(
+    sectionLine(md, "4. Journal"),
+    "**PASS** -- 0 entries, 0 fill(s), 0 closed trade(s).",
+  );
+  assertEquals(sectionLine(md, "5. Latency"), "**PASS** -- max 1500ms, median 1500ms.");
+  assertEquals(
+    sectionLine(md, "6. State"),
+    '**PASS** -- bot_config.paused expected "false"; baseline 1000000.00 checked byte-identical ' +
+      "against hourly_experiment_baseline_verified and the previous verified day.",
+  );
+  assertEquals(sectionLine(md, "7. Kill-switch"), "**PASS** -- 108/108 runs.");
+  assertEquals(
+    sectionLine(md, "8. pg_net stalls"),
+    "**PASS** -- 0 timed-out HTTP response(s) at the :07 slots.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: 09-11 shape -- slots errored, scans mismatch quoted, kill_switch missing+errored", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs[0] = { ...v.hourly_check_runs[0], outcome: "error:Error" };
+  v.scans = v.scans.slice(0, 8); // one scan row short of the expected 9
+  v.kill_switch_runs = {
+    count: 104,
+    outcome_counts: {
+      "success:no_position": 88,
+      "error:AlpacaError": 9,
+      "error:Error": 6,
+      "error:BrokerRequestTimeoutError": 1,
+    },
+  };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.slots, "FAIL");
+  assertEquals(evaluation.checks.scans, "FAIL");
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "1. Slots"),
+    "**FAIL** -- 9/9 hourly-check runs, 1 errored (error:Error).",
+  );
+  assertEquals(
+    sectionLine(md, "2. Scans"),
+    "**FAIL** -- 8 scan row(s) (8 evaluated bar(s)); expected 9 hourly_scans row(s) " +
+      "(runs outside NON_SCANNING_OUTCOMES), found 8.",
+  );
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 104/108 runs, 4 missing, 16 errored (error:AlpacaError x9, error:Error x6, " +
+      "error:BrokerRequestTimeoutError x1).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: 09-14 shape -- slots missing, scans stays PASS, kill_switch errored only", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs = v.hourly_check_runs.slice(0, 8); // one slot missing
+  v.scans = v.scans.slice(0, 8); // matches the 8 scanning runs -> scans check PASSes
+  v.kill_switch_runs = {
+    count: 108,
+    outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+  };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.slots, "FAIL");
+  assertEquals(evaluation.checks.scans, "PASS");
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(sectionLine(md, "1. Slots"), "**FAIL** -- 8/9 hourly-check runs, 1 missing.");
+  assertEquals(sectionLine(md, "2. Scans"), "**PASS** -- 8 scan row(s) (8 evaluated bar(s)).");
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 108/108 runs, 2 errored (error:Error).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: tie ordering -- equal counts sorted by name ascending", () => {
+  const v = cleanDayVerification();
+  v.kill_switch_runs = {
+    count: 108,
+    outcome_counts: {
+      "success:no_position": 104,
+      "error:AlpacaError": 2,
+      "error:naked_position_flattened": 2,
+    },
+  };
+  const evaluation = evaluateVerification(v, null);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 108/108 runs, 4 errored (error:AlpacaError x2, error:naked_position_flattened x2).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: slots unfinished clause", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs[0] = { ...v.hourly_check_runs[0], outcome: null, finished_at: null };
+  v.hourly_check_runs[1] = { ...v.hourly_check_runs[1], outcome: null, finished_at: null };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.slots, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(sectionLine(md, "1. Slots"), "**FAIL** -- 9/9 hourly-check runs, 2 unfinished.");
+});
+
+Deno.test("renderMarkdownDigest section summary: kill_switch extra clause (109/108)", () => {
+  const v = cleanDayVerification();
+  v.kill_switch_runs = { count: 109, outcome_counts: { "success:no_position": 109 } };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(sectionLine(md, "7. Kill-switch"), "**FAIL** -- 109/108 runs, 1 extra.");
+});
+
+Deno.test("renderMarkdownDigest section summary: kill_switch unfinished-key clause", () => {
+  const v = cleanDayVerification();
+  v.kill_switch_runs = {
+    count: 108,
+    outcome_counts: { "success:no_position": 106, "(unfinished)": 2 },
+  };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(sectionLine(md, "7. Kill-switch"), "**FAIL** -- 108/108 runs, 2 unfinished.");
+});
+
+Deno.test("renderMarkdownDigest section summary: kill_switch unexpected-outcome clause", () => {
+  const v = cleanDayVerification();
+  v.kill_switch_runs = {
+    count: 108,
+    outcome_counts: { "success:no_position": 107, "weird_outcome": 1 },
+  };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 108/108 runs, 1 with unexpected outcome (weird_outcome).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: no-position contradiction alone", () => {
+  const v = cleanDayVerification();
+  v.scans[0] = { ...v.scans[0], decision: "LONG", entry_order_id: "order-1" };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 108/108 runs, every run success:no_position despite a LONG scan.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: no-position contradiction combined with 1 missing", () => {
+  const v = cleanDayVerification();
+  v.scans[0] = { ...v.scans[0], decision: "LONG", entry_order_id: "order-1" };
+  v.kill_switch_runs = { count: 107, outcome_counts: { "success:no_position": 107 } };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.kill_switch, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "7. Kill-switch"),
+    "**FAIL** -- 107/108 runs, 1 missing, every run success:no_position despite a LONG scan.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: latency WARN names the scan-only threshold", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs = v.hourly_check_runs.map((r) => ({
+    ...r,
+    finished_at: new Date(Date.parse(r.started_at) + 6000).toISOString(),
+  }));
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.latency, "WARN");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "5. Latency"),
+    "**WARN** -- max 6000ms (over the 5000ms WARN threshold), median 6000ms.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: latency WARN names the entry-day threshold", () => {
+  const v = cleanDayVerification();
+  v.trades = [tradeRow({ reason: "hourly_long_entry", broker_order_id: "order-1" })];
+  v.hourly_check_runs = v.hourly_check_runs.map((r) => ({
+    ...r,
+    finished_at: new Date(Date.parse(r.started_at) + 13000).toISOString(),
+  }));
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.latency, "WARN");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "5. Latency"),
+    "**WARN** -- max 13000ms (over the 12000ms WARN threshold), median 13000ms.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: latency FAIL names the 120000ms threshold", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs = v.hourly_check_runs.map((r) => ({
+    ...r,
+    finished_at: new Date(Date.parse(r.started_at) + 121000).toISOString(),
+  }));
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.latency, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "5. Latency"),
+    "**FAIL** -- max 121000ms (over the 120000ms FAIL threshold), median 121000ms.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: geometry quotes the finding, no numbers prefix", () => {
+  const v = cleanDayVerification();
+  v.scans[0] = { ...v.scans[0], stop_price: 10.005 };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.geometry, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "3. Geometry"),
+    `**FAIL** -- bar_ts=${v.scans[0].bar_ts} stop_price=10.005 is not whole cents.`,
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: state quotes the finding, no numbers prefix", () => {
+  const v = cleanDayVerification();
+  v.config.paused = "true";
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.state, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "6. State"),
+    '**FAIL** -- bot_config.paused="true", expected "false".',
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: journal keeps its numbers, semicolon-joins the quoted finding", () => {
+  const v = cleanDayVerification();
+  v.trades = [
+    tradeRow({
+      reason: "hourly_long_entry",
+      broker_order_id: "order-9",
+      fill_time: "2026-08-05T14:07:00.000Z",
+    }),
+  ];
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.journal, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "4. Journal"),
+    "**FAIL** -- 1 entry, 1 fill(s), 0 closed trade(s); unmatched entry fill " +
+      "broker_order_id=order-9 (SPY hourly_long_entry @ 2026-08-05T14:07:00.000Z).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: scans quotes a WARN finding", () => {
+  const v = cleanDayVerification();
+  v.scans[0] = { ...v.scans[0], decision: "LONG", entry_order_id: null };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.scans, "WARN");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "2. Scans"),
+    `**WARN** -- 9 scan row(s) (9 evaluated bar(s)); LONG decision at bar_ts=${
+      v.scans[0].bar_ts
+    } ` +
+      "has a null entry_order_id (a later scan's reconcile may still adopt it).",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: quoted findings cap at 3 with a (+N more) suffix", () => {
+  const v = cleanDayVerification();
+  v.scans = v.scans.map((s, i) => i < 5 ? { ...s, decision: "LONG", entry_order_id: null } : s);
+  const evaluation = evaluateVerification(v, null);
+  const scansFindings = evaluation.findings.filter((f) => f.startsWith("scans: "));
+  assertEquals(scansFindings.length, 5);
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  const expectedQuoted = scansFindings.slice(0, 3).map((f) => f.slice("scans: ".length)).join("; ");
+  assertEquals(
+    sectionLine(md, "2. Scans"),
+    `**WARN** -- 9 scan row(s) (9 evaluated bar(s)); ${expectedQuoted} (+2 more, see Findings).`,
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: pg_net_timeouts line is unchanged on FAIL", () => {
+  const v = cleanDayVerification();
+  v.pg_net_timeouts = 3;
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.pg_net_timeouts, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "8. pg_net stalls"),
+    "**FAIL** -- 3 timed-out HTTP response(s) at the :07 slots.",
+  );
+});
+
+Deno.test("renderMarkdownDigest section summary: slots fallback -- finished_at null but outcome set, no other slots failure", () => {
+  const v = cleanDayVerification();
+  const startedAt = v.hourly_check_runs[0].started_at;
+  v.hourly_check_runs[0] = { ...v.hourly_check_runs[0], finished_at: null };
+  const evaluation = evaluateVerification(v, null);
+  assertEquals(evaluation.checks.slots, "FAIL");
+  const md = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(
+    sectionLine(md, "1. Slots"),
+    `**FAIL** -- 9/9 hourly-check runs completed cleanly; run started_at=${startedAt} never ` +
+      "finished (finished_at is null).",
+  );
+});
+
+Deno.test("property: every finding carries exactly one of the 8 check-key prefixes", () => {
+  const prefixes = [
+    "slots: ",
+    "latency: ",
+    "scans: ",
+    "geometry: ",
+    "journal: ",
+    "state: ",
+    "kill_switch: ",
+    "pg_net_timeouts: ",
+  ];
+  const scenarios: VerificationBlock[] = [
+    cleanDayVerification(),
+    (() => {
+      const v = cleanDayVerification();
+      v.config.paused = "true";
+      v.scans[0] = { ...v.scans[0], stop_price: 10.005 };
+      v.kill_switch_runs = { count: 107, outcome_counts: { "success:no_position": 107 } };
+      v.pg_net_timeouts = 2;
+      return v;
+    })(),
+  ];
+  for (const v of scenarios) {
+    const evaluation = evaluateVerification(v, null);
+    for (const finding of evaluation.findings) {
+      const matches = prefixes.filter((p) => finding.startsWith(p));
+      assertEquals(matches.length, 1, finding);
+    }
+  }
+});
+
+Deno.test("property: a non-PASS section line differs from its PASS text and never says cleanly", () => {
+  const passMd = renderMarkdownDigest(
+    "2026-08-05",
+    evaluateVerification(cleanDayVerification(), null),
+    null,
+  );
+  const scenarios: Array<[string, VerificationBlock]> = [
+    [
+      "1. Slots",
+      (() => {
+        const v = cleanDayVerification();
+        v.hourly_check_runs[0] = { ...v.hourly_check_runs[0], outcome: "error:Error" };
+        return v;
+      })(),
+    ],
+    [
+      "7. Kill-switch",
+      (() => {
+        const v = cleanDayVerification();
+        v.kill_switch_runs = { count: 107, outcome_counts: { "success:no_position": 107 } };
+        return v;
+      })(),
+    ],
+  ];
+  for (const [title, v] of scenarios) {
+    const md = renderMarkdownDigest("2026-08-05", evaluateVerification(v, null), null);
+    const line = sectionLine(md, title);
+    assertEquals(line === sectionLine(passMd, title), false, title);
+    assertEquals(line.includes("cleanly"), false, title);
+  }
+});
+
+Deno.test("property: renders of a non-PASS evaluation are byte-identical across repeats", () => {
+  const v = cleanDayVerification();
+  v.hourly_check_runs[0] = { ...v.hourly_check_runs[0], outcome: "error:Error" };
+  v.config.paused = "true";
+  const evaluation = evaluateVerification(v, null);
+  const first = renderMarkdownDigest("2026-08-05", evaluation, null);
+  const second = renderMarkdownDigest("2026-08-05", evaluation, null);
+  assertEquals(first, second);
+});
+
+// ---------------------------------------------------------------------------
 // Fixture-driven case matrix (§9), one file per case class under
 // scripts/testdata/. Each fixture is a verification-block-shaped object built
 // by hand against §4.3 (never against Package A's branch, per §10's file
