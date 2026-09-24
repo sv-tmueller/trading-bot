@@ -46,9 +46,9 @@ def test_every_cited_source_document_exists(cell):
 
 
 def test_unrun_records_carry_no_power_claim():
-    """A grid that never ran cannot claim statistical power."""
+    """A grid that never ran (or was folded into a stronger successor) cannot claim power."""
     for cell in tc.LEDGER:
-        if cell.verdict in (tc.PENDING, tc.DATA_BLOCKED):
+        if cell.verdict in tc.UNCOUNTED_VERDICTS:
             assert cell.power == "NONE", (
                 f"{cell.family}/{cell.vehicle} is {cell.verdict} but claims power={cell.power}"
             )
@@ -57,8 +57,85 @@ def test_unrun_records_carry_no_power_claim():
 def test_closing_verdicts_are_exactly_no_go_and_class_kill():
     assert set(tc.CLOSING_VERDICTS) == {tc.NO_GO, tc.CLASS_KILL}
     # the weak/absent verdicts must NOT be closing
-    for v in (tc.DIRECTIONAL_NO_GO, tc.DATA_BLOCKED, tc.PENDING):
+    for v in (tc.DIRECTIONAL_NO_GO, tc.DATA_BLOCKED, tc.PENDING, tc.SUPERSEDED):
         assert v not in tc.CLOSING_VERDICTS
+
+
+def test_uncounted_verdicts_are_exactly_pending_data_blocked_superseded():
+    assert set(tc.UNCOUNTED_VERDICTS) == {tc.PENDING, tc.DATA_BLOCKED, tc.SUPERSEDED}
+
+
+# ---------------------------------------------------------------------------
+# SUPERSEDED verdict (#662)
+# ---------------------------------------------------------------------------
+
+def test_superseded_is_a_verdict_and_never_closing():
+    assert tc.SUPERSEDED in tc.VERDICTS
+    assert tc.SUPERSEDED not in tc.CLOSING_VERDICTS
+
+
+def test_superseded_rows_apply_only_to_power_none_records():
+    for cell in tc.LEDGER:
+        if cell.verdict == tc.SUPERSEDED:
+            assert cell.power == "NONE", (
+                f"{cell.family}/{cell.vehicle} is SUPERSEDED but claims power={cell.power}"
+            )
+
+
+def test_non_superseded_rows_have_no_superseded_by():
+    for cell in tc.LEDGER:
+        if cell.verdict != tc.SUPERSEDED:
+            assert cell.superseded_by == "", (
+                f"{cell.family}/{cell.vehicle} is {cell.verdict} but sets superseded_by"
+            )
+
+
+def test_every_superseded_row_cites_a_valid_successor():
+    """The successor must actually carry the evidence: same family/cadence/vehicle, a
+    counted (non-UNCOUNTED) verdict, at least as many cells, and be on the ledger."""
+    for cell in tc.LEDGER:
+        if cell.verdict != tc.SUPERSEDED:
+            continue
+        assert cell.superseded_by, f"{cell.family}/{cell.vehicle} SUPERSEDED with no successor"
+        successors = [
+            c for c in tc.LEDGER
+            if c is not cell
+            and c.family == cell.family
+            and c.cadence == cell.cadence
+            and c.vehicle == cell.vehicle
+            and c.source == cell.superseded_by
+            and c.verdict not in tc.UNCOUNTED_VERDICTS
+        ]
+        assert successors, (
+            f"{cell.family}/{cell.cadence}/{cell.vehicle}: no counted record cites "
+            f"{cell.superseded_by} as its source"
+        )
+        assert any(s.n_cells >= cell.n_cells for s in successors), (
+            f"{cell.family}/{cell.cadence}/{cell.vehicle}: successor has fewer cells than "
+            f"the superseded record"
+        )
+
+
+def test_orb_probe_row_is_superseded_by_the_longshort_preregistration():
+    rows = tc.find(
+        family="opening_range_breakout", cadence="5m", vehicle="SPY", verdict=tc.SUPERSEDED,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.n_cells == 3
+    assert row.power == "NONE"
+    assert row.source == "docs/research/2026-07-24-orb-probe-verdict.md"
+    assert row.superseded_by == "docs/research/2026-07-24-orb-longshort-preregistration.md"
+
+
+def test_hourly_geometry_data_blocked_pair_is_superseded_by_the_571_verdict():
+    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.SUPERSEDED)
+    assert len(rows) == 2
+    assert {r.cadence for r in rows} == {"hourly", "30m"}
+    for row in rows:
+        assert row.n_cells == 3
+        assert row.power == "NONE"
+        assert row.superseded_by == "docs/research/2026-08-13-hourly-geometry-cadence-sizing-verdict.md"
 
 
 # ---------------------------------------------------------------------------
@@ -142,21 +219,25 @@ def test_is_tested_false_for_something_never_tried():
     assert not tc.is_tested("vol_regime_gating", "daily", "SPY")
 
 
-def test_is_tested_false_for_the_hourly_geometry_data_blocked_cells():
-    """#566: never run (DATA_BLOCKED) -- not evidence, still open for a re-attempt."""
+def test_is_tested_false_for_the_hourly_geometry_superseded_cells():
+    """#566's DATA_BLOCKED rows are now SUPERSEDED (#662) -- still not evidence on their own;
+    the family is only closed if its successor (#571) is a closing verdict, which it is not
+    (DIRECTIONAL_NO_GO)."""
     assert not tc.is_tested("hourly_bracket_geometry_sizing", "hourly", "SPY")
     assert not tc.is_tested("hourly_bracket_geometry_sizing", "30m", "SPY")
 
 
-def test_hourly_geometry_rows_are_data_blocked_with_no_power_claim():
-    """#566: both cadence arms (60m/30m) are on the ledger as DATA_BLOCKED, power=NONE."""
-    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.DATA_BLOCKED)
+def test_hourly_geometry_rows_are_superseded_with_no_power_claim():
+    """#662: both #566 cadence arms (60m/30m) are on the ledger as SUPERSEDED, power=NONE --
+    folded into #571's DIRECTIONAL_NO_GO verdict on the same cells."""
+    rows = tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.SUPERSEDED)
     assert len(rows) == 2
     assert {r.cadence for r in rows} == {"hourly", "30m"}
     for row in rows:
-        assert row.verdict == tc.DATA_BLOCKED
+        assert row.verdict == tc.SUPERSEDED
         assert row.power == "NONE"
         assert row.n_cells == 3
+    assert not tc.find(family="hourly_bracket_geometry_sizing", vehicle="SPY", verdict=tc.DATA_BLOCKED)
 
 
 def test_hourly_geometry_directional_no_go_rows_from_571_are_recorded():
@@ -192,7 +273,7 @@ def test_check_novel_flags_a_closed_duplicate():
     assert res["closed"][0].verdict == tc.NO_GO
 
 
-def test_check_novel_separates_weak_from_closed_from_open():
+def test_check_novel_separates_weak_from_closed_from_superseded():
     weak = tc.check_novel("candlestick_pattern", "daily", "GOOG")
     assert weak["novel"] is False
     assert weak["weak"] and not weak["closed"]
@@ -201,8 +282,26 @@ def test_check_novel_separates_weak_from_closed_from_open():
     closed = tc.check_novel("candlestick_pattern", "daily", "SPY")
     assert closed["closed"] and not closed["open"]
 
-    open_ = tc.check_novel("opening_range_breakout", "5m", "SPY")
-    assert open_["open"] and not open_["closed"]
+    # #662: the ORB probe is now SUPERSEDED, not OPEN -- its 18-cell successor is the
+    # evidence-bearing (weak) record.
+    orb = tc.check_novel("opening_range_breakout", "5m", "SPY")
+    assert orb["superseded"] and orb["weak"] and not orb["open"] and not orb["closed"]
+
+
+def test_check_novel_reports_open_for_a_still_data_blocked_cell(monkeypatch):
+    """No real ledger row is DATA_BLOCKED/PENDING any more after #662 -- exercise the "open"
+    bucket against a synthetic ledger so the branch stays covered."""
+    synthetic = tc.LEDGER + (
+        tc.TestedCell(
+            family="synthetic_open_probe", cadence="daily", vehicle="SPY", exit_style="x",
+            n_cells=1, verdict=tc.DATA_BLOCKED, power="NONE",
+            source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-01-01",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    res = tc.check_novel("synthetic_open_probe", "daily", "SPY")
+    assert res["novel"] is False
+    assert res["open"] and not res["closed"] and not res["weak"] and not res["superseded"]
 
 
 def test_check_novel_buckets_are_disjoint():
@@ -212,7 +311,9 @@ def test_check_novel_buckets_are_disjoint():
         ("opening_range_breakout", "5m", "SPY"),
     ]:
         res = tc.check_novel(family, cadence, vehicle)
-        ids = [id(c) for bucket in ("closed", "weak", "open") for c in res[bucket]]
+        ids = [
+            id(c) for bucket in ("closed", "weak", "superseded", "open") for c in res[bucket]
+        ]
         assert len(ids) == len(set(ids)), "a record landed in two buckets"
 
 
@@ -222,8 +323,10 @@ def test_check_novel_buckets_are_disjoint():
 
 def test_cumulative_trials_excludes_grids_that_never_ran():
     """An unrun grid consumed no multiplicity; counting it would inflate the DSR bar."""
-    # ORB has a DATA_BLOCKED(3) and a PENDING(18) record and has never run
-    assert tc.cumulative_trials("opening_range_breakout") == 0
+    # #662: ORB's 3-cell probe is SUPERSEDED (excluded); its 18-cell successor actually ran
+    # (#617's DIRECTIONAL_NO_GO) and is the only record that counts -- 18, not 0 and not 21
+    # (no double counting the superseded probe's cells).
+    assert tc.cumulative_trials("opening_range_breakout") == 18
     # #443: candlestick v1 ran 28 on GOOG + 28 on SPY (the former-PENDING record, now NO_GO)
     assert tc.cumulative_trials("candlestick_pattern") == 56
     # #443: candlestick v2 ran 56 on GOOG + 56 on SPY (the former-PENDING record, now NO_GO)
@@ -285,3 +388,10 @@ def test_cli_check_reports_a_duplicate_with_its_source(capsys):
     out = capsys.readouterr().out
     assert "CLOSED" in out
     assert "turtle-breakout-verdict" in out
+
+
+def test_cli_check_reports_a_superseded_record_for_the_orb_probe(capsys):
+    assert tc.main(["--check", "opening_range_breakout", "5m", "SPY"]) == 0
+    out = capsys.readouterr().out
+    assert "SUPERSEDED" in out
+    assert "orb-longshort-preregistration" in out

@@ -45,15 +45,54 @@ def test_programme_state_agrees_with_the_ledger():
     st = wr.programme_state()
     assert st["records"] == len(tc.LEDGER)
     assert st["cells_total"] == sum(c.n_cells for c in tc.LEDGER)
-    assert st["cells_run"] + st["cells_pending"] + st["cells_blocked"] == st["cells_total"]
+    assert (
+        st["cells_run"] + st["cells_pending"] + st["cells_blocked"] + st["cells_superseded"]
+        == st["cells_total"]
+    )
 
 
 def test_programme_state_excludes_unrun_grids_from_cells_run():
     st = wr.programme_state()
     unrun = sum(
-        c.n_cells for c in tc.LEDGER if c.verdict in (tc.PENDING, tc.DATA_BLOCKED)
+        c.n_cells for c in tc.LEDGER if c.verdict in tc.UNCOUNTED_VERDICTS
     )
     assert st["cells_run"] == st["cells_total"] - unrun
+
+
+def test_programme_state_reports_superseded_records_and_cells():
+    st = wr.programme_state()
+    superseded = tc.find(verdict=tc.SUPERSEDED)
+    assert st["cells_superseded"] == sum(c.n_cells for c in superseded)
+    assert list(st["superseded_records"]) == list(superseded)
+
+
+def test_programme_state_raises_on_an_unknown_verdict(monkeypatch):
+    bogus = tc.TestedCell(
+        family="fam", cadence="daily", vehicle="SPY", exit_style="x", n_cells=1,
+        verdict="MAYBE", power="NONE", source="docs/research/x.md", date="2026-01-01",
+    )
+    monkeypatch.setattr(tc, "LEDGER", tc.LEDGER + (bogus,))
+    with pytest.raises(ValueError):
+        wr.programme_state()
+
+
+def test_programme_state_counts_a_synthetic_superseded_and_directional_pair(monkeypatch):
+    synthetic = (
+        tc.TestedCell(
+            family="synthetic", cadence="daily", vehicle="SPY", exit_style="x", n_cells=3,
+            verdict=tc.SUPERSEDED, power="NONE", source="docs/research/x.md",
+            date="2026-01-01", superseded_by="docs/research/y.md",
+        ),
+        tc.TestedCell(
+            family="synthetic", cadence="daily", vehicle="SPY", exit_style="x", n_cells=18,
+            verdict=tc.DIRECTIONAL_NO_GO, power="DIRECTIONAL", source="docs/research/y.md",
+            date="2026-01-02",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    st = wr.programme_state()
+    assert st["cells_run"] == 18
+    assert st["cells_superseded"] == 3
 
 
 def test_survivor_count_is_zero_and_matches_the_ledger():
@@ -76,11 +115,12 @@ def test_weak_and_closed_records_are_disjoint():
 # The priority rule
 # ---------------------------------------------------------------------------
 
-def _state(pending=(), blocked=(), weak=()) -> dict:
+def _state(pending=(), blocked=(), weak=(), superseded=()) -> dict:
     return {
         "pending_records": list(pending),
         "blocked_records": list(blocked),
         "weak_records": list(weak),
+        "superseded_records": list(superseded),
     }
 
 
@@ -122,6 +162,25 @@ def test_falls_through_to_an_untested_candidate():
     # first untested candidate on record is the vol-regime one
     assert "vol_regime_gating" in headline
     assert "#422" in rationale
+
+
+def test_superseded_records_are_never_proposed():
+    """A SUPERSEDED record must never surface as the next-round proposal -- its cells were
+    already re-run for real under its successor, so proposing it again would be a duplicate."""
+    st = _state(superseded=[_cell(tc.SUPERSEDED)])
+    headline, rationale = wr.propose_next_round(st)
+    assert "SUPERSEDED" not in headline
+    assert "synthetic" not in headline  # falls through to the untested-candidate list instead
+    assert "vol_regime_gating" in headline
+
+
+def test_live_ledger_headline_is_not_the_superseded_orb_or_hourly_geometry_retry():
+    """#662: once the ORB probe and the hourly-geometry DATA_BLOCKED pair are SUPERSEDED, the
+    generator must not propose retrying either -- both are folded into their successors."""
+    st = wr.programme_state()
+    headline, _rationale = wr.propose_next_round(st)
+    assert "opening_range_breakout" not in headline
+    assert "hourly_bracket_geometry_sizing" not in headline
 
 
 def test_untested_candidates_are_actually_absent_from_the_ledger():
@@ -176,6 +235,19 @@ def test_render_states_the_proposal_rule_it_applied():
 def test_render_marks_open_cells_as_not_evidence():
     text = wr.render_review(date(2026, 7, 25))
     assert "NOT evidence" in text
+
+
+def test_render_includes_a_superseded_section_before_proposed_next_round():
+    text = wr.render_review(date(2026, 7, 25))
+    assert "## Superseded records (the successor carries the evidence)" in text
+    assert text.index("## Superseded records") < text.index("## Proposed next round")
+
+
+def test_render_lists_every_superseded_record_with_its_successor():
+    text = wr.render_review(date(2026, 7, 25))
+    for c in tc.find(verdict=tc.SUPERSEDED):
+        assert c.family in text
+        assert c.superseded_by in text
 
 
 # ---------------------------------------------------------------------------

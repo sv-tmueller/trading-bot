@@ -31,6 +31,12 @@ Verdict vocabulary
                      suggestive, never conclusive, and re-testing at full power is legitimate.
 ``DATA_BLOCKED``     never actually run. **Not evidence of anything** — the cell is still open.
 ``PENDING``          grid frozen and pre-registered, awaiting data.
+``SUPERSEDED``       a `power="NONE"` record (never run, or run only as an unpowered smoke)
+                     whose cells were later re-run for real by a stronger, counted record on
+                     the same family/cadence/vehicle (cited via `superseded_by`). Not closing
+                     on its own -- the successor's own verdict is what actually settles the
+                     cells; this verdict only prevents the never-run row from being read as a
+                     live, still-open question once its successor exists.
 
 Run ``python3 -m backtest.tested_cells`` for a freshly-rendered table (no doc to go stale), or
 ``python3 -m backtest.tested_cells --check candlestick_pattern daily SPY`` to query overlap.
@@ -48,12 +54,19 @@ CLASS_KILL = "CLASS_KILL"
 DIRECTIONAL_NO_GO = "DIRECTIONAL_NO_GO"
 DATA_BLOCKED = "DATA_BLOCKED"
 PENDING = "PENDING"
-VERDICTS = (NO_GO, CLASS_KILL, DIRECTIONAL_NO_GO, DATA_BLOCKED, PENDING)
+SUPERSEDED = "SUPERSEDED"
+VERDICTS = (NO_GO, CLASS_KILL, DIRECTIONAL_NO_GO, DATA_BLOCKED, PENDING, SUPERSEDED)
 
-#: Verdicts that actually close a cell. A DATA_BLOCKED or PENDING cell is still open, and a
-#: DIRECTIONAL_NO_GO is explicitly re-testable at full power — conflating these with a real
-#: NO_GO would let weak evidence masquerade as a settled question.
+#: Verdicts that actually close a cell. A DATA_BLOCKED or PENDING cell is still open, a
+#: DIRECTIONAL_NO_GO is explicitly re-testable at full power, and a SUPERSEDED record defers
+#: entirely to its successor -- conflating any of these with a real NO_GO would let weak or
+#: absent evidence masquerade as a settled question.
 CLOSING_VERDICTS = (NO_GO, CLASS_KILL)
+
+#: Verdicts that consumed no multiplicity: PENDING/DATA_BLOCKED never ran at all, and
+#: SUPERSEDED's cells were re-run for real under its successor's own record -- counting a
+#: SUPERSEDED row here too would double-count the same cells against the DSR bar.
+UNCOUNTED_VERDICTS = (PENDING, DATA_BLOCKED, SUPERSEDED)
 
 POWER_LEVELS = ("PROMOTABLE", "DIRECTIONAL", "UNDERPOWERED", "NONE")
 
@@ -72,6 +85,7 @@ class TestedCell:
     source: str          # the doc that is the authority for this record
     date: str            # YYYY-MM-DD
     note: str = ""       # one line: the load-bearing caveat, if any
+    superseded_by: str = ""  # the successor record's `source`, set only when verdict=SUPERSEDED
 
     def is_closed(self) -> bool:
         """True only if this record actually settles its cells."""
@@ -147,12 +161,16 @@ LEDGER: Tuple[TestedCell, ...] = (
         source="docs/research/2026-07-24-turtle-breakout-verdict.md", date="2026-07-24",
         note="Non-promotable. Calmar -0.567..-0.581.",
     ),
-    # --- Opening-range breakout (#431, #434) — never actually run --------------------
+    # --- Opening-range breakout (#431, #434) — probe superseded by the long/short study ---
     TestedCell(
         family="opening_range_breakout", cadence="5m", vehicle="SPY",
-        exit_style="bracket_OR_RxRisk", n_cells=3, verdict=DATA_BLOCKED, power="NONE",
+        exit_style="bracket_OR_RxRisk", n_cells=3, verdict=SUPERSEDED, power="NONE",
         source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-07-24",
-        note="Long-only v1 probe. Alpaca key-gated; yfinance fallback reached 60 sessions (n_w=0).",
+        note="Long-only v1 probe. Alpaca key-gated; yfinance fallback reached 60 sessions "
+             "(n_w=0) -- DATA_BLOCKED at the time. Superseded once the long/short study "
+             "(#615) actually ran the long / or_bars=1 slice of its 18-cell grid on real "
+             "data and recorded DIRECTIONAL_NO_GO below (#617).",
+        superseded_by="docs/research/2026-07-24-orb-longshort-preregistration.md",
     ),
     TestedCell(
         family="opening_range_breakout", cadence="5m", vehicle="SPY",
@@ -228,26 +246,32 @@ LEDGER: Tuple[TestedCell, ...] = (
              "twin/always-in) -> the mes_swing family is closed NO_GO; no round 2 "
              "(vol-regime gating) is frozen.",
     ),
-    # --- Hourly bracket-geometry/cadence/sizing study (#566) — never actually run --------
+    # --- Hourly bracket-geometry/cadence/sizing study (#566) — superseded by #571's run ---
     TestedCell(
         family="hourly_bracket_geometry_sizing", cadence="hourly", vehicle="SPY",
-        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DATA_BLOCKED, power="NONE",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=SUPERSEDED, power="NONE",
         source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-data-feasibility.md",
         date="2026-08-13",
         note="R{1.0,1.5,2.0} at 60m cadence. No ALPACA_API_KEY_ID/ALPACA_API_SECRET_KEY "
              "(or TS-side ALPACA_API_KEY/ALPACA_SECRET_KEY) set and no local data/intraday "
              "drop-in present; egress to data.alpaca.markets is open (HTTP 401, not a "
              "timeout) -- key-gated, not egress-denied. yfinance fallback confirmed "
-             "insufficient (#422): 60m reaches only DIRECTIONAL (n_w=2).",
+             "insufficient (#422): 60m reaches only DIRECTIONAL (n_w=2) -- DATA_BLOCKED at "
+             "the time. Superseded once the key-gate lifted and the frozen 6-cell grid "
+             "actually ran (#571), recorded below as DIRECTIONAL_NO_GO.",
+        superseded_by="docs/research/2026-08-13-hourly-geometry-cadence-sizing-verdict.md",
     ),
     TestedCell(
         family="hourly_bracket_geometry_sizing", cadence="30m", vehicle="SPY",
-        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=DATA_BLOCKED, power="NONE",
+        exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=SUPERSEDED, power="NONE",
         source="docs/research/2026-08-13-hourly-geometry-cadence-sizing-data-feasibility.md",
         date="2026-08-13",
         note="R{1.0,1.5,2.0} at 30m cadence. Same data gate as the 60m arm above; yfinance "
              "fallback measured UNDERPOWERED (60 sessions, n_w=0), confirming #422's "
-             "on-record 30m depth cap and disqualifying it as a stand-in for this arm.",
+             "on-record 30m depth cap and disqualifying it as a stand-in for this arm -- "
+             "DATA_BLOCKED at the time. Superseded once #571 actually ran this arm's "
+             "3-cell grid, recorded below as DIRECTIONAL_NO_GO.",
+        superseded_by="docs/research/2026-08-13-hourly-geometry-cadence-sizing-verdict.md",
     ),
     # --- Hourly bracket-geometry/cadence/sizing study (#571) -- 0/6, DIRECTIONAL_NO_GO ------
     TestedCell(
@@ -327,21 +351,25 @@ def is_tested(family: str, cadence: str, vehicle: str) -> bool:
 def check_novel(family: str, cadence: str, vehicle: str) -> dict:
     """Report what prior work overlaps a proposed cell, and how strongly.
 
-    Returns ``{"novel": bool, "closed": (...), "weak": (...), "open": (...)}`` where
-    ``closed`` records would make a re-run a duplicate, ``weak`` records are directional
-    reads that a full-power test may legitimately revisit, and ``open`` records are
-    pre-registered-but-unrun grids that a new study would collide with.
+    Returns ``{"novel": bool, "closed": (...), "weak": (...), "superseded": (...),
+    "open": (...)}`` where ``closed`` records would make a re-run a duplicate, ``weak``
+    records are directional reads that a full-power test may legitimately revisit,
+    ``superseded`` records were folded into a later, stronger record on the same cells (see
+    that record's ``superseded_by``), and ``open`` records are pre-registered-but-unrun grids
+    that a new study would collide with.
 
     ``novel`` is True only when nothing at all overlaps — the honest bar for "this is new".
     """
     overlap = find(family=family, cadence=cadence, vehicle=vehicle)
     closed = tuple(c for c in overlap if c.is_closed())
     weak = tuple(c for c in overlap if c.verdict == DIRECTIONAL_NO_GO)
+    superseded = tuple(c for c in overlap if c.verdict == SUPERSEDED)
     open_ = tuple(c for c in overlap if c.verdict in (DATA_BLOCKED, PENDING))
     return {
         "novel": not overlap,
         "closed": closed,
         "weak": weak,
+        "superseded": superseded,
         "open": open_,
     }
 
@@ -349,13 +377,15 @@ def check_novel(family: str, cadence: str, vehicle: str) -> dict:
 def cumulative_trials(family: str) -> int:
     """Total cells ever tried in a family — the multiplicity a new round inherits.
 
-    ``PENDING`` and ``DATA_BLOCKED`` groups are EXCLUDED: a grid that never ran consumed no
-    multiplicity. Counting them would inflate the deflated-Sharpe bar on the basis of tests
-    that produced no numbers.
+    ``UNCOUNTED_VERDICTS`` (``PENDING``, ``DATA_BLOCKED``, ``SUPERSEDED``) are EXCLUDED: a
+    grid that never ran consumed no multiplicity, and a ``SUPERSEDED`` record's cells were
+    re-run for real under its successor's own record, so counting it too would double-count
+    the same cells. Counting either would inflate the deflated-Sharpe bar on the basis of
+    tests that produced no (new) numbers.
     """
     return sum(
         c.n_cells for c in find(family=family)
-        if c.verdict not in (PENDING, DATA_BLOCKED)
+        if c.verdict not in UNCOUNTED_VERDICTS
     )
 
 
@@ -365,7 +395,7 @@ def render_table() -> str:
         "Tested-cell ledger — every strategy cell this repo has run or frozen",
         f"{len(LEDGER)} records; "
         f"{sum(c.n_cells for c in LEDGER)} cells total, "
-        f"{sum(c.n_cells for c in LEDGER if c.verdict not in (PENDING, DATA_BLOCKED))} actually run",
+        f"{sum(c.n_cells for c in LEDGER if c.verdict not in UNCOUNTED_VERDICTS)} actually run",
         "",
         f"{'family':<32} {'cadence':<8} {'vehicle':<8} {'n':>4} {'verdict':<18} {'power':<12}",
     ]
@@ -382,6 +412,7 @@ def render_table() -> str:
         "",
         "Reminder: DATA_BLOCKED and PENDING are NOT evidence — those cells are still open.",
         "DIRECTIONAL_NO_GO is suggestive only and may legitimately be re-tested at full power.",
+        "SUPERSEDED records are folded into a later, stronger record -- see its superseded_by.",
     ]
     return "\n".join(lines)
 
@@ -402,11 +433,14 @@ def main(argv: Optional[list] = None) -> int:
         for label, key in (
             ("CLOSED (a re-run would be a duplicate)", "closed"),
             ("WEAK (directional only — full-power re-test is legitimate)", "weak"),
+            ("SUPERSEDED (folded into a later, stronger record -- see superseded_by)",
+             "superseded"),
             ("OPEN (frozen or blocked, never run — a new study would collide)", "open"),
         ):
             for c in res[key]:
+                suffix = f" (superseded_by={c.superseded_by})" if c.superseded_by else ""
                 print(f"  [{label}] {c.family}/{c.cadence}/{c.vehicle} "
-                      f"n={c.n_cells} {c.verdict} -> {c.source}")
+                      f"n={c.n_cells} {c.verdict} -> {c.source}{suffix}")
         return 0
 
     print(render_table())
