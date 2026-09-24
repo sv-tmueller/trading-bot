@@ -192,6 +192,16 @@ export interface StatusDigest {
       count: number;
       outcome_counts: Record<string, number>;
       started_at: string[];
+      // #659: the day's raw `error:*` kill-switch rows, ascending by
+      // started_at, `notes` unredacted. Interpretation A (lead decision on
+      // #659): `status` stays a thin pass-through of rows it already
+      // fetched -- it does no redaction/truncation/grouping; the evaluator
+      // (scripts/daily_verify.ts) builds the public-facing message excerpt
+      // from this raw data. Last field of `kill_switch_runs` by convention.
+      // This still isn't "full rows" in the sense the comment above warns
+      // against -- it is bounded to the handful of error rows on a day,
+      // never the full 108-row grid.
+      error_runs: Array<{ started_at: string; outcome: string; notes: string | null }>;
     };
     // Full HourlyScanRow values, ascending by bar_ts.
     scans: HourlyScanRow[];
@@ -399,9 +409,21 @@ export async function runStatus(
   let equity: number | null = null;
   let positionQty: number | null = null;
   const alpacaErrors: string[] = [];
-  try { clock = await alpaca.getClock(); } catch (e) { alpacaErrors.push(`getClock: ${(e as Error).message}`); }
-  try { equity = await alpaca.getAccountValue(); } catch (e) { alpacaErrors.push(`getAccountValue: ${(e as Error).message}`); }
-  try { positionQty = await alpaca.getPosition(config.botTicker); } catch (e) { alpacaErrors.push(`getPosition(${config.botTicker}): ${(e as Error).message}`); }
+  try {
+    clock = await alpaca.getClock();
+  } catch (e) {
+    alpacaErrors.push(`getClock: ${(e as Error).message}`);
+  }
+  try {
+    equity = await alpaca.getAccountValue();
+  } catch (e) {
+    alpacaErrors.push(`getAccountValue: ${(e as Error).message}`);
+  }
+  try {
+    positionQty = await alpaca.getPosition(config.botTicker);
+  } catch (e) {
+    alpacaErrors.push(`getPosition(${config.botTicker}): ${(e as Error).message}`);
+  }
   const alpaca_error = alpacaErrors.length > 0 ? alpacaErrors.join("; ") : null;
 
   const outcome_counts: Record<string, number> = {};
@@ -468,14 +490,27 @@ export async function runStatus(
     const killSwitchOutcomeCounts: Record<string, number> = {};
     let killSwitchCount = 0;
     const killSwitchStartedAt: string[] = [];
+    // #659: raw `error:*` rows, collected alongside the counts loop above --
+    // no second pass over dayRows.
+    const killSwitchErrorRuns: Array<
+      { started_at: string; outcome: string; notes: string | null }
+    > = [];
     for (const row of dayRows) {
       if (row.script_name !== "kill-switch") continue;
       killSwitchCount++;
       const key = row.outcome ?? UNFINISHED_LABEL;
       killSwitchOutcomeCounts[key] = (killSwitchOutcomeCounts[key] ?? 0) + 1;
       killSwitchStartedAt.push(row.started_at);
+      if (row.outcome?.startsWith("error:")) {
+        killSwitchErrorRuns.push({
+          started_at: row.started_at,
+          outcome: row.outcome,
+          notes: row.notes,
+        });
+      }
     }
     killSwitchStartedAt.sort((a, b) => a.localeCompare(b));
+    killSwitchErrorRuns.sort((a, b) => a.started_at.localeCompare(b.started_at));
     verification = {
       date: verifyDate!,
       window: { since: verifySince!, until: verifyUntil! },
@@ -485,6 +520,7 @@ export async function runStatus(
         count: killSwitchCount,
         outcome_counts: killSwitchOutcomeCounts,
         started_at: killSwitchStartedAt,
+        error_runs: killSwitchErrorRuns,
       },
       scans: verifyScans ?? [],
       trades: verifyTrades ?? [],

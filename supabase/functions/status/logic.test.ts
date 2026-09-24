@@ -1094,6 +1094,7 @@ Deno.test("verification.kill_switch_runs: counts (count + outcome_counts) plus s
     count: 108,
     outcome_counts: { "success:no_position": 107, "skipped:market_closed": 1 },
     started_at: expectedStartedAt,
+    error_runs: [],
   });
   assertEquals("rows" in digest.verification!.kill_switch_runs, false);
 });
@@ -1235,7 +1236,117 @@ Deno.test("verification: empty day -> scans/trades/hourly_check_runs [], kill_sw
     count: 0,
     outcome_counts: {},
     started_at: [],
+    error_runs: [],
   });
+});
+
+// #659: `error_runs` -- the day's raw kill-switch `error:*` rows, notes
+// unredacted (Interpretation A, lead decision on #659: `status` ships raw
+// text, the evaluator does all redaction/truncation/grouping).
+
+Deno.test("verification.kill_switch_runs.error_runs: holds only error rows, raw notes, sorted ascending from unsorted input", async () => {
+  const [since] = dayWindow(VERIFY_DATE);
+  const dayRows: AuditLogRow[] = [
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T19:00:00.000Z",
+      finished_at: "2026-08-05T19:00:00.500Z",
+      outcome: "error:Error",
+      notes: "second error, raw",
+    },
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:00:00.000Z",
+      finished_at: "2026-08-05T13:00:00.500Z",
+      outcome: "error:AlpacaError",
+      notes: "first error, raw",
+    },
+  ];
+  const { deps } = makeDeps({
+    db: {
+      getAuditLogSince: (sinceIso: string) => Promise.resolve(sinceIso === since ? dayRows : []),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.kill_switch_runs.error_runs, [
+    {
+      started_at: "2026-08-05T13:00:00.000Z",
+      outcome: "error:AlpacaError",
+      notes: "first error, raw",
+    },
+    {
+      started_at: "2026-08-05T19:00:00.000Z",
+      outcome: "error:Error",
+      notes: "second error, raw",
+    },
+  ]);
+});
+
+Deno.test("verification.kill_switch_runs.error_runs: excludes success/skipped/unfinished kill-switch rows and all hourly-check rows", async () => {
+  const [since] = dayWindow(VERIFY_DATE);
+  const dayRows: AuditLogRow[] = [
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:00:00.000Z",
+      finished_at: "2026-08-05T13:00:00.500Z",
+      outcome: "success:no_position",
+      notes: null,
+    },
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:05:00.000Z",
+      finished_at: "2026-08-05T13:05:00.500Z",
+      outcome: "skipped:market_closed",
+      notes: null,
+    },
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:10:00.000Z",
+      finished_at: null,
+      outcome: null,
+      notes: null,
+    },
+    {
+      script_name: "hourly-check",
+      started_at: "2026-08-05T13:07:00.000Z",
+      finished_at: "2026-08-05T13:07:01.000Z",
+      outcome: "error:AlpacaError",
+      notes: "hourly error, must not leak into kill_switch_runs.error_runs",
+    },
+  ];
+  const { deps } = makeDeps({
+    db: {
+      getAuditLogSince: (sinceIso: string) => Promise.resolve(sinceIso === since ? dayRows : []),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.kill_switch_runs.error_runs, []);
+});
+
+Deno.test("verification.kill_switch_runs.error_runs: null notes pass through", async () => {
+  const [since] = dayWindow(VERIFY_DATE);
+  const dayRows: AuditLogRow[] = [
+    {
+      script_name: "kill-switch",
+      started_at: "2026-08-05T13:00:00.000Z",
+      finished_at: "2026-08-05T13:00:00.500Z",
+      outcome: "error:implausible_drawdown",
+      notes: null,
+    },
+  ];
+  const { deps } = makeDeps({
+    db: {
+      getAuditLogSince: (sinceIso: string) => Promise.resolve(sinceIso === since ? dayRows : []),
+    } as unknown as StatusDeps["db"],
+  });
+  const digest = await runStatus(deps, undefined, VERIFY_DATE);
+  assertEquals(digest.verification?.kill_switch_runs.error_runs, [
+    {
+      started_at: "2026-08-05T13:00:00.000Z",
+      outcome: "error:implausible_drawdown",
+      notes: null,
+    },
+  ]);
 });
 
 // #602: when the pg_net_timeout_count RPC fails (e.g. the pg_net extension is

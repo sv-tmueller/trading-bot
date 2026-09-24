@@ -22,13 +22,13 @@ the same numbers):
 
 | Check | Replaces (#535) | Rule |
 | --- | --- | --- |
-| `slots` | check 1 | All 9 `hourly-check` runs for the day exist, every row has a non-null `finished_at`/`outcome`, and no `outcome` starts `error:`. Any breach FAILs. |
+| `slots` | check 1 | All 9 `hourly-check` runs for the day exist, every row has a non-null `finished_at`/`outcome`, and no `outcome` starts `error:`. Any breach FAILs. An `error:*` finding carries a redacted message excerpt from the run's own `notes` when one survives redaction (#659; see "Error message excerpts" below). |
 | `latency` | check 5 | Per run, `finished_at - started_at`. WARN above 5s on scan-only days or 12s on entry days (dual thresholds from ledger data, #618), FAIL above 120s (migration 0015's `pg_net` budget). |
 | `scans` | check 2 | The number of `hourly_scans` rows must match the number of runs whose outcome actually scans (see `NON_SCANNING_OUTCOMES` in `scripts/daily_verify.ts`). A SHORT decision while `shorts_enabled` is false FAILs; a LONG row with no `entry_order_id` WARNs; a NEUTRAL-only `detectors_fired` alongside `no_detectors_fired` is never a finding (the `inside_bar` adjudication). |
 | `geometry` | check 3 | Every bracket `stop_price`/`target_price` must be a whole cent. Any breach FAILs (vacuous pass on a no-trade day). |
 | `journal` | check 4 | Every hourly fill must join a scan row via `entry_order_id` (`findUnmatchedEntryTrades`). An unmatched fill FAILs. |
 | `state` | check 6 | `bot_config.paused` must be `"false"`; the equity baseline and its "verified" marker must be byte-identical to each other and to the previous verified day's baseline. An unset baseline WARNs (day-zero); any other breach FAILs. |
-| `kill_switch` | check 7 | 108 kill-switch runs, every outcome `success:*`/`skipped:*`, and a uniform `success:no_position` alongside a LONG scan row is a contradiction. Any breach FAILs. |
+| `kill_switch` | check 7 | 108 kill-switch runs, every outcome `success:*`/`skipped:*`, and a uniform `success:no_position` alongside a LONG scan row is a contradiction. Any breach FAILs. An odd (non-`success:*`/`skipped:*`) outcome's finding carries a redacted message excerpt, grouped by outcome, when the day's `error:*` runs have notes that survive redaction (#659; see "Error message excerpts" below). |
 | `pg_net_timeouts` | check 5 (original, restored by #554) | Counts `net._http_response` rows where `timed_out` is true at the `:07` hourly-check slots, via a `security definer` RPC (migration 0016). Catches HTTP-response-level timeouts the latency check cannot see (the function completed and wrote its audit row, but `pg_net` recorded a timeout). A nonzero count FAILs, naming the slot to investigate. Distinct from the latency check, which catches slow runs that did not time out. |
 
 A day's verdict is the highest severity across its checks: PASS, WARN (worth
@@ -107,6 +107,43 @@ row for the date, per-check verdicts and metrics) and
 `docs/trading-journal/daily/YYYY-MM-DD.md` (the human-readable digest, in
 #535's original seven-check layout). WARN opens no issue -- it is worth a
 look in the digest, not an incident.
+
+### Error message excerpts (#659)
+
+The `slots` and `kill_switch` checks can each carry a short message excerpt
+appended to their finding, so an `error:*` outcome is actionable straight
+from the Discord line or the issue body, without a manual `audit_log` query.
+The digest (`status?verify=YYYY-MM-DD`) ships the day's raw `error:*` rows
+unredacted (`kill_switch_runs.error_runs`, `hourly_check_runs[].notes`) --
+the evaluator (`scripts/daily_verify.ts`) does all redaction, truncation and
+grouping before any of that text becomes public (this repo, GitHub issues,
+the committed digest and ledger, Discord).
+
+- **Format:** ` -- message: "<excerpt>"`, or ` -- message: "<excerpt>" (+N
+  other distinct message(s))` when a `kill_switch` group spans more than one
+  distinct message after redaction. `slots` findings are per-run (never
+  grouped), so they never carry a `+N`.
+- **Cap:** 200 codepoints, truncated with a trailing `...` -- never splits a
+  multi-byte/astral character. Redaction always runs before truncation, so a
+  secret straddling the cut point never appears partially.
+- **Redaction classes:** HTML tags are stripped; URLs and bare
+  `*.supabase.(co|in|net)` hosts become `[url]`/`[host]`; JWTs, `Bearer`
+  tokens, `key=value`-shaped fields whose key contains `token`, `secret`,
+  `password`, `apikey`, `key_id`, `authorization` or `signature`,
+  `sb_secret_`/`sb_publishable_` tokens, Alpaca `PK`/`AK`/`CK`-prefixed key
+  ids, and any other 32+ character run of base64-ish characters all become
+  `[redacted]`. Redaction is heuristic and intentionally over-broad -- a
+  short string that merely looks like a token is an accepted false positive,
+  never a false negative on an actual secret.
+- **Distinct-message counting:** counted after redaction, so two messages
+  differing only in a redacted URL count as one. Null notes are dropped
+  before counting; an all-null group (or an absent `error_runs`, from an
+  older deployed `status`) leaves the finding byte-identical to a day with no
+  excerpts at all -- the appended text is purely additive.
+- **When no excerpt appears:** the note was null, redacted to nothing, or
+  the deployed `status` predates #659. In every case, the full unredacted
+  `notes` text is one `audit_log` lookup away via the finding's own
+  `started_at` timestamp.
 
 ## Nightly reflection (#583)
 

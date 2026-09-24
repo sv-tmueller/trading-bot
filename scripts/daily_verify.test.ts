@@ -16,6 +16,8 @@ import {
   checkState,
   deriveMissingKillSwitchSlots,
   evaluateVerification,
+  excerptNote,
+  formatMessageSuffix,
   formatMissingSlots,
   HOURLY_SLOTS_PER_WEEKDAY,
   isWeekendYmd,
@@ -23,6 +25,7 @@ import {
   type LedgerRow,
   MalformedVerificationError,
   NON_SCANNING_OUTCOMES,
+  NOTE_EXCERPT_MAX_CHARS,
   parseVerificationBlock,
   renderMarkdownDigest,
   resolveTargetDate,
@@ -212,6 +215,219 @@ Deno.test("NON_SCANNING_OUTCOMES: does not contain any gateSkip()/SKIP-decision/
 });
 
 // ---------------------------------------------------------------------------
+// excerptNote / formatMessageSuffix (#659). Interpretation A (lead decision
+// on #659): `status` ships raw `error:*` notes; this evaluator does all
+// redaction, truncation and grouping before any text becomes public (a
+// public repo, issues, the committed digest and ledger, Discord).
+// ---------------------------------------------------------------------------
+
+Deno.test("excerptNote: null -> null", () => {
+  assertEquals(excerptNote(null), null);
+});
+
+Deno.test("excerptNote: undefined -> null", () => {
+  assertEquals(excerptNote(undefined), null);
+});
+
+Deno.test("excerptNote: a number -> null", () => {
+  assertEquals(excerptNote(42), null);
+});
+
+Deno.test("excerptNote: empty string -> null", () => {
+  assertEquals(excerptNote(""), null);
+});
+
+Deno.test("excerptNote: whitespace-only string -> null", () => {
+  assertEquals(excerptNote("   \n\t  "), null);
+});
+
+Deno.test("excerptNote: a short message comes back unchanged", () => {
+  assertEquals(
+    excerptNote("GET bars SPY -> 503: upstream connect error"),
+    "GET bars SPY -> 503: upstream connect error",
+  );
+});
+
+Deno.test("excerptNote: newlines and tabs collapse to single spaces", () => {
+  assertEquals(excerptNote("line one\nline\ttwo\r\nline three"), "line one line two line three");
+});
+
+Deno.test("excerptNote: a URL is redacted to [url]", () => {
+  assertEquals(
+    excerptNote("GET https://api.example.com/v2/clock -> timeout"),
+    "GET [url] -> timeout",
+  );
+});
+
+Deno.test("excerptNote: the Deno 'error sending request for url (...)' shape redacts the parenthesized URL", () => {
+  assertEquals(
+    excerptNote(
+      "error sending request for url (https://abcproj.supabase.co/rest/v1/audit_log): error trying to connect: tcp connect error",
+    ),
+    "error sending request for url ([url]): error trying to connect: tcp connect error",
+  );
+});
+
+Deno.test("excerptNote: a bare supabase host with no protocol is redacted to [host]", () => {
+  assertEquals(
+    excerptNote("could not reach abcproj.supabase.co right now"),
+    "could not reach [host] right now",
+  );
+});
+
+Deno.test("excerptNote: a JWT is redacted", () => {
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGVzdHNpZ25hdHVyZXZhbHVl";
+  // Deliberately not adjacent to a "token="-shaped prefix -- that's covered
+  // by the key=value test below, and the two redaction classes may
+  // legitimately compose (accepted over-redaction) when a note has both.
+  assertEquals(excerptNote(`session ${jwt} expired`), "session [redacted] expired");
+});
+
+Deno.test("excerptNote: a Bearer token is redacted", () => {
+  assertEquals(
+    excerptNote("Authorization: Bearer abcDEF123token456value"),
+    "Authorization: [redacted]",
+  );
+});
+
+Deno.test("excerptNote: a key=value secret-shaped field is redacted", () => {
+  assertEquals(excerptNote("api_key=SUPERSECRETVALUE123 invalid"), "[redacted] invalid");
+});
+
+Deno.test("excerptNote: an sb_secret_ token is redacted", () => {
+  assertEquals(
+    excerptNote("using sb_secret_abcdefghijklmnopqrstuvwxyz0123456789 failed"),
+    "using [redacted] failed",
+  );
+});
+
+Deno.test("excerptNote: a bare 40-char run (e.g. a hex digest) is redacted", () => {
+  // Space-separated, not "sha=...": a "=" joined onto the run would itself be
+  // consumed by the generic 32+ [A-Za-z0-9+/=_-] class (accepted
+  // over-redaction), which is exercised separately by the key=value test.
+  assertEquals(
+    excerptNote("digest a94a8fe5ccb19ba61c4c0873d391e987982fbbd3 mismatch"),
+    "digest [redacted] mismatch",
+  );
+});
+
+Deno.test("excerptNote: an Alpaca PK-prefixed key id is redacted", () => {
+  assertEquals(
+    excerptNote("key PK1234567890ABCDEF rejected"),
+    "key [redacted] rejected",
+  );
+});
+
+Deno.test("excerptNote: an HTML 502 page is stripped but the visible text survives", () => {
+  assertEquals(
+    excerptNote("<html><body><h1>502 Bad Gateway</h1></body></html>"),
+    "502 Bad Gateway",
+  );
+});
+
+Deno.test("excerptNote: quotes, backticks and @everyone are neutralized", () => {
+  assertEquals(
+    excerptNote('say "hi" `code` @everyone'),
+    "say 'hi' 'code' (at)everyone",
+  );
+});
+
+// A run of 10 letters followed by a space, cycled -- never a 32+-char run
+// from GENERIC_SECRET_RE's charset (space breaks it every 10 chars), so
+// these fixtures exercise ONLY the length/truncation behavior, not
+// redaction.
+function safeText(length: number): string {
+  let out = "";
+  let i = 0;
+  while (out.length < length) {
+    out += String.fromCharCode(97 + (i % 26));
+    i++;
+    if (i % 10 === 0) out += " ";
+  }
+  return out.slice(0, length);
+}
+
+Deno.test("excerptNote: over 200 chars truncates to exactly 200 codepoints, ending in ...", () => {
+  const long = safeText(500);
+  const result = excerptNote(long)!;
+  assertEquals([...result].length, NOTE_EXCERPT_MAX_CHARS);
+  assertEquals(result.endsWith("..."), true);
+  assertEquals(result.slice(0, 197), long.slice(0, 197));
+});
+
+Deno.test("excerptNote: exactly 200 codepoints is not cut", () => {
+  const exact = safeText(200);
+  assertEquals(excerptNote(exact), exact);
+});
+
+Deno.test("excerptNote: astral characters (surrogate pairs) are not split by truncation", () => {
+  const long = "\u{1F600}".repeat(250); // 250 codepoints, 500 UTF-16 code units
+  const result = excerptNote(long)!;
+  // Every character in the result (other than the trailing "...") must be a
+  // full astral codepoint -- Array.from never produces a lone surrogate.
+  const chars = [...result];
+  assertEquals(chars.length, NOTE_EXCERPT_MAX_CHARS);
+  for (const c of chars.slice(0, chars.length - 3)) {
+    assertEquals(c, "\u{1F600}");
+  }
+});
+
+Deno.test("excerptNote: a secret straddling the 200-char cut does not partially appear", () => {
+  const secret = "abcdefghij0123456789ABCDEFGHIJ0123456789"; // 41 chars, 32+ run
+  const padding = "x".repeat(185); // secret starts at codepoint 185, straddles 200
+  const result = excerptNote(padding + secret + " tail")!;
+  assertEquals(result.includes(secret), false);
+  // No fragment of the raw secret (a run of 8+ of its own characters) survives.
+  assertEquals(result.includes(secret.slice(0, 8)), false);
+});
+
+Deno.test("formatMessageSuffix: empty array -> empty string", () => {
+  assertEquals(formatMessageSuffix([]), "");
+});
+
+Deno.test("formatMessageSuffix: all-null notes -> empty string (today's text, unchanged)", () => {
+  assertEquals(formatMessageSuffix([null, null]), "");
+});
+
+Deno.test("formatMessageSuffix: one message across count=2 has no +N", () => {
+  assertEquals(
+    formatMessageSuffix(["same message", "same message"]),
+    ' -- message: "same message"',
+  );
+});
+
+Deno.test("formatMessageSuffix: two distinct messages -> singular +1 other distinct message", () => {
+  assertEquals(
+    formatMessageSuffix(["first", "second"]),
+    ' -- message: "first" (+1 other distinct message)',
+  );
+});
+
+Deno.test("formatMessageSuffix: three distinct messages -> plural +2 other distinct messages", () => {
+  assertEquals(
+    formatMessageSuffix(["first", "second", "third"]),
+    ' -- message: "first" (+2 other distinct messages)',
+  );
+});
+
+Deno.test("formatMessageSuffix: notes differing only in a URL count as one distinct message", () => {
+  assertEquals(
+    formatMessageSuffix([
+      "GET https://a.example.com/x -> timeout",
+      "GET https://b.example.com/y -> timeout",
+    ]),
+    ' -- message: "GET [url] -> timeout"',
+  );
+});
+
+Deno.test("formatMessageSuffix: mixed null and non-null -- first non-null is used, nulls not counted", () => {
+  assertEquals(
+    formatMessageSuffix([null, "abc", null, "xyz"]),
+    ' -- message: "abc" (+1 other distinct message)',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // checkSlots (§5.3 check 1)
 // ---------------------------------------------------------------------------
 
@@ -241,6 +457,46 @@ Deno.test("checkSlots: a run with outcome starting error: -> FAIL", () => {
     hourlyRun({ outcome: "error:AlpacaError" }),
   ];
   assertEquals(checkSlots(runs).status, "FAIL");
+});
+
+// #659: message excerpts on the per-run error: finding.
+
+Deno.test("checkSlots: an error run with notes gets the message excerpt suffix", () => {
+  const runs = [
+    ...Array.from({ length: 8 }, () => hourlyRun()),
+    hourlyRun({
+      started_at: "2026-08-05T21:07:00.000Z",
+      outcome: "error:AlpacaError",
+      notes: "GET bars SPY -> 503: upstream connect error",
+    }),
+  ];
+  const result = checkSlots(runs);
+  assertEquals(result.findings, [
+    'slots: run started_at=2026-08-05T21:07:00.000Z outcome=error:AlpacaError -- message: "GET bars SPY -> 503: upstream connect error"',
+  ]);
+});
+
+Deno.test("checkSlots: an error run with null notes -> byte-identical finding to today's text", () => {
+  const runs = [
+    ...Array.from({ length: 8 }, () => hourlyRun()),
+    hourlyRun({
+      started_at: "2026-08-05T21:07:00.000Z",
+      outcome: "error:AlpacaError",
+      notes: null,
+    }),
+  ];
+  const result = checkSlots(runs);
+  assertEquals(result.findings, [
+    "slots: run started_at=2026-08-05T21:07:00.000Z outcome=error:AlpacaError",
+  ]);
+});
+
+Deno.test("checkSlots: a non-error run's notes (e.g. the journal-degraded order id) never surface", () => {
+  const runs = [
+    ...Array.from({ length: 8 }, () => hourlyRun()),
+    hourlyRun({ outcome: "success:journal_degraded", notes: "journal_degraded order o-1" }),
+  ];
+  assertEquals(checkSlots(runs), { status: "PASS", findings: [] });
 });
 
 // ---------------------------------------------------------------------------
@@ -702,6 +958,174 @@ Deno.test("checkKillSwitch: 109 runs (a duplicated slot) with started_at but no 
   assertEquals(result.findings, ["kill_switch: expected 108 runs, found 109"]);
 });
 
+// #659: message excerpts on the odd-outcome finding.
+
+Deno.test("checkKillSwitch: one message across count=2 has no +N", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "boom" },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: "boom" },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    'kill_switch: outcome=error:Error (count=2) is neither success:* nor skipped:* -- message: "boom"',
+  ]);
+});
+
+Deno.test("checkKillSwitch: two distinct messages -> singular +1 other distinct message", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 105, "error:Error": 3 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "first" },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: "second" },
+        { started_at: "2026-08-05T19:10:00.000Z", outcome: "error:Error", notes: "first" },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    'kill_switch: outcome=error:Error (count=3) is neither success:* nor skipped:* -- message: "first" (+1 other distinct message)',
+  ]);
+});
+
+Deno.test("checkKillSwitch: three distinct messages -> plural +2 other distinct messages", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 105, "error:Error": 3 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "first" },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: "second" },
+        { started_at: "2026-08-05T19:10:00.000Z", outcome: "error:Error", notes: "third" },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    'kill_switch: outcome=error:Error (count=3) is neither success:* nor skipped:* -- message: "first" (+2 other distinct messages)',
+  ]);
+});
+
+Deno.test("checkKillSwitch: notes differing only in a URL count as one distinct message", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+      error_runs: [
+        {
+          started_at: "2026-08-05T19:00:00.000Z",
+          outcome: "error:Error",
+          notes: "GET https://a.example.com/x -> timeout",
+        },
+        {
+          started_at: "2026-08-05T19:05:00.000Z",
+          outcome: "error:Error",
+          notes: "GET https://b.example.com/y -> timeout",
+        },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    'kill_switch: outcome=error:Error (count=2) is neither success:* nor skipped:* -- message: "GET [url] -> timeout"',
+  ]);
+});
+
+Deno.test("checkKillSwitch: an all-null error_runs group gives today's text (no suffix)", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: null },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: null },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    "kill_switch: outcome=error:Error (count=2) is neither success:* nor skipped:*",
+  ]);
+});
+
+Deno.test("checkKillSwitch: mixed null and non-null notes -- first non-null used, nulls not counted", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 105, "error:Error": 3 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: null },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: "abc" },
+        { started_at: "2026-08-05T19:10:00.000Z", outcome: "error:Error", notes: "xyz" },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    'kill_switch: outcome=error:Error (count=3) is neither success:* nor skipped:* -- message: "abc" (+1 other distinct message)',
+  ]);
+});
+
+Deno.test("checkKillSwitch: two error outcomes each get only their own group's messages", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: {
+        "success:no_position": 104,
+        "error:Error": 2,
+        "error:AlpacaError": 2,
+      },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "aaa" },
+        { started_at: "2026-08-05T19:05:00.000Z", outcome: "error:Error", notes: "aaa" },
+        { started_at: "2026-08-05T20:00:00.000Z", outcome: "error:AlpacaError", notes: "bbb" },
+        { started_at: "2026-08-05T20:05:00.000Z", outcome: "error:AlpacaError", notes: "bbb" },
+      ],
+    },
+    [],
+  );
+  assertEquals(
+    result.findings.sort(),
+    [
+      'kill_switch: outcome=error:AlpacaError (count=2) is neither success:* nor skipped:* -- message: "bbb"',
+      'kill_switch: outcome=error:Error (count=2) is neither success:* nor skipped:* -- message: "aaa"',
+    ].sort(),
+  );
+});
+
+Deno.test("checkKillSwitch: error_runs absent gives today's text byte-for-byte", () => {
+  const result = checkKillSwitch(
+    { count: 108, outcome_counts: { "success:no_position": 107, "error:Error": 1 } },
+    [],
+  );
+  assertEquals(result.findings, [
+    "kill_switch: outcome=error:Error (count=1) is neither success:* nor skipped:*",
+  ]);
+});
+
+Deno.test("checkKillSwitch: a non-error odd outcome gets no suffix (no matching error_runs entries)", () => {
+  const result = checkKillSwitch(
+    {
+      count: 108,
+      outcome_counts: { "success:no_position": 107, "weird:outcome": 1 },
+      error_runs: [
+        { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Unrelated", notes: "n/a" },
+      ],
+    },
+    [],
+  );
+  assertEquals(result.findings, [
+    "kill_switch: outcome=weird:outcome (count=1) is neither success:* nor skipped:*",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // evaluateVerification -- composes the seven checks + metrics (§5.3/§6.1).
 // ---------------------------------------------------------------------------
@@ -765,6 +1189,50 @@ Deno.test("evaluateVerification: metrics.hourly_runs and metrics.scan_rows count
   assertEquals(result.metrics.scan_rows, 9);
   assertEquals(result.metrics.kill_switch_runs, 108);
   assertEquals(result.metrics.decision_counts, { LONG: 0, SHORT: 0, SKIP: 9 });
+});
+
+// #659: end-to-end -- a 108-run kill-switch block with two `error:Error`
+// rows carrying notes gives FAIL, the message excerpt appears in the
+// finding, and the finding COUNT stays stable versus the no-notes variant
+// (the suffix is appended to the existing finding, never a new one) so a
+// FAIL issue title's `N finding(s)` doesn't shift just because notes showed
+// up.
+Deno.test("evaluateVerification: a 108-run kill-switch block with 2x error:Error+notes -> FAIL, excerpt appears, findings.length unchanged vs. the no-notes variant", () => {
+  const withNotes = cleanDayVerification();
+  withNotes.kill_switch_runs = {
+    count: 108,
+    outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+    error_runs: [
+      {
+        started_at: "2026-08-05T19:00:00.000Z",
+        outcome: "error:Error",
+        notes: "GET bars SPY -> 503: upstream connect error",
+      },
+      {
+        started_at: "2026-08-05T19:05:00.000Z",
+        outcome: "error:Error",
+        notes: "GET bars SPY -> 503: upstream connect error",
+      },
+    ],
+  };
+  const withNotesResult = evaluateVerification(withNotes, null);
+  assertEquals(withNotesResult.verdict, "FAIL");
+  assertEquals(
+    withNotesResult.findings.some((f) =>
+      f === "kill_switch: outcome=error:Error (count=2) is neither success:* nor skipped:* -- " +
+          'message: "GET bars SPY -> 503: upstream connect error"'
+    ),
+    true,
+  );
+
+  const noNotes = cleanDayVerification();
+  noNotes.kill_switch_runs = {
+    count: 108,
+    outcome_counts: { "success:no_position": 106, "error:Error": 2 },
+  };
+  const noNotesResult = evaluateVerification(noNotes, null);
+  assertEquals(noNotesResult.verdict, "FAIL");
+  assertEquals(withNotesResult.findings.length, noNotesResult.findings.length);
 });
 
 Deno.test("evaluateVerification: metrics.latency_ms.max/median over finished runs", () => {
@@ -1213,5 +1681,56 @@ Deno.test("parseVerificationBlock: kill_switch_runs.started_at not an array -> t
 Deno.test("parseVerificationBlock: kill_switch_runs.started_at with an unparseable entry -> throws", () => {
   const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
   (raw.kill_switch_runs as Record<string, unknown>).started_at = ["not-a-timestamp"];
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+// #659: kill_switch_runs.error_runs is optional -- absent is valid (backward
+// compat, same #562 pattern as started_at above); when present, each entry
+// needs a parsable started_at and a string outcome. notes is not validated.
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs absent -> parses fine (old digest)", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  const killSwitchRuns = raw.kill_switch_runs as Record<string, unknown>;
+  assertEquals("error_runs" in killSwitchRuns, false);
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.kill_switch_runs.error_runs, undefined);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs valid -> parses through", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).error_runs = [
+    { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "boom" },
+  ];
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.kill_switch_runs.error_runs, [
+    { started_at: "2026-08-05T19:00:00.000Z", outcome: "error:Error", notes: "boom" },
+  ]);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs not an array -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).error_runs = "not-an-array";
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs entry not an object -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).error_runs = ["not-an-object"];
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs entry with an unparseable started_at -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).error_runs = [
+    { started_at: "not-a-timestamp", outcome: "error:Error", notes: null },
+  ];
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: kill_switch_runs.error_runs entry with a non-string outcome -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  (raw.kill_switch_runs as Record<string, unknown>).error_runs = [
+    { started_at: "2026-08-05T19:00:00.000Z", outcome: 42, notes: null },
+  ];
   assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
 });
