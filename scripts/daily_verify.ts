@@ -40,6 +40,12 @@ export interface VerifyHourlyCheckRun {
   notes: string | null;
 }
 
+export interface VerifyKillSwitchErrorRun {
+  started_at: string;
+  outcome: string;
+  notes: string | null;
+}
+
 export interface VerifyKillSwitchRuns {
   count: number;
   outcome_counts: Record<string, number>;
@@ -48,6 +54,14 @@ export interface VerifyKillSwitchRuns {
   // yet (backward compat: parseVerificationBlock treats absence as valid,
   // and checkKillSwitch falls back to today's plain count-mismatch finding).
   started_at?: string[];
+  // #659: the day's raw `error:*` kill-switch rows, ascending by started_at,
+  // notes unredacted (Interpretation A, lead decision on #659: `status`
+  // ships raw text; this evaluator does all redaction/truncation/grouping
+  // via excerptNote/formatMessageSuffix before any text becomes public).
+  // Optional -- absent when an older deployed `status` hasn't been upgraded
+  // yet (backward compat: parseVerificationBlock treats absence as valid,
+  // and checkKillSwitch appends no message suffix).
+  error_runs?: VerifyKillSwitchErrorRun[];
 }
 
 export interface VerifyConfig {
@@ -230,6 +244,116 @@ export const NON_SCANNING_OUTCOMES: ReadonlySet<string> = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
+// #659: error message excerpts. `status` ships raw `error:*` notes
+// (Interpretation A, lead decision on #659) -- this is the one place that
+// text becomes public (a public repo, issues, the committed digest and
+// ledger, Discord), so every redaction/truncation/grouping decision lives
+// here, not in the Edge Function. Both pure, both total (never throw).
+// ---------------------------------------------------------------------------
+
+/** The excerpt's hard cap, in codepoints (never UTF-16 code units). */
+export const NOTE_EXCERPT_MAX_CHARS = 200;
+
+// Order matters -- more specific token shapes are redacted first, so the
+// generic 32+-char catch-all (last) only mops up whatever a specific pattern
+// didn't already replace with the atomic "[redacted]" placeholder.
+const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
+const BEARER_RE = /\bBearer\s+\S+/gi;
+const KEY_VALUE_RE =
+  /\b[\w-]*(?:token|secret|password|apikey|api_key|key_id|authorization|signature)[\w-]*[:=]\S+/gi;
+const SB_TOKEN_RE = /\bsb_(?:secret|publishable)_\S+/g;
+const ALPACA_KEY_RE = /\b(?:PK|AK|CK)[A-Z0-9]{16,}\b/g;
+const GENERIC_SECRET_RE = /[A-Za-z0-9+/=_-]{32,}/g;
+
+// Scheme-generic and case-insensitive (#659 round 2) -- catches `HTTPS://`
+// and non-http(s) schemes like `postgres://user:pass@host/db`, not just
+// `http(s)://`. The trailing character class (excludes whitespace, quotes,
+// parens, angle/square brackets) is unchanged from the http(s)-only version,
+// so a URL embedded in "(...)" or wrapped in quotes still redacts only the
+// URL itself, not the surrounding punctuation. Schemeless hostnames (no
+// `scheme://` prefix) are intentionally NOT matched here -- deferred, see
+// docs/runbooks/daily-verification.md.
+const URL_RE = /[a-z][a-z0-9+.-]*:\/\/[^\s"'()<>\[\]]+/gi;
+const BARE_SUPABASE_HOST_RE =
+  /\b[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.supabase\.(?:co|in|net)\b/g;
+
+const HTML_TAG_RE = /<[^>]*>/g;
+// Intentional: collapsing stray control bytes (rare, but audit_log notes are
+// free text from broker/HTTP error messages) is exactly the point.
+// deno-lint-ignore no-control-regex
+const CONTROL_CHARS_RE = /[\x00-\x1F\x7F]+/g;
+
+/**
+ * Codepoint-safe truncation to `max` (never splits an astral/surrogate-pair
+ * character): `Array.from` iterates by codepoint, unlike `.slice`/`.length`
+ * which count UTF-16 code units. Returns `s` unchanged when it is already at
+ * or under `max` codepoints; otherwise keeps the first `max - 3` codepoints
+ * and appends `"..."`, so the returned string is exactly `max` codepoints.
+ */
+function truncateCodepoints(s: string, max: number): string {
+  const chars = [...s];
+  if (chars.length <= max) return s;
+  return chars.slice(0, max - 3).join("") + "...";
+}
+
+/**
+ * Pure, total redaction + excerpting of one `error:*` audit_log note (#659).
+ * Non-string input (including null/undefined -- the DB column is nullable)
+ * returns null, as does an empty or whitespace-only result after redaction.
+ * Redaction always runs BEFORE truncation, so a secret straddling the cut
+ * point never appears partially -- over-redaction (a short string that
+ * merely looks like a token) is an accepted false positive.
+ */
+export function excerptNote(notes: unknown): string | null {
+  if (typeof notes !== "string") return null;
+
+  let s = notes;
+  s = s.replace(HTML_TAG_RE, "");
+  s = s.replace(URL_RE, "[url]");
+  s = s.replace(BARE_SUPABASE_HOST_RE, "[host]");
+  s = s.replace(JWT_RE, "[redacted]");
+  s = s.replace(BEARER_RE, "[redacted]");
+  s = s.replace(KEY_VALUE_RE, "[redacted]");
+  s = s.replace(SB_TOKEN_RE, "[redacted]");
+  s = s.replace(ALPACA_KEY_RE, "[redacted]");
+  s = s.replace(GENERIC_SECRET_RE, "[redacted]");
+  s = s.replace(CONTROL_CHARS_RE, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/[`"]/g, "'").replace(/@/g, "(at)");
+
+  if (s.length === 0) return null;
+  return truncateCodepoints(s, NOTE_EXCERPT_MAX_CHARS);
+}
+
+/**
+ * Builds the ` -- message: "..."` suffix appended to a finding (#659).
+ * `notes` is the raw (possibly null) notes of every run in the group, in
+ * array order. Nulls (including notes that redact to nothing) are dropped
+ * first; the first surviving excerpt is shown, "distinct" is counted after
+ * redaction (so two notes differing only in a redacted URL count as one).
+ * Returns "" (no suffix at all) when nothing survives -- callers append this
+ * directly, so an empty-array/all-null group leaves the finding byte-
+ * identical to today's text.
+ */
+export function formatMessageSuffix(notes: unknown[]): string {
+  const excerpts = notes
+    .map((n) => excerptNote(n))
+    .filter((s): s is string => s !== null);
+  if (excerpts.length === 0) return "";
+
+  const distinct: string[] = [];
+  for (const e of excerpts) {
+    if (!distinct.includes(e)) distinct.push(e);
+  }
+  const first = excerpts[0];
+  const otherCount = distinct.length - (distinct.includes(first) ? 1 : 0);
+  if (otherCount <= 0) return ` -- message: "${first}"`;
+  return ` -- message: "${first}" (+${otherCount} other distinct message${
+    otherCount === 1 ? "" : "s"
+  })`;
+}
+
+// ---------------------------------------------------------------------------
 // The seven checks (§5.3). Each is a pure function of its own slice of the
 // digest, returning the check's severity plus human-readable findings (empty
 // findings on PASS). A day's overall verdict is the highest severity across
@@ -269,7 +393,11 @@ export function checkSlots(runs: VerifyHourlyCheckRun[]): CheckOutcome {
     if (r.outcome === null) {
       findings.push(`slots: run started_at=${r.started_at} has no outcome`);
     } else if (r.outcome.startsWith("error:")) {
-      findings.push(`slots: run started_at=${r.started_at} outcome=${r.outcome}`);
+      findings.push(
+        `slots: run started_at=${r.started_at} outcome=${r.outcome}${
+          formatMessageSuffix([r.notes])
+        }`,
+      );
     }
   }
   return { status: findings.length > 0 ? "FAIL" : "PASS", findings };
@@ -453,11 +581,18 @@ export function checkKillSwitch(
   }
 
   const outcomeEntries = Object.entries(killSwitchRuns.outcome_counts);
+  // #659: absent error_runs (older deployed `status`) means [] -- every
+  // group's matching-notes filter then yields [], so formatMessageSuffix
+  // returns "" and the finding is byte-for-byte today's text.
+  const errorRuns = killSwitchRuns.error_runs ?? [];
   for (const [outcome, count] of outcomeEntries) {
     if (!outcome.startsWith("success:") && !outcome.startsWith("skipped:")) {
       statuses.push("FAIL");
+      const groupNotes = errorRuns.filter((r) => r.outcome === outcome).map((r) => r.notes);
       findings.push(
-        `kill_switch: outcome=${outcome} (count=${count}) is neither success:* nor skipped:*`,
+        `kill_switch: outcome=${outcome} (count=${count}) is neither success:* nor skipped:*${
+          formatMessageSuffix(groupNotes)
+        }`,
       );
     }
   }
@@ -1248,6 +1383,32 @@ export function parseVerificationBlock(raw: unknown): VerificationBlock {
     }
     for (const ts of killSwitchRuns.started_at) {
       assertParsableTimestamp(ts, "kill_switch_runs.started_at[]");
+    }
+  }
+  // #659: error_runs is optional (absent -> older deployed `status`, still
+  // valid, per the same #562 pattern as started_at above); when present it
+  // must be an array of objects with a parsable started_at and a string
+  // outcome. `notes` is not validated -- excerptNote/formatMessageSuffix are
+  // total over any input, including a malformed one.
+  if (killSwitchRuns.error_runs !== undefined) {
+    if (!Array.isArray(killSwitchRuns.error_runs)) {
+      throw new MalformedVerificationError(
+        "verification.kill_switch_runs.error_runs is present but not an array",
+      );
+    }
+    for (const run of killSwitchRuns.error_runs) {
+      if (run === null || typeof run !== "object") {
+        throw new MalformedVerificationError(
+          "a verification.kill_switch_runs.error_runs entry is not an object",
+        );
+      }
+      const r = run as Record<string, unknown>;
+      assertParsableTimestamp(r.started_at, "kill_switch_runs.error_runs[].started_at");
+      if (typeof r.outcome !== "string") {
+        throw new MalformedVerificationError(
+          "a verification.kill_switch_runs.error_runs entry has a non-string outcome",
+        );
+      }
     }
   }
   if (!Array.isArray(v.scans)) {
