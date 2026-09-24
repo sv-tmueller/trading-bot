@@ -20,6 +20,16 @@ This is also why the next-round proposal is a **priority rule**, stated in
   3. Then a **DIRECTIONAL_NO_GO** family — legitimately re-testable at full power.
   4. Only then an **untested** family from ``UNTESTED_CANDIDATES``.
 
+``SUPERSEDED`` records (#662) never surface as a proposal candidate -- their cells were
+already re-run for real under a later, stronger record on the same family/cadence/vehicle
+(cited via ``superseded_by``). ``programme_state`` counts them in ``cells_superseded``
+(excluded from ``cells_run``, per ``tc.UNCOUNTED_VERDICTS``) and lists them, with their
+successor, in a dedicated "## Superseded records" section so a reader can still see what was
+folded in and why, without that record ever being mistaken for a live, still-open question.
+An unknown verdict (not in ``tc.VERDICTS``) raises ``ValueError`` rather than being silently
+read as "run" -- an inflated ``cells_run``/multiplicity count that disappears from every
+section of this review is worse than a loud failure.
+
 Deliberately NOT in this file
 -----------------------------
 Where the review is *filed* (a doc, an issue, both) and *when* is the caller's business — see
@@ -84,10 +94,20 @@ def iso_week_label(as_of: date) -> str:
 
 
 def programme_state() -> dict:
-    """Mechanical snapshot of the research programme, straight from the ledger."""
-    run = [c for c in tc.LEDGER if c.verdict not in (tc.PENDING, tc.DATA_BLOCKED)]
+    """Mechanical snapshot of the research programme, straight from the ledger.
+
+    Raises ``ValueError`` on any record whose verdict is not in ``tc.VERDICTS`` -- an unknown
+    verdict would otherwise silently fall into the "run" bucket (inflating ``cells_run`` and
+    the family's multiplicity) and never surface in this review at all.
+    """
+    for c in tc.LEDGER:
+        if c.verdict not in tc.VERDICTS:
+            raise ValueError(f"unknown verdict {c.verdict!r} on {c.family}/{c.cadence}/{c.vehicle}")
+
+    run = [c for c in tc.LEDGER if c.verdict not in tc.UNCOUNTED_VERDICTS]
     pending = tc.find(verdict=tc.PENDING)
     blocked = tc.find(verdict=tc.DATA_BLOCKED)
+    superseded = tc.find(verdict=tc.SUPERSEDED)
     closed = [c for c in tc.LEDGER if c.is_closed()]
     weak = tc.find(verdict=tc.DIRECTIONAL_NO_GO)
     families = sorted({c.family for c in tc.LEDGER})
@@ -97,10 +117,12 @@ def programme_state() -> dict:
         "cells_run": sum(c.n_cells for c in run),
         "cells_pending": sum(c.n_cells for c in pending),
         "cells_blocked": sum(c.n_cells for c in blocked),
+        "cells_superseded": sum(c.n_cells for c in superseded),
         "closed_records": closed,
         "weak_records": list(weak),
         "pending_records": list(pending),
         "blocked_records": list(blocked),
+        "superseded_records": list(superseded),
         "families": families,
         "survivors": 0,   # no cell has ever cleared the bar in this repo; see §Survivors
     }
@@ -165,7 +187,8 @@ def render_review(as_of: Optional[date] = None) -> str:
         "",
         f"- **{state['records']} records**, **{state['cells_total']} cells** on the ledger",
         f"- **{state['cells_run']} cells actually run**; "
-        f"{state['cells_pending']} frozen-but-unrun; {state['cells_blocked']} blocked",
+        f"{state['cells_pending']} frozen-but-unrun; {state['cells_blocked']} blocked; "
+        f"{state['cells_superseded']} superseded",
         f"- **Survivors: {state['survivors']}** — no cell has ever cleared the "
         f"after-tax-Calmar-vs-SPY bar in this repo",
         f"- Families on record: {', '.join(state['families'])}",
@@ -220,6 +243,20 @@ def render_review(as_of: Optional[date] = None) -> str:
             f"- `{c.family}` / {c.cadence} / {c.vehicle} — **{c.verdict}** "
             f"({_cells(c.n_cells)}) — `{c.source}`"
         )
+
+    lines += [
+        "",
+        "## Superseded records (the successor carries the evidence)",
+        "",
+    ]
+    if state["superseded_records"]:
+        for c in state["superseded_records"]:
+            lines.append(
+                f"- `{c.family}` / {c.cadence} / {c.vehicle} ({_cells(c.n_cells)}) -- "
+                f"`{c.source}` superseded by `{c.superseded_by}`"
+            )
+    else:
+        lines.append("None on record.")
 
     lines += [
         "",
