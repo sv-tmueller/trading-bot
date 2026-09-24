@@ -736,13 +736,38 @@ Deno.test("tagMissingKillSwitchSlots: no row, slot < evidence_from -> 'evidence 
   );
 });
 
-Deno.test("tagMissingKillSwitchSlots: boundary -- slot exactly at evidence_from is covered (no request recorded)", () => {
+Deno.test("tagMissingKillSwitchSlots: historic shape -- 2026-09-11 18:15Z slot is covered (evidence_from 24s earlier)", () => {
   const result = tagMissingKillSwitchSlots(
     "2026-09-11",
     ["18:15Z"],
     evidence("2026-09-11T18:14:36.000Z"),
   );
   assertEquals(result, "18:15Z [no request recorded]");
+});
+
+// Real boundary tests (#665 round-1 review finding 1): the 09-11 fixture
+// above sits 24s off the cutoff, so it never actually exercised the `>=`
+// comparison at daily_verify.ts's slot-vs-evidence_from check. These two
+// pin the millisecond either side of equality.
+Deno.test("tagMissingKillSwitchSlots: true boundary -- slot exactly equal to evidence_from is covered (no request recorded)", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T19:00:00.000Z"),
+  );
+  assertEquals(result, "19:00Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: true boundary -- evidence_from 1ms after the slot is expired", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T19:00:00.001Z"),
+  );
+  assertEquals(
+    result,
+    "19:00Z [evidence expired]; pg_net evidence retained from 2026-08-05T19:00:00.001Z",
+  );
 });
 
 Deno.test("tagMissingKillSwitchSlots: historic shape -- 17:10Z before an 18:47Z cutoff shows expired", () => {
@@ -837,6 +862,33 @@ Deno.test("tagMissingKillSwitchSlots: precedence -- error beats non-2xx beats 2x
   assertEquals(result, "19:00Z [pg_net error]");
 });
 
+// #665 round-1 review finding 9: the three-way test above establishes
+// error > non-2xx > 2xx together, but never isolates timeout vs. error, or
+// non-2xx vs. 2xx, as their own pairs.
+Deno.test("tagMissingKillSwitchSlots: precedence -- timeout beats error", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: null, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: precedence -- non-2xx beats 2xx", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: 200, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: 503, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net non-2xx (HTTP 503)]");
+});
+
 Deno.test("tagMissingKillSwitchSlots: an hourly-check-looking row (:07) is never attributed to a kill-switch slot", () => {
   const result = tagMissingKillSwitchSlots(
     "2026-08-05",
@@ -891,6 +943,22 @@ Deno.test("tagMissingKillSwitchSlots: grouping -- different tags do not collapse
     "17:10Z [evidence expired], 19:00Z-19:10Z [no request recorded]; " +
       "pg_net evidence retained from 2026-08-05T18:47:00.000Z",
   );
+});
+
+// #665 round-1 review finding 2: the test above never puts two DIFFERENT
+// tags on ADJACENT slots -- 17:10Z and 19:00Z are 110 minutes apart, so the
+// same-tag condition at daily_verify.ts's grouping step is never actually
+// exercised there. This pins two consecutive (5-minute-apart) slots with
+// different tags.
+Deno.test("tagMissingKillSwitchSlots: grouping -- adjacent slots with different tags do not collapse", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z", "19:05Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout], 19:05Z [no request recorded]");
 });
 
 Deno.test("tagMissingKillSwitchSlots: any expired slot appends the retained-from suffix", () => {
