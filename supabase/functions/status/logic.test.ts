@@ -1279,8 +1279,9 @@ Deno.test("verification.pg_net_kill_switch_evidence: pass-through of a successfu
     ],
   };
   const { deps } = makeDeps({
-    db: { getPgNetKillSwitchEvidence: () => Promise.resolve(evidence) } as unknown as
-      StatusDeps["db"],
+    db: {
+      getPgNetKillSwitchEvidence: () => Promise.resolve(evidence),
+    } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps, undefined, VERIFY_DATE);
   assertEquals(digest.verification?.pg_net_kill_switch_evidence, evidence);
@@ -1288,8 +1289,9 @@ Deno.test("verification.pg_net_kill_switch_evidence: pass-through of a successfu
 
 Deno.test("verification.pg_net_kill_switch_evidence: undefined (RPC failure) becomes null, never []", async () => {
   const { deps } = makeDeps({
-    db: { getPgNetKillSwitchEvidence: () => Promise.resolve(undefined) } as unknown as
-      StatusDeps["db"],
+    db: {
+      getPgNetKillSwitchEvidence: () => Promise.resolve(undefined),
+    } as unknown as StatusDeps["db"],
   });
   const digest = await runStatus(deps, undefined, VERIFY_DATE);
   assertEquals(digest.verification?.pg_net_kill_switch_evidence, null);
