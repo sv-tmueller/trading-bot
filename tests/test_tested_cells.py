@@ -169,9 +169,23 @@ def test_is_tested_true_for_a_closed_cell():
     assert tc.is_tested("donchian_breakout", "daily", "SPY")
 
 
-def test_is_tested_false_for_a_pending_cell():
-    """A frozen-but-unrun grid is not evidence and must not close the question."""
-    assert not tc.is_tested("opening_range_breakout", "5m", "SPY")
+def test_is_tested_false_for_a_pending_cell(monkeypatch):
+    """A frozen-but-unrun grid is not evidence and must not close the question.
+
+    No real ledger row is PENDING for a family with no closing record any more after #662
+    (opening_range_breakout is now SUPERSEDED) -- exercise a synthetic monkeypatched record
+    (the ``test_check_novel_reports_open_for_a_still_data_blocked_cell`` pattern) so this test
+    still fails if PENDING is ever (mis)treated as closing.
+    """
+    synthetic = tc.LEDGER + (
+        tc.TestedCell(
+            family="synthetic_pending_probe", cadence="daily", vehicle="SPY", exit_style="x",
+            n_cells=1, verdict=tc.PENDING, power="NONE",
+            source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-01-01",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    assert not tc.is_tested("synthetic_pending_probe", "daily", "SPY")
 
 
 def test_is_tested_true_for_the_closed_candlestick_spy_cell():
@@ -180,8 +194,21 @@ def test_is_tested_true_for_the_closed_candlestick_spy_cell():
     assert tc.is_tested("candlestick_pattern_context", "daily", "SPY")
 
 
-def test_is_tested_false_for_a_data_blocked_cell():
-    assert not tc.is_tested("opening_range_breakout", "5m", "SPY")
+def test_is_tested_false_for_a_data_blocked_cell(monkeypatch):
+    """No real ledger row is DATA_BLOCKED for a family with no closing record any more after
+    #662 (opening_range_breakout is now SUPERSEDED) -- exercise a synthetic monkeypatched
+    record (the ``test_check_novel_reports_open_for_a_still_data_blocked_cell`` pattern) so
+    this test still fails if DATA_BLOCKED is ever (mis)treated as closing.
+    """
+    synthetic = tc.LEDGER + (
+        tc.TestedCell(
+            family="synthetic_data_blocked_probe", cadence="daily", vehicle="SPY",
+            exit_style="x", n_cells=1, verdict=tc.DATA_BLOCKED, power="NONE",
+            source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-01-01",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    assert not tc.is_tested("synthetic_data_blocked_probe", "daily", "SPY")
 
 
 def test_is_tested_true_for_the_mes_swing_no_go_cell():
@@ -355,7 +382,8 @@ def test_cumulative_trials_of_an_unknown_family_is_zero():
 
 
 def test_cumulative_trials_counts_571s_run_but_not_566s_data_blocked_rows():
-    """#566's DATA_BLOCKED pair never ran -- consumed no multiplicity. #571's
+    """#566's pair never ran (DATA_BLOCKED at the time; now SUPERSEDED by #662, still
+    excluded from multiplicity either way) -- consumed no multiplicity. #571's
     DIRECTIONAL_NO_GO pair actually ran the 6-cell grid, so it counts: 3+3=6.
     """
     assert tc.cumulative_trials("hourly_bracket_geometry_sizing") == 6

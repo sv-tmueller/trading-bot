@@ -161,7 +161,7 @@ LEDGER: Tuple[TestedCell, ...] = (
         source="docs/research/2026-07-24-turtle-breakout-verdict.md", date="2026-07-24",
         note="Non-promotable. Calmar -0.567..-0.581.",
     ),
-    # --- Opening-range breakout (#431, #434) — probe superseded by the long/short study ---
+    # --- Opening-range breakout (#431, #434) -- probe superseded by the long/short study ---
     TestedCell(
         family="opening_range_breakout", cadence="5m", vehicle="SPY",
         exit_style="bracket_OR_RxRisk", n_cells=3, verdict=SUPERSEDED, power="NONE",
@@ -246,7 +246,7 @@ LEDGER: Tuple[TestedCell, ...] = (
              "twin/always-in) -> the mes_swing family is closed NO_GO; no round 2 "
              "(vol-regime gating) is frozen.",
     ),
-    # --- Hourly bracket-geometry/cadence/sizing study (#566) — superseded by #571's run ---
+    # --- Hourly bracket-geometry/cadence/sizing study (#566) -- superseded by #571's run ---
     TestedCell(
         family="hourly_bracket_geometry_sizing", cadence="hourly", vehicle="SPY",
         exit_style="bracket_RxRisk_flatten", n_cells=3, verdict=SUPERSEDED, power="NONE",

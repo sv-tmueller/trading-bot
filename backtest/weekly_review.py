@@ -96,7 +96,7 @@ def iso_week_label(as_of: date) -> str:
 def programme_state() -> dict:
     """Mechanical snapshot of the research programme, straight from the ledger.
 
-    Raises ``ValueError`` on any record whose verdict is not in ``tc.VERDICTS`` — an unknown
+    Raises ``ValueError`` on any record whose verdict is not in ``tc.VERDICTS`` -- an unknown
     verdict would otherwise silently fall into the "run" bucket (inflating ``cells_run`` and
     the family's multiplicity) and never surface in this review at all.
     """

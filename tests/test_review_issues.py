@@ -121,22 +121,79 @@ def test_no_current_supplied_still_supersedes_older_duplicates_by_label():
 
 
 # ---------------------------------------------------------------------------
+# decide -- exposes the KEPT issue's own number/label (review finding 1)
+# ---------------------------------------------------------------------------
+
+def test_decide_backfill_keeps_the_newer_open_week_and_closes_the_current_issue():
+    """Backfill: W39 #700 is already open; a backfill run creates W20 #710. The close
+    comment must name the KEPT issue (#700), never the run's own issue (#710) -- closing
+    #710 with "Superseded by #710" would point at itself (#666 review finding 1)."""
+    issues = [_issue(700, "2026-W39")]
+    decision = ri.decide(issues, current_number=710, current_label="2026-W20")
+    assert decision["keep_number"] == 700
+    assert decision["keep_label"] == "2026-W39"
+    assert decision["close"] == [710]
+
+
+def test_decide_normal_run_keeps_the_current_issue():
+    issues = [_issue(100, "2026-W38")]
+    decision = ri.decide(issues, current_number=101, current_label="2026-W39")
+    assert decision["keep_number"] == 101
+    assert decision["keep_label"] == "2026-W39"
+    assert decision["close"] == [100]
+
+
+def test_decide_reports_no_keep_when_there_are_no_candidates():
+    assert ri.decide([]) == {"keep_number": None, "keep_label": None, "close": []}
+
+
+def test_issues_to_close_matches_decides_close_list():
+    """``issues_to_close`` is a thin view over ``decide`` -- kept for existing callers."""
+    issues = [_issue(700, "2026-W39")]
+    assert (
+        ri.issues_to_close(issues, current_number=710, current_label="2026-W20")
+        == ri.decide(issues, current_number=710, current_label="2026-W20")["close"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Title matching -- no false match on a trailing newline (review finding 7)
+# ---------------------------------------------------------------------------
+
+def test_parse_week_label_rejects_a_title_with_a_trailing_newline():
+    """``fullmatch`` (not ``^...$``) must reject a trailing newline -- ``$`` alone allows one
+    immediately before it, which would let a near-miss title (e.g. a body/title mix-up) match."""
+    assert ri.parse_week_label("Research review 2026-W39 — next-round proposal\n") is None
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def test_cli_reads_json_from_stdin_and_prints_numbers_to_close(capsys):
+def test_cli_reads_json_from_stdin_and_prints_the_keep_line_then_numbers_to_close(capsys):
     payload = json.dumps([_issue(100, "2026-W38"), _issue(101, "2026-W39")])
     rc = ri.main(["--current-number", "101", "--current-label", "2026-W39"], stdin_text=payload)
     assert rc == 0
-    out = capsys.readouterr().out
-    assert out.strip() == "100"
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == ["keep 101 2026-W39", "100"]
 
 
-def test_cli_prints_nothing_when_there_is_nothing_to_close(capsys):
+def test_cli_output_shape_for_the_backfill_case(capsys):
+    """The CLI output the workflow parses: first line names the KEPT issue, not the current
+    (run's own) one -- exactly review finding 1's backfill case."""
+    payload = json.dumps([_issue(700, "2026-W39")])
+    rc = ri.main(["--current-number", "710", "--current-label", "2026-W20"], stdin_text=payload)
+    assert rc == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == ["keep 700 2026-W39", "710"]
+
+
+def test_cli_prints_only_the_keep_line_when_there_is_nothing_to_close(capsys):
     payload = json.dumps([_issue(101, "2026-W39")])
     rc = ri.main(["--current-number", "101", "--current-label", "2026-W39"], stdin_text=payload)
     assert rc == 0
-    assert capsys.readouterr().out == ""
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == ["keep 101 2026-W39"]
 
 
 def test_cli_works_without_current_args():
@@ -154,4 +211,4 @@ def test_cli_subprocess_reads_real_stdin():
          "--current-number", "101", "--current-label", "2026-W39"],
         input=payload, capture_output=True, text=True, cwd=REPO_ROOT, check=True,
     )
-    assert result.stdout.strip() == "100"
+    assert result.stdout.strip().splitlines() == ["keep 101 2026-W39", "100"]

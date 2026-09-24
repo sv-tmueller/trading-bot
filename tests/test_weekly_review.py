@@ -164,13 +164,25 @@ def test_falls_through_to_an_untested_candidate():
     assert "#422" in rationale
 
 
-def test_superseded_records_are_never_proposed():
+def test_superseded_records_are_never_proposed(monkeypatch):
     """A SUPERSEDED record must never surface as the next-round proposal -- its cells were
-    already re-run for real under its successor, so proposing it again would be a duplicate."""
-    st = _state(superseded=[_cell(tc.SUPERSEDED)])
+    already re-run for real under its successor, so proposing it again would be a duplicate.
+
+    Built through the real ``programme_state()`` (not a hand-built ``_state()`` dict) with a
+    monkeypatched SUPERSEDED-only ledger, so this test actually exercises ``propose_next_round``
+    ignoring ``superseded_records``, rather than merely asserting a key it never reads.
+    """
+    synthetic = (
+        tc.TestedCell(
+            family="synthetic_superseded", cadence="daily", vehicle="SPY", exit_style="x",
+            n_cells=3, verdict=tc.SUPERSEDED, power="NONE", source="docs/research/x.md",
+            date="2026-01-01", superseded_by="docs/research/y.md",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    st = wr.programme_state()
     headline, rationale = wr.propose_next_round(st)
-    assert "SUPERSEDED" not in headline
-    assert "synthetic" not in headline  # falls through to the untested-candidate list instead
+    assert "synthetic_superseded" not in headline  # falls through to the untested-candidate list
     assert "vol_regime_gating" in headline
 
 

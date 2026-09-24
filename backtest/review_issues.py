@@ -35,23 +35,24 @@ import sys
 from typing import Dict, List, Optional, Sequence
 
 #: Exact title format the workflow creates. A near-miss (extra text, wrong dash, unpadded
-#: week) must never be mistaken for a review issue -- ``fullmatch`` via ``^...$`` enforces
-#: that.
-TITLE_RE = re.compile(r"^Research review (\d{4}-W\d{2}) — next-round proposal$")
+#: week, or a trailing newline) must never be mistaken for a review issue -- matched via
+#: ``fullmatch`` (no ``^...$`` anchors: ``$`` alone would allow a trailing newline through).
+TITLE_RE = re.compile(r"Research review (\d{4}-W\d{2}) — next-round proposal")
 
 
 def parse_week_label(title: str) -> Optional[str]:
     """The ``YYYY-Www`` label if ``title`` is exactly a review-issue title, else ``None``."""
-    m = TITLE_RE.match(title)
+    m = TITLE_RE.fullmatch(title)
     return m.group(1) if m else None
 
 
-def issues_to_close(
+def decide(
     issues: Sequence[dict],
     current_number: Optional[int] = None,
     current_label: Optional[str] = None,
-) -> List[int]:
-    """Issue numbers to close, from a list of open issues plus this run's own issue.
+) -> Dict[str, object]:
+    """The full decision for a run: which issue to KEEP (its own number and week label), and
+    which issues to close.
 
     ``issues`` is a sequence of ``{"number": int, "title": str}`` (as ``gh issue list --json
     number,title`` emits); titles that do not match ``TITLE_RE`` are ignored entirely -- never
@@ -64,7 +65,19 @@ def issues_to_close(
     Exactly one candidate is kept: the one with the lexicographically-greatest
     ``(week_label, issue_number)`` -- since labels are zero-padded ``YYYY-Www``, label
     comparison is chronological, and the issue-number tiebreak keeps the more recently
-    created issue among same-week duplicates. Every other candidate is returned, sorted.
+    created issue among same-week duplicates. Every other candidate is closed.
+
+    Returns ``{"keep_number": int | None, "keep_label": str | None, "close": List[int]}``.
+    ``keep_number``/``keep_label`` are ``None`` only when there are no candidates at all (an
+    empty ``issues`` list and no current issue passed in) -- there is then nothing to keep or
+    close.
+
+    The KEPT issue is not always ``current_number``: in a backfill (an older week's run,
+    created while a newer week's issue is already open), the newer open issue is kept and the
+    just-created backfill issue is itself the one that closes. The caller MUST use
+    ``keep_number``/``keep_label`` for its close comment/log line -- using its own
+    ``current_number`` there would, in that case, tell the closed issue it superseded itself
+    (#666 review finding 1).
     """
     candidates: Dict[int, str] = {}
     for issue in issues:
@@ -76,10 +89,21 @@ def issues_to_close(
         candidates.setdefault(current_number, current_label)
 
     if not candidates:
-        return []
+        return {"keep_number": None, "keep_label": None, "close": []}
 
     keep_number = max(candidates, key=lambda n: (candidates[n], n))
-    return sorted(n for n in candidates if n != keep_number)
+    close = sorted(n for n in candidates if n != keep_number)
+    return {"keep_number": keep_number, "keep_label": candidates[keep_number], "close": close}
+
+
+def issues_to_close(
+    issues: Sequence[dict],
+    current_number: Optional[int] = None,
+    current_label: Optional[str] = None,
+) -> List[int]:
+    """Issue numbers to close -- the ``close`` half of :func:`decide`. Kept for callers that
+    only need the close list, not which issue is kept."""
+    return decide(issues, current_number=current_number, current_label=current_label)["close"]
 
 
 def main(argv: Optional[List[str]] = None, stdin_text: Optional[str] = None) -> int:
@@ -93,10 +117,12 @@ def main(argv: Optional[List[str]] = None, stdin_text: Optional[str] = None) -> 
     text = stdin_text if stdin_text is not None else sys.stdin.read()
     issues = json.loads(text) if text.strip() else []
 
-    closed = issues_to_close(
+    decision = decide(
         issues, current_number=args.current_number, current_label=args.current_label,
     )
-    for number in closed:
+    if decision["keep_number"] is not None:
+        print(f"keep {decision['keep_number']} {decision['keep_label']}")
+    for number in decision["close"]:
         print(number)
     return 0
 
