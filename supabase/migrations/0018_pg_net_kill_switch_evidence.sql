@@ -85,18 +85,18 @@ create or replace function public.pg_net_kill_switch_evidence(
   set search_path = ''
   set timezone = 'UTC'
   as $$
-    select jsonb_build_object(
+    select pg_catalog.jsonb_build_object(
       'evidence_from', greatest(
         pg_catalog.now() - coalesce(
           nullif(pg_catalog.current_setting('pg_net.ttl', true), '')::interval,
           interval '6 hours'
         ),
-        (select min(r.created) from net._http_response r)
+        (select pg_catalog.min(r.created) from net._http_response r)
       ),
       'responses', coalesce(
         (
-          select jsonb_agg(
-            jsonb_build_object(
+          select pg_catalog.jsonb_agg(
+            pg_catalog.jsonb_build_object(
               'created', r.created,
               'status_code', r.status_code,
               'timed_out', r.timed_out
@@ -109,7 +109,7 @@ create or replace function public.pg_net_kill_switch_evidence(
             and extract(hour from r.created) between 13 and 21
             and extract(minute from r.created)::int % 5 = 0
         ),
-        '[]'::jsonb
+        '[]'::pg_catalog.jsonb
       )
     )
   $$;
