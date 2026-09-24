@@ -1941,3 +1941,125 @@ Deno.test({
     }
   },
 });
+
+// #665 round-1 review finding 4: `new Date(x).toISOString()` throws a
+// RangeError on an unparseable timestamp (crashing the whole digest with a
+// 500), and the old code silently coerced a malformed status_code to null
+// and a missing timed_out to false instead of treating them as malformed.
+// Every value below must degrade to undefined (warn, never throw, never
+// coerce).
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: an unparseable evidence_from -> returns undefined, never throws",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: { evidence_from: "not-a-timestamp", responses: [] },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with an unparseable created -> returns undefined, never throws",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [{ created: "not-a-timestamp", status_code: 200, timed_out: false }],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with a string status_code -> returns undefined, does not coerce to null",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [
+            { created: "2026-08-05T13:00:00+00:00", status_code: "503", timed_out: false },
+          ],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with a missing timed_out -> returns undefined, does not coerce to false",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [{ created: "2026-08-05T13:00:00+00:00", status_code: 200 }],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});

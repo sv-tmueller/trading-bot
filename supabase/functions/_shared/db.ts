@@ -875,6 +875,13 @@ export async function getPgNetKillSwitchEvidence(
     console.warn("getPgNetKillSwitchEvidence: malformed RPC payload, degrading to undefined");
     return undefined;
   }
+  const evidenceFromMs = Date.parse(raw.evidence_from);
+  if (Number.isNaN(evidenceFromMs)) {
+    console.warn(
+      "getPgNetKillSwitchEvidence: malformed evidence_from timestamp, degrading to undefined",
+    );
+    return undefined;
+  }
   const responses: PgNetKillSwitchEvidenceResponse[] = [];
   for (const entry of raw.responses) {
     if (entry === null || typeof entry !== "object") {
@@ -886,14 +893,33 @@ export async function getPgNetKillSwitchEvidence(
       console.warn("getPgNetKillSwitchEvidence: malformed response row, degrading to undefined");
       return undefined;
     }
+    const createdMs = Date.parse(row.created);
+    if (Number.isNaN(createdMs)) {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row created timestamp, degrading to undefined",
+      );
+      return undefined;
+    }
+    if (typeof row.status_code !== "number" && row.status_code !== null) {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row status_code, degrading to undefined",
+      );
+      return undefined;
+    }
+    if (typeof row.timed_out !== "boolean") {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row timed_out, degrading to undefined",
+      );
+      return undefined;
+    }
     responses.push({
-      created: new Date(row.created).toISOString(),
-      status_code: typeof row.status_code === "number" ? row.status_code : null,
-      timed_out: row.timed_out === true,
+      created: new Date(createdMs).toISOString(),
+      status_code: row.status_code,
+      timed_out: row.timed_out,
     });
   }
   return {
-    evidence_from: new Date(raw.evidence_from).toISOString(),
+    evidence_from: new Date(evidenceFromMs).toISOString(),
     responses,
   };
 }
