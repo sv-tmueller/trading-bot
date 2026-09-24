@@ -132,17 +132,17 @@ Consecutive slots collapse into a range only when they share the same tag,
 e.g. `(missing: 17:10Z [evidence expired], 19:00Z-19:10Z [no request
 recorded])`. When any tagged slot is `evidence expired`, the finding appends
 `; pg_net evidence retained from <evidence_from>` naming the RPC's own
-retention cutoff. If the RPC itself failed (or the deployed `status` predates
-#660), the finding instead appends `; pg_net evidence unavailable`, or falls
-back silently to the untagged pre-#660 text when the digest doesn't carry
-the `pg_net_kill_switch_evidence` field at all.
+retention cutoff. If the RPC itself failed (or migration 0018 has not been
+applied yet), the finding instead appends `; pg_net evidence unavailable`, or
+falls back silently to the untagged pre-#660 text when the digest doesn't
+carry the `pg_net_kill_switch_evidence` field at all.
 
 **Retention and coverage.** `net._http_response` rows are deleted after
 `pg_net.ttl` (upstream default 6 hours; this repo has never overridden it --
 run `show pg_net.ttl;` on the target project to check the live value). The
 daily-verification workflow's own scheduled runs have historically started
-00:06-00:47Z the *next* UTC day -- a gap (8h55m) longer than any 6-hour
-retention can cover. **`evidence expired` is therefore the normal, expected
+00:06-00:47Z the *next* UTC day; the grid spans 8h55m, longer than a
+6-hour retention can cover. **`evidence expired` is therefore the normal, expected
 tag for early-day missing slots** (roughly slots before ~18:xx UTC at a
 6-hour retention), not a sign anything is broken. Raising `pg_net.ttl` (to
 36h or more) would shrink or eliminate that blind spot but is an explicit,
