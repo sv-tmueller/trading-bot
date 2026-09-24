@@ -23,6 +23,7 @@ import {
   getLatestHourlyScan,
   getLatestRegimeState,
   getPendingNotifications,
+  getPgNetKillSwitchEvidence,
   getPgNetTimeoutCount,
   getRegimeStatesSince,
   getTradesInWindow,
@@ -1816,6 +1817,247 @@ Deno.test({
       // The degradation is logged so operators can spot it in the function logs.
       assertEquals(warnings.length > 0, true);
       assertEquals(warnings[0].includes("getPgNetTimeoutCount"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// #660: getPgNetKillSwitchEvidence -- calls the security-definer RPC
+// (migration 0018) that wraps the kill-switch grid's pg_net evidence
+// (`evidence_from` cutoff + per-response `created`/`status_code`/`timed_out`
+// rows). Same resilience contract as getPgNetTimeoutCount: an RPC error or a
+// malformed payload degrades to undefined (never throws), with a
+// console.warn naming this helper.
+// ---------------------------------------------------------------------------
+
+Deno.test("getPgNetKillSwitchEvidence: calls the RPC with named range_start/range_end params", async () => {
+  const { sb, calls } = fakeRpcClient("pg_net_kill_switch_evidence", {
+    data: { evidence_from: "2026-08-05T13:00:00+00:00", responses: [] },
+    error: null,
+  });
+  await getPgNetKillSwitchEvidence(sb, "2026-08-05T00:00:00Z", "2026-08-05T23:59:59Z");
+  assertEquals(calls[0].name, "pg_net_kill_switch_evidence");
+  assertEquals(calls[0].args, {
+    range_start: "2026-08-05T00:00:00Z",
+    range_end: "2026-08-05T23:59:59Z",
+  });
+});
+
+Deno.test("getPgNetKillSwitchEvidence: normalizes evidence_from and each response's created via toISOString()", async () => {
+  const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+    data: {
+      evidence_from: "2026-08-05T13:00:00+00:00",
+      responses: [
+        { created: "2026-08-05T13:00:00+00:00", status_code: 200, timed_out: false },
+        { created: "2026-08-05T13:05:00+00:00", status_code: null, timed_out: true },
+      ],
+    },
+    error: null,
+  });
+  const result = await getPgNetKillSwitchEvidence(
+    sb,
+    "2026-08-05T00:00:00Z",
+    "2026-08-05T23:59:59Z",
+  );
+  assertEquals(result, {
+    evidence_from: "2026-08-05T13:00:00.000Z",
+    responses: [
+      { created: "2026-08-05T13:00:00.000Z", status_code: 200, timed_out: false },
+      { created: "2026-08-05T13:05:00.000Z", status_code: null, timed_out: true },
+    ],
+  });
+});
+
+Deno.test({
+  name: "getPgNetKillSwitchEvidence: RPC error -> returns undefined instead of throwing",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: null,
+        error: { message: "extension pg_net does not exist" },
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: malformed payload (missing responses array) -> returns undefined",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: { evidence_from: "2026-08-05T13:00:00+00:00" },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name: "getPgNetKillSwitchEvidence: malformed payload (null data) -> returns undefined",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", { data: null, error: null });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+// #665 round-1 review finding 4: `new Date(x).toISOString()` throws a
+// RangeError on an unparseable timestamp (crashing the whole digest with a
+// 500), and the old code silently coerced a malformed status_code to null
+// and a missing timed_out to false instead of treating them as malformed.
+// Every value below must degrade to undefined (warn, never throw, never
+// coerce).
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: an unparseable evidence_from -> returns undefined, never throws",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: { evidence_from: "not-a-timestamp", responses: [] },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with an unparseable created -> returns undefined, never throws",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [{ created: "not-a-timestamp", status_code: 200, timed_out: false }],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with a string status_code -> returns undefined, does not coerce to null",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [
+            { created: "2026-08-05T13:00:00+00:00", status_code: "503", timed_out: false },
+          ],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
+    } finally {
+      console.warn = origWarn;
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "getPgNetKillSwitchEvidence: a response row with a missing timed_out -> returns undefined, does not coerce to false",
+  fn: async () => {
+    const origWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+    try {
+      const { sb } = fakeRpcClient("pg_net_kill_switch_evidence", {
+        data: {
+          evidence_from: "2026-08-05T13:00:00+00:00",
+          responses: [{ created: "2026-08-05T13:00:00+00:00", status_code: 200 }],
+        },
+        error: null,
+      });
+      const result = await getPgNetKillSwitchEvidence(
+        sb,
+        "2026-08-05T00:00:00Z",
+        "2026-08-05T23:59:59Z",
+      );
+      assertEquals(result, undefined);
+      assertEquals(warnings.length > 0, true);
+      assertEquals(warnings[0].includes("getPgNetKillSwitchEvidence"), true);
     } finally {
       console.warn = origWarn;
     }

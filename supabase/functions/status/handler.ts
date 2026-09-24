@@ -19,6 +19,7 @@ import {
   getLatestEquitySnapshot,
   getLatestHourlyScan,
   getLatestRegimeState,
+  getPgNetKillSwitchEvidence,
   getPgNetTimeoutCount,
   getRegimeStatesSince,
   getTradesInWindow,
@@ -62,6 +63,9 @@ function buildDeps(): StatusDeps {
       getTradesInWindow: (sinceIso, untilIso) => getTradesInWindow(sb, sinceIso, untilIso),
       // #554: pg_net stall check RPC (migration 0016).
       getPgNetTimeoutCount: (sinceIso, untilIso) => getPgNetTimeoutCount(sb, sinceIso, untilIso),
+      // #660: kill-switch slot pg_net evidence RPC (migration 0018).
+      getPgNetKillSwitchEvidence: (sinceIso, untilIso) =>
+        getPgNetKillSwitchEvidence(sb, sinceIso, untilIso),
     },
   };
 }

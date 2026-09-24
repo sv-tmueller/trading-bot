@@ -815,3 +815,114 @@ export async function getPgNetTimeoutCount(
   }
   return typeof data === "number" ? data : Number(data ?? 0);
 }
+
+// #660: one net._http_response row's evidence, per the security-definer RPC
+// (migration 0018) -- created/status_code/timed_out only, never content,
+// headers or error_msg.
+export interface PgNetKillSwitchEvidenceResponse {
+  created: string;
+  status_code: number | null;
+  timed_out: boolean;
+}
+
+// #660: the kill-switch grid's pg_net evidence for a [start, end) window --
+// the retention cutoff (`evidence_from`) plus every matching response row,
+// ascending by created. Used by scripts/daily_verify.ts's
+// tagMissingKillSwitchSlots to explain a missing kill-switch slot.
+export interface PgNetKillSwitchEvidence {
+  evidence_from: string;
+  responses: PgNetKillSwitchEvidenceResponse[];
+}
+
+// #660: Calls the security-definer RPC (migration 0018) that wraps the
+// kill-switch grid's pg_net evidence: the retention cutoff plus every
+// net._http_response row matching the [range_start, range_end) window,
+// UTC hour 13-21, minute a multiple of 5 (the kill-switch cron's own grid --
+// hourly-check's `:07` slot never lands on a multiple of 5, so it is never
+// mixed in). Named params `range_start`/`range_end` -- #602 was a
+// parameter-name mismatch on this same RPC-call shape, so the param names
+// here are deliberately spelled out to match the migration's own signature.
+//
+// An RPC error or a malformed payload (missing/wrong-shaped `evidence_from`
+// or `responses`) degrades to undefined rather than throwing or returning an
+// empty array -- status/logic.ts coerces undefined to `null` for the digest
+// field (never `[]`: an RPC failure must never look like "checked, no
+// evidence found"). Timestamps are normalized with `toISOString()` so
+// downstream string comparisons (tagMissingKillSwitchSlots) don't have to
+// account for Postgres's `+00:00` vs `Z` formatting.
+export async function getPgNetKillSwitchEvidence(
+  sb: SupabaseClient,
+  sinceIso: string,
+  untilIso: string,
+): Promise<PgNetKillSwitchEvidence | undefined> {
+  const { data, error } = await sb
+    .rpc("pg_net_kill_switch_evidence", {
+      range_start: sinceIso,
+      range_end: untilIso,
+    });
+  if (error) {
+    console.warn(
+      `getPgNetKillSwitchEvidence: RPC failed, degrading to undefined: ${error.message}`,
+    );
+    return undefined;
+  }
+  if (data === null || typeof data !== "object") {
+    console.warn("getPgNetKillSwitchEvidence: malformed RPC payload, degrading to undefined");
+    return undefined;
+  }
+  const raw = data as Record<string, unknown>;
+  if (typeof raw.evidence_from !== "string" || !Array.isArray(raw.responses)) {
+    console.warn("getPgNetKillSwitchEvidence: malformed RPC payload, degrading to undefined");
+    return undefined;
+  }
+  const evidenceFromMs = Date.parse(raw.evidence_from);
+  if (Number.isNaN(evidenceFromMs)) {
+    console.warn(
+      "getPgNetKillSwitchEvidence: malformed evidence_from timestamp, degrading to undefined",
+    );
+    return undefined;
+  }
+  const responses: PgNetKillSwitchEvidenceResponse[] = [];
+  for (const entry of raw.responses) {
+    if (entry === null || typeof entry !== "object") {
+      console.warn("getPgNetKillSwitchEvidence: malformed response row, degrading to undefined");
+      return undefined;
+    }
+    const row = entry as Record<string, unknown>;
+    if (typeof row.created !== "string") {
+      console.warn("getPgNetKillSwitchEvidence: malformed response row, degrading to undefined");
+      return undefined;
+    }
+    const createdMs = Date.parse(row.created);
+    if (Number.isNaN(createdMs)) {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row created timestamp, degrading to undefined",
+      );
+      return undefined;
+    }
+    if (typeof row.status_code !== "number" && row.status_code !== null) {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row status_code, degrading to undefined",
+      );
+      return undefined;
+    }
+    // Strict boolean check: pg_net >= v0.19.6 always writes true/false. Earlier versions
+    // write NULL timed_out on failure rows, which falls into this branch too -- fail-safe,
+    // since it degrades to "pg_net evidence unavailable" rather than misreading NULL as false.
+    if (typeof row.timed_out !== "boolean") {
+      console.warn(
+        "getPgNetKillSwitchEvidence: malformed response row timed_out, degrading to undefined",
+      );
+      return undefined;
+    }
+    responses.push({
+      created: new Date(createdMs).toISOString(),
+      status_code: row.status_code,
+      timed_out: row.timed_out,
+    });
+  }
+  return {
+    evidence_from: new Date(evidenceFromMs).toISOString(),
+    responses,
+  };
+}

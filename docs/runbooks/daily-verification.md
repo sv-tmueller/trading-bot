@@ -28,7 +28,7 @@ the same numbers):
 | `geometry` | check 3 | Every bracket `stop_price`/`target_price` must be a whole cent. Any breach FAILs (vacuous pass on a no-trade day). |
 | `journal` | check 4 | Every hourly fill must join a scan row via `entry_order_id` (`findUnmatchedEntryTrades`). An unmatched fill FAILs. |
 | `state` | check 6 | `bot_config.paused` must be `"false"`; the equity baseline and its "verified" marker must be byte-identical to each other and to the previous verified day's baseline. An unset baseline WARNs (day-zero); any other breach FAILs. |
-| `kill_switch` | check 7 | 108 kill-switch runs, every outcome `success:*`/`skipped:*`, and a uniform `success:no_position` alongside a LONG scan row is a contradiction. Any breach FAILs. An odd (non-`success:*`/`skipped:*`) outcome's finding carries a redacted message excerpt, grouped by outcome, when the day's `error:*` runs have notes that survive redaction (#659; see "Error message excerpts" below). |
+| `kill_switch` | check 7 | 108 kill-switch runs, every outcome `success:*`/`skipped:*`, and a uniform `success:no_position` alongside a LONG scan row is a contradiction. Any breach FAILs. A missing-slot finding can carry a per-slot pg_net evidence tag pinpointing why the slot is missing (#660; see "Reading a missing kill-switch slot tag" below). An odd (non-`success:*`/`skipped:*`) outcome's finding carries a redacted message excerpt, grouped by outcome, when the day's `error:*` runs have notes that survive redaction (#659; see "Error message excerpts" below). |
 | `pg_net_timeouts` | check 5 (original, restored by #554) | Counts `net._http_response` rows where `timed_out` is true at the `:07` hourly-check slots, via a `security definer` RPC (migration 0016). Catches HTTP-response-level timeouts the latency check cannot see (the function completed and wrote its audit row, but `pg_net` recorded a timeout). A nonzero count FAILs, naming the slot to investigate. Distinct from the latency check, which catches slow runs that did not time out. |
 
 A day's verdict is the highest severity across its checks: PASS, WARN (worth
@@ -154,6 +154,64 @@ the committed digest and ledger, Discord).
   the deployed `status` predates #659. In every case, the full unredacted
   `notes` text is one `audit_log` lookup away via the finding's own
   `started_at` timestamp.
+
+### Reading a missing kill-switch slot tag (#660)
+
+`kill_switch`'s count-mismatch finding (`kill_switch: expected 108 runs,
+found N (missing: ...)`) can name not just which 5-minute slots are missing,
+but why -- via a security-definer RPC (`pg_net_kill_switch_evidence`,
+migration 0018) that hands the evaluator the raw pg_net evidence
+(`net._http_response` rows) for the kill-switch cron's grid.
+
+**Tags**, one per missing slot, precedence timeout > error > non-2xx > 2xx
+(a matching row always beats an expiry-based tag):
+
+| Evidence for the slot | Tag |
+| --- | --- |
+| A `net._http_response` row with `timed_out` | `pg_net timeout` |
+| A row with a status outside 2xx | `pg_net non-2xx (HTTP <code>)` |
+| A row with a null status, not timed out | `pg_net error` |
+| A row with a 2xx status (the request succeeded, but the slot's own `audit_log` row is still missing) | `pg_net 2xx` |
+| No row, and the slot is still within the RPC's retained window | `no request recorded` |
+| No row, and the slot predates the RPC's retained window | `evidence expired` |
+
+Consecutive slots collapse into a range only when they share the same tag,
+e.g. `(missing: 17:10Z [evidence expired], 19:00Z-19:10Z [no request
+recorded])`. When any tagged slot is `evidence expired`, the finding appends
+`; pg_net evidence retained from <evidence_from>` naming the RPC's own
+retention cutoff. If the RPC itself failed (or migration 0018 has not been
+applied yet), the finding instead appends `; pg_net evidence unavailable`, or
+falls back silently to the untagged pre-#660 text when the digest doesn't
+carry the `pg_net_kill_switch_evidence` field at all.
+
+**Retention and coverage.** `net._http_response` rows are deleted after
+`pg_net.ttl` (upstream default 6 hours; this repo has never overridden it --
+run `show pg_net.ttl;` on the target project to check the live value). The
+daily-verification workflow's own scheduled runs have historically started
+00:06-00:47Z the *next* UTC day; the grid spans 8h55m, longer than a
+6-hour retention can cover. **`evidence expired` is therefore the normal, expected
+tag for early-day missing slots** (roughly slots before ~18:xx UTC at a
+6-hour retention), not a sign anything is broken. Raising `pg_net.ttl` (to
+36h or more) would shrink or eliminate that blind spot but is an explicit,
+separate operator follow-up -- not part of #660.
+
+**Backfills are always expired.** A backfilled run (`gh workflow run
+daily-verification.yml -f date=YYYY-MM-DD`) always executes long after the
+target date, so every one of its missing-slot tags reads `evidence expired`
+regardless of what actually happened on the day -- this is expected, not a
+regression. A re-run overwrites the date's ledger row and digest, so the
+*first* scheduled run's artifact is the evidence of record; a later backfill
+never recovers pg_net evidence the first run's own artifact didn't already
+capture.
+
+**The same blind spot as check 8 (`pg_net_timeouts`)**: this RPC has no
+`net._http_response` URL column to join back to "which cron job fired this
+request", so it matches purely on `created`'s UTC minute (kill-switch's grid
+is every 5th minute; hourly-check's own `:07` slot never lands on one, so
+the two are never conflated) -- a kill-switch request that pg_net doesn't
+process until 60+ seconds after its slot boundary lands in the next,
+off-grid minute and is silently excluded, reading as `no request recorded`
+(or `evidence expired`) instead of matching its true, late response.
 
 ## Nightly reflection (#583)
 

@@ -11,6 +11,7 @@ import type {
   AuditLogRow,
   EquitySnapshotRow,
   HourlyScanRow,
+  PgNetKillSwitchEvidence,
   RegimeStateRow,
   TradeRow,
 } from "../_shared/db.ts";
@@ -68,6 +69,15 @@ export interface StatusDeps {
     // Only called when `verifyDate` is passed. Resolves to undefined when
     // the RPC is unavailable (#602); logic.ts coerces via `?? 0`.
     getPgNetTimeoutCount: (sinceIso: string, untilIso: string) => Promise<number | undefined>;
+    // #660: kill-switch slot pg_net evidence -- security-definer RPC
+    // (migration 0018). Only called when `verifyDate` is passed. Resolves to
+    // undefined when the RPC is unavailable or the payload is malformed;
+    // logic.ts coerces via `?? null` (never `[]`/`{}` -- an RPC failure must
+    // never look like "checked, no evidence found").
+    getPgNetKillSwitchEvidence: (
+      sinceIso: string,
+      untilIso: string,
+    ) => Promise<PgNetKillSwitchEvidence | undefined>;
   };
 }
 
@@ -222,6 +232,14 @@ export interface StatusDigest {
     // from the security-definer RPC (migration 0016). Catches HTTP-
     // response-level timeouts the latency check cannot see.
     pg_net_timeouts: number;
+    // #660: kill-switch grid pg_net evidence, from the security-definer
+    // RPC (migration 0018) -- the evaluator (scripts/daily_verify.ts) uses
+    // this to tag a missing kill-switch slot with what pg_net actually saw.
+    // Top-level (a sibling of pg_net_timeouts, not nested inside
+    // kill_switch_runs) and placed immediately after it. `null` on RPC
+    // failure -- never `{}`/`[]`, which would read as "checked, no
+    // evidence" instead of "could not check".
+    pg_net_kill_switch_evidence: PgNetKillSwitchEvidence | null;
   };
 }
 
@@ -368,6 +386,7 @@ export async function runStatus(
     verifyTrades,
     hourlyBaselineVerifiedRaw,
     pgNetTimeoutCount,
+    pgNetKillSwitchEvidence,
   ] = await Promise.all([
     db.getLatestRegimeState(),
     db.getAuditLogSince(since, until),
@@ -397,6 +416,11 @@ export async function runStatus(
     // #554: pg_net stall check -- security-definer RPC (migration 0016)
     // counting timed_out rows at the :07 hourly-check slots.
     verifying ? db.getPgNetTimeoutCount(verifySince!, verifyUntil!) : Promise.resolve(undefined),
+    // #660: kill-switch slot pg_net evidence -- security-definer RPC
+    // (migration 0018).
+    verifying
+      ? db.getPgNetKillSwitchEvidence(verifySince!, verifyUntil!)
+      : Promise.resolve(undefined),
   ]);
 
   // #646: Decouple the status digest from Alpaca clock availability.
@@ -540,6 +564,12 @@ export async function runStatus(
       // Undefined when not verifying (the Promise.all resolved to undefined);
       // coerced to 0 defensively -- the RPC is only called when verifying.
       pg_net_timeouts: pgNetTimeoutCount ?? 0,
+      // #660: kill-switch grid pg_net evidence from the security-definer RPC
+      // (migration 0018). Undefined (not verifying, or the RPC failed/
+      // returned a malformed payload) coerces to null -- never `{}`/`[]`,
+      // which would misread as "checked, no evidence" rather than "could
+      // not check".
+      pg_net_kill_switch_evidence: pgNetKillSwitchEvidence ?? null,
     };
   }
 

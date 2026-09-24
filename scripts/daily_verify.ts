@@ -64,6 +64,25 @@ export interface VerifyKillSwitchRuns {
   error_runs?: VerifyKillSwitchErrorRun[];
 }
 
+// #660: one net._http_response row's evidence, from the security-definer
+// RPC (migration 0018) -- created/status_code/timed_out only.
+export interface VerifyPgNetResponseEvidence {
+  created: string;
+  status_code: number | null;
+  timed_out: boolean;
+}
+
+// #660: the kill-switch grid's pg_net evidence for the day's window --
+// the retention cutoff plus every matching response row. Mirrors
+// _shared/db.ts's PgNetKillSwitchEvidence shape; defined locally (not
+// imported) per this file's own existing convention of shaping its wire
+// types independently of the Edge Function's TS modules (VerifyHourlyCheckRun
+// et al. above do the same).
+export interface VerifyPgNetKillSwitchEvidence {
+  evidence_from: string;
+  responses: VerifyPgNetResponseEvidence[];
+}
+
 export interface VerifyConfig {
   paused: string | null;
   hourly_experiment_start_equity: string | null;
@@ -85,6 +104,15 @@ export interface VerificationBlock {
   // compat: evaluateVerification treats absence as 0 / PASS, same as
   // kill_switch_runs.started_at's own optional pattern in #562).
   pg_net_timeouts?: number;
+  // #660: the kill-switch grid's pg_net evidence, from the security-definer
+  // RPC (migration 0018), used by checkKillSwitch to tag a missing slot with
+  // what pg_net actually saw. Top-level (a sibling of pg_net_timeouts, not
+  // nested inside kill_switch_runs), placed immediately after it. Optional --
+  // absent when an older deployed `status` hasn't been upgraded yet (falls
+  // back to the plain, untagged missing-slot text, byte-identical to
+  // pre-#660). `null` when `status` itself degraded the RPC failure (never
+  // `{}` -- see PgNetKillSwitchEvidence's own doc comment in _shared/db.ts).
+  pg_net_kill_switch_evidence?: VerifyPgNetKillSwitchEvidence | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +228,133 @@ export function formatMissingSlots(slots: string[]): string {
   }
   parts.push(rangeStart === rangeEnd ? rangeStart : `${rangeStart}-${rangeEnd}`);
   return parts.join(", ");
+}
+
+// ---------------------------------------------------------------------------
+// #660: tag a missing kill-switch slot with the pg_net evidence (migration
+// 0018's RPC) that explains the gap -- a timed-out/errored/non-2xx/2xx
+// net._http_response row, or (no row) whether the slot still falls within
+// the RPC's retention window at all. See the tag table in the #660 sub-plan
+// for the full case list this implements.
+// ---------------------------------------------------------------------------
+
+/**
+ * `HH:MMZ` label for a `created` timestamp, iff it lands on the kill-switch
+ * grid (UTC hour 13-21, minute a multiple of 5) -- null otherwise.
+ * Hourly-check's own `:07` cron slot never lands on a multiple of 5 (nor do
+ * any of :01-:04, :06, :08-:09), so an hourly-check row is never attributed
+ * to a kill-switch slot; likewise any out-of-grid timestamp (e.g. 12:55Z,
+ * 22:00Z from a manual off-hours pg_net call) is ignored.
+ */
+function killSwitchSlotLabelForCreated(created: string): string | null {
+  const d = new Date(created);
+  const h = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  if (h < 13 || h > 21 || m % KILL_SWITCH_GRID_STEP_MINUTES !== 0) return null;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}Z`;
+}
+
+/** The tag for a single net._http_response row (before any multi-row precedence). */
+function tagForResponse(r: VerifyPgNetResponseEvidence): string {
+  if (r.timed_out) return "pg_net timeout";
+  if (r.status_code === null) return "pg_net error";
+  if (r.status_code < 200 || r.status_code >= 300) {
+    return `pg_net non-2xx (HTTP ${r.status_code})`;
+  }
+  return "pg_net 2xx";
+}
+
+/** Precedence rank for picking one tag among multiple rows in the same slot: timeout > error > non-2xx > 2xx. */
+function tagRank(tag: string): number {
+  if (tag === "pg_net timeout") return 0;
+  if (tag === "pg_net error") return 1;
+  if (tag.startsWith("pg_net non-2xx")) return 2;
+  return 3; // "pg_net 2xx"
+}
+
+interface TaggedSlot {
+  label: string;
+  tag: string;
+}
+
+function formatTaggedRange(start: TaggedSlot, end: TaggedSlot): string {
+  const range = start.label === end.label ? start.label : `${start.label}-${end.label}`;
+  return `${range} [${start.tag}]`;
+}
+
+/**
+ * #660: tags each of `missingSlots` (deriveMissingKillSwitchSlots' own
+ * ascending `HH:MMZ` labels) with the pg_net evidence that explains the gap,
+ * then groups consecutive slots into `first-last` ranges the same way
+ * formatMissingSlots does -- but tag-aware: a run only collapses when every
+ * member shares the same tag. `date` (the verification day, `YYYY-MM-DD`
+ * UTC) anchors both the slot-vs-`evidence_from` comparison and the
+ * `created`-to-slot match.
+ *
+ * `evidence === null` (the status digest's own RPC-failure degradation)
+ * leaves every slot untagged -- the same text `formatMissingSlots` would
+ * produce -- with `; pg_net evidence unavailable` appended once. This
+ * function is never called with `evidence === undefined` -- checkKillSwitch
+ * falls back to the plain `formatMissingSlots` call instead, so the
+ * pre-#660 finding text stays byte-identical when the evidence RPC hasn't
+ * been rolled out yet.
+ */
+export function tagMissingKillSwitchSlots(
+  date: string,
+  missingSlots: string[],
+  evidence: VerifyPgNetKillSwitchEvidence | null,
+): string {
+  if (missingSlots.length === 0) return "";
+  if (evidence === null) {
+    return `${formatMissingSlots(missingSlots)}; pg_net evidence unavailable`;
+  }
+
+  const bySlot = new Map<string, VerifyPgNetResponseEvidence[]>();
+  for (const r of evidence.responses) {
+    const label = killSwitchSlotLabelForCreated(r.created);
+    if (label === null) continue;
+    const rows = bySlot.get(label);
+    if (rows) rows.push(r);
+    else bySlot.set(label, [r]);
+  }
+
+  const evidenceFromMs = Date.parse(evidence.evidence_from);
+  const tagged: TaggedSlot[] = missingSlots.map((label) => {
+    const rows = bySlot.get(label);
+    if (rows !== undefined && rows.length > 0) {
+      // A row beats expiry -- and among multiple rows in the same slot,
+      // precedence is timeout > error > non-2xx > 2xx (tagRank).
+      let bestTag = tagForResponse(rows[0]);
+      for (const r of rows.slice(1)) {
+        const t = tagForResponse(r);
+        if (tagRank(t) < tagRank(bestTag)) bestTag = t;
+      }
+      return { label, tag: bestTag };
+    }
+    const slotMs = Date.parse(`${date}T${label.slice(0, 5)}:00.000Z`);
+    return { label, tag: slotMs >= evidenceFromMs ? "no request recorded" : "evidence expired" };
+  });
+
+  const parts: string[] = [];
+  let rangeStart = tagged[0];
+  let rangeEnd = tagged[0];
+  for (let i = 1; i < tagged.length; i++) {
+    const isConsecutive =
+      parseSlotLabelMinutes(tagged[i].label) - parseSlotLabelMinutes(rangeEnd.label) ===
+        KILL_SWITCH_GRID_STEP_MINUTES;
+    if (isConsecutive && tagged[i].tag === rangeEnd.tag) {
+      rangeEnd = tagged[i];
+      continue;
+    }
+    parts.push(formatTaggedRange(rangeStart, rangeEnd));
+    rangeStart = tagged[i];
+    rangeEnd = tagged[i];
+  }
+  parts.push(formatTaggedRange(rangeStart, rangeEnd));
+
+  const text = parts.join(", ");
+  const anyExpired = tagged.some((t) => t.tag === "evidence expired");
+  return anyExpired ? `${text}; pg_net evidence retained from ${evidence.evidence_from}` : text;
 }
 
 // Dual WARN thresholds based on ledger data (#618): scan-only days (no
@@ -558,6 +713,13 @@ export function checkState(
 export function checkKillSwitch(
   killSwitchRuns: VerifyKillSwitchRuns,
   scans: HourlyScanRow[],
+  // #660: the kill-switch grid's pg_net evidence (migration 0018) and the
+  // verification day, both optional -- undefined when the caller hasn't
+  // wired them (byte-identical to pre-#660 text). See
+  // tagMissingKillSwitchSlots's own doc comment for the evidence===null vs.
+  // undefined distinction.
+  evidence?: VerifyPgNetKillSwitchEvidence | null,
+  date?: string,
 ): CheckOutcome {
   const findings: string[] = [];
   const statuses: CheckStatus[] = [];
@@ -574,7 +736,13 @@ export function checkKillSwitch(
     if (killSwitchRuns.started_at !== undefined) {
       const missing = deriveMissingKillSwitchSlots(killSwitchRuns.started_at);
       if (missing.length > 0) {
-        finding += ` (missing: ${formatMissingSlots(missing)})`;
+        // #660: tag each missing slot with pg_net evidence when both a date
+        // and an evidence block (possibly null -- RPC failure) are given;
+        // falls back to the plain, untagged text otherwise.
+        const missingText = evidence !== undefined && date !== undefined
+          ? tagMissingKillSwitchSlots(date, missing, evidence)
+          : formatMissingSlots(missing);
+        finding += ` (missing: ${missingText})`;
       }
     }
     findings.push(finding);
@@ -843,7 +1011,15 @@ export function evaluateVerification(
   const geometry = checkGeometry(v.scans);
   const journal = checkJournal(v.trades, v.scans);
   const state = checkState(v.config, previousRow);
-  const killSwitch = checkKillSwitch(v.kill_switch_runs, v.scans);
+  // #660: v.pg_net_kill_switch_evidence is optional -- undefined when an
+  // older deployed status hasn't been upgraded yet, in which case
+  // checkKillSwitch falls back to the plain, untagged missing-slot text.
+  const killSwitch = checkKillSwitch(
+    v.kill_switch_runs,
+    v.scans,
+    v.pg_net_kill_switch_evidence,
+    v.date,
+  );
 
   // #554: pg_net stall check -- detects HTTP-response-level timeouts that
   // the latency check cannot see (function completed and wrote its audit
@@ -1407,6 +1583,48 @@ export function parseVerificationBlock(raw: unknown): VerificationBlock {
       if (typeof r.outcome !== "string") {
         throw new MalformedVerificationError(
           "a verification.kill_switch_runs.error_runs entry has a non-string outcome",
+        );
+      }
+    }
+  }
+  // #660: pg_net_kill_switch_evidence is optional -- absent (an older
+  // deployed `status`) or explicitly null (status's own RPC-failure
+  // degradation) are both valid; when present and non-null it must be an
+  // object with a parsable evidence_from and a responses array of
+  // well-shaped rows (created parsable, status_code a number or null,
+  // timed_out a boolean).
+  if (v.pg_net_kill_switch_evidence !== undefined && v.pg_net_kill_switch_evidence !== null) {
+    if (typeof v.pg_net_kill_switch_evidence !== "object") {
+      throw new MalformedVerificationError(
+        "verification.pg_net_kill_switch_evidence is present but not an object",
+      );
+    }
+    const evidence = v.pg_net_kill_switch_evidence as Record<string, unknown>;
+    assertParsableTimestamp(
+      evidence.evidence_from,
+      "pg_net_kill_switch_evidence.evidence_from",
+    );
+    if (!Array.isArray(evidence.responses)) {
+      throw new MalformedVerificationError(
+        "verification.pg_net_kill_switch_evidence.responses is missing or not an array",
+      );
+    }
+    for (const response of evidence.responses) {
+      if (response === null || typeof response !== "object") {
+        throw new MalformedVerificationError(
+          "a verification.pg_net_kill_switch_evidence.responses entry is not an object",
+        );
+      }
+      const r = response as Record<string, unknown>;
+      assertParsableTimestamp(r.created, "pg_net_kill_switch_evidence.responses[].created");
+      if (r.status_code !== null && typeof r.status_code !== "number") {
+        throw new MalformedVerificationError(
+          "a verification.pg_net_kill_switch_evidence.responses entry has a non-number/non-null status_code",
+        );
+      }
+      if (typeof r.timed_out !== "boolean") {
+        throw new MalformedVerificationError(
+          "a verification.pg_net_kill_switch_evidence.responses entry has a non-boolean timed_out",
         );
       }
     }

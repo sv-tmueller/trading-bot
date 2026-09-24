@@ -30,9 +30,11 @@ import {
   renderMarkdownDigest,
   resolveTargetDate,
   selectPreviousRow,
+  tagMissingKillSwitchSlots,
   upsertLedgerJsonl,
   type VerificationBlock,
   type VerifyHourlyCheckRun,
+  type VerifyPgNetKillSwitchEvidence,
 } from "./daily_verify.ts";
 
 // The full 108-slot grid of kill-switch started_at timestamps for a clean
@@ -973,6 +975,338 @@ Deno.test("checkKillSwitch: 109 runs (a duplicated slot) with started_at but no 
   const result = checkKillSwitch(
     { count: 109, outcome_counts: { "success:no_position": 109 }, started_at: startedAt },
     [],
+  );
+  assertEquals(result.findings, ["kill_switch: expected 108 runs, found 109"]);
+});
+
+// #660: tagMissingKillSwitchSlots -- tags each missing kill-switch slot with
+// the pg_net evidence (migration 0018) that explains the gap, and
+// checkKillSwitch's count-mismatch branch wires it in.
+
+function evidence(
+  evidenceFrom: string,
+  responses: VerifyPgNetKillSwitchEvidence["responses"] = [],
+): VerifyPgNetKillSwitchEvidence {
+  return { evidence_from: evidenceFrom, responses };
+}
+
+Deno.test("tagMissingKillSwitchSlots: no row, slot >= evidence_from -> 'no request recorded'", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z"),
+  );
+  assertEquals(result, "19:00Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: no row, slot < evidence_from -> 'evidence expired'", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["13:00Z"],
+    evidence("2026-08-05T15:00:00.000Z"),
+  );
+  assertEquals(
+    result,
+    "13:00Z [evidence expired]; pg_net evidence retained from 2026-08-05T15:00:00.000Z",
+  );
+});
+
+Deno.test("tagMissingKillSwitchSlots: historic shape -- 2026-09-11 18:15Z slot is covered (evidence_from 24s earlier)", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-09-11",
+    ["18:15Z"],
+    evidence("2026-09-11T18:14:36.000Z"),
+  );
+  assertEquals(result, "18:15Z [no request recorded]");
+});
+
+// Real boundary tests (#665 round-1 review finding 1): the 09-11 fixture
+// above sits 24s off the cutoff, so it never actually exercised the `>=`
+// comparison at daily_verify.ts's slot-vs-evidence_from check. These two
+// pin the millisecond either side of equality.
+Deno.test("tagMissingKillSwitchSlots: true boundary -- slot exactly equal to evidence_from is covered (no request recorded)", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T19:00:00.000Z"),
+  );
+  assertEquals(result, "19:00Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: true boundary -- evidence_from 1ms after the slot is expired", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T19:00:00.001Z"),
+  );
+  assertEquals(
+    result,
+    "19:00Z [evidence expired]; pg_net evidence retained from 2026-08-05T19:00:00.001Z",
+  );
+});
+
+Deno.test("tagMissingKillSwitchSlots: historic shape -- 17:10Z before an 18:47Z cutoff shows expired", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-09-21",
+    ["17:10Z"],
+    evidence("2026-09-21T18:47:00.000Z"),
+  );
+  assertEquals(
+    result,
+    "17:10Z [evidence expired]; pg_net evidence retained from 2026-09-21T18:47:00.000Z",
+  );
+});
+
+Deno.test("tagMissingKillSwitchSlots: a row with timed_out=true tags 'pg_net timeout'", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: a row with a null status, not timed out, tags 'pg_net error'", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: null, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net error]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: a row with a non-2xx status tags 'pg_net non-2xx (HTTP <code>)'", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: 503, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net non-2xx (HTTP 503)]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: a row with a 2xx status tags 'pg_net 2xx' (a response with no audit row)", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: 200, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net 2xx]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: a row on an expired slot is tagged by the row (a row beats expiry)", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["13:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T13:00:00.500Z", status_code: 503, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "13:00Z [pg_net non-2xx (HTTP 503)]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: precedence when a slot has two rows -- timeout beats non-2xx", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: 503, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: precedence -- error beats non-2xx beats 2xx", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: 200, timed_out: false },
+      { created: "2026-08-05T19:00:00.500Z", status_code: 503, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: null, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net error]");
+});
+
+// #665 round-1 review finding 9: the three-way test above establishes
+// error > non-2xx > 2xx together, but never isolates timeout vs. error, or
+// non-2xx vs. 2xx, as their own pairs.
+Deno.test("tagMissingKillSwitchSlots: precedence -- timeout beats error", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: null, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: precedence -- non-2xx beats 2xx", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.100Z", status_code: 200, timed_out: false },
+      { created: "2026-08-05T19:00:00.900Z", status_code: 503, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net non-2xx (HTTP 503)]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: an hourly-check-looking row (:07) is never attributed to a kill-switch slot", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z", "19:05Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:07:00.000Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z-19:05Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: an hourly-check-looking row (:09, timed out) is never attributed", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:05Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:09:00.000Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:05Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: out-of-grid rows (12:55Z, 22:00Z) are ignored", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["13:00Z"],
+    evidence("2026-08-05T00:00:00.000Z", [
+      { created: "2026-08-05T12:55:00.000Z", status_code: 200, timed_out: false },
+      { created: "2026-08-05T22:00:00.000Z", status_code: 200, timed_out: false },
+    ]),
+  );
+  assertEquals(result, "13:00Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: grouping -- same tags collapse into a range", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z", "19:05Z", "19:10Z"],
+    evidence("2026-08-05T15:00:00.000Z"),
+  );
+  assertEquals(result, "19:00Z-19:10Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: grouping -- different tags do not collapse", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["17:10Z", "19:00Z", "19:05Z", "19:10Z"],
+    evidence("2026-08-05T18:47:00.000Z"),
+  );
+  assertEquals(
+    result,
+    "17:10Z [evidence expired], 19:00Z-19:10Z [no request recorded]; " +
+      "pg_net evidence retained from 2026-08-05T18:47:00.000Z",
+  );
+});
+
+// #665 round-1 review finding 2: the test above never puts two DIFFERENT
+// tags on ADJACENT slots -- 17:10Z and 19:00Z are 110 minutes apart, so the
+// same-tag condition at daily_verify.ts's grouping step is never actually
+// exercised there. This pins two consecutive (5-minute-apart) slots with
+// different tags.
+Deno.test("tagMissingKillSwitchSlots: grouping -- adjacent slots with different tags do not collapse", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z", "19:05Z"],
+    evidence("2026-08-05T15:00:00.000Z", [
+      { created: "2026-08-05T19:00:00.500Z", status_code: null, timed_out: true },
+    ]),
+  );
+  assertEquals(result, "19:00Z [pg_net timeout], 19:05Z [no request recorded]");
+});
+
+Deno.test("tagMissingKillSwitchSlots: any expired slot appends the retained-from suffix", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["17:10Z", "19:00Z"],
+    evidence("2026-08-05T18:47:00.000Z"),
+  );
+  assertEquals(
+    result,
+    "17:10Z [evidence expired], 19:00Z [no request recorded]; " +
+      "pg_net evidence retained from 2026-08-05T18:47:00.000Z",
+  );
+});
+
+Deno.test("tagMissingKillSwitchSlots: no expired slot -> no retained-from suffix", () => {
+  const result = tagMissingKillSwitchSlots(
+    "2026-08-05",
+    ["19:00Z"],
+    evidence("2026-08-05T15:00:00.000Z"),
+  );
+  assertEquals(result.includes("pg_net evidence retained"), false);
+});
+
+Deno.test("tagMissingKillSwitchSlots: evidence === null (RPC failed) -> untagged, plus 'pg_net evidence unavailable'", () => {
+  const result = tagMissingKillSwitchSlots("2026-08-05", ["19:00Z", "20:15Z"], null);
+  assertEquals(result, "19:00Z, 20:15Z; pg_net evidence unavailable");
+});
+
+Deno.test("checkKillSwitch: evidence present -> the count-mismatch finding carries per-slot tags", () => {
+  const startedAt = fullKillSwitchGrid("2026-08-05").filter((ts) => !ts.includes("T19:05:00"));
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 }, started_at: startedAt },
+    [],
+    evidence("2026-08-05T15:00:00.000Z"),
+    "2026-08-05",
+  );
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 107 (missing: 19:05Z [no request recorded])",
+  ]);
+});
+
+Deno.test("checkKillSwitch: evidence undefined -> byte-identical to the pre-#660 plain finding", () => {
+  const startedAt = fullKillSwitchGrid("2026-08-05").filter((ts) => !ts.includes("T19:05:00"));
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 }, started_at: startedAt },
+    [],
+  );
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 107 (missing: 19:05Z)",
+  ]);
+});
+
+Deno.test("checkKillSwitch: evidence null (RPC failed) -> the finding carries the unavailable suffix", () => {
+  const startedAt = fullKillSwitchGrid("2026-08-05").filter((ts) => !ts.includes("T19:05:00"));
+  const result = checkKillSwitch(
+    { count: 107, outcome_counts: { "success:no_position": 107 }, started_at: startedAt },
+    [],
+    null,
+    "2026-08-05",
+  );
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 107 (missing: 19:05Z; pg_net evidence unavailable)",
+  ]);
+});
+
+Deno.test("checkKillSwitch: 109 runs (a duplicated slot), evidence present -> the duplicate-slot fallback is kept (no tags)", () => {
+  const startedAt = [...fullKillSwitchGrid("2026-08-05"), "2026-08-05T19:05:00.900Z"];
+  const result = checkKillSwitch(
+    { count: 109, outcome_counts: { "success:no_position": 109 }, started_at: startedAt },
+    [],
+    evidence("2026-08-05T20:00:00.000Z"),
+    "2026-08-05",
   );
   assertEquals(result.findings, ["kill_switch: expected 108 runs, found 109"]);
 });
@@ -2108,6 +2442,149 @@ Deno.test("parseVerificationBlock: kill_switch_runs.started_at with an unparseab
   const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
   (raw.kill_switch_runs as Record<string, unknown>).started_at = ["not-a-timestamp"];
   assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+// #660: pg_net_kill_switch_evidence is optional -- absent or null is valid
+// (absent: an older deployed `status`; null: the status digest's own RPC
+// failure degradation); when present and non-null it must be an object with
+// a parsable evidence_from and a responses array of well-shaped rows.
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence absent -> parses fine (old digest)", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  assertEquals("pg_net_kill_switch_evidence" in raw, false);
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.pg_net_kill_switch_evidence, undefined);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence null -> parses fine (RPC failure degradation)", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = null;
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.pg_net_kill_switch_evidence, null);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence valid -> parses through", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [
+      { created: "2026-08-05T19:00:00.500Z", status_code: 200, timed_out: false },
+    ],
+  };
+  const parsed = parseVerificationBlock(raw);
+  assertEquals(parsed.pg_net_kill_switch_evidence, {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [
+      { created: "2026-08-05T19:00:00.500Z", status_code: 200, timed_out: false },
+    ],
+  });
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence not an object -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = "not-an-object";
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.evidence_from unparseable -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = { evidence_from: "not-a-timestamp", responses: [] };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.responses not an array -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: "not-an-array",
+  };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.responses entry not an object -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: ["not-an-object"],
+  };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.responses entry with an unparseable created -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [{ created: "not-a-timestamp", status_code: 200, timed_out: false }],
+  };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.responses entry with a non-boolean timed_out -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [{ created: "2026-08-05T19:00:00.500Z", status_code: 200, timed_out: "yes" }],
+  };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+Deno.test("parseVerificationBlock: pg_net_kill_switch_evidence.responses entry with a non-number/non-null status_code -> throws", () => {
+  const raw = loadFixture("clean-day") as unknown as Record<string, unknown>;
+  raw.pg_net_kill_switch_evidence = {
+    evidence_from: "2026-08-05T15:00:00.000Z",
+    responses: [{ created: "2026-08-05T19:00:00.500Z", status_code: "200", timed_out: false }],
+  };
+  assertThrows(() => parseVerificationBlock(raw), MalformedVerificationError);
+});
+
+// #660: evaluateVerification wiring -- v.pg_net_kill_switch_evidence and
+// v.date reach checkKillSwitch, but the check/verdict/Metrics/ledger shape
+// stay exactly as before (ND2/sub-plan: "No change to the verdict, Metrics,
+// buildSummary/checkNumbers or the ledger schema").
+
+Deno.test("evaluateVerification: pg_net_kill_switch_evidence flows into the kill_switch finding's tags", () => {
+  const v = cleanDayVerification();
+  const missingSlot = "19:05Z";
+  v.kill_switch_runs = {
+    count: 107,
+    outcome_counts: { "success:no_position": 107 },
+    started_at: fullKillSwitchGrid("2026-08-05").filter((ts) =>
+      !ts.includes(`T${missingSlot.slice(0, 5)}:00`)
+    ),
+  };
+  v.pg_net_kill_switch_evidence = { evidence_from: "2026-08-05T15:00:00.000Z", responses: [] };
+  const result = evaluateVerification(v, null);
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(
+    result.findings.includes(
+      "kill_switch: expected 108 runs, found 107 (missing: 19:05Z [no request recorded])",
+    ),
+    true,
+  );
+});
+
+Deno.test("evaluateVerification: pg_net_kill_switch_evidence absent -> verdict/checks/metrics/findings count unchanged from before #660", () => {
+  const v = cleanDayVerification();
+  v.kill_switch_runs = {
+    count: 107,
+    outcome_counts: { "success:no_position": 107 },
+    started_at: fullKillSwitchGrid("2026-08-05").filter((ts) => !ts.includes("T19:05:00")),
+  };
+  const result = evaluateVerification(v, null);
+  assertEquals(result.verdict, "FAIL");
+  assertEquals(result.findings, [
+    "kill_switch: expected 108 runs, found 107 (missing: 19:05Z)",
+  ]);
+  assertEquals(Object.keys(result.checks).sort(), [
+    "geometry",
+    "journal",
+    "kill_switch",
+    "latency",
+    "pg_net_timeouts",
+    "scans",
+    "slots",
+    "state",
+  ]);
 });
 
 // #659: kill_switch_runs.error_runs is optional -- absent is valid (backward
