@@ -118,7 +118,11 @@ see `supabase/functions/_shared/config.ts`'s `getHourlyShortsEnabled()`).
 ascending by `started_at`, carrying `notes` (the journal-degraded order id,
 per the hourly-bot rollout runbook). `kill_switch_runs` is counts
 (`count` plus `outcome_counts`) plus the day's per-run `started_at`
-timestamps ascending (#562), still never full rows, since ~108
+timestamps ascending (#562), plus `error_runs` (#659): the day's raw
+`error:*` kill-switch rows as `{started_at, outcome, notes}`, `notes`
+unredacted here (the daily-verify evaluator, `scripts/daily_verify.ts`, does
+all redaction/truncation before any of that text becomes public). Every
+other kill-switch row is still never shipped as a full row, since ~108
 same-outcome rows a day carry no information the counts lack beyond their
 timing; the timestamps let the daily-verification evaluator name which
 5-minute grid slot(s) are missing on a short day. `scans` and `trades` are the full,
