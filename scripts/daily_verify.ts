@@ -909,6 +909,177 @@ function checkNumbers(key: keyof EvaluationChecks, metrics: Metrics): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #661: section summaries state the failure reason. checkNumbers (above)
+// never sees a check's own status, so it printed the same PASS-shaped text
+// on a FAIL/WARN day. sectionSummary replaces it in renderMarkdownDigest's
+// checkSections below: on PASS it returns checkNumbers unchanged, byte for
+// byte; on WARN/FAIL it names the reason, either counted straight from
+// `metrics` (slots, kill_switch, latency) or quoted from the check's own
+// findings (scans, geometry, journal, state). pg_net_timeouts is unchanged
+// on every status -- its checkNumbers text already names the only thing that
+// can fail it.
+// ---------------------------------------------------------------------------
+
+/** Strips one trailing "." so a checkNumbers()-style string can be reused as a clause prefix. */
+function stripTrailingPeriod(text: string): string {
+  return text.endsWith(".") ? text.slice(0, -1) : text;
+}
+
+/** The findings belonging to one section: every entry of `findings` prefixed `"<key>: "`. */
+function sectionFindings(key: keyof EvaluationChecks, findings: string[]): string[] {
+  const prefix = `${key}: `;
+  return findings.filter((f) => f.startsWith(prefix));
+}
+
+/**
+ * Quotes up to the first 3 already-prefix-stripped section findings, joined
+ * "; ", plus a "(+N more, see Findings)" suffix when there are more than 3.
+ */
+function quoteFindings(strippedFindings: string[]): string {
+  const shown = strippedFindings.slice(0, 3).join("; ");
+  const extra = strippedFindings.length - 3;
+  return extra > 0 ? `${shown} (+${extra} more, see Findings)` : shown;
+}
+
+/** An outcome-count record's entries whose key matches `predicate`. */
+function outcomeEntriesMatching(
+  counts: Record<string, number>,
+  predicate: (outcome: string) => boolean,
+): Array<[string, number]> {
+  return Object.entries(counts).filter(([outcome]) => predicate(outcome));
+}
+
+function sumCounts(entries: Array<[string, number]>): number {
+  return entries.reduce((sum, [, count]) => sum + count, 0);
+}
+
+/**
+ * Renders outcome-count entries sorted by count descending, then by name
+ * ascending (a plain `<` compare) -- a single distinct outcome is named
+ * alone; more than one distinct outcome is each suffixed " xN".
+ */
+function formatOutcomeGroups(entries: Array<[string, number]>): string {
+  const sorted = [...entries].sort(([nameA, countA], [nameB, countB]) => {
+    if (countA !== countB) return countB - countA;
+    return nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
+  });
+  if (sorted.length === 1) return sorted[0][0];
+  return sorted.map(([name, count]) => `${name} x${count}`).join(", ");
+}
+
+/** The "N missing"/"N extra" clause -- mirrors checkSlots'/checkKillSwitch's own count mismatch. */
+function missingOrExtraClause(actual: number, expected: number): string | null {
+  if (actual < expected) return `${expected - actual} missing`;
+  if (actual > expected) return `${actual - expected} extra`;
+  return null;
+}
+
+/** The "N unfinished" clause -- mirrors computeMetrics's UNFINISHED_OUTCOME_LABEL bucketing. */
+function unfinishedClause(counts: Record<string, number>): string | null {
+  const count = counts[UNFINISHED_OUTCOME_LABEL] ?? 0;
+  return count > 0 ? `${count} unfinished` : null;
+}
+
+/** The "N errored (...)" clause -- mirrors checkSlots'/checkKillSwitch's own error:* handling. */
+function erroredClause(counts: Record<string, number>): string | null {
+  const entries = outcomeEntriesMatching(counts, (o) => o.startsWith("error:"));
+  const total = sumCounts(entries);
+  return total > 0 ? `${total} errored (${formatOutcomeGroups(entries)})` : null;
+}
+
+/**
+ * The "N with unexpected outcome (...)" clause -- mirrors checkKillSwitch's own
+ * "neither success:* nor skipped:*" finding, minus error:* (named by erroredClause)
+ * and the "(unfinished)" bucket (named by unfinishedClause).
+ */
+function unexpectedOutcomeClause(counts: Record<string, number>): string | null {
+  const entries = outcomeEntriesMatching(
+    counts,
+    (o) =>
+      o !== UNFINISHED_OUTCOME_LABEL &&
+      !o.startsWith("success:") &&
+      !o.startsWith("skipped:") &&
+      !o.startsWith("error:"),
+  );
+  const total = sumCounts(entries);
+  return total > 0 ? `${total} with unexpected outcome (${formatOutcomeGroups(entries)})` : null;
+}
+
+/** Mirrors checkKillSwitch's own uniform-no_position-despite-a-LONG-scan contradiction. */
+function noPositionContradictionClause(metrics: Metrics): string | null {
+  const entries = Object.entries(metrics.kill_switch_outcome_counts);
+  const isUniformNoPosition = entries.length === 1 &&
+    entries[0][0] === "success:no_position" &&
+    entries[0][1] === metrics.kill_switch_runs;
+  const hasLongScan = metrics.decision_counts.LONG > 0;
+  return isUniformNoPosition && hasLongScan
+    ? "every run success:no_position despite a LONG scan"
+    : null;
+}
+
+/**
+ * A section's rendered reason line (§6.2). PASS returns checkNumbers()
+ * unchanged, byte for byte -- everything below only runs on WARN/FAIL.
+ */
+function sectionSummary(
+  key: keyof EvaluationChecks,
+  status: CheckStatus,
+  metrics: Metrics,
+  findings: string[],
+): string {
+  const numbers = checkNumbers(key, metrics);
+  if (status === "PASS" || key === "pg_net_timeouts") return numbers;
+
+  const quoted = quoteFindings(findings.map((f) => f.slice(`${key}: `.length)));
+  const fallback = `${stripTrailingPeriod(numbers)}; ${quoted}.`;
+
+  switch (key) {
+    case "geometry":
+    case "state":
+      return `${quoted}.`;
+    case "scans":
+    case "journal":
+      return `${stripTrailingPeriod(numbers)}; ${quoted}.`;
+    case "latency": {
+      const { max, median } = metrics.latency_ms;
+      if (max === null) return fallback;
+      const threshold = status === "FAIL"
+        ? LATENCY_FAIL_MS
+        : (metrics.entries > 0 ? LATENCY_WARN_ENTRY_MS : LATENCY_WARN_SCAN_MS);
+      return `max ${max}ms (over the ${threshold}ms ${status} threshold), median ${
+        fmtMsOrNa(median)
+      }.`;
+    }
+    case "slots": {
+      const clauses = [
+        missingOrExtraClause(metrics.hourly_runs, HOURLY_SLOTS_PER_WEEKDAY),
+        unfinishedClause(metrics.hourly_outcome_counts),
+        erroredClause(metrics.hourly_outcome_counts),
+      ].filter((c): c is string => c !== null);
+      if (clauses.length === 0) return fallback;
+      return `${metrics.hourly_runs}/${HOURLY_SLOTS_PER_WEEKDAY} hourly-check runs, ${
+        clauses.join(", ")
+      }.`;
+    }
+    case "kill_switch": {
+      const clauses = [
+        missingOrExtraClause(metrics.kill_switch_runs, KILL_SWITCH_SLOTS_PER_WEEKDAY),
+        unfinishedClause(metrics.kill_switch_outcome_counts),
+        erroredClause(metrics.kill_switch_outcome_counts),
+        unexpectedOutcomeClause(metrics.kill_switch_outcome_counts),
+        noPositionContradictionClause(metrics),
+      ].filter((c): c is string => c !== null);
+      if (clauses.length === 0) return fallback;
+      return `${metrics.kill_switch_runs}/${KILL_SWITCH_SLOTS_PER_WEEKDAY} runs, ${
+        clauses.join(", ")
+      }.`;
+    }
+    default:
+      return numbers;
+  }
+}
+
 function renderChangedSection(metrics: Metrics, previousRow: LedgerRow | null): string {
   if (previousRow === null) {
     return "_No previous verified day to compare against (day zero)._";
@@ -944,7 +1115,9 @@ export function renderMarkdownDigest(
   const checkSections = CHECK_TITLES.flatMap(({ key, title }) => [
     `## ${title}`,
     "",
-    `**${checks[key]}** -- ${checkNumbers(key, metrics)}`,
+    `**${checks[key]}** -- ${
+      sectionSummary(key, checks[key], metrics, sectionFindings(key, findings))
+    }`,
     "",
   ]);
 
