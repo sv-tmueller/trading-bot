@@ -906,6 +906,9 @@ export async function getPgNetKillSwitchEvidence(
       );
       return undefined;
     }
+    // Strict boolean check: pg_net >= v0.19.6 always writes true/false. Earlier versions
+    // write NULL timed_out on failure rows, which falls into this branch too -- fail-safe,
+    // since it degrades to "pg_net evidence unavailable" rather than misreading NULL as false.
     if (typeof row.timed_out !== "boolean") {
       console.warn(
         "getPgNetKillSwitchEvidence: malformed response row timed_out, degrading to undefined",

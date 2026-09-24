@@ -19,7 +19,7 @@
 --     timeout, so pg_net's own 5000ms default applies to every request.
 --   * `net._http_response` rows are deleted once older than `pg_net.ttl`.
 --     The upstream default is 6 hours and this repo has never overridden
---     it -- the live value on dev/prod is unverified; an operator should run
+--     it -- the live value on dev is unverified; an operator should run
 --     `show pg_net.ttl;` after this migration lands (see the runbook
 --     subsection this PR adds).
 --   * `daily-verification.yml` is scheduled for 22:15Z, but its last 12
