@@ -284,3 +284,30 @@ about 15:10), so the two rules never hold a position at the same time.
 
 No statistic involving `r13`, or relating `r1`/`r12` to anything after 15:30, was computed
 before this commit.
+
+---
+
+## Addendum A1 (2026-10-22, results commit) -- no definition changed; one implementation deviation corrected
+
+Everything above this line is the frozen pre-registration (commit `0742897`) and is unchanged.
+
+**No amendment.** No hypothesis, configuration, sample, cost, metric, threshold or trial count
+was changed after results were seen.
+
+**Implementation deviation (corrected to match §1.2).** The first execution of
+`run_momentum_study.py` wrongly put `RV1` (V3's volatility input) in the session eligibility
+filter. That excluded 3 sessions with missing 09:3x bars (2020-03-09, 2020-03-12, 2020-03-16,
+the circuit-breaker halts). §1.2 makes eligibility depend only on the price-point bars, and §3
+already implies that V3 is flat when `RV1` is undefined. The code was corrected to do exactly
+that, and the study was re-run. The verdict doc reports the corrected numbers and records the
+first-run figures (b1 = -0.0125, t -0.79; V1-E1 -2.49 bps at 1 bp/side; gate FAIL). The
+verdict is NO_EDGE under both runs.
+
+**D1 as computed:** -6.15 bps (42 ex-dates vs other eligible sessions) -> primary keeps
+ex-dates, as anticipated in §9.
+
+**Post-hoc checks**, labelled as such, are in `diag_posthoc.py` and the verdict doc §3.1:
+circuit-breaker-day sensitivity, top-1% |r1| trim, 30-min-file consistency, and the r12-only
+forking path. None of them is a trial and none can change the verdict.
+
+Results: `docs/research/2026-10-22-spy-intraday-momentum-verdict.md`.
