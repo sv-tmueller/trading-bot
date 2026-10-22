@@ -358,3 +358,31 @@ venv/bin/python $D/run_parity_p0a.py --decisions <scratch>/dec/SPY_sip_60m.csv \
 # P0b-P0d, the study, and the verdict tables: run_multi_symbol_study.py (added in the
 # results commit; it may only consume the frozen definitions above).
 ```
+
+---
+
+## Addendum A1 (2026-10-22, results commit) -- P0d price criterion was mis-specified
+
+Everything above this line is the frozen pre-registration (commit `a5354e1`) and is unchanged.
+
+**What happened.** Gate P0d's first criterion (median |delta close| <= 2 bps, Yahoo vs SIP)
+returned **141.24 bps -> FAIL as specified**. Its other two criteria passed (same-action
+agreement 0.894 >= 0.80; delta mean R -0.018, within 0.10). No study result had been computed
+when this was found (the runner stops on a failed gate).
+
+**Cause (verified, `diag_p0d_adjustment.py`).** §2 itself records that the #571 SIP bars are
+`adjustment=all` (dividend back-adjusted) while the Yahoo bars are `auto_adjust=False`. The
+close-price criterion therefore measured SPY's dividend back-adjustment, not the feed:
+the Yahoo/SIP ratio is 1.03438 on the first overlap day and 1.00000 on the last, its
+within-session spread is 0.17 bps median (0.78 bps p95), and it steps (> 5 bps) on exactly 11
+days -- 2023-12-15, 2024-03-15, 2024-06-21, 2024-09-20, 2024-12-20, 2025-03-21, 2025-06-20,
+2025-09-19, 2025-12-19, 2026-03-20, 2026-06-18, i.e. SPY's quarterly ex-dividend dates. With
+each session's multiplicative factor divided out, median |delta close| is **0.03 bps** (p95 0.20);
+bar shape (close/open, high/open, low/open) differs by 0.05-0.06 bps median.
+
+**Amendment.** P0d's price criterion is re-measured adjustment-neutrally (each session's
+median Yahoo/SIP ratio divided out), with the same 2 bps threshold -> **PASS**. The amendment
+fixes the gate's measurement so it checks what the gate was meant to check (the feed). It does
+not change any study definition, symbol, metric, threshold, or decision rule. Both readings
+are printed by `run_multi_symbol_study.py` ("as pre-registered: FAIL"; "Addendum A1,
+adjustment-neutral: PASS") and the verdict doc reports the deviation next to the gate table.
