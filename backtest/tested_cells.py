@@ -355,6 +355,58 @@ LEDGER: Tuple[TestedCell, ...] = (
              "(HAC t 0.59); no config positive at 0.5 or 1 bp/side; gate fails. "
              "n_w=10 < 13, DIRECTIONAL; poor prior for a re-test.",
     ),
+    # --- 2026-06-24 candidate-strategy survey backfill (#681) -- daily-bar cadence ---------
+    # These rules decide monthly (vol_target daily) but are recorded at the bar cadence
+    # "daily"; query them with "daily". Baselines are folded in: the Faber-10mo baseline is
+    # the Faber SPY cell, and re-measurements in other windows are not new trials.
+    TestedCell(
+        family="dual_momentum_gem", cadence="daily", vehicle="ETF_BASKET_GEM",
+        exit_style="monthly_rotation", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+        date="2026-06-24",
+        note="SPY/EFA/AGG with BIL hurdle; 12-mo abs+rel momentum, monthly, published "
+             "default (no grid). 2007-2026: after-tax Calmar US 0.14 vs 1x SPY 0.17, fails "
+             "the first gate; per-window median 0.39 vs 0.55 (n_w=19); 2020 worse than SPY.",
+    ),
+    TestedCell(
+        family="faber_ma_timing", cadence="daily", vehicle="SPY",
+        exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+        date="2026-06-24",
+        note="10-mo SMA on SPY, monthly, published default; also the survey's 'faber 10mo' "
+             "baseline (identical signal, one cell). 1993-2026: after-tax Calmar US 0.21 > "
+             "SPY 0.18 but < tsmom-12mo 0.24; per-window median 0.67 vs 0.85 (n_w=32).",
+    ),
+    TestedCell(
+        family="faber_ma_timing", cadence="daily", vehicle="ETF_BASKET_GTAA5",
+        exit_style="monthly_sleeve_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+        date="2026-06-24",
+        note="GTAA-lite SPY/EFA/AGG/DBC/VNQ, each 1/5 sleeve on its own 10-mo SMA, monthly, "
+             "published default. 2006-2026: after-tax Calmar US 0.18 ties SPY 0.18; "
+             "per-window median 0.48 vs 0.85 (n_w=21); 14.3 trades/yr, max DD -15.3%.",
+    ),
+    TestedCell(
+        family="tsmom_timeseries", cadence="daily", vehicle="SPY",
+        exit_style="monthly_regime_flip", n_cells=1, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+        date="2026-06-24",
+        note="Survey baseline, never screened as a candidate: 12-mo trailing return > 0 on "
+             "SPY, monthly. Not a failure: beat 1x SPY full-history after-tax Calmar in all "
+             "three windows (0.21-0.24 US vs 0.17-0.18); no per-window or bear-stress read. "
+             "Both cuts flag it for a full re-test.",
+    ),
+    TestedCell(
+        family="vol_target", cadence="daily", vehicle="SPY",
+        exit_style="daily_vol_resize", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-candidate-strategy-survey-second-cut.md",
+        date="2026-06-24",
+        note="w = min(0.10 / 20d realized vol, 1.0) on SPY, daily, published default. "
+             "1993-2026: pre-tax Calmar 0.205 vs SPY 0.196 (parity); after tax n/a (curve "
+             "non-positive) at 93.7 trades/yr; per-window median -0.54 vs 0.85 (n_w=34). "
+             "No-loss-credit tax model overstates the magnitude, not the sign.",
+    ),
 )
 
 
