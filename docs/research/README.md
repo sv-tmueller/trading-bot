@@ -87,3 +87,4 @@ Skill location: [`.claude/skills/research-bundle/SKILL.md`](../../.claude/skills
 ## Existing bundles
 
 - [`swing-trading/`](swing-trading/) — first bundle; produced 2026-04-30 via PR #98. Reference example for the format.
+- [`strategy-landscape-and-risk/`](strategy-landscape-and-risk/) -- what bots and human traders do, typical risk parameters, combining strategies; produced 2026-10-23 as research input for #675.
