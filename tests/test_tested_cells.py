@@ -423,3 +423,35 @@ def test_cli_check_reports_a_superseded_record_for_the_orb_probe(capsys):
     out = capsys.readouterr().out
     assert "SUPERSEDED" in out
     assert "orb-longshort-preregistration" in out
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-24 candidate-survey backfill (#681)
+JUNE_SURVEY_CELLS = [
+    ("faber_ma_timing", "SPY"),
+    ("faber_ma_timing", "ETF_BASKET_GTAA5"),
+    ("dual_momentum_gem", "ETF_BASKET_GEM"),
+    ("tsmom_timeseries", "SPY"),
+    ("vol_target", "SPY"),
+]
+
+
+@pytest.mark.parametrize("family,vehicle", JUNE_SURVEY_CELLS)
+def test_june_survey_cells_not_novel(family, vehicle):
+    assert tc.check_novel(family, "daily", vehicle)["novel"] is False
+
+
+def test_june_survey_closing_verdicts_pin_tsmom_as_weak_not_closed():
+    """tsmom beat 1x SPY in the survey and was never stress-tested: it must stay re-testable."""
+    assert tc.is_tested("tsmom_timeseries", "daily", "SPY") is False
+    assert tc.check_novel("tsmom_timeseries", "daily", "SPY")["weak"]
+    for family, vehicle in JUNE_SURVEY_CELLS:
+        if family != "tsmom_timeseries":
+            assert tc.is_tested(family, "daily", vehicle) is True, (family, vehicle)
+
+
+def test_june_survey_cumulative_trials():
+    assert tc.cumulative_trials("faber_ma_timing") == 2
+    assert tc.cumulative_trials("dual_momentum_gem") == 1
+    assert tc.cumulative_trials("tsmom_timeseries") == 1
+    assert tc.cumulative_trials("vol_target") == 1
