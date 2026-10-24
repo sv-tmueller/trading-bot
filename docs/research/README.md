@@ -84,6 +84,10 @@ Use the `research-bundle` skill: `/research-bundle <topic>` (and optionally `<so
 
 Skill location: [`.claude/skills/research-bundle/SKILL.md`](../../.claude/skills/research-bundle/SKILL.md).
 
+## AI research pipeline
+
+Strategy candidates from the AI research pipeline (issue template, trial ledger, per-candidate result files and the scorecard template) are documented in [`pipeline/`](pipeline/).
+
 ## Existing bundles
 
 - [`swing-trading/`](swing-trading/) — first bundle; produced 2026-04-30 via PR #98. Reference example for the format.
