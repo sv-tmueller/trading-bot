@@ -38,7 +38,7 @@ import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import numpy as np
 
@@ -47,7 +47,7 @@ ROUND_BUDGET = 50
 BACKFILL_ROUND = "backfill"
 DEFAULT_PATH = Path("docs/research/pipeline/trials.json")
 
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class BudgetExceededError(RuntimeError):
@@ -133,7 +133,7 @@ def load_trials(path: Path = DEFAULT_PATH) -> List[TrialRecord]:
 
 
 def append_trials(
-    records: List[TrialRecord],
+    records: Iterable[TrialRecord],
     *,
     path: Path = DEFAULT_PATH,
     round_budget: int = ROUND_BUDGET,
@@ -146,6 +146,7 @@ def append_trials(
     leaves the file byte-for-byte unchanged. An empty batch is a no-op and does not rewrite.
     """
     path = Path(path)
+    records = list(records)  # materialize: a generator would be exhausted by validation
     existing = load_trials(path)  # also makes a missing file a hard error
     if not records:
         return
@@ -160,7 +161,7 @@ def append_trials(
         seen.add(record.trial_id)
 
     counts: Dict[str, int] = {}
-    for record in existing + list(records):
+    for record in existing + records:
         counts[record.round_id] = counts.get(record.round_id, 0) + 1
     for round_id in {r.round_id for r in records}:
         if round_id != BACKFILL_ROUND and counts[round_id] > round_budget:
@@ -169,7 +170,7 @@ def append_trials(
                 f"budget is {round_budget}"
             )
 
-    merged = sorted(existing + list(records), key=lambda r: r.trial_id)
+    merged = sorted(existing + records, key=lambda r: r.trial_id)
     text = (
         json.dumps([asdict(r) for r in merged], indent=2, sort_keys=True, allow_nan=False)
         + "\n"

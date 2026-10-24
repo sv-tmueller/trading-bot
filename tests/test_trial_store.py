@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import stat
 from dataclasses import asdict
 from pathlib import Path
 
@@ -176,9 +177,12 @@ def test_n_periods_must_be_int_at_least_two(p, bad):
         append_trials([rec(1, n_periods=bad)], path=p)
 
 
-def test_bad_date_rejected(p):
+@pytest.mark.parametrize(
+    "bad", ["24/10/2026", "2026-02-30", "2025-02-29", "\uff12\uff10\uff12\uff16-10-24"]
+)
+def test_bad_date_rejected(p, bad):
     with pytest.raises(ValueError):
-        append_trials([rec(1, date="24/10/2026")], path=p)
+        append_trials([rec(1, date=bad)], path=p)
 
 
 def test_missing_file_is_a_hard_error(tmp_path):
@@ -188,6 +192,8 @@ def test_missing_file_is_a_hard_error(tmp_path):
     with pytest.raises(FileNotFoundError):
         append_trials([rec(1)], path=missing)
     with pytest.raises(FileNotFoundError):
+        append_trials([], path=missing)
+    with pytest.raises(FileNotFoundError):
         programme_sharpes(path=missing)
     assert not missing.exists()
 
@@ -196,6 +202,17 @@ def test_append_empty_list_does_not_rewrite(p):
     p.write_text("[\n]\n", encoding="utf-8")  # non-canonical on purpose
     append_trials([], path=p)
     assert p.read_text(encoding="utf-8") == "[\n]\n"
+
+
+def test_generator_batch_is_appended(p):
+    append_trials((rec(i) for i in range(2)), path=p)
+    assert [r.trial_id for r in load_trials(p)] == ["t000", "t001"]
+
+
+def test_append_preserves_file_mode(p):
+    p.chmod(0o644)
+    append_trials([rec(1)], path=p)
+    assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
 
 def test_unknown_space_returns_empty_float_array(p):
