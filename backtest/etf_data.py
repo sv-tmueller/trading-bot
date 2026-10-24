@@ -33,7 +33,7 @@ class HoldoutLockedError(RuntimeError):
 
 
 def _check_candidate_id(candidate_id: str) -> None:
-    if not isinstance(candidate_id, str) or not _CANDIDATE_ID_RE.match(candidate_id):
+    if not isinstance(candidate_id, str) or not _CANDIDATE_ID_RE.fullmatch(candidate_id):
         raise ValueError(f"invalid candidate_id: {candidate_id!r}")
 
 
@@ -46,7 +46,10 @@ def _fetch_yfinance(ticker: str) -> pd.DataFrame:
         raise RuntimeError(f"no data for {ticker}")
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df[_OHLC].dropna()
+    df = df[_OHLC].dropna()
+    if df.empty:
+        raise RuntimeError(f"no data for {ticker}")
+    return df
 
 
 def _normalize(ticker: str, df: pd.DataFrame) -> pd.DataFrame:

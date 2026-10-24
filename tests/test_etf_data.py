@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import pandas as pd
 import pytest
 
 from backtest import etf_data
 from backtest.etf_data import HoldoutLockedError, load_daily_bars, record_result
+
+
+_REAL_FETCH_YFINANCE = etf_data._fetch_yfinance
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +61,23 @@ def test_development_truncation_handles_tz_aware_index(tmp_path, index):
     assert bars.index.max() == pd.Timestamp("2021-12-31")
     assert pd.Timestamp("2021-12-31") in bars.index
     assert not (bars.index.year == 2022).any()
+
+
+def test_development_strips_utc_midnight_tz_without_converting(tmp_path):
+    index = pd.date_range("2021-12-28", "2022-01-05", freq="D", tz="UTC")
+    bars = load_daily_bars(
+        ["SPY"], phase="development", fetch=lambda t: _frame(index), pipeline_dir=tmp_path
+    )["SPY"]
+    assert list(bars.index) == list(pd.date_range("2021-12-28", "2021-12-31"))
+    assert list(bars["Close"]) == [100.5, 101.5, 102.5, 103.5]
+
+
+def test_yfinance_all_nan_download_raises(monkeypatch):
+    nan_frame = _frame(pd.bdate_range("2021-12-20", "2021-12-24")) * float("nan")
+    fake_yf = types.SimpleNamespace(download=lambda *a, **k: nan_frame)
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    with pytest.raises(RuntimeError, match="no data for SPY"):
+        _REAL_FETCH_YFINANCE("SPY")
 
 
 def test_holdout_locked_without_development_result(tmp_path):
@@ -115,7 +137,7 @@ def test_unknown_phase_raises_value_error(tmp_path):
         load_daily_bars(["SPY"], phase="bogus", fetch=fake, pipeline_dir=tmp_path)
 
 
-@pytest.mark.parametrize("bad", ["", "..", "a/b"])
+@pytest.mark.parametrize("bad", ["", "..", "a/b", "c1\n"])
 def test_invalid_candidate_id_rejected(tmp_path, bad):
     with pytest.raises(ValueError):
         record_result(bad, "development", {}, pipeline_dir=tmp_path)
