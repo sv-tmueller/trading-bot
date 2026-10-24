@@ -81,6 +81,44 @@ def test_gross_cap_above_one_is_respected_exactly():
     assert (gross.iloc[60:] >= 1.5 - 1e-9).all()
 
 
+@pytest.mark.parametrize("gross_cap", [0.5, 1.0, 1.5, 2.0])
+def test_cap_holds_under_every_summation_order(gross_cap):
+    """Randomized property: no row exceeds the cap under any summation.
+
+    The row sum depends on the order of float additions, so a row that is at
+    the cap by one sum can be 1 ulp over by another. Check pandas, numpy,
+    python ``sum`` and the exact ``math.fsum`` over many shapes and seeds,
+    with no tolerance (the weighted simulator raises on any excess).
+    """
+    for seed in range(40):
+        rng = np.random.default_rng(1000 + seed)
+        n_assets = int(rng.integers(2, 16))
+        cols = [f"A{i}" for i in range(n_assets)]
+        rets = _rets(n=200, cols=cols, vols=[0.02] * n_assets, seed=seed)
+        raw = pd.DataFrame(
+            rng.choice([-1.0, -0.5, 0.0, 0.3, 1.0, 2.0], size=rets.shape),
+            index=rets.index,
+            columns=rets.columns,
+        )
+        w = vol_target_weights(raw, rets, target_vol=0.5, gross_cap=gross_cap)
+        arr = w.to_numpy()
+        pandas_sum = w.abs().sum(axis=1).to_numpy()
+        numpy_sum = np.abs(arr).sum(axis=1)
+        py_sum = np.array([sum(abs(x) for x in row) for row in arr])
+        exact = np.array([math.fsum(abs(x) for x in row) for row in arr])
+        for name, got in (
+            ("pandas", pandas_sum),
+            ("numpy", numpy_sum),
+            ("python", py_sum),
+            ("fsum", exact),
+        ):
+            over = int((got > gross_cap).sum())
+            assert over == 0, f"{name}: {over} rows over cap (seed {seed})"
+        # The cap still binds on rows that have a sizable position.
+        live = exact > 0
+        assert (exact[live] >= gross_cap - 1e-9).all()
+
+
 # --- scaling --------------------------------------------------------------
 
 

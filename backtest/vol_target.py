@@ -155,9 +155,10 @@ def vol_target_weights(
     returns) get weight 0 and drop out of the quadratic form. A row whose
     portfolio daily vol is not finite or <= ``_MIN_DAILY_VOL`` is all zero.
 
-    If ``sum(|w|) > gross_cap`` after scaling the row is rescaled to the cap
-    (signs and proportions kept) and given a tiny relative haircut, so the
-    output satisfies ``sum(|w|) <= gross_cap`` exactly, with no tolerance.
+    If ``sum(|w|)`` after scaling exceeds ``gross_cap * (1 - 1e-12)`` the row
+    is rescaled to that value (signs and proportions kept), so the output
+    satisfies ``sum(|w|) <= gross_cap`` with no tolerance under any summation
+    order (pandas, numpy, python ``sum``, ``math.fsum``).
     There is no per-column clipping. Rows inside the warm-up window are 0.
 
     Not the same function as ``backtest.families.vol_target_weights`` (20-day
@@ -182,10 +183,17 @@ def vol_target_weights(
         if not math.isfinite(daily_vol) or daily_vol <= _MIN_DAILY_VOL:
             continue
         w = w * (target_vol / (daily_vol * math.sqrt(_TRADING_DAYS)))
+        # A row inside the haircut band of the cap is rescaled to the haircut
+        # cap, so the stored weights sum below the cap under any summation
+        # order (the haircut dwarfs the ~n*eps float summation error). Testing
+        # only ``sum > cap`` with one sum order is not enough: a row at the cap
+        # by that sum can be 1 ulp over by another.
+        limit = gross_cap * (1.0 - _CAP_HAIRCUT)
         gross = float(np.abs(w).sum())
-        if gross > gross_cap:
-            w = w * (gross_cap / gross)
-            while float(np.abs(w).sum()) > gross_cap:
+        if gross > limit:
+            w = w * (limit / gross)
+            # Belt and braces against the exact sum of the stored floats.
+            while math.fsum(np.abs(w).tolist()) > gross_cap:
                 w = w * (1.0 - _CAP_HAIRCUT)
         out[t, cols] = w
     return pd.DataFrame(out, index=raw_weights.index, columns=raw_weights.columns)
