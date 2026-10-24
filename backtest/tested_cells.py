@@ -344,6 +344,17 @@ LEDGER: Tuple[TestedCell, ...] = (
         note="SPY plus non-winner controls. The 10-year SPY B0 baseline (-0.139R/trade at "
              "1 bp/side, n=2,478) is a measurement of the live rule, not a new trial.",
     ),
+    # --- SPY market intraday momentum, Gao et al. 2018 (operator request 2026-10-22) -----
+    TestedCell(
+        family="intraday_momentum_first_last_halfhour", cadence="30m", vehicle="SPY",
+        exit_style="eod_flat", n_cells=6, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-10-22-spy-intraday-momentum-verdict.md",
+        date="2026-10-22",
+        note="V1/V2/V3 x E1/E2 on SPY 5Min SIP 2016-2026, verdict NO_EDGE: b1=+0.016 "
+             "(HAC t 0.59); no config positive at 0.5 or 1 bp/side; gate fails. "
+             "n_w=10 < 13, DIRECTIONAL; poor prior for a re-test.",
+    ),
 )
 
 
