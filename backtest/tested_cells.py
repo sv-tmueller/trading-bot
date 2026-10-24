@@ -315,6 +315,35 @@ LEDGER: Tuple[TestedCell, ...] = (
              "cells empty. n_w~=10 < 13, DIRECTIONAL only. keep_volume param added to "
              "run_fetch_spy_intraday.py for future re-test with proper volume.",
     ),
+    # --- Multi-symbol hourly rule (operator request 2026-10-22) -- DIRECTIONAL_NO_GO ----
+    TestedCell(
+        family="hourly_decide_multi_symbol", cadence="hourly", vehicle="TOP10_2026-10-21",
+        exit_style="bracket_2R_flatten", n_cells=10, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-10-22-multi-symbol-hourly-verdict.md",
+        date="2026-10-22",
+        note="Live decideHourly unchanged on SPY's top-10 issuers (Yahoo 1h, 2023-11 to "
+             "2026-10). 0/10 EDGE; books near-independent (N_eff 10.2/11) so diversification "
+             "made the negative expectancy more certain. Gate fails all three legs. n_w=2.",
+    ),
+    TestedCell(
+        family="hourly_decide_multi_symbol", cadence="hourly", vehicle="ETF5_QQQ_IWM_DIA_XLK_XLF",
+        exit_style="bracket_2R_flatten", n_cells=5, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-10-22-multi-symbol-hourly-verdict.md",
+        date="2026-10-22",
+        note="Same rule on 5 broad/sector ETFs: every ETF NO_EDGE or NEGATIVE; avg pairwise "
+             "correlation +0.26, 4.3 effective bets of 6. n_w=2.",
+    ),
+    TestedCell(
+        family="hourly_decide_multi_symbol", cadence="hourly", vehicle="SPY+CONTROLS_BRKB_JPM_UNH",
+        exit_style="bracket_2R_flatten", n_cells=4, verdict=DIRECTIONAL_NO_GO,
+        power="DIRECTIONAL",
+        source="docs/research/2026-10-22-multi-symbol-hourly-verdict.md",
+        date="2026-10-22",
+        note="SPY plus non-winner controls. The 10-year SPY B0 baseline (-0.139R/trade at "
+             "1 bp/side, n=2,478) is a measurement of the live rule, not a new trial.",
+    ),
 )
 
 
