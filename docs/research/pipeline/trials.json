@@ -1,1 +1,160 @@
-[]
+[
+  {
+    "candidate_id": "faber_ma_timing",
+    "config": {
+      "cash_yield": 0.0,
+      "commission_bps": 5,
+      "dev_window": [
+        "1993-01-29",
+        "2021-12-31"
+      ],
+      "held": [
+        "SPY"
+      ],
+      "ledger_family": "faber_ma_timing",
+      "ledger_vehicle": "SPY",
+      "simulator": "backtest.regime.simulate_from_signal",
+      "slippage_bps": 5,
+      "survey_strategy": "faber_single",
+      "window_tickers": [
+        "SPY"
+      ]
+    },
+    "date": "2026-06-24",
+    "n_periods": 7284,
+    "round_id": "backfill",
+    "sharpe_daily": 0.04873937410340154,
+    "source": "docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+    "space": "daily_allocation",
+    "trial_id": "backfill-faber-10m-spy"
+  },
+  {
+    "candidate_id": "faber_ma_timing",
+    "config": {
+      "cash_yield": 0.0,
+      "commission_bps": 5,
+      "dev_window": [
+        "2006-02-06",
+        "2021-12-31"
+      ],
+      "held": [
+        "SPY",
+        "EFA",
+        "AGG",
+        "DBC",
+        "VNQ"
+      ],
+      "ledger_family": "faber_ma_timing",
+      "ledger_vehicle": "ETF_BASKET_GTAA5",
+      "simulator": "backtest.regime.simulate_from_signal",
+      "slippage_bps": 5,
+      "survey_strategy": "gtaa",
+      "window_tickers": [
+        "SPY",
+        "EFA",
+        "AGG",
+        "DBC",
+        "VNQ"
+      ]
+    },
+    "date": "2026-06-24",
+    "n_periods": 4004,
+    "round_id": "backfill",
+    "sharpe_daily": 0.03572109880590687,
+    "source": "docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+    "space": "daily_allocation",
+    "trial_id": "backfill-faber-gtaa5"
+  },
+  {
+    "candidate_id": "dual_momentum_gem",
+    "config": {
+      "cash_yield": 0.0,
+      "commission_bps": 5,
+      "dev_window": [
+        "2007-05-30",
+        "2021-12-31"
+      ],
+      "held": [
+        "SPY",
+        "EFA",
+        "AGG"
+      ],
+      "ledger_family": "dual_momentum_gem",
+      "ledger_vehicle": "ETF_BASKET_GEM",
+      "simulator": "backtest.regime.simulate_from_signal",
+      "slippage_bps": 5,
+      "survey_strategy": "gem",
+      "window_tickers": [
+        "SPY",
+        "EFA",
+        "AGG",
+        "BIL"
+      ]
+    },
+    "date": "2026-06-24",
+    "n_periods": 3675,
+    "round_id": "backfill",
+    "sharpe_daily": 0.032178507078550515,
+    "source": "docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+    "space": "daily_allocation",
+    "trial_id": "backfill-gem-dual-momentum"
+  },
+  {
+    "candidate_id": "tsmom_timeseries",
+    "config": {
+      "cash_yield": 0.0,
+      "commission_bps": 5,
+      "dev_window": [
+        "1993-01-29",
+        "2021-12-31"
+      ],
+      "held": [
+        "SPY"
+      ],
+      "ledger_family": "tsmom_timeseries",
+      "ledger_vehicle": "SPY",
+      "simulator": "backtest.regime.simulate_from_signal",
+      "slippage_bps": 5,
+      "survey_strategy": "tsmom",
+      "window_tickers": [
+        "SPY"
+      ]
+    },
+    "date": "2026-06-24",
+    "n_periods": 7284,
+    "round_id": "backfill",
+    "sharpe_daily": 0.047174684522195275,
+    "source": "docs/research/2026-06-24-candidate-strategy-survey-first-cut.md",
+    "space": "daily_allocation",
+    "trial_id": "backfill-tsmom-12m-spy"
+  },
+  {
+    "candidate_id": "vol_target",
+    "config": {
+      "cash_yield": 0.0,
+      "commission_bps": 5,
+      "dev_window": [
+        "1993-01-29",
+        "2021-12-31"
+      ],
+      "held": [
+        "SPY"
+      ],
+      "ledger_family": "vol_target",
+      "ledger_vehicle": "SPY",
+      "simulator": "backtest.regime.simulate_from_signal",
+      "slippage_bps": 5,
+      "survey_strategy": "vol_target",
+      "window_tickers": [
+        "SPY"
+      ]
+    },
+    "date": "2026-06-24",
+    "n_periods": 7284,
+    "round_id": "backfill",
+    "sharpe_daily": 0.045233329137390435,
+    "source": "docs/research/2026-06-24-candidate-strategy-survey-second-cut.md",
+    "space": "daily_allocation",
+    "trial_id": "backfill-vol-target-10-spy"
+  }
+]
