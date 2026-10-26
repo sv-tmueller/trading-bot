@@ -26,7 +26,7 @@ from backtest.run_etf_parity import (
 @pytest.fixture(autouse=True)
 def _block_network(monkeypatch):
     def _boom(*args, **kwargs):
-        raise AssertionError("unmocked network/Alpaca call")
+        pytest.fail("unmocked network/Alpaca call")
 
     monkeypatch.setattr(etf_data, "_fetch_yfinance", _boom)
     monkeypatch.setattr(parity, "fetch_bars", _boom)
@@ -94,6 +94,8 @@ def test_single_outlier_passes_and_p99_is_the_independent_quantile():
     yf, al = _pair(spike)
     res = compare_daily_returns(yf, al)
     diffs = (al.pct_change() - yf.pct_change()).abs().dropna() * 10_000
+    assert res["n_days"] == 500
+    assert float(diffs.max()) == pytest.approx(50.0, abs=0.01)
     assert res["median_abs_diff_bps"] < 1
     assert res["p99_abs_diff_bps"] == pytest.approx(float(np.quantile(diffs, 0.99)))
     assert res["p99_abs_diff_bps"] == pytest.approx(0.0, abs=1e-6)
