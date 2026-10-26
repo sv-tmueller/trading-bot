@@ -241,6 +241,58 @@ def test_scorecard_with_dates_and_years_round_trips_through_strict_json():
     assert json.loads(json.dumps(card, allow_nan=False)) == card
 
 
+def _raw_result(values, index) -> PortfolioResult:
+    """Like ``_result`` but with the producer's raw ``equity.pct_change()``.
+
+    ``backtest/portfolio.py`` emits ``daily_returns`` with no fillna, so row 0
+    is NaN here and a ruined (exactly zero) equity curve carries NaN (0/0) or
+    inf (x/0) afterwards.
+    """
+    equity = pd.Series(np.asarray(values, dtype=float), index=index)
+    return PortfolioResult(
+        equity=equity,
+        daily_returns=equity.pct_change(),
+        gross_exposure=pd.Series(0.0, index=index),
+        held_weights=pd.DataFrame(index=index),
+        trades=[],
+        costs=dict(ZERO_COSTS),
+    )
+
+
+def test_raw_pct_change_returns_with_row_zero_nan_round_trip_through_strict_json():
+    idx = _calendar_index()
+    res = _raw_result(_random_curve(idx, seed=5), idx)
+    assert math.isnan(res.daily_returns.iloc[0])
+    card = _card(res, _raw_result(_random_curve(idx, seed=6), idx))
+    assert json.loads(json.dumps(card, allow_nan=False)) == card
+    r = res.daily_returns.to_numpy()[1:]
+    assert card["n_periods"] == len(idx) - 1
+    assert card["sharpe_daily"] == pytest.approx(deflated_sharpe_ratio(r, [0.0, 0.1])["sr_hat"])
+    assert card["realized_vol"] == pytest.approx(r.std(ddof=1) * math.sqrt(252))
+    assert set(card["year_returns"]) == {"2019", "2020", "2021"}
+
+
+def test_ruin_to_exactly_zero_equity_round_trips_through_strict_json():
+    idx = _calendar_index()
+    values = _random_curve(idx, seed=7)
+    values[300:] = 0.0  # ruin inside 2019 and flat at zero for years afterwards
+    res = _raw_result(values, idx)
+    assert res.daily_returns.isna().any()
+    card = _card(res, _raw_result(_random_curve(idx, seed=8), idx))
+    assert json.loads(json.dumps(card, allow_nan=False)) == card
+    assert all(math.isfinite(v) for v in card["year_returns"].values())
+    assert card["sharpe_daily"] is not None and math.isfinite(card["sharpe_daily"])
+
+
+def test_short_ruin_curve_and_zero_start_curve_round_trip_through_strict_json():
+    idx = pd.bdate_range("2020-01-01", periods=8)
+    for values in ([100, 50, 0, 0, 0, 0, 0, 0], [0, 100, 110, 120, 130, 140, 150, 160]):
+        card = _card(_raw_result(values, idx), _result(np.linspace(100, 105, 8), idx))
+        assert json.loads(json.dumps(card, allow_nan=False)) == card
+        for key in ("sharpe_daily", "sharpe_annual", "realized_vol"):
+            assert math.isfinite(card[key])
+
+
 # 10
 def test_mismatched_benchmark_double_cost_or_leverage_index_raises():
     idx = pd.bdate_range("2020-01-01", periods=10)
