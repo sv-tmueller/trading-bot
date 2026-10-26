@@ -451,7 +451,59 @@ def test_june_survey_closing_verdicts_pin_tsmom_as_weak_not_closed():
 
 
 def test_june_survey_cumulative_trials():
-    assert tc.cumulative_trials("faber_ma_timing") == 2
+    # #694 added a leveraged-vehicle cell to each of faber (2 -> 3) and tsmom (1 -> 2).
+    assert tc.cumulative_trials("faber_ma_timing") == 3
     assert tc.cumulative_trials("dual_momentum_gem") == 1
-    assert tc.cumulative_trials("tsmom_timeseries") == 1
+    assert tc.cumulative_trials("tsmom_timeseries") == 2
     assert tc.cumulative_trials("vol_target") == 1
+
+
+# ---------------------------------------------------------------------------
+# June leveraged-vehicle backfill (#694)
+# ---------------------------------------------------------------------------
+
+LEVERAGED_STUDY = "docs/research/2026-06-24-leveraged-regime-signal-study.md"
+WALKFORWARD_DOC = "docs/research/2026-06-14-walkforward-oos-baselines.md"
+LEVERAGED_FAMILIES = ["tsmom_timeseries", "faber_ma_timing", "sma_regime_filter"]
+
+
+@pytest.mark.parametrize("family", LEVERAGED_FAMILIES)
+def test_leveraged_cells_are_closed_on_upro(family):
+    assert tc.check_novel(family, "daily", "UPRO")["novel"] is False
+    assert tc.is_tested(family, "daily", "UPRO") is True
+
+
+def test_upro_has_exactly_the_four_leveraged_study_records():
+    recs = tc.find(vehicle="UPRO")
+    assert sorted((r.family, r.exit_style) for r in recs) == [
+        ("faber_ma_timing", "monthly_regime_flip"),
+        ("sma_regime_filter", "daily_regime_flip"),
+        ("sma_regime_filter", "daily_regime_flip_2d_confirm"),
+        ("tsmom_timeseries", "monthly_regime_flip"),
+    ]
+    for r in recs:
+        assert r.cadence == "daily"
+        assert r.source == LEVERAGED_STUDY
+        assert r.date == "2026-06-24"
+        assert r.n_cells == 1
+        assert r.verdict == tc.NO_GO
+        assert r.power == "PROMOTABLE"
+        assert r.superseded_by == ""
+
+
+def test_sma_regime_filter_exit_styles_are_the_two_study_variants():
+    styles = {r.exit_style for r in tc.find(family="sma_regime_filter")}
+    assert styles == {"daily_regime_flip", "daily_regime_flip_2d_confirm"}
+    assert tc.cumulative_trials("sma_regime_filter") == 2
+
+
+def test_walkforward_rows_add_no_record_of_their_own():
+    assert not [c for c in tc.LEDGER if c.source == WALKFORWARD_DOC]
+
+
+def test_tsmom_spy_note_cites_the_walkforward_read_and_stays_weak():
+    (rec,) = tc.find(family="tsmom_timeseries", vehicle="SPY")
+    assert WALKFORWARD_DOC in rec.note
+    assert rec.source != WALKFORWARD_DOC
+    assert tc.is_tested("tsmom_timeseries", "daily", "SPY") is False
+    assert tc.check_novel("tsmom_timeseries", "daily", "SPY")["weak"]

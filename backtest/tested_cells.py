@@ -395,7 +395,9 @@ LEDGER: Tuple[TestedCell, ...] = (
         note="Survey baseline, never screened as a candidate: 12-mo trailing return > 0 on "
              "SPY, monthly. Not a failure: beat 1x SPY full-history after-tax Calmar in all "
              "three windows (0.21-0.24 US vs 0.17-0.18); no per-window or bear-stress read. "
-             "Both cuts flag it for a full re-test.",
+             "Both cuts flag it for a full re-test. Same signal re-measured pre-tax over 34 "
+             "annual windows in docs/research/2026-06-14-walkforward-oos-baselines.md (25 "
+             "positive; median Sharpe 0.96 vs buy-and-hold 1.04); not a new trial.",
     ),
     TestedCell(
         family="vol_target", cadence="daily", vehicle="SPY",
@@ -406,6 +408,57 @@ LEDGER: Tuple[TestedCell, ...] = (
              "1993-2026: pre-tax Calmar 0.205 vs SPY 0.196 (parity); after tax n/a (curve "
              "non-positive) at 93.7 trades/yr; per-window median -0.54 vs 0.85 (n_w=34). "
              "No-loss-credit tax model overstates the magnitude, not the sign.",
+    ),
+    # --- 2026-06-24 leveraged-vehicle backfill (#694) -- daily-bar cadence -----------------
+    # "UPRO" means 3x daily-rebalanced SPY: the synthetic series is a validated UPRO proxy
+    # (daily-return corr 0.998), and the real-UPRO walk-forward re-measures the same cells
+    # (cited in the notes, no extra trials). No record for the incumbent 200-DMA, nor for the
+    # persistence and buy-and-hold null baselines, as in #681.
+    TestedCell(
+        family="tsmom_timeseries", cadence="daily", vehicle="UPRO",
+        exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
+        date="2026-06-24",
+        note="12-mo trailing SPY return > 0, monthly, LONG/CASH on synthetic 3x SPY "
+             "(backtest/synthetic.py, daily-return corr 0.998 vs real UPRO 2009-2026), "
+             "1993-2026. Not a Calmar failure: after-tax Calmar US 0.22 vs 1x SPY 0.18, per-"
+             "window median 0.90 vs 0.85 (n_w=31). Closed on drawdown: max DD -76.2% (2020) vs "
+             "the goal's ~-34% ceiling; operator rejected it in "
+             "docs/decisions/2026-07-06-keep-200dma-regime-signal.md. Real-UPRO walk-forward "
+             "2021-2026 (docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re-"
+             "measured the same cell; not a new trial.",
+    ),
+    TestedCell(
+        family="faber_ma_timing", cadence="daily", vehicle="UPRO",
+        exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
+        date="2026-06-24",
+        note="10-mo SMA on SPY, monthly, LONG/CASH on synthetic 3x SPY (UPRO proxy), "
+             "1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 (DE 0.17 misses); per-window "
+             "median 0.38 vs 0.85 (n_w=32); max DD -63.5%. Real-UPRO walk-forward 2021-2026 "
+             "(docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re-measured the "
+             "same cell; not a new trial.",
+    ),
+    TestedCell(
+        family="sma_regime_filter", cadence="daily", vehicle="UPRO",
+        exit_style="daily_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
+        date="2026-06-24",
+        note="100-DMA: SPY close > 100-day SMA (regime_signals.sma_signal), daily, LONG/CASH "
+             "on synthetic 3x SPY (UPRO proxy), 1993-2026. Ruinous whipsaw: 5.45 flips/yr, max "
+             "DD -91.9%, after-tax Calmar US 0.06 vs 1x SPY 0.18, per-window median -0.02 vs "
+             "0.85 (n_w=34).",
+    ),
+    TestedCell(
+        family="sma_regime_filter", cadence="daily", vehicle="UPRO",
+        exit_style="daily_regime_flip_2d_confirm", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
+        date="2026-06-24",
+        note="200-DMA with a symmetric 2-close confirmation "
+             "(regime_signals.confirmed_sma_signal), daily, LONG/CASH on synthetic 3x SPY "
+             "(UPRO proxy), 1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 but per-window "
+             "median 0.21 vs 0.85 (n_w=34), so the thin edge is not robust; max DD -58.2% vs "
+             "incumbent -59.5%.",
     ),
 )
 

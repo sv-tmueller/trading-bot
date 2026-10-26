@@ -11,7 +11,7 @@ which candidates are tested and which are promoted.
 ```
 docs/research/pipeline/
   README.md                          this file
-  trials.json                        programme-wide trial ledger (every trial counts toward the budget)
+  trials.json                        programme-wide trial ledger (every tested configuration is stored; see spec 5.4)
   <candidate_id>/
     development_result.json          recorded after the development phase (to 2021)
     holdout_result.json              recorded once, by the single holdout run (2022+)
