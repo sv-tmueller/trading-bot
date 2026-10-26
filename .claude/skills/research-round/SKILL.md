@@ -41,8 +41,8 @@ Do all of these before the first phase. Stop and tell the operator if any fails.
 
 1. **Safety contract.** Read CLAUDE.md "Architectural invariants" and "Writing conventions". Cite
    them by reference; do not restate them in any artifact this skill writes.
-2. **Broker guard.** `export CLAUDE_AGENT_NO_BROKER=1` in every shell this skill runs, and pass it to
-   every dispatched agent. The pipeline needs no broker call at any step.
+2. **Broker guard.** Start every Bash command this skill runs with `export CLAUDE_AGENT_NO_BROKER=1 &&`, and
+   pass it to every dispatched agent. The pipeline needs no broker call at any step.
 3. **Read the design inputs:** the spec above, `docs/research/strategy-landscape-and-risk/strategies.md`,
    `docs/research/2026-07-21-overfitting-gate-usage.md`, and `docs/research/README.md` (the two-PR
    rule: a freeze PR merged before any results PR, and results land as a dated addendum under the
@@ -60,7 +60,8 @@ Do all of these before the first phase. Stop and tell the operator if any fails.
    `.github/ISSUE_TEMPLATE/candidate.md` is present.
 6. **Clean worktree on a detached HEAD** from the current `origin/main`. Run `python3` from the
    worktree root: `DEFAULT_PATH` and `PIPELINE_DIR` are relative to the repo root. Publish to the
-   round's branches with `git push --force-with-lease origin HEAD:refs/heads/<branch>`.
+   round's branches with `git push origin HEAD:refs/heads/<branch>`. Never force-push a round branch;
+   a rejected push means stop and inspect.
 7. **Round id is fresh** (see Inputs), and the round issue exists or has been opened.
 
 ## Phases
@@ -123,7 +124,7 @@ Do all of these before the first phase. Stop and tell the operator if any fails.
    - the holdout policy: the holdout runs for every picked candidate, so no choice is made after
      seeing development numbers.
 3. **Parity check (spec 5.6).** Run
-   `python3 -m backtest.run_etf_parity --tickers <frozen list>` and paste its output into the freeze PR.
+   `python3 -m backtest.run_etf_parity --tickers <comma-separated frozen list>` and paste its output into the freeze PR.
    It is a GET-only market-data read over the development window, not a broker call. If no read-only
    data keys are available in this environment, ask the operator to run it and paste the output.
 4. Open the freeze PR as a draft, linking the round issue and the candidate issues (it closes none of
@@ -162,15 +163,26 @@ Work on the results branch `docs/<round_id>-results`, created from the merged `o
    `backtest/vol_target.py`, simulates with `simulate_portfolio` and `CostModel` from
    `backtest/portfolio.py` (using `round_trips_per_year` for activity), and builds the scorecard with
    `compute_scorecard` from `backtest/scorecard.py` (with the `benchmark_weights` SPY run as
-   benchmark). It evaluates exactly the frozen grid, nothing outside it, and appends every evaluated
-   configuration, losers included, as `TrialRecord` rows via `append_trials` from
-   `backtest/trial_store.py`.
-4. **Written payloads.** `development_result.json` (via `record_result`) holds `round_id`,
+   benchmark, `double_cost=` (the selected configuration re-run at twice the frozen `CostModel`
+   costs) and `leverage_info=` (the same configuration at gross cap 1.5 with the frozen financing
+   rate); neither re-run is appended as a trial). It evaluates exactly the frozen grid, nothing outside
+   it, and appends every evaluated configuration, losers included, as `TrialRecord` rows via
+   `append_trials` from `backtest/trial_store.py`. The script takes `--phase development|holdout`. The
+   holdout path reads `selected_trial_id` and `config` from `development_result.json`, runs only that
+   configuration and records via `record_result(candidate_id, "holdout", payload)`. The analyst writes
+   and commits this path but never runs it. The script also writes
+   `<study dir>/<candidate_id>-development-returns.csv` (one row per development day; one column per
+   `trial_id` plus `benchmark`), committed with `development_result.json`.
+4. **Written payloads.** The analyst writes the development payload to
+   `<study dir>/<candidate_id>-development-payload.json` and never calls `record_result`. After the
+   step 5 post-checks pass, this session calls `record_result(candidate_id, "development", payload)`,
+   so the holdout lock stays closed for the whole analyst run. `development_result.json` holds `round_id`,
    `candidate_id`, `trial_ids`, `selected_trial_id`, `config`, `scorecard` (the `compute_scorecard`
    dict) and `commit`. `holdout_result.json` holds the same keys minus `trial_ids`.
 5. **Post-checks after each analyst returns** (the orchestrator, not the analyst, runs them):
    - no `holdout_result.json` exists for any candidate yet;
-   - the number of stored trials for that candidate equals the frozen N;
+   - the number of stored trials for that candidate equals the frozen N:
+     `python3 -c 'import sys; from backtest.trial_store import load_trials; n=sum(r.candidate_id=="<candidate_id>" for r in load_trials()); print(n); sys.exit(0 if n==<N> else 1)'` exits 0;
    - `grep -rnE 'yfinance|yf\.download|fetch_bars|run_fetch_spy_intraday' <study dir>` prints nothing.
 
    Any failure: stop, post on the round issue, wait.
@@ -185,8 +197,8 @@ exists, and `record_result` refuses every write once `holdout_result.json` exist
 a file, so a renamed id, a deleted file or another worktree could re-open it. Close that gap with
 this procedure:
 
-- (a) `development_result.json` and `trials.json` are committed and pushed on the results branch
-  before any holdout runs.
+- (a) `development_result.json` and `trials.json` are committed and pushed on the results branch, and
+  the results PR is opened as a draft, before any holdout runs.
 - (b) Before each run, `git fetch origin && git log --all --oneline -- docs/research/pipeline/<candidate_id>/holdout_result.json`
   must print nothing.
 - (c) The holdout is one invocation of the committed study script per candidate, run by this
@@ -199,8 +211,10 @@ this procedure:
 - (f) The holdout runs for every picked candidate, as the pre-registration says.
 - (g) The holdout scorecard covers rows on or after `HOLDOUT_START` only. Earlier rows only warm up
   signals and volatility estimates.
-- (h) A retest after the holdout uses a new `candidate_id` and states that the holdout was already
-  seen (spec 5.3).
+- (h) A retest after the holdout uses a new `candidate_id` and has no holdout: never call
+  `load_daily_bars(phase="holdout")` for it, pass `holdout=None` to `evaluate_candidate`, and state in
+  its pre-registration and verdict that the holdout was already seen under `<old candidate_id>` (spec
+  5.3: a re-tested candidate loses its holdout). (f) applies to first tests only.
 
 ### Phase 5 -- Verdicts and the results PR
 
@@ -213,7 +227,10 @@ this procedure:
    and the footer "what would change the recommendation" from the scorecard template in
    `docs/research/pipeline/README.md`. The renderer emits no recommendation text; the recommendation is
    yours and is labelled as such. `evaluate_candidate` forwards `gate_kwargs` to `evaluate_gate` in
-   `backtest/overfitting_gate.py` unchanged; use only the frozen values.
+   `backtest/overfitting_gate.py` unchanged; use only the frozen values. Build `perf_matrix` (trial
+   columns in `trial_ids` order), `returns_best` (the `selected_trial_id` column) and `uplifts` (the
+   frozen uplift definition against `benchmark`) from that file; never recompute them after the
+   holdout.
 3. A `ValueError` or `KeyError` from `evaluate_candidate` is an input error, not a failed verdict:
    stop and post no verdict.
 4. Post the rendered scorecard, the verdict and the recommendation as a comment on each candidate
@@ -225,6 +242,11 @@ this procedure:
    - ledger rows in `backtest/tested_cells.py`, written by this orchestrating session (the analyst
      may not edit `backtest/`), with updated pins in `tests/test_tested_cells.py` if a pinned
      family's count changes;
+   - for a candidate that fails, use `NO_GO` with `power="PROMOTABLE"` when its development scorecard
+     has `len(window_calmars) >= 13` (the repo's n_w promotion bar), otherwise `DIRECTIONAL_NO_GO`
+     with `power="DIRECTIONAL"`. Use `CLASS_KILL` only when the verdict document closes the whole
+     family. `n_cells` is the candidate's frozen N. Never `PENDING`, `DATA_BLOCKED` or `SUPERSEDED`
+     (uncounted);
    - `python3 -m pytest tests/test_tested_cells.py tests/test_trial_store.py -v` passing.
 6. **Pass-verdict gap.** The ledger vocabulary (`VERDICTS` in `backtest/tested_cells.py`) has no pass
    value, and `PENDING` is not counted. If a candidate passes all five criteria, do not invent a
@@ -251,7 +273,8 @@ this procedure:
   after seeing holdout numbers, or add a rescue variant.
 - All new prose uses `--` or parentheses, never em dashes (CLAUDE.md "Writing conventions").
   Frozen records under `docs/research/` are never restyled.
-- Commits follow CLAUDE.md conventions. Push after each green step.
+- Commit messages use the conventional prefixes seen in `git log` (`docs(research):`, `feat(backtest):`).
+  Push after each green step.
 
 ## Non-goals
 
