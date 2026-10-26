@@ -190,6 +190,53 @@ def test_positive_cash_earns_cash_returns():
     assert r.costs["cash_interest"] == pytest.approx(r.equity.iloc[-1] - START)
 
 
+def test_short_proceeds_earn_no_cash_interest():
+    # Retail model: short-sale proceeds sit in cash but earn nothing. Only the
+    # equity (cash net of short notional) earns cash_returns.
+    n = 253
+    rate = 0.0002
+    r = _run(
+        [-0.5] * n,
+        [100.0] * n,
+        cash_returns=pd.Series(rate, index=_idx(n)),
+        costs=CostModel(borrow_bps_annual=0.0),
+    )
+    assert r.costs["cash_interest"] == pytest.approx(
+        START * ((1 + rate) ** n - 1), rel=0.01
+    )
+    assert r.costs["financing"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_long_book_cash_interest_is_interest_on_cash():
+    # Long-only: cash after accrual is equity minus long value, so dividing by
+    # (1 + rate) recovers the cash balance that earned the interest.
+    n = 253
+    rate = 0.0002
+    r = _run(
+        [0.5] * n,
+        [100.0] * n,
+        cash_returns=pd.Series(rate, index=_idx(n)),
+    )
+    expected = (r.equity * (1 - r.held_weights["AAA"]) * rate / (1 + rate)).sum()
+    assert r.costs["cash_interest"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_cash_interest_floors_at_zero_when_shorts_exceed_cash():
+    # Long 1.2 / short 0.3 at gross_cap 1.5 leaves cash at +0.1 of equity, less
+    # than the 0.3 short notional: the interest base floors at 0, so interest
+    # accrues only on day 0 (before any position) and nothing is financed.
+    n = 20
+    rate = 0.0002
+    idx = _idx(n)
+    w = pd.DataFrame({"AAA": 1.2, "BBB": -0.3}, index=idx)
+    px = pd.DataFrame({"AAA": 100.0, "BBB": 100.0}, index=idx)
+    r = simulate_portfolio(
+        w, px, px, pd.Series(rate, index=idx), gross_cap=1.5
+    )
+    assert r.costs["cash_interest"] == pytest.approx(START * rate, rel=1e-9)
+    assert r.costs["financing"] == pytest.approx(0.0, abs=1e-6)
+
+
 def test_no_leverage_at_one_x_means_no_financing():
     n = 40
     prices = 100.0 * 1.001 ** np.arange(n)

@@ -37,18 +37,25 @@ Model (decisions, documented):
   taxed by ``apply_annual_netting_tax``, which flatters an always-held
   benchmark more than an active candidate (strict side for the pass bar).
 - Accruals at close d, on the balances after that day's trades. Borrow:
-  short notional x ``borrow_bps_annual / 1e4 / 252``. Positive cash earns
-  ``cash_returns[d]`` (a daily simple decimal return, for example BIL
-  ``Close.pct_change()``). Negative cash, whatever ``gross_cap`` is, pays
+  short notional x ``borrow_bps_annual / 1e4 / 252``. Cash interest:
+  ``max(cash - short_notional, 0)`` earns ``cash_returns[d]`` (a daily
+  simple decimal return, for example BIL ``Close.pct_change()``), with
+  ``short_notional`` marked at that close. Negative cash, whatever
+  ``gross_cap`` is, pays
   ``|cash| * (cash_returns[d] + financing_spread_bps_annual / 1e4 / 252)``.
   They go into ``costs`` and ``equity``, never into a trade's ``pnl``, so the
   tax layer sees no trade for cash interest.
-- Cash model. Short-sale proceeds sit in cash and earn ``cash_returns`` like
-  any positive cash balance (large brokers pay something like this; a retail
-  Alpaca account pays nothing on short proceeds). The effect is largest in
-  high-rate regimes for candidates that short heavily. The vol-targeted
-  benchmark runs through the same simulator, so both sides get the same
-  treatment. A pre-registration should state this cash and borrow model.
+- Cash model (retail, net of shorts). Short-sale proceeds sit in cash but
+  earn nothing, as on a retail Alpaca account: interest accrues only on cash
+  net of short notional, floored at zero (equivalently, equity before the
+  day's accruals minus long market value). A long-only book is unaffected; a
+  short book earns interest on its equity only, never on its proceeds, so a
+  shorting candidate gets no carry the long-only benchmark could not also
+  earn. Financing is still charged only on negative cash, so above a 1.0
+  gross cap short proceeds can offset what would otherwise be a margin debit
+  (information line only; at a 1.0 cap, cash net of shorts is non-negative
+  apart from drift between rebalances). A pre-registration should cite this
+  cash, borrow and financing model.
 - Missing prices. An asset trades on a day only if both its open and close
   are finite. Otherwise it is not traded that day: the position is kept (0 if
   never opened) and valued at the last finite close. A data gap never forces
@@ -262,8 +269,9 @@ def simulate_portfolio(
         pos_val_c = position_values(last_close)
         short_notional = float(-pos_val_c[pos_val_c < 0.0].sum())
         cash_pre = cash
-        if cash_pre > 0.0:
-            interest = cash_pre * cash_r[d]
+        interest_base = max(cash_pre - short_notional, 0.0)
+        if interest_base > 0.0:
+            interest = interest_base * cash_r[d]
             tot["cash_interest"] += interest
             cash += interest
         elif cash_pre < 0.0:
