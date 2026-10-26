@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -25,7 +26,7 @@ from backtest.run_etf_parity import (
 @pytest.fixture(autouse=True)
 def _block_network(monkeypatch):
     def _boom(*args, **kwargs):
-        raise AssertionError("unmocked network/Alpaca call")
+        pytest.fail("unmocked network/Alpaca call")
 
     monkeypatch.setattr(etf_data, "_fetch_yfinance", _boom)
     monkeypatch.setattr(parity, "fetch_bars", _boom)
@@ -93,6 +94,8 @@ def test_single_outlier_passes_and_p99_is_the_independent_quantile():
     yf, al = _pair(spike)
     res = compare_daily_returns(yf, al)
     diffs = (al.pct_change() - yf.pct_change()).abs().dropna() * 10_000
+    assert res["n_days"] == 500
+    assert float(diffs.max()) == pytest.approx(50.0, abs=0.01)
     assert res["median_abs_diff_bps"] < 1
     assert res["p99_abs_diff_bps"] == pytest.approx(float(np.quantile(diffs, 0.99)))
     assert res["p99_abs_diff_bps"] == pytest.approx(0.0, abs=1e-6)
@@ -168,6 +171,20 @@ def test_yfinance_missing_days_shrink_n_days_without_false_diffs():
     yf = yf.drop(yf.index[list(range(50, 100, 5))])
     res = compare_daily_returns(yf, al)
     assert res["n_days"] == 490
+    assert res["p99_abs_diff_bps"] == pytest.approx(0.0, abs=1e-9)
+    assert res["passed"] is True
+
+
+def test_non_leading_nan_close_counts_as_one_missing_day():
+    # A NaN close must shrink n_days by one (501 bars -> 500 returns -> 499),
+    # never be padded into a fabricated zero return plus a two-day return.
+    yf, al = _pair()
+    al.iloc[100] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        res = compare_daily_returns(yf, al)
+    assert res["n_days"] == 499
+    assert res["median_abs_diff_bps"] == 0.0
     assert res["p99_abs_diff_bps"] == pytest.approx(0.0, abs=1e-9)
     assert res["passed"] is True
 

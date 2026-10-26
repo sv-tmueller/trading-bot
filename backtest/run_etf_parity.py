@@ -48,12 +48,13 @@ def compare_daily_returns(yf_close: pd.Series, alpaca_close: pd.Series) -> dict:
     The join happens before ``pct_change`` so a day missing on one side makes
     both sides span the same multi-day interval instead of creating false
     diffs. Days present on only one side are dropped. No overlap fails closed.
+    Raises ValueError on a tz-aware or duplicated index; a NaN close counts as a missing day.
     """
     _check_index("yf_close", yf_close)
     _check_index("alpaca_close", alpaca_close)
     joined = pd.concat([yf_close, alpaca_close], axis=1, join="inner")
     joined.columns = ["yf", "alpaca"]
-    rets = joined.sort_index().pct_change().dropna()
+    rets = joined.dropna().sort_index().pct_change().dropna()
     diffs = (rets["alpaca"] - rets["yf"]).abs() * 10_000
     n_days = int(len(diffs))
     if n_days == 0:
@@ -112,7 +113,6 @@ def run_parity(
             row["n_alpaca"] = int(len(alpaca_close))
             row.update(compare_daily_returns(yf_close, alpaca_close))
         except Exception as exc:  # one bad ticker must not abort the rest
-            row["passed"] = False
             row["error"] = repr(exc)
         rows.append(row)
     return rows
