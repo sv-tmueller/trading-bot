@@ -411,9 +411,9 @@ LEDGER: Tuple[TestedCell, ...] = (
     ),
     # --- 2026-06-24 leveraged-vehicle backfill (#694) -- daily-bar cadence -----------------
     # "UPRO" means 3x daily-rebalanced SPY: the synthetic series is a validated UPRO proxy
-    # (daily-return corr 0.998), and the real-UPRO walk-forward re-measures the same cells
-    # (cited in the notes, no extra trials). No record for the incumbent 200-DMA, nor for the
-    # persistence and buy-and-hold null baselines, as in #681.
+    # (daily-return corr 0.998), and the real-UPRO walk-forward re-measures the tsmom and
+    # Faber cells (cited in their notes, no extra trials). No record for the incumbent
+    # 200-DMA, nor for the persistence and buy-and-hold null baselines, as in #681.
     TestedCell(
         family="tsmom_timeseries", cadence="daily", vehicle="UPRO",
         exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
