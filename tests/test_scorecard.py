@@ -424,6 +424,15 @@ def test_render_none_detail_is_n_a_and_empty_detail_drops_the_parentheses():
     assert "- drawdown: pass" in md.splitlines()
     assert "None" not in md and "()" not in md
 
+    # an empty-string luck detail renders n/a in the DSR cell (reviewer finding on #705)
+    empty_luck = {"passed": True, "criteria": {"luck": {"passed": True, "detail": ""}}}
+    md_empty = render_scorecard_markdown(_card(), _card(), empty_luck)
+    assert _cells(md_empty, SPEC_LABELS[9])[1] == "n/a"
+    # a missing detail key renders (n/a) in the verdict line, matching the DSR cell
+    missing = {"passed": True, "criteria": {"luck": {"passed": True}}}
+    md_missing = render_scorecard_markdown(_card(), _card(), missing)
+    assert "- luck: pass (n/a)" in md_missing.splitlines()
+
 
 def test_rendered_markdown_contains_no_em_dash():
     verdict = {"passed": True, "criteria": {"luck": {"passed": True, "detail": "ok"}}}

@@ -354,7 +354,7 @@ def render_scorecard_markdown(
     if verdict is not None:
         luck = (verdict.get("criteria") or {}).get("luck")
         if luck is not None:
-            dsr_text = _detail_text(luck.get("detail"))
+            dsr_text = _detail_text(luck.get("detail")) or _NA
 
     dev_cells = _column(development, ("2008", "2020"), dsr_text)
     if holdout is None:
@@ -376,7 +376,7 @@ def render_scorecard_markdown(
                 lines.append(f"- {name}: {_NA}")
             else:
                 status = "pass" if crit.get("passed") else "fail"
-                detail = _detail_text(crit.get("detail", ""))
+                detail = _detail_text(crit.get("detail"))
                 suffix = f" ({detail})" if detail else ""
                 lines.append(f"- {name}: {status}{suffix}")
     return "\n".join(lines) + "\n"
