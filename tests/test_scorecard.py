@@ -283,11 +283,16 @@ def test_ruin_to_exactly_zero_equity_round_trips_through_strict_json():
     assert json.loads(json.dumps(card, allow_nan=False)) == card
     assert all(math.isfinite(v) for v in card["year_returns"].values())
     assert card["sharpe_daily"] is not None and math.isfinite(card["sharpe_daily"])
+    # The ruin day (2019-07-26, -100%) is finite and stays; later dropped days count as 0%.
+    assert card["year_returns"]["2019"] == -1.0
+    assert card["year_returns"]["2020"] == 0.0
+    assert card["n_periods"] == 300
 
 
 def test_short_ruin_curve_and_zero_start_curve_round_trip_through_strict_json():
     idx = pd.bdate_range("2020-01-01", periods=8)
-    for values in ([100, 50, 0, 0, 0, 0, 0, 0], [0, 100, 110, 120, 130, 140, 150, 160]):
+    curves = ([100, 50, 0, 0, 0, 0, 0, 0], [0, 100, 110, 120, 130, 140, 150, 160], [0.0] * 8)
+    for values in curves:
         card = _card(_raw_result(values, idx), _result(np.linspace(100, 105, 8), idx))
         assert json.loads(json.dumps(card, allow_nan=False)) == card
         for key in ("sharpe_daily", "sharpe_annual", "realized_vol"):
