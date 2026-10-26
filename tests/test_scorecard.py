@@ -407,6 +407,22 @@ def test_render_without_verdict_has_n_a_dsr_and_none_values_render_n_a():
     # zero-drawdown curve: calmar is None; no "None" or "nan" leaks into the table
     assert _cells(md, SPEC_LABELS[3])[1] == "n/a"
     assert "None" not in md and re.search(r"\bnan\b", md) is None
+    assert "-0.0%" not in md  # a zero drawdown renders as 0.0%, not a negative zero
+
+
+def test_render_none_detail_is_n_a_and_empty_detail_drops_the_parentheses():
+    verdict = {
+        "passed": True,
+        "criteria": {
+            "luck": {"passed": True, "detail": None},
+            "drawdown": {"passed": True, "detail": ""},
+        },
+    }
+    md = render_scorecard_markdown(_card(), _card(), verdict)
+    assert _cells(md, SPEC_LABELS[9])[1] == "n/a"
+    assert "- luck: pass (n/a)" in md.splitlines()
+    assert "- drawdown: pass" in md.splitlines()
+    assert "None" not in md and "()" not in md
 
 
 def test_rendered_markdown_contains_no_em_dash():

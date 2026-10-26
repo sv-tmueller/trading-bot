@@ -85,6 +85,8 @@ ROW_LABELS = (
     "DSR (with programme trial count), PBO, bootstrap CI on uplift",
     "Same rule at 1.5x gross exposure, incl. financing (information only)",
 )
+# Raises at import if the label above is ever reworded.
+_DSR_ROW = ROW_LABELS.index("DSR (with programme trial count), PBO, bootstrap CI on uplift")
 
 _CRITERIA_ORDER = ("drawdown", "beats_benchmark", "luck", "holdout", "activity")
 
@@ -330,6 +332,11 @@ def _column(card: dict, years: tuple, dsr_text: str) -> List[str]:
     ]
 
 
+def _detail_text(detail: object) -> str:
+    """A criterion detail as text: None renders ``n/a``, empty stays empty."""
+    return _NA if detail is None else str(detail)
+
+
 def render_scorecard_markdown(
     development: dict,
     holdout: Optional[dict],
@@ -347,14 +354,14 @@ def render_scorecard_markdown(
     if verdict is not None:
         luck = (verdict.get("criteria") or {}).get("luck")
         if luck is not None:
-            dsr_text = str(luck.get("detail", _NA))
+            dsr_text = _detail_text(luck.get("detail"))
 
     dev_cells = _column(development, ("2008", "2020"), dsr_text)
     if holdout is None:
         hold_cells = [_NA] * len(ROW_LABELS)
     else:
         hold_cells = _column(holdout, ("2022",), _NA)
-    hold_cells[9] = _NA
+    hold_cells[_DSR_ROW] = _NA
 
     lines = [HEADER, "|---|---|---|"]
     for label, dev, hold in zip(ROW_LABELS, dev_cells, hold_cells):
@@ -369,5 +376,7 @@ def render_scorecard_markdown(
                 lines.append(f"- {name}: {_NA}")
             else:
                 status = "pass" if crit.get("passed") else "fail"
-                lines.append(f"- {name}: {status} ({crit.get('detail', '')})")
+                detail = _detail_text(crit.get("detail", ""))
+                suffix = f" ({detail})" if detail else ""
+                lines.append(f"- {name}: {status}{suffix}")
     return "\n".join(lines) + "\n"
