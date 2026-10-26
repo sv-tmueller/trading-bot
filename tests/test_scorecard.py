@@ -243,11 +243,11 @@ def test_scorecard_with_dates_and_years_round_trips_through_strict_json():
 
 
 def _raw_result(values, index) -> PortfolioResult:
-    """Like ``_result`` but with the producer's raw ``equity.pct_change()``.
+    """Like ``_result`` but with a raw ``equity.pct_change()`` (row 0 NaN).
 
-    ``backtest/portfolio.py`` emits ``daily_returns`` with no fillna, so row 0
-    is NaN here and a ruined (exactly zero) equity curve carries NaN (0/0) or
-    inf (x/0) afterwards.
+    ``backtest/portfolio.py`` sets row 0 finite but applies no fillna, so a
+    ruined (exactly zero) equity curve carries NaN (0/0) or inf (x/0) in later
+    rows; this fixture reproduces those rows.
     """
     equity = pd.Series(np.asarray(values, dtype=float), index=index)
     return PortfolioResult(

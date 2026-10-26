@@ -17,9 +17,11 @@ Shape contract (strict JSON, ``json.dumps(card, allow_nan=False)`` works):
 - ``sharpe_daily`` is mean/std(ddof=1) of the daily returns, not annualised
   and not excess; it equals ``overfitting_gate``'s ``sr_hat`` for the same
   finite series. ``n_periods`` is the number of finite return rows.
-- Non-finite returns are dropped. The simulator's ``daily_returns`` is a raw
-  ``equity.pct_change()`` (row 0 NaN in a raw series; NaN after an equity
-  curve hits exactly 0.0; inf from a zero start). Entries that are not finite
+- Non-finite returns are dropped. The simulator's ``daily_returns`` is
+  ``equity.pct_change()`` with row 0 set finite (``backtest/portfolio.py``), so
+  a real result loses rows only once its equity sits at exactly 0.0 (NaN for
+  0/0, inf for x/0); a raw ``pct_change()`` fixture also has NaN in row 0.
+  Entries that are not finite
   are removed from ``sharpe_daily``, ``sharpe_annual``, ``realized_vol``,
   ``n_periods`` and ``year_returns`` (a dropped day counts as a 0% day), so
   every value stays finite. With fewer than 2 finite returns the Sharpe and
