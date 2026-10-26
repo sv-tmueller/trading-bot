@@ -6,20 +6,24 @@ caller supplies everything. Research only; never touches the trading path.
 
 Criteria, in fixed order (the scorecard renderer iterates in this order):
 
-1. ``drawdown``        max drawdown <= MAX_DRAWDOWN on the development card and,
-                       when the holdout has been run, on the holdout card.
+1. ``drawdown``        max drawdown, a non-negative magnitude (the #695
+                       convention) of at most MAX_DRAWDOWN, on the development
+                       card and, when the holdout has been run, on the holdout
+                       card. A signed negative value fails.
 2. ``beats_benchmark`` median development window Calmar strictly above the
                        benchmark's median window Calmar.
 3. ``luck``            ``evaluate_gate`` (DSR / PBO / bootstrap) passes on
                        development data; this module re-implements no threshold.
 4. ``holdout``         holdout CAGR (pre-tax, after costs) > 0 and holdout max
-                       drawdown <= MAX_DRAWDOWN. ``holdout=None`` fails with
-                       the detail ``holdout not yet run``.
+                       drawdown a non-negative magnitude of at most
+                       MAX_DRAWDOWN. ``holdout=None`` fails with the detail
+                       ``holdout not yet run``.
 5. ``activity``        development round trips per year >=
                        MIN_ROUND_TRIPS_PER_YEAR and development max time share
                        in one ETF <= MAX_TIME_SHARE_ONE_ETF.
 
 All five are always evaluated (no short-circuit) so every criterion reports.
+A present value that is None or non-finite fails the criterion that reads it.
 
 Pinned readings: a holdout drawdown above the cap fails both ``drawdown`` and
 ``holdout``; ``activity`` reads the development card only.
@@ -56,19 +60,21 @@ def _entry(passed: bool, detail: str) -> dict:
     return {"passed": bool(passed), "detail": detail}
 
 
-def _median(windows: dict) -> Optional[float]:
-    return float(np.median([float(v) for v in windows.values()])) if windows else None
+def _median(windows: dict) -> float:
+    # Callers guarantee a non-empty dict. A None or non-finite entry becomes NaN,
+    # which propagates to a NaN median (and so fails the criterion).
+    return float(np.median([float(v) if _finite(v) else math.nan for v in windows.values()]))
 
 
 def _drawdown(development: dict, holdout: Optional[dict]) -> dict:
     dev = development["max_drawdown"]
-    ok = _finite(dev) and float(dev) <= MAX_DRAWDOWN
+    ok = _finite(dev) and 0.0 <= float(dev) <= MAX_DRAWDOWN
     detail = f"development {_fmt(dev)}"
     if holdout is None:
         detail += "; holdout not yet run"
     else:
         hold = holdout["max_drawdown"]
-        ok = ok and _finite(hold) and float(hold) <= MAX_DRAWDOWN
+        ok = ok and _finite(hold) and 0.0 <= float(hold) <= MAX_DRAWDOWN
         detail += f"; holdout {_fmt(hold)}"
     return _entry(ok, f"{detail}; cap {MAX_DRAWDOWN:.4f}")
 
@@ -80,7 +86,7 @@ def _beats_benchmark(development: dict) -> dict:
     if n_c == 0 or n_b == 0:
         return _entry(False, f"no scored windows (candidate n_w={n_c}, benchmark n_w={n_b})")
     med_c, med_b = _median(cand), _median(bench)
-    ok = bool(med_c > med_b)
+    ok = _finite(med_c) and _finite(med_b) and med_c > med_b
     return _entry(
         ok,
         f"median window Calmar candidate {_fmt(med_c)} (n_w={n_c}) "
@@ -104,7 +110,7 @@ def _holdout(holdout: Optional[dict]) -> dict:
     if holdout is None:
         return _entry(False, "holdout not yet run")
     cagr, dd = holdout["cagr"], holdout["max_drawdown"]
-    ok = _finite(cagr) and float(cagr) > 0.0 and _finite(dd) and float(dd) <= MAX_DRAWDOWN
+    ok = _finite(cagr) and float(cagr) > 0.0 and _finite(dd) and 0.0 <= float(dd) <= MAX_DRAWDOWN
     return _entry(ok, f"holdout CAGR {_fmt(cagr)} (need > 0); max drawdown {_fmt(dd)}")
 
 
@@ -120,7 +126,7 @@ def _activity(development: dict) -> dict:
     return _entry(
         ok,
         f"round trips per year {_fmt(trips)} (min {MIN_ROUND_TRIPS_PER_YEAR}); "
-        f"max time share in one ETF {_fmt(share)} (max {MAX_TIME_SHARE_ONE_ETF:.2f})",
+        f"max time share in one ETF {_fmt(share)} (max {MAX_TIME_SHARE_ONE_ETF:.4f})",
     )
 
 
@@ -134,13 +140,18 @@ def evaluate_candidate(
     uplifts: np.ndarray,
     gate_kwargs: Optional[dict] = None,
 ) -> dict:
-    """Return ``{"passed": bool, "criteria": {name: {"passed", "detail"}}}``."""
+    """Return ``{"passed": bool, "criteria": {name: {"passed", "detail"}}}``.
+
+    ``development`` and ``holdout`` are #695 scorecard dicts; ``all_trial_sharpes``
+    is ``programme_sharpes()``; ``gate_kwargs`` is forwarded to ``evaluate_gate``
+    unchanged.
+    """
     res = evaluate_gate(
         returns_best=returns_best,
         all_trial_sharpes=all_trial_sharpes,
         perf_matrix=perf_matrix,
         uplifts=uplifts,
-        **(dict(gate_kwargs) if gate_kwargs else {}),
+        **(gate_kwargs or {}),
     )
     criteria = {
         "drawdown": _drawdown(development, holdout),

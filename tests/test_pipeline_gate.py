@@ -175,6 +175,31 @@ def test_constants_exact():
         ({"development": _scorecard(max_time_share_one_etf=0.9001)}, {"activity"}),
         ({"holdout": _holdout(cagr=0.0)}, {"holdout"}),
         ({"holdout": _holdout(cagr=None)}, {"holdout"}),
+        # A signed (negative) drawdown is not a magnitude and must fail.
+        ({"development": _scorecard(max_drawdown=-0.25)}, {"drawdown"}),
+        # None / non-finite values fail the criterion that reads them.
+        ({"development": _scorecard(round_trips_per_year=None)}, {"activity"}),
+        ({"development": _scorecard(max_time_share_one_etf=float("nan"))}, {"activity"}),
+        ({"development": _scorecard(max_time_share_one_etf=None)}, {"activity"}),
+        ({"development": _scorecard(max_drawdown=float("-inf"))}, {"drawdown"}),
+        ({"development": _scorecard(max_drawdown=None)}, {"drawdown"}),
+        ({"holdout": _holdout(max_drawdown=None)}, {"drawdown", "holdout"}),
+        (
+            {"development": _scorecard(window_calmars={"2012": float("nan"), "2013": 1.9, "2014": 1.4})},
+            {"beats_benchmark"},
+        ),
+        (
+            {"development": _scorecard(window_calmars={"2012": None, "2013": 1.9, "2014": 1.4})},
+            {"beats_benchmark"},
+        ),
+        (
+            {"development": _scorecard(window_calmars={"2012": float("inf"), "2013": 1.9, "2014": 1.4})},
+            {"beats_benchmark"},
+        ),
+        (
+            {"development": _scorecard(benchmark={"window_calmars": {"2012": None, "2013": 1.1, "2014": 0.9}})},
+            {"beats_benchmark"},
+        ),
     ],
 )
 def test_boundaries(kwargs, failing):
@@ -282,6 +307,8 @@ def test_gate_kwargs_none_is_accepted():
     # evaluate_gate defaults (16 splits, 1000 boots) on the same battery.
     result = _run(gate_kwargs=None)
     assert list(result["criteria"]) == CRITERIA
+    expected = og.evaluate_gate(**_luck_inputs())
+    assert result["criteria"]["luck"]["passed"] is bool(expected["passed"])
 
 
 # 10
