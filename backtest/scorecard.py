@@ -17,9 +17,11 @@ Shape contract (strict JSON, ``json.dumps(card, allow_nan=False)`` works):
 - ``sharpe_daily`` is mean/std(ddof=1) of the daily returns, not annualised
   and not excess; it equals ``overfitting_gate``'s ``sr_hat`` for the same
   finite series. ``n_periods`` is the number of finite return rows.
-- Non-finite returns are dropped. The simulator's ``daily_returns`` is a raw
-  ``equity.pct_change()`` (row 0 NaN in a raw series; NaN after an equity
-  curve hits exactly 0.0; inf from a zero start). Entries that are not finite
+- Non-finite returns are dropped. The simulator's ``daily_returns`` is
+  ``equity.pct_change()`` with row 0 set finite (``backtest/portfolio.py``), so
+  a real result loses rows only once its equity sits at exactly 0.0 (NaN for
+  0/0, inf for x/0); a raw ``pct_change()`` fixture also has NaN in row 0.
+  Entries that are not finite
   are removed from ``sharpe_daily``, ``sharpe_annual``, ``realized_vol``,
   ``n_periods`` and ``year_returns`` (a dropped day counts as a 0% day), so
   every value stays finite. With fewer than 2 finite returns the Sharpe and
@@ -83,6 +85,8 @@ ROW_LABELS = (
     "DSR (with programme trial count), PBO, bootstrap CI on uplift",
     "Same rule at 1.5x gross exposure, incl. financing (information only)",
 )
+# Raises at import if the label above is ever reworded.
+_DSR_ROW = ROW_LABELS.index("DSR (with programme trial count), PBO, bootstrap CI on uplift")
 
 _CRITERIA_ORDER = ("drawdown", "beats_benchmark", "luck", "holdout", "activity")
 
@@ -114,9 +118,7 @@ def _curve_metrics(curve: pd.Series) -> dict:
 
     running_max = curve.cummax()
     drawdown = (curve - running_max) / running_max
-    max_dd = float(-drawdown.min())
-    if max_dd < 0.0:
-        max_dd = 0.0
+    max_dd = max(0.0, float(-drawdown.min()))  # 0.0 first: max(-0.0, 0.0) is -0.0
     dd_start: Optional[str] = None
     dd_end: Optional[str] = None
     if max_dd > 0.0:
@@ -330,6 +332,11 @@ def _column(card: dict, years: tuple, dsr_text: str) -> List[str]:
     ]
 
 
+def _detail_text(detail: object) -> str:
+    """A criterion detail as text: None renders ``n/a``, empty stays empty."""
+    return _NA if detail is None else str(detail)
+
+
 def render_scorecard_markdown(
     development: dict,
     holdout: Optional[dict],
@@ -347,14 +354,14 @@ def render_scorecard_markdown(
     if verdict is not None:
         luck = (verdict.get("criteria") or {}).get("luck")
         if luck is not None:
-            dsr_text = str(luck.get("detail", _NA))
+            dsr_text = _detail_text(luck.get("detail")) or _NA
 
     dev_cells = _column(development, ("2008", "2020"), dsr_text)
     if holdout is None:
         hold_cells = [_NA] * len(ROW_LABELS)
     else:
         hold_cells = _column(holdout, ("2022",), _NA)
-    hold_cells[9] = _NA
+    hold_cells[_DSR_ROW] = _NA
 
     lines = [HEADER, "|---|---|---|"]
     for label, dev, hold in zip(ROW_LABELS, dev_cells, hold_cells):
@@ -369,5 +376,7 @@ def render_scorecard_markdown(
                 lines.append(f"- {name}: {_NA}")
             else:
                 status = "pass" if crit.get("passed") else "fail"
-                lines.append(f"- {name}: {status} ({crit.get('detail', '')})")
+                detail = _detail_text(crit.get("detail"))
+                suffix = f" ({detail})" if detail else ""
+                lines.append(f"- {name}: {status}{suffix}")
     return "\n".join(lines) + "\n"

@@ -182,6 +182,24 @@ def test_window_calmars_score_only_full_calendar_years_with_string_keys():
     assert card["worst_year"]["return"] == min(card["year_returns"].values())
 
 
+@pytest.mark.parametrize(
+    "start, end, expected",
+    [
+        ("2019-01-07", "2019-12-25", ["2019"]),  # both bounds exactly on the edge
+        ("2019-01-08", "2019-12-31", []),  # starts one day too late
+        ("2019-01-02", "2019-12-24", []),  # ends one day too early
+        ("2022-01-03", "2022-12-30", ["2022"]),  # a holdout year starting at the first session
+    ],
+)
+def test_full_year_bounds_are_jan_7_and_dec_25_inclusive(start, end, expected):
+    idx = pd.bdate_range(start, end)
+    assert idx[0] == pd.Timestamp(start) and idx[-1] == pd.Timestamp(end)
+    card = _card(
+        _result(_random_curve(idx, seed=3), idx), _result(_random_curve(idx, seed=4), idx)
+    )
+    assert sorted(card["year_returns"]) == expected
+
+
 def test_trade_exiting_in_a_year_lowers_that_years_calmar_but_not_other_years():
     idx = _calendar_index()
     eq = _random_curve(idx, seed=3, drift=0.002)
@@ -224,6 +242,7 @@ def test_scorecard_round_trips_through_strict_json_including_zero_drawdown():
     dbl = _result(np.linspace(100, 108, 10), idx)
     card = _card(res, _result(np.linspace(100, 105, 10), idx), double_cost=dbl, leverage_info=dbl)
     assert card["max_drawdown"] == 0.0
+    assert math.copysign(1.0, card["max_drawdown"]) == 1.0  # never -0.0
     assert card["calmar"] is None
     assert card["max_drawdown_start"] is None and card["max_drawdown_end"] is None
     assert json.loads(json.dumps(card, allow_nan=False)) == card
@@ -242,11 +261,11 @@ def test_scorecard_with_dates_and_years_round_trips_through_strict_json():
 
 
 def _raw_result(values, index) -> PortfolioResult:
-    """Like ``_result`` but with the producer's raw ``equity.pct_change()``.
+    """Like ``_result`` but with a raw ``equity.pct_change()`` (row 0 NaN).
 
-    ``backtest/portfolio.py`` emits ``daily_returns`` with no fillna, so row 0
-    is NaN here and a ruined (exactly zero) equity curve carries NaN (0/0) or
-    inf (x/0) afterwards.
+    ``backtest/portfolio.py`` sets row 0 finite but applies no fillna, so a
+    ruined (exactly zero) equity curve carries NaN (0/0) or inf (x/0) in later
+    rows; this fixture reproduces those rows.
     """
     equity = pd.Series(np.asarray(values, dtype=float), index=index)
     return PortfolioResult(
@@ -282,11 +301,16 @@ def test_ruin_to_exactly_zero_equity_round_trips_through_strict_json():
     assert json.loads(json.dumps(card, allow_nan=False)) == card
     assert all(math.isfinite(v) for v in card["year_returns"].values())
     assert card["sharpe_daily"] is not None and math.isfinite(card["sharpe_daily"])
+    # The ruin day (2019-07-26, -100%) is finite and stays; later dropped days count as 0%.
+    assert card["year_returns"]["2019"] == -1.0
+    assert card["year_returns"]["2020"] == 0.0
+    assert card["n_periods"] == 300
 
 
 def test_short_ruin_curve_and_zero_start_curve_round_trip_through_strict_json():
     idx = pd.bdate_range("2020-01-01", periods=8)
-    for values in ([100, 50, 0, 0, 0, 0, 0, 0], [0, 100, 110, 120, 130, 140, 150, 160]):
+    curves = ([100, 50, 0, 0, 0, 0, 0, 0], [0, 100, 110, 120, 130, 140, 150, 160], [0.0] * 8)
+    for values in curves:
         card = _card(_raw_result(values, idx), _result(np.linspace(100, 105, 8), idx))
         assert json.loads(json.dumps(card, allow_nan=False)) == card
         for key in ("sharpe_daily", "sharpe_annual", "realized_vol"):
@@ -383,6 +407,31 @@ def test_render_without_verdict_has_n_a_dsr_and_none_values_render_n_a():
     # zero-drawdown curve: calmar is None; no "None" or "nan" leaks into the table
     assert _cells(md, SPEC_LABELS[3])[1] == "n/a"
     assert "None" not in md and re.search(r"\bnan\b", md) is None
+    assert "-0.0%" not in md  # a zero drawdown renders as 0.0%, not a negative zero
+
+
+def test_render_none_detail_is_n_a_and_empty_detail_drops_the_parentheses():
+    verdict = {
+        "passed": True,
+        "criteria": {
+            "luck": {"passed": True, "detail": None},
+            "drawdown": {"passed": True, "detail": ""},
+        },
+    }
+    md = render_scorecard_markdown(_card(), _card(), verdict)
+    assert _cells(md, SPEC_LABELS[9])[1] == "n/a"
+    assert "- luck: pass (n/a)" in md.splitlines()
+    assert "- drawdown: pass" in md.splitlines()
+    assert "None" not in md and "()" not in md
+
+    # an empty-string luck detail renders n/a in the DSR cell (reviewer finding on #705)
+    empty_luck = {"passed": True, "criteria": {"luck": {"passed": True, "detail": ""}}}
+    md_empty = render_scorecard_markdown(_card(), _card(), empty_luck)
+    assert _cells(md_empty, SPEC_LABELS[9])[1] == "n/a"
+    # a missing detail key renders (n/a) in the verdict line, matching the DSR cell
+    missing = {"passed": True, "criteria": {"luck": {"passed": True}}}
+    md_missing = render_scorecard_markdown(_card(), _card(), missing)
+    assert "- luck: pass (n/a)" in md_missing.splitlines()
 
 
 def test_rendered_markdown_contains_no_em_dash():
