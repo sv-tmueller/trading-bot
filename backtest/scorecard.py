@@ -14,9 +14,16 @@ Shape contract (strict JSON, ``json.dumps(card, allow_nan=False)`` works):
   year keys are 4-digit strings, undefined values are None (never NaN/inf).
 - ``max_drawdown`` is a non-negative magnitude (0.10 for a 10% drawdown).
 - Returns, vols and costs are decimal fractions.
-- ``sharpe_daily`` is mean/std(ddof=1) of the daily returns (row 0 included),
-  not annualised and not excess; it equals ``overfitting_gate``'s ``sr_hat``
-  for the same series. ``n_periods`` is the number of return rows.
+- ``sharpe_daily`` is mean/std(ddof=1) of the daily returns, not annualised
+  and not excess; it equals ``overfitting_gate``'s ``sr_hat`` for the same
+  finite series. ``n_periods`` is the number of finite return rows.
+- Non-finite returns are dropped. The simulator's ``daily_returns`` is a raw
+  ``equity.pct_change()`` (row 0 NaN in a raw series; NaN after an equity
+  curve hits exactly 0.0; inf from a zero start). Entries that are not finite
+  are removed from ``sharpe_daily``, ``sharpe_annual``, ``realized_vol``,
+  ``n_periods`` and ``year_returns`` (a dropped day counts as a 0% day), so
+  every value stays finite. With fewer than 2 finite returns the Sharpe and
+  vol are 0.0, the same convention as zero variance.
 - ``costs["cash_interest"]`` is never read, so the scorecard is independent of
   how the simulator accrues cash interest.
 
@@ -150,19 +157,24 @@ def _window_calmars(res: PortfolioResult, years: List[int]) -> Dict[str, float]:
     return out
 
 
+def _finite(returns: pd.Series) -> np.ndarray:
+    values = returns.to_numpy(dtype=float)
+    return values[np.isfinite(values)]
+
+
 def _performance_block(res: PortfolioResult) -> dict:
     """The 13 keys computed for both the candidate and the benchmark."""
     equity = res.equity
-    r = res.daily_returns.to_numpy(dtype=float)
+    r = _finite(res.daily_returns)
     pre = _curve_metrics(equity)
     after = _curve_metrics(apply_annual_netting_tax(res.trades, equity))
 
-    std = float(r.std(ddof=1))
+    std = float(r.std(ddof=1)) if len(r) >= 2 else 0.0
     sharpe_daily = 0.0 if std <= _ZERO_VARIANCE_ATOL else float(r.mean() / std)
 
     years = _scored_years(equity.index)
     year_returns = {
-        str(y): float(np.prod(1.0 + res.daily_returns[equity.index.year == y].to_numpy()) - 1.0)
+        str(y): float(np.prod(1.0 + _finite(res.daily_returns[equity.index.year == y])) - 1.0)
         for y in years
     }
     worst_year = None
