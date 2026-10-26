@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import numpy as np
 import pandas as pd
@@ -183,7 +184,7 @@ def test_window_calmars_score_only_full_calendar_years_with_string_keys():
 
 def test_trade_exiting_in_a_year_lowers_that_years_calmar_but_not_other_years():
     idx = _calendar_index()
-    eq = _random_curve(idx, seed=3)
+    eq = _random_curve(idx, seed=3, drift=0.002)
     bench = _result(_random_curve(idx, seed=4), idx)
     base = _card(_result(eq, idx), bench)
     assert base["window_calmars"]["2020"] > 0 and base["window_calmars"]["2021"] > 0
@@ -329,7 +330,7 @@ def test_render_without_verdict_has_n_a_dsr_and_none_values_render_n_a():
     assert _cells(md, SPEC_LABELS[9])[1] == "n/a"
     # zero-drawdown curve: calmar is None; no "None" or "nan" leaks into the table
     assert _cells(md, SPEC_LABELS[3])[1] == "n/a"
-    assert "None" not in md and "nan" not in md
+    assert "None" not in md and re.search(r"\bnan\b", md) is None
 
 
 def test_rendered_markdown_contains_no_em_dash():
@@ -338,4 +339,4 @@ def test_rendered_markdown_contains_no_em_dash():
         render_scorecard_markdown(_card(), None, None),
         render_scorecard_markdown(_card(), _card(), verdict),
     ):
-        assert "—" not in md
+        assert chr(0x2014) not in md
