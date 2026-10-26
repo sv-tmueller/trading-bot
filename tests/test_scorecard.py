@@ -182,6 +182,24 @@ def test_window_calmars_score_only_full_calendar_years_with_string_keys():
     assert card["worst_year"]["return"] == min(card["year_returns"].values())
 
 
+@pytest.mark.parametrize(
+    "start, end, expected",
+    [
+        ("2019-01-07", "2019-12-25", ["2019"]),  # both bounds exactly on the edge
+        ("2019-01-08", "2019-12-31", []),  # starts one day too late
+        ("2019-01-02", "2019-12-24", []),  # ends one day too early
+        ("2022-01-03", "2022-12-30", ["2022"]),  # a holdout year starting at the first session
+    ],
+)
+def test_full_year_bounds_are_jan_7_and_dec_25_inclusive(start, end, expected):
+    idx = pd.bdate_range(start, end)
+    assert idx[0] == pd.Timestamp(start) and idx[-1] == pd.Timestamp(end)
+    card = _card(
+        _result(_random_curve(idx, seed=3), idx), _result(_random_curve(idx, seed=4), idx)
+    )
+    assert sorted(card["year_returns"]) == expected
+
+
 def test_trade_exiting_in_a_year_lowers_that_years_calmar_but_not_other_years():
     idx = _calendar_index()
     eq = _random_curve(idx, seed=3, drift=0.002)
