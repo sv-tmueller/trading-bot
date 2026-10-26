@@ -117,7 +117,7 @@ def test_all_pass_fixture_passes_with_five_ordered_criteria_and_is_json_safe():
         assert isinstance(entry["detail"], str)
         assert "\n" not in entry["detail"]
         assert "|" not in entry["detail"]
-        assert "—" not in entry["detail"]
+        assert chr(0x2014) not in entry["detail"]
     json.dumps(result, allow_nan=False)
 
 
@@ -257,7 +257,7 @@ def test_luck_consistent_with_evaluate_gate_and_detail_has_figures():
     detail = entry["detail"]
     for token in ("DSR", "N=50", "PBO", "CI"):
         assert token in detail
-    assert "\n" not in detail and "|" not in detail and "—" not in detail
+    assert "\n" not in detail and "|" not in detail and chr(0x2014) not in detail
     assert f"{expected['dsr']:.4f}" in detail
     assert f"{expected['pbo']:.4f}" in detail
 
