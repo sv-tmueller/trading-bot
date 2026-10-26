@@ -121,8 +121,9 @@ Do all of these before the first phase. Stop and tell the operator if any fails.
      `bootstrap_alpha`, `dsr_sr_benchmark`;
    - the pass bar (spec 5.2, which the operator confirms by merging) and the development and holdout
      split (`DEV_END`, `HOLDOUT_START` in `backtest/etf_data.py`);
-   - the holdout policy: the holdout runs for every picked candidate, so no choice is made after
-     seeing development numbers.
+   - the holdout policy: the holdout runs for every picked candidate that is a first test, so no
+     choice is made after seeing development numbers; a retest under Phase 4 (h) has none, and the
+     pre-registration names the `<old candidate_id>` whose holdout was seen.
 3. **Parity check (spec 5.6).** Run
    `python3 -m backtest.run_etf_parity --tickers <comma-separated frozen list>` and paste its output into the freeze PR.
    It is a GET-only market-data read over the development window, not a broker call. If no read-only
@@ -169,8 +170,11 @@ Work on the results branch `docs/<round_id>-results`, created from the merged `o
    it, and appends every evaluated configuration, losers included, as `TrialRecord` rows via
    `append_trials` from `backtest/trial_store.py`. The script takes `--phase development|holdout`. The
    holdout path reads `selected_trial_id` and `config` from `development_result.json`, runs only that
-   configuration and records via `record_result(candidate_id, "holdout", payload)`. The analyst writes
-   and commits this path but never runs it. The script also writes
+   configuration (with the `benchmark_weights` SPY benchmark and the `double_cost=` and
+   `leverage_info=` re-runs, all cut to rows on or after `HOLDOUT_START` as Phase 4 (g) says) and records via `record_result(candidate_id, "holdout", payload)`. The analyst writes
+   and commits this path but never runs it. The holdout path appends no trial: `trials.json`, and
+   with it the DSR trial vector and the round budget, holds development-period configurations only
+   (spec 5.3). The script also writes
    `<study dir>/<candidate_id>-development-returns.csv` (one row per development day; one column per
    `trial_id` plus `benchmark`), committed with `development_result.json`.
 4. **Written payloads.** The analyst writes the development payload to
@@ -214,7 +218,9 @@ this procedure:
 - (h) A retest after the holdout uses a new `candidate_id` and has no holdout: never call
   `load_daily_bars(phase="holdout")` for it, pass `holdout=None` to `evaluate_candidate`, and state in
   its pre-registration and verdict that the holdout was already seen under `<old candidate_id>` (spec
-  5.3: a re-tested candidate loses its holdout). (f) applies to first tests only.
+  5.3: a re-tested candidate loses its holdout). (f) applies to first tests only. Such a retest fails the gate's `holdout` criterion (detail
+  `holdout not yet run`); the verdict document says the holdout was seen under `<old candidate_id>`,
+  and any wish to waive the criterion is a separate issue (Non-goals).
 
 ### Phase 5 -- Verdicts and the results PR
 
@@ -229,8 +235,9 @@ this procedure:
    yours and is labelled as such. `evaluate_candidate` forwards `gate_kwargs` to `evaluate_gate` in
    `backtest/overfitting_gate.py` unchanged; use only the frozen values. Build `perf_matrix` (trial
    columns in `trial_ids` order), `returns_best` (the `selected_trial_id` column) and `uplifts` (the
-   frozen uplift definition against `benchmark`) from that file; never recompute them after the
-   holdout.
+   frozen uplift definition against `benchmark`) from `<study dir>/<candidate_id>-development-returns.csv` (Phase 3 step 3); never recompute them after the
+   holdout. `dev_card` and `hold_card` are the `scorecard` values of `development_result.json` and
+   `holdout_result.json` (`hold_card` is `None` for a retest under Phase 4 (h)).
 3. A `ValueError` or `KeyError` from `evaluate_candidate` is an input error, not a failed verdict:
    stop and post no verdict.
 4. Post the rendered scorecard, the verdict and the recommendation as a comment on each candidate
