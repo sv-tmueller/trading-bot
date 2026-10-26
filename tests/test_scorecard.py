@@ -224,6 +224,7 @@ def test_scorecard_round_trips_through_strict_json_including_zero_drawdown():
     dbl = _result(np.linspace(100, 108, 10), idx)
     card = _card(res, _result(np.linspace(100, 105, 10), idx), double_cost=dbl, leverage_info=dbl)
     assert card["max_drawdown"] == 0.0
+    assert math.copysign(1.0, card["max_drawdown"]) == 1.0  # never -0.0
     assert card["calmar"] is None
     assert card["max_drawdown_start"] is None and card["max_drawdown_end"] is None
     assert json.loads(json.dumps(card, allow_nan=False)) == card

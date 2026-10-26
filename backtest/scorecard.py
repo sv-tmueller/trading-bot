@@ -114,9 +114,7 @@ def _curve_metrics(curve: pd.Series) -> dict:
 
     running_max = curve.cummax()
     drawdown = (curve - running_max) / running_max
-    max_dd = float(-drawdown.min())
-    if max_dd < 0.0:
-        max_dd = 0.0
+    max_dd = max(0.0, float(-drawdown.min()))  # 0.0 first: max(-0.0, 0.0) is -0.0
     dd_start: Optional[str] = None
     dd_end: Optional[str] = None
     if max_dd > 0.0:
