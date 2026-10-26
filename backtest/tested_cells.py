@@ -419,54 +419,46 @@ LEDGER: Tuple[TestedCell, ...] = (
         exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
         date="2026-06-24",
-        note=(
-            "12-mo trailing SPY return > 0, monthly, LONG/CASH on synthetic 3x SPY "
-            "(backtest/synthetic.py, daily-return corr 0.998 vs real UPRO 2009-2026), "
-            "1993-2026. Not a Calmar failure: after-tax Calmar US 0.22 vs 1x SPY 0.18, per- "
-            "window median 0.90 vs 0.85 (n_w=31). Closed on drawdown: max DD -76.2% (2020) vs "
-            "the goal's ~-34% ceiling; operator rejected it in "
-            "docs/decisions/2026-07-06-keep-200dma-regime-signal.md. Real-UPRO walk-forward "
-            "2021-2026 (docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re- "
-            "measured the same cell; not a new trial."
-        ),
+        note="12-mo trailing SPY return > 0, monthly, LONG/CASH on synthetic 3x SPY "
+             "(backtest/synthetic.py, daily-return corr 0.998 vs real UPRO 2009-2026), "
+             "1993-2026. Not a Calmar failure: after-tax Calmar US 0.22 vs 1x SPY 0.18, per-"
+             "window median 0.90 vs 0.85 (n_w=31). Closed on drawdown: max DD -76.2% (2020) vs "
+             "the goal's ~-34% ceiling; operator rejected it in "
+             "docs/decisions/2026-07-06-keep-200dma-regime-signal.md. Real-UPRO walk-forward "
+             "2021-2026 (docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re-"
+             "measured the same cell; not a new trial.",
     ),
     TestedCell(
         family="faber_ma_timing", cadence="daily", vehicle="UPRO",
         exit_style="monthly_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
         date="2026-06-24",
-        note=(
-            "10-mo SMA on SPY, monthly, LONG/CASH on synthetic 3x SPY (UPRO proxy), "
-            "1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 (DE 0.17 misses); per-window "
-            "median 0.38 vs 0.85 (n_w=32); max DD -63.5%. Real-UPRO walk-forward 2021-2026 "
-            "(docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re-measured the "
-            "same cell; not a new trial."
-        ),
+        note="10-mo SMA on SPY, monthly, LONG/CASH on synthetic 3x SPY (UPRO proxy), "
+             "1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 (DE 0.17 misses); per-window "
+             "median 0.38 vs 0.85 (n_w=32); max DD -63.5%. Real-UPRO walk-forward 2021-2026 "
+             "(docs/research/2026-06-14-walkforward-oos-baselines.md, n_w=5) re-measured the "
+             "same cell; not a new trial.",
     ),
     TestedCell(
         family="sma_regime_filter", cadence="daily", vehicle="UPRO",
         exit_style="daily_regime_flip", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
         date="2026-06-24",
-        note=(
-            "100-DMA: SPY close > 100-day SMA (regime_signals.sma_signal), daily, LONG/CASH "
-            "on synthetic 3x SPY (UPRO proxy), 1993-2026. Ruinous whipsaw: 5.45 flips/yr, max "
-            "DD -91.9%, after-tax Calmar US 0.06 vs 1x SPY 0.18, per-window median -0.02 vs "
-            "0.85 (n_w=34)."
-        ),
+        note="100-DMA: SPY close > 100-day SMA (regime_signals.sma_signal), daily, LONG/CASH "
+             "on synthetic 3x SPY (UPRO proxy), 1993-2026. Ruinous whipsaw: 5.45 flips/yr, max "
+             "DD -91.9%, after-tax Calmar US 0.06 vs 1x SPY 0.18, per-window median -0.02 vs "
+             "0.85 (n_w=34).",
     ),
     TestedCell(
         family="sma_regime_filter", cadence="daily", vehicle="UPRO",
         exit_style="daily_regime_flip_2d_confirm", n_cells=1, verdict=NO_GO, power="PROMOTABLE",
         source="docs/research/2026-06-24-leveraged-regime-signal-study.md",
         date="2026-06-24",
-        note=(
-            "200-DMA with a symmetric 2-close confirmation "
-            "(regime_signals.confirmed_sma_signal), daily, LONG/CASH on synthetic 3x SPY "
-            "(UPRO proxy), 1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 but per-window "
-            "median 0.21 vs 0.85 (n_w=34), so the thin edge is not robust; max DD -58.2% vs "
-            "incumbent -59.5%."
-        ),
+        note="200-DMA with a symmetric 2-close confirmation "
+             "(regime_signals.confirmed_sma_signal), daily, LONG/CASH on synthetic 3x SPY "
+             "(UPRO proxy), 1993-2026. After-tax Calmar US 0.19 vs 1x SPY 0.18 but per-window "
+             "median 0.21 vs 0.85 (n_w=34), so the thin edge is not robust; max DD -58.2% vs "
+             "incumbent -59.5%.",
     ),
 )
 
