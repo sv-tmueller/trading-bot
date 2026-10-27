@@ -5,11 +5,11 @@ import path from "node:path";
 // Sole owner of filesystem access for the daily-verification artifacts (#548,
 // design spec §6.1/§6.2/§8). Every read here happens at Next.js build time
 // (generateStaticParams / a plain static-page render), never at request time
-// for the two /daily routes; see web/app/daily/**. The dashboard tile
-// (web/app/page.tsx) is the one deliberate exception: it calls
-// getLatestVerifiedDay() from a force-dynamic route at request time, which
-// the design spec's lead decision accepts (identical Vercel
-// outside-root-directory exposure either way).
+// for the two /daily routes; see web/app/daily/**. The dashboard
+// (web/app/page.tsx) is the one deliberate exception: it calls readLedger()
+// from a force-dynamic route at request time (the latest-verified-day tile and
+// the ROI rolling-window history, #674), which the design spec's lead decision
+// accepts (identical Vercel outside-root-directory exposure either way).
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -28,7 +28,8 @@ export interface LedgerMetrics {
   fills: number;
   closed_trades: number;
   r_multiples: number[];
-  equity_usd: number;
+  // null on non-trading rows (the 2026-09-07 holiday row), despite the old type.
+  equity_usd: number | null;
   floor_baseline_raw: string | null;
   floor_price_usd: number | null;
   headroom_pct: number | null;
@@ -152,14 +153,6 @@ export function readLedger(): LedgerRow[] {
     rows.push(row);
   }
   return rows;
-}
-
-// The dashboard tile's data source (called at request time from the
-// force-dynamic `/` route). The ledger is kept in ascending date order, so
-// the latest verified day is the last row.
-export function getLatestVerifiedDay(): LedgerRow | null {
-  const rows = readLedger();
-  return rows.length === 0 ? null : rows[rows.length - 1];
 }
 
 // Dates with a rendered markdown digest, sorted ascending. Backs

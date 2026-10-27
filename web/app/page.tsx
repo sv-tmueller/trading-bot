@@ -1,6 +1,14 @@
 import { serviceClient } from "@/lib/supabase";
 import { getAccount, getPositions, type AlpacaAccount, type AlpacaPosition } from "@/lib/alpaca";
-import { getLatestVerifiedDay } from "@/lib/dailyJournal";
+import { readLedger } from "@/lib/dailyJournal";
+import {
+  computeDashboardRoi,
+  formatSignedPct,
+  HOURLY_BOT_START_DATE,
+  ROLLING_WINDOW_DAYS,
+  SHORT_WINDOW_TRADING_DAYS,
+  type RoiResult,
+} from "@/lib/roi";
 
 // Always render fresh at request time — this is a live status page.
 export const dynamic = "force-dynamic";
@@ -196,8 +204,11 @@ export default async function Page() {
   const { recentScans, latestEntered, paused, baseline, trades, audit, account, positions, dbError } =
     await getData();
   // Synchronous, request-time read (design spec §8's accepted tension
-  // resolution); no need to join the Promise.all above.
-  const latestVerifiedDay = getLatestVerifiedDay();
+  // resolution); no need to join the Promise.all above. The ledger is kept in
+  // ascending date order, so the latest verified day is its last row; the same
+  // rows also feed the ROI rolling-window start point (#674).
+  const ledgerRows = readLedger();
+  const latestVerifiedDay = ledgerRows.length === 0 ? null : ledgerRows[ledgerRows.length - 1];
 
   const latestScan = recentScans[0] ?? null;
   const now = new Date();
@@ -234,6 +245,20 @@ export default async function Page() {
     ? computeEquityHeadroomPct(equity, floorPrice)
     : null;
   const floorBreached = equity != null && floorPrice != null && equity <= floorPrice;
+
+  // ROI (#674): pure math in lib/roi.ts over equity figures this page already
+  // reads (no new query). End = latest scan equity; start = the experiment
+  // baseline; the rolling window's start comes from the daily ledger's
+  // metrics.equity_usd (a file read).
+  const { sinceStart: roiSinceStart, rolling: roiRolling } = computeDashboardRoi({
+    baselineEquity: baseline,
+    latest: latestScan
+      ? { date: new Date(latestScan.bar_ts).toISOString().slice(0, 10), equity }
+      : null,
+    history: ledgerRows.map((r) => ({ date: r.date, equity: r.metrics.equity_usd })),
+    startDate: HOURLY_BOT_START_DATE,
+    rollingDays: ROLLING_WINDOW_DAYS,
+  });
 
   return (
     <main className="mx-auto max-w-5xl space-y-6 p-6">
@@ -296,6 +321,48 @@ export default async function Page() {
           {floorPrice != null ? ` · floor ${money(floorPrice)}` : ""}
         </p>
       )}
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-medium text-fg-2">Return on investment (paper, dev)</h2>
+        {roiSinceStart === null ? (
+          <p className="text-sm text-muted">
+            ROI n/a (needs the experiment baseline and at least one scan).
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Stat
+                label="ROI since hourly-bot start"
+                value={formatSignedPct(roiSinceStart.rawRoi)}
+                accent="zinc"
+              />
+              <Stat label="Annualized (compound, 365-day)" value={annualizedText(roiSinceStart)} accent="zinc" />
+              <Stat
+                label="Period"
+                value={`${roiSinceStart.calendarDays} days, ~${roiSinceStart.tradingDays} trading days`}
+                accent="zinc"
+              />
+            </div>
+            <p className="text-xs text-muted">{roiSinceStart.periodLabel}</p>
+            {roiSinceStart.shortWindow && (
+              <p className="text-xs text-warn">
+                Short period, not meaningful: under {SHORT_WINDOW_TRADING_DAYS} trading days, so the
+                yearly rate is very noisy.
+              </p>
+            )}
+          </>
+        )}
+        <p className="text-xs text-muted">
+          {roiRolling
+            ? `Rolling ${ROLLING_WINDOW_DAYS} days: ${formatSignedPct(roiRolling.rawRoi)} over ${roiRolling.periodLabel} -> ${annualizedText(roiRolling)}`
+            : `Rolling ${ROLLING_WINDOW_DAYS} days: n/a (under ${ROLLING_WINDOW_DAYS} days of history since ${HOURLY_BOT_START_DATE})`}
+        </p>
+        <p className="text-xs text-muted">
+          Annualized = (end equity / start equity)^(365 / calendar days) - 1. Start: experiment
+          baseline; end: latest scan equity. Trading days count weekdays (holidays not excluded).
+          Assumes no deposits or withdrawals (paper account, dev only).
+        </p>
+      </section>
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium text-fg-2">Open position &amp; bracket levels ({symbol})</h2>
@@ -412,6 +479,10 @@ export default async function Page() {
       </a>
     </main>
   );
+}
+
+function annualizedText(r: RoiResult): string {
+  return r.annualizedRoi === null ? "n/a" : `~${formatSignedPct(r.annualizedRoi)}/yr`;
 }
 
 function Stat({ label, value, accent }: { label: string; value: string; accent: string }) {

@@ -4,8 +4,10 @@ A Next.js (App Router) status page for the hourly candlestick bot, reading
 Supabase **server-side** with the service-role key. No controls — viewing only
 (the panic kill button stays the token-auth Edge Function). Answers one
 question: is the bot alive, and what did it just do — strategy-performance
-analysis (R-multiples, detector hit rates, equity curves) is out of scope here;
-`scripts/render_weekly_journal.ts` owns that weekly.
+analysis (R-multiples, detector hit rates, equity curves, trailing returns) is
+out of scope here; `scripts/render_weekly_journal.ts` owns that weekly. The one
+carve-out is a single return-on-investment figure (#674, which overrides #538's
+"trailing returns" non-goal for this figure only; see the ROI sentence below).
 
 Shows: the latest `hourly_scans` bar's timestamp and decision, the open
 position with its bracket levels (entry ref / stop / target, paired with the
@@ -18,6 +20,18 @@ unrealized P&L) when Alpaca keys are configured (otherwise it shows a "not
 connected" hint). The page also states how stale its newest scan is (a plain
 age fact, plus a banner past a fixed 72h threshold) and notes when no scan has
 ever been recorded, rather than letting either read as silent "all clear".
+A **Return on investment (paper, dev)** section shows the raw ROI since the
+hourly-bot start (2026-07-30, the dev paper experiment), the compound annualized
+rate `(end / start)^(365 / calendar days) - 1`, the period it covers, a
+rolling-90-day secondary figure (`n/a` until 90 days of history exist), and a
+"short period, not meaningful" hint under 60 trading days. Start equity is the
+`hourly_experiment_start_equity` baseline and end equity is the latest scan's
+`equity_usd`, both already read by this page; the rolling window's start point
+comes from the daily ledger's `metrics.equity_usd` (a file read, so it needs the
+same `docs/trading-journal/` access described below, and the label always shows
+the start date actually used). The math lives in the pure module
+`web/lib/roi.ts`. It assumes no deposits or withdrawals (paper account), and a
+prod dashboard must revisit `HOURLY_BOT_START_DATE` once prod exists.
 A tile on this page shows the latest daily-verification day and its verdict,
 linking to `/daily` (see below); it is the one part of this page that is not
 covered by the `force-dynamic` export above it: see "Daily verification
@@ -77,6 +91,7 @@ cd web
 cp .env.example .env.local   # fill SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (dev project)
 npm install
 npm run dev                  # http://localhost:3000
+npm test                     # unit tests for web/lib (Node's built-in runner; needs Node >= 22.18)
 ```
 
 ## Deploy (Vercel)
