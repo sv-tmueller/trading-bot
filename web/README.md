@@ -6,8 +6,8 @@ Supabase **server-side** with the service-role key. No controls — viewing only
 question: is the bot alive, and what did it just do — strategy-performance
 analysis (R-multiples, detector hit rates, equity curves, trailing returns) is
 out of scope here; `scripts/render_weekly_journal.ts` owns that weekly. The one
-carve-out is a single return-on-investment figure (#674, which overrides #538's
-"trailing returns" non-goal for this figure only; see the ROI sentence below).
+carve-out is the ROI section (#674: since-start and rolling-90-day ROI), which overrides #538's
+"trailing returns" non-goal for that section only.
 
 Shows: the latest `hourly_scans` bar's timestamp and decision, the open
 position with its bracket levels (entry ref / stop / target, paired with the

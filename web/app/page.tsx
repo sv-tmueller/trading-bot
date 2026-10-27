@@ -355,7 +355,7 @@ export default async function Page() {
         <p className="text-xs text-muted">
           {roiRolling
             ? `Rolling ${ROLLING_WINDOW_DAYS} days: ${formatSignedPct(roiRolling.rawRoi)} over ${roiRolling.periodLabel} -> ${annualizedText(roiRolling)}`
-            : `Rolling ${ROLLING_WINDOW_DAYS} days: n/a (under ${ROLLING_WINDOW_DAYS} days of history since ${HOURLY_BOT_START_DATE})`}
+            : `Rolling ${ROLLING_WINDOW_DAYS} days: n/a (needs ${ROLLING_WINDOW_DAYS} days of history since ${HOURLY_BOT_START_DATE} and a latest scan)`}
         </p>
         <p className="text-xs text-muted">
           Annualized = (end equity / start equity)^(365 / calendar days) - 1. Start: experiment

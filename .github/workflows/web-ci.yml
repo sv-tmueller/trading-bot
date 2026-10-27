@@ -23,10 +23,11 @@ on:
 
 concurrency:
   group: web-ci-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     defaults:
       run:
