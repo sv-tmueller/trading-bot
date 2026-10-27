@@ -10,6 +10,7 @@ Current skills relevant to engineering work:
 - **`add-or-extend-agent`** — recipe for adding a new env-driven setting (env read, validation, `.env.example`, README, opt-in/default-OFF pattern). The historical "agent" content (BaseAgent contract, tool routing) is no longer applicable post-2026-05-07 pivot but the settings recipe is still canonical.
 - **`handover`** — writing a session handover doc so a future session can resume cold.
 - **`research-bundle`** — multi-agent research surveys for product-direction decisions.
+- **`weekly-reflection`** -- weekly critique of the hourly bot's trading week (reads the week's daily reflections, verification data and hypothesis issues; writes a reflections doc and files or updates hypothesis issues). Invoke with "run the weekly critique" or "weekly reflection for W<week>".
 - **`research-round`** -- operator-gated research round for the AI research pipeline (candidate issues, pre-registration freeze PR, development run then one-shot holdout, scorecard and gate verdict per candidate); stops at three operator decisions. Spec: `docs/superpowers/specs/2026-10-23-ai-research-pipeline-design.md`.
 
 ## Superpowers skills are the canonical playbooks
@@ -28,7 +29,7 @@ This project uses the [`superpowers`](https://github.com/obra/superpowers) plugi
 | Wrapping up a branch | `superpowers:finishing-a-development-branch` | `/tm-kickoff` pipeline; human merge sign-off. |
 | Worktree-per-task isolation | `superpowers:using-git-worktrees` | All agents (reinforces the existing "always use worktrees" rule). |
 
-The three trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`) sit alongside the superpowers skills — they cover work the superpowers library does not.
+The five trading-bot-specific skills (`add-or-extend-agent`, `handover`, `research-bundle`, `weekly-reflection`, `research-round`) sit alongside the superpowers skills -- they cover work the superpowers library does not.
 
 **Where superpowers conflicts with older inline guidance in `CLAUDE.md` or in agent `.md` files, the superpowers playbook wins.** The [Architectural invariants](#architectural-invariants) section below is the single authoritative home of the repo's safety contract; nothing restates the invariant text, every enforcement artifact references this section. Non-negotiable.
 
