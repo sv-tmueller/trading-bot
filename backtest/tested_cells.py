@@ -37,6 +37,15 @@ Verdict vocabulary
                      on its own -- the successor's own verdict is what actually settles the
                      cells; this verdict only prevents the never-run row from being read as a
                      live, still-open question once its successor exists.
+``PASS``             tested at PROMOTABLE power (only) and cleared the bar its
+                     pre-registration froze (for a research-pipeline round, all five
+                     ``backtest/pipeline_gate.py`` criteria). Settles the cell the other way
+                     from NO_GO: ``is_tested`` and ``check_novel`` treat it as tested (a re-run
+                     is a duplicate) and its cells count toward multiplicity. Deliberately NOT
+                     in CLOSING_VERDICTS, which means "cleared nothing". A pass below
+                     PROMOTABLE power has no verdict yet; raise it with the operator. A pass is
+                     not a promotion: promoting is the operator's decision and changes nothing
+                     live.
 
 Run ``python3 -m backtest.tested_cells`` for a freshly-rendered table (no doc to go stale), or
 ``python3 -m backtest.tested_cells --check candlestick_pattern daily SPY`` to query overlap.
@@ -55,12 +64,15 @@ DIRECTIONAL_NO_GO = "DIRECTIONAL_NO_GO"
 DATA_BLOCKED = "DATA_BLOCKED"
 PENDING = "PENDING"
 SUPERSEDED = "SUPERSEDED"
-VERDICTS = (NO_GO, CLASS_KILL, DIRECTIONAL_NO_GO, DATA_BLOCKED, PENDING, SUPERSEDED)
+PASS = "PASS"
+VERDICTS = (NO_GO, CLASS_KILL, DIRECTIONAL_NO_GO, DATA_BLOCKED, PENDING, SUPERSEDED, PASS)
 
 #: Verdicts that actually close a cell. A DATA_BLOCKED or PENDING cell is still open, a
 #: DIRECTIONAL_NO_GO is explicitly re-testable at full power, and a SUPERSEDED record defers
 #: entirely to its successor -- conflating any of these with a real NO_GO would let weak or
-#: absent evidence masquerade as a settled question.
+#: absent evidence masquerade as a settled question. The tuple means "cleared nothing": PASS
+#: also settles its cells but is deliberately left out, so ``is_closed()`` and the weekly
+#: review's "Closed directions" never list a pass as a kill.
 CLOSING_VERDICTS = (NO_GO, CLASS_KILL)
 
 #: Verdicts that consumed no multiplicity: PENDING/DATA_BLOCKED never ran at all, and
@@ -88,7 +100,10 @@ class TestedCell:
     superseded_by: str = ""  # the successor record's `source`, set only when verdict=SUPERSEDED
 
     def is_closed(self) -> bool:
-        """True only if this record actually settles its cells."""
+        """True only for a negative settle (a ``CLOSING_VERDICTS`` member).
+
+        A ``PASS`` record also settles its cells; see ``is_tested``.
+        """
         return self.verdict in CLOSING_VERDICTS
 
 
@@ -482,22 +497,28 @@ def find(
 
 
 def is_tested(family: str, cadence: str, vehicle: str) -> bool:
-    """True only if this (family, cadence, vehicle) has a **closing** verdict on record.
+    """True only if this (family, cadence, vehicle) has a **settling** verdict on record.
+
+    Settling means ``CLOSING_VERDICTS`` (cleared nothing) or ``PASS`` (cleared the bar);
+    either way a re-run is a duplicate.
 
     Deliberately strict: a ``DATA_BLOCKED`` or ``PENDING`` record is not evidence, and a
     ``DIRECTIONAL_NO_GO`` is explicitly re-testable at full power. Treating any of those as
     "already tested" would let weak or absent evidence close a live question.
     """
     return any(
-        c.is_closed() for c in find(family=family, cadence=cadence, vehicle=vehicle)
+        c.is_closed() or c.verdict == PASS
+        for c in find(family=family, cadence=cadence, vehicle=vehicle)
     )
 
 
 def check_novel(family: str, cadence: str, vehicle: str) -> dict:
     """Report what prior work overlaps a proposed cell, and how strongly.
 
-    Returns ``{"novel": bool, "closed": (...), "weak": (...), "superseded": (...),
-    "open": (...)}`` where ``closed`` records would make a re-run a duplicate, ``weak``
+    Returns ``{"novel": bool, "closed": (...), "passed": (...), "weak": (...),
+    "superseded": (...), "open": (...)}`` where ``closed`` records would make a re-run a
+    duplicate, ``passed`` records cleared their pre-registered bar (a re-run is equally a
+    duplicate, but reads as a winner, not a kill, so it is kept out of ``closed``), ``weak``
     records are directional reads that a full-power test may legitimately revisit,
     ``superseded`` records were folded into a later, stronger record on the same cells (see
     that record's ``superseded_by``), and ``open`` records are pre-registered-but-unrun grids
@@ -507,12 +528,14 @@ def check_novel(family: str, cadence: str, vehicle: str) -> dict:
     """
     overlap = find(family=family, cadence=cadence, vehicle=vehicle)
     closed = tuple(c for c in overlap if c.is_closed())
+    passed = tuple(c for c in overlap if c.verdict == PASS)
     weak = tuple(c for c in overlap if c.verdict == DIRECTIONAL_NO_GO)
     superseded = tuple(c for c in overlap if c.verdict == SUPERSEDED)
     open_ = tuple(c for c in overlap if c.verdict in (DATA_BLOCKED, PENDING))
     return {
         "novel": not overlap,
         "closed": closed,
+        "passed": passed,
         "weak": weak,
         "superseded": superseded,
         "open": open_,
@@ -577,6 +600,8 @@ def main(argv: Optional[list] = None) -> int:
             return 0
         for label, key in (
             ("CLOSED (a re-run would be a duplicate)", "closed"),
+            ("PASSED (cleared its pre-registered bar -- a re-run would be a duplicate)",
+             "passed"),
             ("WEAK (directional only — full-power re-test is legitimate)", "weak"),
             ("SUPERSEDED (folded into a later, stronger record -- see superseded_by)",
              "superseded"),
