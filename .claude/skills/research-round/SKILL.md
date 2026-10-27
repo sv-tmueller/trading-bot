@@ -249,16 +249,31 @@ this procedure:
    - ledger rows in `backtest/tested_cells.py`, written by this orchestrating session (the analyst
      may not edit `backtest/`), with updated pins in `tests/test_tested_cells.py` if a pinned
      family's count changes;
+   - for a candidate whose `evaluate_candidate` result has `passed` True and whose development
+     scorecard has `len(window_calmars) >= 13` (`PROMOTION_N_W` in `backtest/intraday_data.py`, the
+     repo's n_w promotion bar), use `PASS` with `power="PROMOTABLE"`; a pass below that bar is step 6;
    - for a candidate that fails, use `NO_GO` with `power="PROMOTABLE"` when its development scorecard
      has `len(window_calmars) >= 13` (the repo's n_w promotion bar), otherwise `DIRECTIONAL_NO_GO`
      with `power="DIRECTIONAL"`. Use `CLASS_KILL` only when the verdict document closes the whole
      family. `n_cells` is the candidate's frozen N. Never `PENDING`, `DATA_BLOCKED` or `SUPERSEDED`
      (uncounted);
-   - `python3 -m pytest tests/test_tested_cells.py tests/test_trial_store.py -v` passing.
-6. **Pass-verdict gap.** The ledger vocabulary (`VERDICTS` in `backtest/tested_cells.py`) has no pass
-   value, and `PENDING` is not counted. If a candidate passes all five criteria, do not invent a
-   verdict and do not stretch an existing one; write it up in the verdict document and raise the gap
-   at the final stop for the operator to resolve.
+   - `python3 -m pytest tests/test_tested_cells.py tests/test_trial_store.py tests/test_weekly_review.py -v`
+     passing. The first `PASS` row breaks two live-ledger pins in `tests/test_weekly_review.py`:
+     `test_survivor_count_is_zero_and_matches_the_ledger` and
+     `test_render_live_ledger_has_no_passed_cells_and_zero_survivor_wording_unchanged`. Update both to
+     the new live state in the same results PR (the survivor count, the swapped survivors line, and
+     the `PASS` row under "Passed cells"), never delete them, and assert the full swapped line rather
+     than a shared prefix. A third pin, `test_untested_candidates_are_actually_absent_from_the_ledger`,
+     fails on the first ledger row of any verdict for a family in `UNTESTED_CANDIDATES`
+     (`backtest/weekly_review.py`). If it fails, stop and raise it on the round issue; do not edit
+     `backtest/weekly_review.py` inside the round, because the candidate-list update is its own issue.
+6. **Pass verdict.** `PASS` is in the ledger vocabulary (`VERDICTS` in `backtest/tested_cells.py`),
+   but write it only under step 5's two conditions. `test_pass_rows_claim_promotable_power` enforces
+   the power label; n_w is checked only by this step, because `evaluate_candidate` does not enforce it.
+   A candidate that passes all five criteria with `len(window_calmars) < 13` gets no ledger row: no
+   existing verdict fits, so do not stretch `PASS`, `DIRECTIONAL_NO_GO` or `PENDING`. Write it up in
+   the verdict document and raise it at STOP 3. A pass is not a promotion: promotion stays the
+   operator's decision at STOP 3 and changes nothing live (see Non-goals).
 7. Print and post on the round issue, verbatim, with the PR number filled in:
 
    ```
