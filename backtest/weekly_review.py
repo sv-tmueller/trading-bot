@@ -30,6 +30,13 @@ An unknown verdict (not in ``tc.VERDICTS``) raises ``ValueError`` rather than be
 read as "run" -- an inflated ``cells_run``/multiplicity count that disappears from every
 section of this review is worse than a loud failure.
 
+``PASS`` records (#723) never surface as a proposal candidate either -- the cell is settled
+(cleared its pre-registered bar), and a re-run would be a duplicate. They are counted in
+``cells_run`` (``PASS`` is not in ``tc.UNCOUNTED_VERDICTS``), counted as ``survivors`` (one per
+record), and listed in a dedicated "## Passed cells" section, never under "Closed directions"
+(``PASS`` is not a ``tc.CLOSING_VERDICTS`` member). A pass settles the cell; promotion is the
+operator's decision and changes nothing live.
+
 Deliberately NOT in this file
 -----------------------------
 Where the review is *filed* (a doc, an issue, both) and *when* is the caller's business — see
@@ -108,6 +115,7 @@ def programme_state() -> dict:
     pending = tc.find(verdict=tc.PENDING)
     blocked = tc.find(verdict=tc.DATA_BLOCKED)
     superseded = tc.find(verdict=tc.SUPERSEDED)
+    passed = tc.find(verdict=tc.PASS)
     closed = [c for c in tc.LEDGER if c.is_closed()]
     weak = tc.find(verdict=tc.DIRECTIONAL_NO_GO)
     families = sorted({c.family for c in tc.LEDGER})
@@ -119,12 +127,13 @@ def programme_state() -> dict:
         "cells_blocked": sum(c.n_cells for c in blocked),
         "cells_superseded": sum(c.n_cells for c in superseded),
         "closed_records": closed,
+        "passed_records": list(passed),
         "weak_records": list(weak),
         "pending_records": list(pending),
         "blocked_records": list(blocked),
         "superseded_records": list(superseded),
         "families": families,
-        "survivors": 0,   # no cell has ever cleared the bar in this repo; see §Survivors
+        "survivors": len(passed),   # PASS records (one per candidate's selected configuration)
     }
 
 
@@ -198,6 +207,14 @@ def render_review(as_of: Optional[date] = None) -> str:
         "| family | cells run |",
         "|---|---|",
     ]
+    if state["survivors"]:
+        # The zero-survivor wording above claims nothing has ever passed; swap it out once a
+        # PASS record exists. With no survivors the line stays byte-identical.
+        at = next(i for i, ln in enumerate(lines) if ln.startswith("- **Survivors:"))
+        lines[at] = (
+            f"- **Survivors: {state['survivors']}** -- PASS records on the ledger; "
+            f"see \"Passed cells\" below"
+        )
     for family in state["families"]:
         lines.append(f"| `{family}` | {tc.cumulative_trials(family)} |")
 
@@ -243,6 +260,24 @@ def render_review(as_of: Optional[date] = None) -> str:
             f"- `{c.family}` / {c.cadence} / {c.vehicle} — **{c.verdict}** "
             f"({_cells(c.n_cells)}) — `{c.source}`"
         )
+
+    lines += [
+        "",
+        "## Passed cells (cleared the pre-registered bar; never proposed as a re-test)",
+        "",
+    ]
+    if state["passed_records"]:
+        for c in state["passed_records"]:
+            lines.append(
+                f"- `{c.family}` / {c.cadence} / {c.vehicle} ({_cells(c.n_cells)}) -- "
+                f"**{c.verdict}** -- `{c.source}`"
+            )
+    else:
+        lines.append("None on record.")
+    lines += [
+        "",
+        "A pass settles the cell; promotion is the operator's decision and changes nothing live.",
+    ]
 
     lines += [
         "",

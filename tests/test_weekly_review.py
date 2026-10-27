@@ -282,3 +282,66 @@ def test_cli_writes_to_out_and_creates_parent_dirs(tmp_path, capsys):
 def test_cli_rejects_a_malformed_date():
     with pytest.raises(ValueError):
         wr.main(["--as-of", "not-a-date"])
+
+
+# ---------------------------------------------------------------------------
+# PASS verdict (#723)
+# ---------------------------------------------------------------------------
+
+def _pass_cell(family="synthetic_pass", n=7) -> tc.TestedCell:
+    return tc.TestedCell(
+        family=family, cadence="daily", vehicle="SPY", exit_style="x", n_cells=n,
+        verdict=tc.PASS, power="PROMOTABLE",
+        source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-01-01",
+    )
+
+
+def test_pass_records_are_never_proposed(monkeypatch):
+    """A PASS family is on the ledger, so propose_next_round must fall through to the
+    untested-candidate list rather than re-proposing it."""
+    monkeypatch.setattr(tc, "LEDGER", (_pass_cell(),))
+    st = wr.programme_state()
+    headline, _rationale = wr.propose_next_round(st)
+    assert "synthetic_pass" not in headline
+    assert "vol_regime_gating" in headline
+
+
+def test_programme_state_counts_pass_cells_as_run_and_records_as_survivors(monkeypatch):
+    passed = _pass_cell(n=7)
+    killed = tc.TestedCell(
+        family="synthetic_weak", cadence="daily", vehicle="SPY", exit_style="x", n_cells=3,
+        verdict=tc.DIRECTIONAL_NO_GO, power="DIRECTIONAL",
+        source="docs/research/2026-07-24-orb-probe-verdict.md", date="2026-01-01",
+    )
+    monkeypatch.setattr(tc, "LEDGER", (passed, killed))
+    st = wr.programme_state()
+    assert st["cells_run"] == 10
+    assert st["survivors"] == 1
+    assert list(st["passed_records"]) == [passed]
+    assert passed not in st["closed_records"]
+
+
+def test_render_lists_a_pass_record_under_passed_cells_not_closed_directions(monkeypatch):
+    monkeypatch.setattr(tc, "LEDGER", (_pass_cell(),))
+    text = wr.render_review(date(2026, 7, 25))
+    assert "## Passed cells (cleared the pre-registered bar; never proposed as a re-test)" in text
+    assert "- `synthetic_pass` / daily / SPY (7 cells) -- **PASS** -- " in text
+    assert "**Survivors: 1**" in text
+    assert text.index("## Closed directions") < text.index("## Passed cells")
+    assert text.index("## Passed cells") < text.index("## Superseded records")
+    assert text.index("## Passed cells") < text.index("## Proposed next round")
+    closed_block = text[text.index("## Closed directions"):text.index("## Passed cells")]
+    assert "synthetic_pass" not in closed_block
+
+
+def test_render_live_ledger_has_no_passed_cells_and_zero_survivor_wording_unchanged():
+    text = wr.render_review(date(2026, 7, 25))
+    (line,) = [ln for ln in text.splitlines() if ln.startswith("- **Survivors:")]
+    assert line.startswith("- **Survivors: 0**")
+    assert line.endswith("no cell has ever cleared the after-tax-Calmar-vs-SPY bar in this repo")
+    section = text[text.index("## Passed cells"):text.index("## Superseded records")]
+    assert "None on record." in section
+    assert (
+        "A pass settles the cell; promotion is the operator's decision and changes nothing live."
+        in section
+    )
