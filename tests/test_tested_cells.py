@@ -507,3 +507,113 @@ def test_tsmom_spy_note_cites_the_walkforward_read_and_stays_weak():
     assert rec.source != WALKFORWARD_DOC
     assert tc.is_tested("tsmom_timeseries", "daily", "SPY") is False
     assert tc.check_novel("tsmom_timeseries", "daily", "SPY")["weak"]
+
+
+# ---------------------------------------------------------------------------
+# PASS verdict (#723)
+# ---------------------------------------------------------------------------
+
+PASS_SOURCE = "docs/research/2026-07-24-orb-probe-verdict.md"
+
+
+def _pass_record(family="synthetic_pass_probe", n=7, power="PROMOTABLE") -> tc.TestedCell:
+    return tc.TestedCell(
+        family=family, cadence="daily", vehicle="SPY", exit_style="x", n_cells=n,
+        verdict=tc.PASS, power=power, source=PASS_SOURCE, date="2026-01-01",
+    )
+
+
+def test_pass_is_a_verdict_but_neither_closing_nor_uncounted():
+    assert tc.PASS == "PASS"
+    assert tc.PASS in tc.VERDICTS
+    # A pass settles its cells but is NOT a kill and consumed real multiplicity.
+    assert tc.PASS not in tc.CLOSING_VERDICTS
+    assert tc.PASS not in tc.UNCOUNTED_VERDICTS
+    assert _pass_record().is_closed() is False
+
+
+def test_a_promotable_pass_record_validates():
+    """The same conditions test_every_record_has_a_valid_schema applies, plus the source and
+    superseded_by rules, hold for a well-formed PASS record."""
+    cell = _pass_record()
+    assert cell.verdict in tc.VERDICTS
+    assert cell.power in tc.POWER_LEVELS
+    assert cell.n_cells > 0
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", cell.date)
+    assert cell.family and cell.cadence and cell.vehicle and cell.exit_style
+    assert cell.source.startswith("docs/")
+    assert (REPO_ROOT / cell.source).is_file()
+    assert cell.superseded_by == ""
+
+
+def test_pass_rows_claim_promotable_power():
+    """A pass at DIRECTIONAL power would close a cell on weak evidence. Vacuous until the
+    first PASS row lands, then it bites (the SUPERSEDED-rows precedent)."""
+    for cell in tc.LEDGER:
+        if cell.verdict == tc.PASS:
+            assert cell.power == "PROMOTABLE", (
+                f"{cell.family}/{cell.vehicle} is PASS but claims power={cell.power}"
+            )
+
+
+def test_cumulative_trials_counts_a_pass_record(monkeypatch):
+    synthetic = (
+        _pass_record(n=7),
+        tc.TestedCell(
+            family="synthetic_pass_probe", cadence="daily", vehicle="ES", exit_style="x",
+            n_cells=3, verdict=tc.PENDING, power="NONE", source=PASS_SOURCE,
+            date="2026-01-01",
+        ),
+    )
+    monkeypatch.setattr(tc, "LEDGER", synthetic)
+    assert tc.cumulative_trials("synthetic_pass_probe") == 7
+
+
+def test_is_tested_true_for_a_pass_cell(monkeypatch):
+    monkeypatch.setattr(tc, "LEDGER", (_pass_record(),))
+    assert tc.is_tested("synthetic_pass_probe", "daily", "SPY") is True
+
+
+def test_check_novel_reports_a_pass_cell_as_passed_not_closed(monkeypatch):
+    monkeypatch.setattr(tc, "LEDGER", (_pass_record(),))
+    res = tc.check_novel("synthetic_pass_probe", "daily", "SPY")
+    assert res["novel"] is False
+    assert res["passed"]
+    assert not res["closed"] and not res["weak"] and not res["superseded"] and not res["open"]
+
+
+def test_check_novel_buckets_are_disjoint_including_passed(monkeypatch):
+    monkeypatch.setattr(tc, "LEDGER", tc.LEDGER + (_pass_record(),))
+    for family, cadence, vehicle in [
+        ("donchian_breakout", "daily", "SPY"),
+        ("candlestick_pattern", "daily", "GOOG"),
+        ("opening_range_breakout", "5m", "SPY"),
+        ("synthetic_pass_probe", "daily", "SPY"),
+    ]:
+        res = tc.check_novel(family, cadence, vehicle)
+        ids = [
+            id(c)
+            for bucket in ("closed", "passed", "weak", "superseded", "open")
+            for c in res[bucket]
+        ]
+        assert len(ids) == len(set(ids)), "a record landed in two buckets"
+
+
+def test_render_table_shows_a_pass_record_and_counts_it_as_run(monkeypatch):
+    run_before = re.search(r"(\d+) actually run", tc.render_table())
+    assert run_before, "render_table no longer prints an 'actually run' total"
+    monkeypatch.setattr(tc, "LEDGER", tc.LEDGER + (_pass_record(n=7),))
+    text = tc.render_table()
+    assert f"{int(run_before.group(1)) + 7} actually run" in text
+    assert any(
+        line.startswith("synthetic_pass_probe") and " PASS " in line
+        for line in text.splitlines()
+    )
+
+
+def test_cli_check_reports_a_pass_record(monkeypatch, capsys):
+    monkeypatch.setattr(tc, "LEDGER", (_pass_record(),))
+    assert tc.main(["--check", "synthetic_pass_probe", "daily", "SPY"]) == 0
+    out = capsys.readouterr().out
+    assert "PASSED" in out
+    assert PASS_SOURCE in out
