@@ -186,6 +186,15 @@ def test_superseded_records_are_never_proposed(monkeypatch):
     assert "vol_regime_gating" in headline
 
 
+def test_a_pass_on_an_untested_candidate_family_is_skipped_by_the_proposal(monkeypatch):
+    """vol_regime_gating is the first UNTESTED_CANDIDATES entry; once a PASS record sits on it
+    the `not tc.find(family=...)` skip must move the headline to the next candidate."""
+    monkeypatch.setattr(tc, "LEDGER", (_pass_cell(family="vol_regime_gating"),))
+    headline, _rationale = wr.propose_next_round(wr.programme_state())
+    assert "vol_regime_gating" not in headline
+    assert "cross_sectional_rv" in headline
+
+
 def test_live_ledger_headline_is_not_the_superseded_orb_or_hourly_geometry_retry():
     """#662: once the ORB probe and the hourly-geometry DATA_BLOCKED pair are SUPERSEDED, the
     generator must not propose retrying either -- both are folded into their successors."""
@@ -327,6 +336,9 @@ def test_render_lists_a_pass_record_under_passed_cells_not_closed_directions(mon
     assert "## Passed cells (cleared the pre-registered bar; never proposed as a re-test)" in text
     assert "- `synthetic_pass` / daily / SPY (7 cells) -- **PASS** -- " in text
     assert "**Survivors: 1**" in text
+    (line,) = [ln for ln in text.splitlines() if ln.startswith("- **Survivors:")]
+    assert line == '- **Survivors: 1** -- PASS records on the ledger; see "Passed cells" below'
+    assert "no cell has ever cleared" not in text
     assert text.index("## Closed directions") < text.index("## Passed cells")
     assert text.index("## Passed cells") < text.index("## Superseded records")
     assert text.index("## Passed cells") < text.index("## Proposed next round")

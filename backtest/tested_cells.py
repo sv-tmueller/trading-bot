@@ -37,9 +37,10 @@ Verdict vocabulary
                      on its own -- the successor's own verdict is what actually settles the
                      cells; this verdict only prevents the never-run row from being read as a
                      live, still-open question once its successor exists.
-``PASS``             tested at PROMOTABLE power (only) and cleared the bar its
+``PASS``             tested at PROMOTABLE power (only; n_w >= 13) and cleared the bar its
                      pre-registration froze (for a research-pipeline round, all five
-                     ``backtest/pipeline_gate.py`` criteria). Settles the cell the other way
+                     ``backtest/pipeline_gate.py`` criteria, which do not enforce n_w, so
+                     the ``power`` field is the only check on it). Settles the cell the other way
                      from NO_GO: ``is_tested`` and ``check_novel`` treat it as tested (a re-run
                      is a duplicate) and its cells count toward multiplicity. Deliberately NOT
                      in CLOSING_VERDICTS, which means "cleared nothing". A pass below

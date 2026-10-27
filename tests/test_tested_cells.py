@@ -600,10 +600,11 @@ def test_check_novel_buckets_are_disjoint_including_passed(monkeypatch):
 
 
 def test_render_table_shows_a_pass_record_and_counts_it_as_run(monkeypatch):
+    run_before = re.search(r"(\d+) actually run", tc.render_table())
+    assert run_before, "render_table no longer prints an 'actually run' total"
     monkeypatch.setattr(tc, "LEDGER", tc.LEDGER + (_pass_record(n=7),))
-    expected = sum(c.n_cells for c in tc.LEDGER if c.verdict not in tc.UNCOUNTED_VERDICTS)
     text = tc.render_table()
-    assert f"{expected} actually run" in text
+    assert f"{int(run_before.group(1)) + 7} actually run" in text
     assert any(
         line.startswith("synthetic_pass_probe") and " PASS " in line
         for line in text.splitlines()
