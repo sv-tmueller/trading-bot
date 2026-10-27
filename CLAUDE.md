@@ -10,6 +10,7 @@ Current skills relevant to engineering work:
 - **`add-or-extend-agent`** — recipe for adding a new env-driven setting (env read, validation, `.env.example`, README, opt-in/default-OFF pattern). The historical "agent" content (BaseAgent contract, tool routing) is no longer applicable post-2026-05-07 pivot but the settings recipe is still canonical.
 - **`handover`** — writing a session handover doc so a future session can resume cold.
 - **`research-bundle`** — multi-agent research surveys for product-direction decisions.
+- **`research-round`** -- operator-gated research round for the AI research pipeline (candidate issues, pre-registration freeze PR, development run then one-shot holdout, scorecard and gate verdict per candidate); stops at three operator decisions. Spec: `docs/superpowers/specs/2026-10-23-ai-research-pipeline-design.md`.
 
 ## Superpowers skills are the canonical playbooks
 
