@@ -257,7 +257,7 @@ this procedure:
      with `power="DIRECTIONAL"`. Use `CLASS_KILL` only when the verdict document closes the whole
      family. `n_cells` is the candidate's frozen N. Never `PENDING`, `DATA_BLOCKED` or `SUPERSEDED`
      (uncounted);
-   - `python3 -m pytest tests/test_tested_cells.py tests/test_trial_store.py tests/test_weekly_review.py -v`
+   - `python3 -m pytest -m "not slow"`, the command CI runs on every PR (`.github/workflows/deploy-dev.yml`),
      passing. The first `PASS` row breaks two live-ledger pins in `tests/test_weekly_review.py`:
      `test_survivor_count_is_zero_and_matches_the_ledger` and
      `test_render_live_ledger_has_no_passed_cells_and_zero_survivor_wording_unchanged`. Update both to
@@ -267,6 +267,24 @@ this procedure:
      fails on the first ledger row of any verdict for a family in `UNTESTED_CANDIDATES`
      (`backtest/weekly_review.py`). If it fails, stop and raise it on the round issue; do not edit
      `backtest/weekly_review.py` inside the round, because the candidate-list update is its own issue.
+     A fourth pin,
+     `tests/test_run_trial_backfill.py::test_each_trial_matches_one_ledger_record_with_same_source_and_date`,
+     fails when a ledger row reuses one of the five backfilled cells in `TRIALS`
+     (`backtest/run_trial_backfill.py`), all at cadence `daily`: `tsmom_timeseries` on `SPY`,
+     `faber_ma_timing` on `SPY` or `ETF_BASKET_GTAA5`, `dual_momentum_gem` on `ETF_BASKET_GEM`, and
+     `vol_target` on `SPY`. It exists to prove each backfilled trial's ledger record is present, not
+     that the cell has no later record. When it fails, narrow it in the same results PR: change only
+     the line that builds `hits` to
+     `hits = [c for c in tested_cells.find(spec.ledger_family, "daily", spec.ledger_vehicle) if c.source == spec.source]`
+     and leave its assertions and name as they are; never delete it. If the narrowed test still
+     fails, the round has changed or re-cited a backfilled record: stop and raise it on the round
+     issue, and edit neither `backtest/run_trial_backfill.py` nor the records it matches in
+     `backtest/tested_cells.py`. Run the command from the worktree root with an interpreter that has
+     `requirements.txt` installed, as CI does; it skips only the tests marked `slow` in `pytest.ini`
+     (live network or data fetches) and takes a few minutes. A collection error such as
+     `ModuleNotFoundError: No module named 'ta'` is a failed run: install `requirements.txt`
+     (`python3 -m pip install -r requirements.txt`) and re-run. Never add `--ignore`, `--deselect`
+     or `-k`, or substitute a shorter file list, to get green.
 6. **Pass verdict.** `PASS` is in the ledger vocabulary (`VERDICTS` in `backtest/tested_cells.py`),
    but write it only under step 5's two conditions. `test_pass_rows_claim_promotable_power` enforces
    the power label; n_w is checked only by this step, because `evaluate_candidate` does not enforce it.
