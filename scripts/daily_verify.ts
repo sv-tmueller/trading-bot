@@ -390,6 +390,24 @@ export const LATENCY_FAIL_MS = 120_000;
 // anomaly can produce a scan-count mismatch (a FAIL on the `scans` check)
 // without either outcome being folded into NON_SCANNING_OUTCOMES. See the
 // dedicated `zero-completed-bars-residual` fixture.
+//
+// Not a residual but a designed collapse (#671, root cause on that issue):
+// hourly_scans is keyed (symbol, bar_ts) (migration 0012), and both journal
+// writers upsert on that key (db.ts upsertHourlyScan / upsertHourlyScanUnlessEntered,
+// ~lines 566-632). A lagging feed at a :07 slot makes the staleness gate
+// (logic.ts:981-988) journal `skipped:stale_data` onto an OLDER bar that
+// already has a row, overwriting it in place (pinned by logic.test.ts:2362),
+// so two scanning runs end up sharing one row. checkScans therefore lets each
+// `skipped:stale_data` run whose notes start `bar end=` excuse at most one
+// missing row. `skipped:stale_data` stays OUT of this set: such a run can
+// also write a fresh row (two lagging slots in a row).
+//
+// Disclosed residual of the same kind, never seen in the committed ledger:
+// the partial-bar and scan-window gates (logic.ts:964-980) run before
+// staleness, so a lagging feed at the second open slot could re-pick the
+// 13:00 partial bar and collapse a `skipped:partial_bar` run into that row.
+// checkScans does not excuse it; it would surface as a visible scans FAIL
+// (the safe direction).
 export const NON_SCANNING_OUTCOMES: ReadonlySet<string> = new Set([
   "skipped:trading_paused",
   "skipped:market_closed",
@@ -599,10 +617,21 @@ export function checkScans(v: ScansCheckInput): CheckOutcome {
   const expectedScans = v.hourly_check_runs.filter(
     (r) => r.outcome === null || !NON_SCANNING_OUTCOMES.has(r.outcome),
   ).length;
-  if (v.scans.length !== expectedScans) {
+  // #671: a stale-bar skip that journaled (notes `bar end=...`) may have
+  // re-picked a bar that already had a row, collapsing two runs into one row
+  // (hourly_scans is keyed per bar). Each such run excuses at most one missing
+  // row; the zero-completed-bars stale run (other notes, null notes) is not
+  // counted, so that residual stays a visible FAIL.
+  const collapsibleStaleRuns = v.hourly_check_runs.filter(
+    (r) => r.outcome === "skipped:stale_data" && (r.notes ?? "").startsWith("bar end="),
+  ).length;
+  const minScans = expectedScans - collapsibleStaleRuns;
+  if (v.scans.length < minScans || v.scans.length > expectedScans) {
     statuses.push("FAIL");
     findings.push(
-      `scans: expected ${expectedScans} hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES), found ${v.scans.length}`,
+      collapsibleStaleRuns === 0
+        ? `scans: expected ${expectedScans} hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES), found ${v.scans.length}`
+        : `scans: expected ${minScans}-${expectedScans} hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES, minus up to ${collapsibleStaleRuns} stale-bar run(s) that may share a bar's row), found ${v.scans.length}`,
     );
   }
 
