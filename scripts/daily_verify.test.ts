@@ -763,7 +763,12 @@ Deno.test("checkScans: one stale run excuses at most one missing row -> FAIL at 
     hourly_check_runs: oct15Runs(OCT15_STALE_NOTES),
     scans: oct15Scans().slice(0, 4),
   });
-  assertEquals(checkScans(v).status, "FAIL");
+  assertEquals(checkScans(v), {
+    status: "FAIL",
+    findings: [
+      "scans: expected 5-6 hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES, minus up to 1 stale-bar run(s) that may share a bar's row), found 4",
+    ],
+  });
 });
 
 Deno.test("checkScans: more rows (7) than scanning runs (6) still FAILs even with a stale run", () => {

@@ -623,7 +623,9 @@ export function checkScans(v: ScansCheckInput): CheckOutcome {
   // row; the zero-completed-bars stale run (other notes, null notes) is not
   // counted, so that residual stays a visible FAIL.
   const collapsibleStaleRuns = v.hourly_check_runs.filter(
-    (r) => r.outcome === "skipped:stale_data" && (r.notes ?? "").startsWith("bar end="),
+    (r) =>
+      r.outcome === "skipped:stale_data" && typeof r.notes === "string" &&
+      r.notes.startsWith("bar end="),
   ).length;
   const minScans = expectedScans - collapsibleStaleRuns;
   if (v.scans.length < minScans || v.scans.length > expectedScans) {
