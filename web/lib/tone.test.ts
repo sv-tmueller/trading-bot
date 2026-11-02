@@ -31,6 +31,10 @@ test("outcomeTone: success:auto_paused is neg (lead decision, batch #738)", () =
   assert.equal(outcomeTone("success:auto_paused"), "neg");
 });
 
+test("outcomeTone: success:journal_degraded is warn (lead decision, batch #738)", () => {
+  assert.equal(outcomeTone("success:journal_degraded"), "warn");
+});
+
 test("outcomeTone: error:* is neg", () => {
   assert.equal(outcomeTone("error:DataError"), "neg");
   assert.equal(outcomeTone("error:naked_position_flattened"), "neg");
