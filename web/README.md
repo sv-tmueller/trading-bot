@@ -32,6 +32,14 @@ same `docs/trading-journal/` access described below, and the label always shows
 the start date actually used). The math lives in the pure module
 `web/lib/roi.ts`. It assumes no deposits or withdrawals (paper account), and a
 prod dashboard must revisit `HOURLY_BOT_START_DATE` once prod exists.
+Numbers are colored by what they mean, using the existing `pos` / `neg` / `warn` /
+`muted` tokens: return and P&L figures are green when positive and red when
+negative; audit outcomes `success` and `success:*` are green, `error:*` and
+`success:auto_paused` are red, `skipped:*` is grey; floor headroom is amber under
+5% and red at or below the floor (never green); zero, SKIP and n/a are grey.
+Direction (LONG/SHORT, BUY/SELL, the holdings qty sign) is never colored: it gets
+a ▲/▼ marker in default text. The +/- sign and the text are always kept. The
+classification lives in the pure module `web/lib/tone.ts`.
 A tile on this page shows the latest daily-verification day and its verdict,
 linking to `/daily` (see below); it is the one part of this page that is not
 covered by the `force-dynamic` export above it: see "Daily verification
