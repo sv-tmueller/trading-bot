@@ -476,6 +476,30 @@ LEDGER: Tuple[TestedCell, ...] = (
              "median 0.21 vs 0.85 (n_w=34), so the thin edge is not robust; max DD -58.2% vs "
              "incumbent -59.5%.",
     ),
+    # --- 2026-11-03 research round etf-daily-r1 (#737; pipeline round 1) -- daily-bar cadence
+    # "ETF_BASKET_XA14" = SPY, QQQ, IWM, EFA, EEM, VNQ, TLT, IEF, LQD, HYG, TIP, GLD, DBC, UUP
+    # with BIL as cash; 10% portfolio vol target, gross cap 1.0, five-criterion pipeline bar
+    # (backtest/pipeline_gate.py) against SPY through the same vol-targeting mechanism.
+    # Development 2007-05-30 to 2021-12-31 (n_w=14); one-shot holdout 2022-01-03 to 2026-11-03.
+    TestedCell(
+        family="tsmom_timeseries", cadence="daily", vehicle="ETF_BASKET_XA14",
+        exit_style="daily_signal_flip", n_cells=8, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-11-03-etf-daily-r1-verdict.md", date="2026-11-03",
+        note="Per-ETF L-day excess return over BIL, L in {21,63,126,252} x {long_short,"
+             "long_flat}, inverse-vol + 10% vol target. Selected L=63 long_flat: dev CAGR 5.1%, "
+             "max DD 17.0%, median year Calmar 0.79 vs benchmark 0.96 (n_w=14); DSR 0.88 (N=19), "
+             "bootstrap CI on uplift includes 0; holdout CAGR -0.5%, 2022 -12.4%. 2/5 criteria.",
+    ),
+    TestedCell(
+        family="cross_sectional_rv", cadence="daily", vehicle="ETF_BASKET_XA14",
+        exit_style="weekly_rank_rotation", n_cells=6, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-11-03-etf-daily-r1-verdict.md", date="2026-11-03",
+        note="Weekly top-4-of-14 on L-day return skipping 21 days, L in {63,126,252} x "
+             "{long_only, long_short}, inverse-vol + 10% vol target. Selected L=126 long_only: "
+             "dev CAGR 7.0%, max DD 16.3%, median year Calmar 0.70 vs benchmark 0.96 (n_w=14); "
+             "DSR 0.85 (N=19), PBO 0.09, bootstrap CI on uplift includes 0; holdout CAGR +5.0%, "
+             "max DD 10.6% (passes). 3/5 criteria: not better than vol-targeted SPY.",
+    ),
 )
 
 
