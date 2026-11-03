@@ -147,6 +147,36 @@ Applied identically to both candidates, the benchmark and the two information re
 
 `python3 -m backtest.run_etf_parity --tickers SPY,QQQ,IWM,EFA,EEM,VNQ,TLT,IEF,LQD,HYG,TIP,GLD,DBC,UUP,BIL` compares yfinance adjusted closes with Alpaca `1Day` bars (`adjustment=all`) over 2019-01-01 to 2021-12-31 and passes a ticker when the median absolute daily-return difference is below 1 bp and the 99th percentile below 10 bps. It is a GET-only market-data read, not a broker call, and the only data contact allowed before this document merges. The session that wrote this document has no Alpaca data keys, so the operator runs it and its output is pasted into the freeze PR. A failing ticker is discussed on the PR before the merge; the basket is not changed silently.
 
+### 10.1 Parity check result (operator-run, 2026-11-03, recorded before the merge)
+
+`venv/bin/python3 -m backtest.run_etf_parity --tickers SPY,QQQ,IWM,EFA,EEM,VNQ,TLT,IEF,LQD,HYG,TIP,GLD,DBC,UUP,BIL`, verbatim:
+
+```
+ticker    n_days  median_bps   p99_bps   n_yf  n_alpaca verdict
+SPY          756       1.410    37.866    757       757 FAIL
+QQQ          756       0.117     2.682    757       757 PASS
+IWM          756       1.555    35.762    757       757 FAIL
+EFA          756       0.727     7.627    757       757 PASS
+EEM          756       1.112    11.739    757       757 FAIL
+VNQ          756       0.549    15.581    757       757 FAIL
+TLT          756       0.242     0.807    757       757 PASS
+IEF          756       0.321     0.978    757       757 PASS
+LQD          756       0.336    11.007    757       757 FAIL
+HYG          756       0.518     7.225    757       757 PASS
+TIP          756       0.321     1.051    757       757 PASS
+GLD          756       0.000     9.788    757       757 PASS
+DBC          756       2.062     7.963    757       757 FAIL
+UUP          756       1.402     4.265    757       757 FAIL
+BIL          756       0.219     1.095    757       757 PASS
+```
+
+7 PASS, 8 FAIL against the script's thresholds (median < 1 bp, p99 < 10 bps); 757 sessions on both sides for every ticker. A read-only follow-up (largest-difference sessions per failing ticker, ex-dividend dates flagged from yfinance's dividend series; output on freeze PR #754) found two causes, neither of which touches the research data:
+
+1. **The p99 failures are 4 to 6 sessions in March 2020** (the circuit-breaker sessions 2020-03-09 to 2020-03-19, plus 03-30/31 for DBC), where Alpaca's `1Day` close differs from the official close that yfinance carries by up to 10% (VNQ 2020-03-16: yfinance 51.07, Alpaca 56.15; LQD 2020-03-16: 95.23 vs 91.18; GLD 2020-03-16: 141.64 vs 137.56; SPY 2020-03-12: 225.60 vs 232.07). Each bad close produces two offsetting return differences (that day and the next). Ex-dividend days are not the cause: the median absolute difference on ex-dividend days is the same as or smaller than on other days for every ticker checked. The same sessions were flagged as a first-run deviation in `docs/research/2026-10-22-spy-intraday-momentum-verdict.md`. The research runs on yfinance's official closes; the artefact sits on the Alpaca side and is a live-trading data-quality note for Project 2, not a research input.
+2. **The median failures are cent rounding of Alpaca's adjusted prices on low-priced ETFs** (UUP at about $21 and DBC at about $10 to $13: one cent is 4 to 8 bps, and UUP's largest off-March-2020 differences are all 4.3 to 4.6 bps with yfinance carrying sub-cent adjusted values) plus sub-cent adjustment differences elsewhere (SPY, IWM at 1.4 to 1.6 bps). The mean signed difference off the March 2020 sessions is within 0.15 bps of zero for every ticker, so there is no drift between the sources.
+
+**Decision recorded here (the operator confirms it by merging):** the basket is unchanged. The frozen rules use 21 to 252 day cumulative returns and 60-day volatility windows, which the two effects above cannot move except when a signal is already at zero; both effects are below the frozen 5 bps per-side slippage. The verdict document cites this section as the data-quality caveat, and any promoted rule's Project 2 design must re-run the parity check on the bars it will trade on, with the March 2020 sessions as a known Alpaca-side artefact. The `run_etf_parity` thresholds themselves (set before any real basket was run through the script) are a separate issue, not changed in this round.
+
 ## 11. What exists before this commit
 
 - The four candidate issues (#750 to #753) and the novelty-check output they carry (`python3 -m backtest.tested_cells --check ...`), which reads only the ledger.
