@@ -652,3 +652,18 @@ before journaling and can surface as `skipped:stale_data`, so that narrow
 anomaly can produce a scan-count mismatch. `error:*` outcomes are excluded
 because they are dynamic and not enumerable, and the `slots` check already FAILs
 any `error:*` regardless.
+
+**2026-11-02, #671: the `scans` row count is a range, not an equality.**
+`hourly_scans` is keyed `(symbol, bar_ts)` (migration 0012), so two scanning runs
+that pick the same candidate bar share one row. On 2026-10-15 a lagging feed made
+a `skipped:stale_data` run re-pick an older bar and overwrite its row in place
+(designed behaviour, #487), so 6 scanning runs left 5 rows while every run
+journaled correctly. This amends the §5.3 `scans` rule: with S the number of runs
+outside `NON_SCANNING_OUTCOMES` and k the number of `skipped:stale_data` runs whose
+notes start `bar end=`, the check FAILs only when rows < S - k or rows > S. When k
+is 0 the rule and the finding text are unchanged. Stale runs with other or null
+notes (the zero-completed-bars residual above) are not counted, so that residual
+stays a visible FAIL. `skipped:stale_data` is deliberately not added to
+`NON_SCANNING_OUTCOMES`, since a stale run can also write a new row. The same
+collapse could in principle occur at the partial-bar or scan-window gate; it has
+never been seen and would surface as a visible FAIL.

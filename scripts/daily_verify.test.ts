@@ -682,6 +682,107 @@ Deno.test("checkScans: neutral-only detectors_fired alongside no_detectors_fired
   assertEquals(checkScans(v), { status: "PASS", findings: [] });
 });
 
+// #671: hourly_scans is keyed (symbol, bar_ts), so two scanning runs that pick
+// the same candidate bar share one row. A lagging feed at a :07 slot makes
+// skipped:stale_data re-pick an older bar and overwrite its row in place.
+function oct15Runs(staleNotes: string | null): VerifyHourlyCheckRun[] {
+  const run = (hh: string, outcome: string, notes: string | null = null) =>
+    hourlyRun({
+      started_at: `2026-10-15T${hh}:07:00.000Z`,
+      finished_at: `2026-10-15T${hh}:07:01.000Z`,
+      outcome,
+      notes,
+    });
+  return [
+    run("13", "skipped:market_closed"),
+    run("14", "skipped:partial_bar"),
+    run("15", "success"),
+    run("16", "success:no_action"),
+    run("17", "success:no_action"),
+    // A stale run at 17:07 or 19:07 gives the same counts.
+    run("18", "skipped:stale_data", staleNotes),
+    run("19", "success:no_action"),
+    run("20", "skipped:market_closed"),
+    run("21", "skipped:market_closed"),
+  ];
+}
+
+function oct15Scans(): HourlyScanRow[] {
+  return [
+    scanRow({
+      bar_ts: "2026-10-15T13:00:00.000Z",
+      decision: "SKIP",
+      skip_reason: "partial_bar",
+    }),
+    scanRow({
+      bar_ts: "2026-10-15T14:00:00.000Z",
+      decision: "LONG",
+      skip_reason: null,
+      detectors_fired: ["bullish_marubozu"],
+      entry_order_id: "2d380a7b-f609-4866-882d-9cab68cef859",
+    }),
+    scanRow({ bar_ts: "2026-10-15T15:00:00.000Z", skip_reason: "no_detectors_fired" }),
+    scanRow({ bar_ts: "2026-10-15T16:00:00.000Z", skip_reason: "stale_data" }),
+    scanRow({ bar_ts: "2026-10-15T18:00:00.000Z", skip_reason: "no_detectors_fired" }),
+  ];
+}
+
+const OCT15_STALE_NOTES = "bar end=2026-10-15T17:00:00.000Z stale by 67.1min";
+
+Deno.test("checkScans: 2026-10-15 -- stale run re-picked a journaled bar, 6 scanning runs share 5 rows -> PASS", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs(OCT15_STALE_NOTES),
+    scans: oct15Scans(),
+  });
+  assertEquals(checkScans(v), { status: "PASS", findings: [] });
+});
+
+Deno.test("checkScans: stale run with 'no completed bars returned' notes is not excused -> FAIL with today's exact finding", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs("no completed bars returned"),
+    scans: oct15Scans(),
+  });
+  assertEquals(checkScans(v), {
+    status: "FAIL",
+    findings: [
+      "scans: expected 6 hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES), found 5",
+    ],
+  });
+});
+
+Deno.test("checkScans: stale run with null notes is not excused (fails closed) -> FAIL", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs(null),
+    scans: oct15Scans(),
+  });
+  assertEquals(checkScans(v).status, "FAIL");
+});
+
+Deno.test("checkScans: one stale run excuses at most one missing row -> FAIL at 4 rows", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs(OCT15_STALE_NOTES),
+    scans: oct15Scans().slice(0, 4),
+  });
+  assertEquals(checkScans(v), {
+    status: "FAIL",
+    findings: [
+      "scans: expected 5-6 hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES, minus up to 1 stale-bar run(s) that may share a bar's row), found 4",
+    ],
+  });
+});
+
+Deno.test("checkScans: more rows (7) than scanning runs (6) still FAILs even with a stale run", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs(OCT15_STALE_NOTES),
+    scans: [
+      ...oct15Scans(),
+      scanRow({ bar_ts: "2026-10-15T17:00:00.000Z", skip_reason: "no_detectors_fired" }),
+      scanRow({ bar_ts: "2026-10-15T19:00:00.000Z", skip_reason: "no_detectors_fired" }),
+    ],
+  });
+  assertEquals(checkScans(v).status, "FAIL");
+});
+
 // ---------------------------------------------------------------------------
 // checkGeometry (§5.3 check 3)
 // ---------------------------------------------------------------------------
