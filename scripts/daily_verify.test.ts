@@ -699,7 +699,7 @@ function oct15Runs(staleNotes: string | null): VerifyHourlyCheckRun[] {
     run("15", "success"),
     run("16", "success:no_action"),
     run("17", "success:no_action"),
-    // A stale run at 17:07 or 19:07 gives the same counts.
+    // A stale run at 17:07 or 19:07 that re-picked an earlier bar gives the same counts.
     run("18", "skipped:stale_data", staleNotes),
     run("19", "success:no_action"),
     run("20", "skipped:market_closed"),
@@ -756,6 +756,67 @@ Deno.test("checkScans: stale run with null notes is not excused (fails closed) -
     scans: oct15Scans(),
   });
   assertEquals(checkScans(v).status, "FAIL");
+});
+
+const OCT15_K0_FINDING =
+  "scans: expected 6 hourly_scans row(s) (runs outside NON_SCANNING_OUTCOMES), found 5";
+
+// #745: a stale run delayed past the staleness tolerance can scan its own
+// expected bar (a fresh row). Its bar end equals its slot hour, so it must not
+// excuse an unrelated missing row.
+Deno.test("checkScans: delayed stale run on its own fresh bar excuses nothing -> FAIL with the k = 0 finding", () => {
+  const runs = oct15Runs("bar end=2026-10-15T18:00:00.000Z stale by 20.0min");
+  runs[5] = {
+    ...runs[5],
+    started_at: "2026-10-15T18:20:00.000Z",
+    finished_at: "2026-10-15T18:20:01.000Z",
+  };
+  // 15:00 is the unrelated missing row; 17:00 and 18:00 are fresh rows.
+  const scans = [
+    scanRow({
+      bar_ts: "2026-10-15T13:00:00.000Z",
+      decision: "SKIP",
+      skip_reason: "partial_bar",
+    }),
+    oct15Scans()[1],
+    scanRow({ bar_ts: "2026-10-15T16:00:00.000Z", skip_reason: "no_detectors_fired" }),
+    scanRow({ bar_ts: "2026-10-15T17:00:00.000Z", skip_reason: "stale_data" }),
+    scanRow({ bar_ts: "2026-10-15T18:00:00.000Z", skip_reason: "no_detectors_fired" }),
+  ];
+  const v = verificationForScans({ hourly_check_runs: runs, scans });
+  assertEquals(checkScans(v), { status: "FAIL", findings: [OCT15_K0_FINDING] });
+});
+
+// #745: pins the typeof guard; a regression to `(r.notes ?? "").startsWith`
+// would throw a TypeError on a non-string value.
+Deno.test("checkScans: stale run with non-string, non-null notes is not excused -> FAIL with the k = 0 finding", () => {
+  const v = verificationForScans({
+    hourly_check_runs: oct15Runs(42 as unknown as string),
+    scans: oct15Scans(),
+  });
+  assertEquals(checkScans(v), { status: "FAIL", findings: [OCT15_K0_FINDING] });
+});
+
+Deno.test("checkScans: stale run whose bar end is not the exact ISO form is not excused (fails closed) -> FAIL", () => {
+  const unparsable = [
+    "bar end=not-a-time stale by 67.1min",
+    // A lenient Date.parse would read these as UTC midnight / local time.
+    "bar end=2026-10-15 stale by 67.1min",
+    "bar end=2026-10-15T17:00:00 stale by 67.1min",
+    // Rolls over to 2026-03-02 under a lenient parse; the round-trip check rejects it.
+    "bar end=2026-02-30T17:00:00.000Z stale by 67.1min",
+  ];
+  for (const notes of unparsable) {
+    const v = verificationForScans({
+      hourly_check_runs: oct15Runs(notes),
+      scans: oct15Scans(),
+    });
+    assertEquals(
+      checkScans(v),
+      { status: "FAIL", findings: [OCT15_K0_FINDING] },
+      notes,
+    );
+  }
 });
 
 Deno.test("checkScans: one stale run excuses at most one missing row -> FAIL at 4 rows", () => {

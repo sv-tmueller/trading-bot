@@ -667,3 +667,5 @@ stays a visible FAIL. `skipped:stale_data` is deliberately not added to
 `NON_SCANNING_OUTCOMES`, since a stale run can also write a new row. The same
 collapse could in principle occur at the partial-bar or scan-window gate; it has
 never been seen and would surface as a visible FAIL.
+
+**2026-11-03, #745: only a stale run on an earlier bar is counted.** This narrows the #671 rule above. k now counts only `skipped:stale_data` runs whose notes carry a `bar end=` in the exact `toISOString()` form `hourly-check` writes, strictly earlier than the run's own slot hour (its `started_at` rounded down to the UTC hour). A normal :07 run's candidate bar ends at the top of the same hour, so a run delayed past the staleness tolerance onto its own bar has a bar end equal to its slot hour and wrote a fresh row; counting it would hide one unrelated missing row. A missing, unparsable or non-exact `bar end` is not counted (fail closed). The finding text is unchanged. Residual: two lagging slots in a row are both counted although only the first shares a row, so such a day over-excuses by one; never seen in the ledger.

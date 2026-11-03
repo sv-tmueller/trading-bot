@@ -398,9 +398,17 @@ export const LATENCY_FAIL_MS = 120_000;
 // (logic.ts:981-988) journal `skipped:stale_data` onto an OLDER bar that
 // already has a row, overwriting it in place (pinned by logic.test.ts:2362),
 // so two scanning runs end up sharing one row. checkScans therefore lets each
-// `skipped:stale_data` run whose notes start `bar end=` excuse at most one
-// missing row. `skipped:stale_data` stays OUT of this set: such a run can
-// also write a fresh row (two lagging slots in a row).
+// `skipped:stale_data` run that re-picked an earlier bar excuse at most one
+// missing row (#745: only a `bar end=` strictly earlier than the run's
+// `started_at` floored to the UTC hour counts; a run delayed onto its own
+// bar, or one with unparsable notes, excuses nothing). `skipped:stale_data`
+// stays OUT of this set: such a run can also write a fresh row.
+//
+// Residual of that rule (#745): two lagging slots in a row (for example 17:07
+// stale on the 15:00 bar, then 18:07 stale on the 16:00 bar) are both counted
+// although only the first shares an existing row, so such a day over-excuses
+// by one. Never seen in the ledger; fixing it would mean inferring which bar
+// each run scanned.
 //
 // Disclosed residual of the same kind, never seen in the committed ledger:
 // the partial-bar and scan-window gates (logic.ts:964-980) run before
@@ -609,6 +617,29 @@ export interface ScansCheckInput {
   scans: HourlyScanRow[];
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+// #745: the exact toISOString() form hourly-check writes (logic.ts:986).
+const STALE_BAR_END_RE = /^bar end=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)(?:\s|$)/;
+
+/**
+ * #745: true when a `skipped:stale_data` run's `bar end` is strictly earlier than
+ * the run's own slot hour (`started_at` rounded down to the UTC hour), i.e. the
+ * feed served an older bar that may already have a row. Equality means the run
+ * scanned its own bar (a fresh row). Total and fail closed: anything missing or
+ * unparsable returns false. The NaN check must precede `toISOString()`, which
+ * throws a RangeError on an invalid Date.
+ */
+function staleRunRepickedEarlierBar(r: VerifyHourlyCheckRun): boolean {
+  if (r.outcome !== "skipped:stale_data" || typeof r.notes !== "string") return false;
+  const m = STALE_BAR_END_RE.exec(r.notes);
+  if (m === null) return false;
+  const barEndMs = Date.parse(m[1]);
+  if (Number.isNaN(barEndMs) || new Date(barEndMs).toISOString() !== m[1]) return false;
+  const startedMs = Date.parse(r.started_at);
+  if (Number.isNaN(startedMs)) return false;
+  return barEndMs < Math.floor(startedMs / HOUR_MS) * HOUR_MS;
+}
+
 /** Check 2 (replaces manual check 2): scan-row count vs. scanning-run count, plus per-scan sanity. */
 export function checkScans(v: ScansCheckInput): CheckOutcome {
   const findings: string[] = [];
@@ -619,14 +650,12 @@ export function checkScans(v: ScansCheckInput): CheckOutcome {
   ).length;
   // #671: a stale-bar skip that journaled (notes `bar end=...`) may have
   // re-picked a bar that already had a row, collapsing two runs into one row
-  // (hourly_scans is keyed per bar). Each such run excuses at most one missing
-  // row; the zero-completed-bars stale run (other notes, null notes) is not
-  // counted, so that residual stays a visible FAIL.
-  const collapsibleStaleRuns = v.hourly_check_runs.filter(
-    (r) =>
-      r.outcome === "skipped:stale_data" && typeof r.notes === "string" &&
-      r.notes.startsWith("bar end="),
-  ).length;
+  // (hourly_scans is keyed per bar). #745: only a run whose `bar end` is
+  // earlier than its own slot hour counts, so a run delayed onto its own fresh
+  // bar excuses nothing. Each counted run excuses at most one missing row; the
+  // zero-completed-bars stale run (other notes, null notes) is not counted, so
+  // that residual stays a visible FAIL.
+  const collapsibleStaleRuns = v.hourly_check_runs.filter(staleRunRepickedEarlierBar).length;
   const minScans = expectedScans - collapsibleStaleRuns;
   if (v.scans.length < minScans || v.scans.length > expectedScans) {
     statuses.push("FAIL");
