@@ -9,6 +9,15 @@ import {
   SHORT_WINDOW_TRADING_DAYS,
   type RoiResult,
 } from "@/lib/roi";
+import {
+  decisionTone,
+  directionLabel,
+  headroomTone,
+  outcomeTone,
+  qtyLabel,
+  signTone,
+  type Tone,
+} from "@/lib/tone";
 
 // Always render fresh at request time — this is a live status page.
 export const dynamic = "force-dynamic";
@@ -294,21 +303,17 @@ export default async function Page() {
       )}
 
       <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Stat label="Latest bar" value={latestScan ? fmt(latestScan.bar_ts) : "—"} accent="zinc" />
+        <Stat label="Latest bar" value={latestScan ? fmt(latestScan.bar_ts) : "—"} />
         <Stat
           label="Decision"
-          value={latestScan?.decision ?? "—"}
-          accent={latestScan?.decision === "LONG"
-            ? "emerald"
-            : latestScan?.decision === "SHORT"
-            ? "amber"
-            : "zinc"}
+          value={latestScan ? directionLabel(latestScan.decision) : "—"}
+          tone={decisionTone(latestScan?.decision)}
         />
-        <Stat label="Paused" value={paused ? "PAUSED" : "no"} accent={paused ? "amber" : "zinc"} />
+        <Stat label="Paused" value={paused ? "PAUSED" : "no"} tone={paused ? "warn" : null} />
         <Stat
           label={`Equity vs -${EQUITY_FLOOR_PCT * 100}% floor`}
           value={pctValue(headroomPct)}
-          accent={floorBreached ? "red" : "zinc"}
+          tone={headroomTone(headroomPct, floorBreached)}
         />
       </section>
 
@@ -334,13 +339,16 @@ export default async function Page() {
               <Stat
                 label="ROI since hourly-bot start"
                 value={formatSignedPct(roiSinceStart.rawRoi)}
-                accent="zinc"
+                tone={signTone(roiSinceStart.rawRoi)}
               />
-              <Stat label="Annualized (compound, 365-day)" value={annualizedText(roiSinceStart)} accent="zinc" />
+              <Stat
+                label="Annualized (compound, 365-day)"
+                value={annualizedText(roiSinceStart)}
+                tone={signTone(roiSinceStart.annualizedRoi)}
+              />
               <Stat
                 label="Period"
                 value={`${roiSinceStart.calendarDays} days, ~${roiSinceStart.tradingDays} trading days`}
-                accent="zinc"
               />
             </div>
             <p className="text-xs text-muted">{roiSinceStart.periodLabel}</p>
@@ -353,9 +361,16 @@ export default async function Page() {
           </>
         )}
         <p className="text-xs text-muted">
-          {roiRolling
-            ? `Rolling ${ROLLING_WINDOW_DAYS} days: ${formatSignedPct(roiRolling.rawRoi)} over ${roiRolling.periodLabel} -> ${annualizedText(roiRolling)}`
-            : `Rolling ${ROLLING_WINDOW_DAYS} days: n/a (needs ${ROLLING_WINDOW_DAYS} days of history since ${HOURLY_BOT_START_DATE} and a latest scan)`}
+          {roiRolling ? (
+            <>
+              {`Rolling ${ROLLING_WINDOW_DAYS} days: `}
+              <span className={TONE_CLASS[signTone(roiRolling.rawRoi)]}>{formatSignedPct(roiRolling.rawRoi)}</span>
+              {` over ${roiRolling.periodLabel} -> `}
+              <span className={TONE_CLASS[signTone(roiRolling.annualizedRoi)]}>{annualizedText(roiRolling)}</span>
+            </>
+          ) : (
+            `Rolling ${ROLLING_WINDOW_DAYS} days: n/a (needs ${ROLLING_WINDOW_DAYS} days of history since ${HOURLY_BOT_START_DATE} and a latest scan)`
+          )}
         </p>
         <p className="text-xs text-muted">
           Annualized = (end equity / start equity)^(365 / calendar days) - 1. Start: experiment
@@ -379,12 +394,11 @@ export default async function Page() {
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat
               label="Side"
-              value={(openPosition.qty as number) > 0 ? "LONG" : "SHORT"}
-              accent={(openPosition.qty as number) > 0 ? "emerald" : "amber"}
+              value={directionLabel((openPosition.qty as number) > 0 ? "LONG" : "SHORT")}
             />
-            <Stat label="Qty" value={String(Math.abs(openPosition.qty as number))} accent="zinc" />
-            <Stat label="Entry ref / stop" value={bracketRow ? `${money(bracketRow.entry_ref_price)} / ${money(bracketRow.stop_price)}` : "—"} accent="zinc" />
-            <Stat label="Target" value={bracketRow ? money(bracketRow.target_price) : "—"} accent="zinc" />
+            <Stat label="Qty" value={String(Math.abs(openPosition.qty as number))} />
+            <Stat label="Entry ref / stop" value={bracketRow ? `${money(bracketRow.entry_ref_price)} / ${money(bracketRow.stop_price)}` : "—"} />
+            <Stat label="Target" value={bracketRow ? money(bracketRow.target_price) : "—"} />
           </div>
         )}
         {bracketUnavailable && (
@@ -409,21 +423,24 @@ export default async function Page() {
         ) : (
           <>
             <div className="grid grid-cols-2 gap-4">
-              <Stat label="Equity" value={money(account.equity)} accent="zinc" />
-              <Stat label="Cash" value={money(account.cash)} accent="zinc" />
+              <Stat label="Equity" value={money(account.equity)} />
+              <Stat label="Cash" value={money(account.cash)} />
             </div>
             <Table
               title=""
               cols={["symbol", "qty", "avg entry", "current", "market value", "unrealized P&L"]}
               rows={positions.map((p) => [
                 p.symbol,
-                p.qty == null ? "—" : String(p.qty),
+                p.qty == null ? "—" : qtyLabel(p.qty),
                 money(p.avgEntry),
                 money(p.currentPrice),
                 money(p.marketValue),
-                p.unrealizedPl == null
-                  ? "—"
-                  : `${p.unrealizedPl >= 0 ? "+" : ""}${money(p.unrealizedPl)} (${pct(p.unrealizedPlpc)})`,
+                {
+                  text: p.unrealizedPl == null
+                    ? "—"
+                    : `${p.unrealizedPl >= 0 ? "+" : ""}${money(p.unrealizedPl)} (${pct(p.unrealizedPlpc)})`,
+                  tone: signTone(p.unrealizedPl),
+                },
               ])}
               empty="No open positions."
             />
@@ -437,7 +454,7 @@ export default async function Page() {
         rows={recentScans.map((s) => [
           fmt(s.bar_ts),
           s.symbol,
-          s.decision,
+          { text: directionLabel(s.decision), tone: decisionTone(s.decision) },
           s.detectors_fired.length > 0 ? s.detectors_fired.join(", ") : "—",
           s.skip_reason ?? "—",
         ])}
@@ -447,14 +464,19 @@ export default async function Page() {
       <Table
         title="Recent trades"
         cols={["fill time", "side", "qty", "symbol", "price", "reason"]}
-        rows={trades.map((t) => [fmt(t.fill_time), t.side, String(t.qty), t.symbol, money(t.fill_price), t.reason])}
+        rows={trades.map((t) => [fmt(t.fill_time), directionLabel(t.side), String(t.qty), t.symbol, money(t.fill_price), t.reason])}
         empty="No trades yet."
       />
 
       <Table
         title="Recent runs (audit log)"
         cols={["finished", "script", "outcome", "notes"]}
-        rows={audit.map((a) => [fmt(a.finished_at), a.script_name, a.outcome ?? "—", a.notes ?? ""])}
+        rows={audit.map((a) => [
+          fmt(a.finished_at),
+          a.script_name,
+          { text: a.outcome ?? "—", tone: outcomeTone(a.outcome) },
+          a.notes ?? "",
+        ])}
         empty="No runs yet."
       />
 
@@ -485,22 +507,28 @@ function annualizedText(r: RoiResult): string {
   return r.annualizedRoi === null ? "n/a" : `~${formatSignedPct(r.annualizedRoi)}/yr`;
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent: string }) {
-  const color: Record<string, string> = {
-    emerald: "text-pos",
-    amber: "text-warn",
-    red: "text-neg",
-    zinc: "text-fg",
-  };
+// Full literal class names on purpose: the Tailwind scanner cannot see
+// dynamically built names such as `text-${tone}`.
+const TONE_CLASS: Record<Tone, string> = {
+  pos: "text-pos",
+  neg: "text-neg",
+  warn: "text-warn",
+  muted: "text-muted",
+};
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: Tone | null }) {
   return (
     <div className="rounded-lg border border-border bg-bg-glow/50 p-4">
       <div className="text-[11px] uppercase tracking-wide text-muted">{label}</div>
-      <div className={`mt-1 text-lg font-semibold ${color[accent] ?? "text-fg"}`}>{value}</div>
+      <div className={`mt-1 text-lg font-semibold ${tone ? TONE_CLASS[tone] : "text-fg"}`}>{value}</div>
     </div>
   );
 }
 
-function Table({ title, cols, rows, empty }: { title: string; cols: string[]; rows: string[][]; empty: string }) {
+// A plain string renders in the default cell color; an object adds a tone.
+type Cell = string | { text: string; tone: Tone | null };
+
+function Table({ title, cols, rows, empty }: { title: string; cols: string[]; rows: Cell[][]; empty: string }) {
   return (
     <section>
       {title ? <h2 className="mb-2 text-sm font-medium text-fg-2">{title}</h2> : null}
@@ -521,9 +549,18 @@ function Table({ title, cols, rows, empty }: { title: string; cols: string[]; ro
             ) : (
               rows.map((r, i) => (
                 <tr key={i} className="hover:bg-bg-glow/40">
-                  {r.map((c, j) => (
-                    <td key={j} className="whitespace-nowrap px-3 py-2 text-fg-2">{c}</td>
-                  ))}
+                  {r.map((c, j) => {
+                    const text = typeof c === "string" ? c : c.text;
+                    const tone = typeof c === "string" ? null : c.tone;
+                    return (
+                      <td
+                        key={j}
+                        className={`whitespace-nowrap px-3 py-2 ${tone ? TONE_CLASS[tone] : "text-fg-2"}`}
+                      >
+                        {text}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))
             )}
