@@ -894,7 +894,7 @@ Deno.test("#628: candidate bar outside scan window -> skipped:outside_scan_windo
 Deno.test("#628: default config (13/21) does not reject normal candidate", async () => {
   // With defaults, the 14:00 candidate (hour 14, inside [13, 21)) passes the
   // scan-window gate and proceeds normally.
-  const { deps, rec } = buildDeps("2026-07-27T15:07:00Z");
+  const { deps } = buildDeps("2026-07-27T15:07:00Z");
   // Don't override scan hours -- defaults from BASE_CONFIG (13/21)
   const outcome = await runHourlyCheck(deps);
   // Should NOT be outside_scan_window -- it should be some other outcome
@@ -904,7 +904,7 @@ Deno.test("#628: default config (13/21) does not reject normal candidate", async
 
 Deno.test("#628: isFlattenScan fires when currentUtcHour >= scanEndHour", async () => {
   // Set scan end to 15 so the 15:07 run (hour 15 >= 15) triggers flatten.
-  const { deps, rec } = buildDeps("2026-07-27T15:07:00Z");
+  const { deps } = buildDeps("2026-07-27T15:07:00Z");
   deps.config.hourlyScanEndHour = 15;
   const outcome = await runHourlyCheck(deps);
   // The flatten gate fires before the scan-window gate (step 9 vs the new

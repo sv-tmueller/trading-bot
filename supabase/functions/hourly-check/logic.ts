@@ -33,7 +33,12 @@
 //
 // Residual, disclosed: a crash before insertAuditLog produces no outcome and
 // no alert; runbook §10's no-audit-row triage covers it, out of scope.
-import { AlpacaError, AlpacaServerError, type ClosedOrderFill, type Fill } from "../_shared/alpaca.ts";
+import {
+  AlpacaError,
+  AlpacaServerError,
+  type ClosedOrderFill,
+  type Fill,
+} from "../_shared/alpaca.ts";
 import { CONTEXT_SMA_WINDOW } from "../_shared/candlestick.ts";
 import type { HourlyConfig } from "../_shared/config.ts";
 import type {
@@ -711,8 +716,7 @@ export async function runHourlyCheck(deps: HourlyCheckDeps): Promise<string> {
     }
     const nowMs = deps.now().getTime();
     const currentUtcHour = deps.now().getUTCHours();
-    const isFlattenScan =
-      (clock.nextClose - nowMs <= HOUR_MS) ||
+    const isFlattenScan = (clock.nextClose - nowMs <= HOUR_MS) ||
       (currentUtcHour >= config.hourlyScanEndHour);
 
     // 4-5. Reconciliation contract + flatten-scan close-out (T11).

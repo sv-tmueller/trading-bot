@@ -353,7 +353,9 @@ export function createAlpacaClient(
           const body = await res.text();
           const elapsedMs = Date.now() - startTime;
           throw new AlpacaServerError(
-            `${init?.method ?? "GET"} ${path} -> ${res.status}: ${body} (retries exhausted: ${MAX_RETRIES} retries, ${elapsedMs}ms total elapsed)`,
+            `${
+              init?.method ?? "GET"
+            } ${path} -> ${res.status}: ${body} (retries exhausted: ${MAX_RETRIES} retries, ${elapsedMs}ms total elapsed)`,
           );
         }
         return res;
@@ -374,7 +376,10 @@ export function createAlpacaClient(
     }
   }
 
-  async function tradeJsonRetryable(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+  async function tradeJsonRetryable(
+    path: string,
+    init?: RequestInit,
+  ): Promise<Record<string, unknown>> {
     const res = await tradeRetryable(path, init);
     if (!res.ok) {
       throw new AlpacaError(

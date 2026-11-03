@@ -1941,7 +1941,9 @@ Deno.test("listOpenOrderIds: empty when no resting orders", async () => {
 
 Deno.test("#645: tradeJson 5xx -> throws AlpacaServerError (instanceof AlpacaError)", async () => {
   setKeys();
-  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "internal error" }, 503)));
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ message: "internal error" }, 503))
+  );
   liftBrokerGuard();
   try {
     const err = await assertRejects(
@@ -1982,7 +1984,9 @@ Deno.test("#645: tradeJson 4xx -> throws AlpacaError (NOT AlpacaServerError)", a
 
 Deno.test("#645: getPosition 5xx -> throws AlpacaServerError", async () => {
   setKeys();
-  const restore = stubFetch(() => Promise.resolve(jsonResponse({ message: "internal error" }, 500)));
+  const restore = stubFetch(() =>
+    Promise.resolve(jsonResponse({ message: "internal error" }, 500))
+  );
   try {
     const err = await assertRejects(
       () => createAlpacaClient({ paperOnly: false }).getPosition("UPRO"),

@@ -21,7 +21,9 @@ on:
 
 concurrency:
   group: deploy-dev-${{ github.ref }}
-  cancel-in-progress: false
+  # Cancel superseded PR check runs only; never cancel a main deploy midway
+  # (between the functions deploy and db push).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Dev / paper project (trading-bot-dev). Live keys never touch this workflow.
@@ -30,11 +32,14 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.8.2
+      - run: deno task fmt:check
+      - run: deno task lint
       - run: deno task test
       - uses: actions/setup-python@v5
         with:
@@ -46,6 +51,7 @@ jobs:
     needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
