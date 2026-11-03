@@ -300,5 +300,125 @@
     "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
     "space": "daily_allocation",
     "trial_id": "etf-daily-r1-tsmom-basket-08"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 63,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_only",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.045379678597243595,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-01"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 63,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.01951333136878754,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-02"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 126,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_only",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.04793056955290986,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-03"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 126,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.02148123061872233,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-04"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 252,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_only",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.03014456663823128,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-05"
+  },
+  {
+    "candidate_id": "etf-daily-r1-xs-momentum",
+    "config": {
+      "L": 252,
+      "gross_cap": 1.0,
+      "k": 4,
+      "rebalance_band": 0.02,
+      "skip": 21,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-03",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r1",
+    "sharpe_daily": 0.005441075855103474,
+    "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r1-xs-momentum-06"
   }
 ]
