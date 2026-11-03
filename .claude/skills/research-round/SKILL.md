@@ -248,7 +248,7 @@ this procedure:
    - the study directory, `docs/research/pipeline/trials.json`, and each candidate's two result files;
    - ledger rows in `backtest/tested_cells.py`, written by this orchestrating session (the analyst
      may not edit `backtest/`), with updated pins in `tests/test_tested_cells.py` if a pinned
-     family's count changes; two pins in that file are state pins, not count pins:
+     family's count changes; two of that file's state pins guard the tsmom/SPY cell:
      `test_june_survey_closing_verdicts_pin_tsmom_as_weak_not_closed` and
      `test_tsmom_spy_note_cites_the_walkforward_read_and_stays_weak`. When a `tsmom_timeseries`
      ledger row on `SPY` trips either one, stop and raise it on the round issue; do not edit either

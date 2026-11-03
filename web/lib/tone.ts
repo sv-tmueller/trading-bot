@@ -30,8 +30,8 @@ function hasPrefix(outcome: string, prefix: string): boolean {
 export function outcomeTone(outcome: string | null | undefined): Tone | null {
   if (outcome == null || outcome === "") return "muted";
   // Checked before the generic success rule: the run itself succeeded but it
-  // paused trading on a floor breach (red), or a fill went through while the
-  // journal write failed (amber: needs attention, not a loss).
+  // paused trading on a floor breach (red), or a fill went through but a
+  // post-fill DB write failed (amber: needs attention, not a loss).
   if (outcome === "success:auto_paused") return "neg";
   if (outcome === "success:journal_degraded") return "warn";
   if (hasPrefix(outcome, "success")) return "pos";
