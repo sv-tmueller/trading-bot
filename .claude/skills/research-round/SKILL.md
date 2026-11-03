@@ -248,7 +248,13 @@ this procedure:
    - the study directory, `docs/research/pipeline/trials.json`, and each candidate's two result files;
    - ledger rows in `backtest/tested_cells.py`, written by this orchestrating session (the analyst
      may not edit `backtest/`), with updated pins in `tests/test_tested_cells.py` if a pinned
-     family's count changes;
+     family's count changes; two pins in that file are state pins, not count pins:
+     `test_june_survey_closing_verdicts_pin_tsmom_as_weak_not_closed` and
+     `test_tsmom_spy_note_cites_the_walkforward_read_and_stays_weak`. When a `tsmom_timeseries`
+     ledger row on `SPY` trips either one, stop and raise it on the round issue; do not edit either
+     pin or the ledger inside the round, because these pins encode a research judgement (tsmom beat
+     1x SPY in the survey and was never stress-tested, so it must stay re-testable) that a round
+     result may legitimately overturn, and the operator decides that explicitly;
    - for a candidate whose `evaluate_candidate` result has `passed` True and whose development
      scorecard has `len(window_calmars) >= 13` (`PROMOTION_N_W` in `backtest/intraday_data.py`, the
      repo's n_w promotion bar), use `PASS` with `power="PROMOTABLE"`; a pass below that bar is step 6;
@@ -276,15 +282,18 @@ this procedure:
      that the cell has no later record. When it fails, narrow it in the same results PR: change only
      the line that builds `hits` to
      `hits = [c for c in tested_cells.find(spec.ledger_family, "daily", spec.ledger_vehicle) if c.source == spec.source]`
-     and leave its assertions and name as they are; never delete it. If the narrowed test still
+     and leave its assertions and name as they are; never delete it. Say in the results PR body
+     that the pin was narrowed and why (this step). If the narrowed test still
      fails, the round has changed or re-cited a backfilled record: stop and raise it on the round
      issue, and edit neither `backtest/run_trial_backfill.py` nor the records it matches in
      `backtest/tested_cells.py`. Run the command from the worktree root with an interpreter that has
-     `requirements.txt` installed, as CI does; it skips only the tests marked `slow` in `pytest.ini`
-     (live network or data fetches) and takes a few minutes. A collection error such as
-     `ModuleNotFoundError: No module named 'ta'` is a failed run: install `requirements.txt`
-     (`python3 -m pip install -r requirements.txt`) and re-run. Never add `--ignore`, `--deselect`
-     or `-k`, or substitute a shorter file list, to get green.
+     `requirements.txt` installed, as CI does; it skips only the tests marked `slow` (the marker
+     `pytest.ini` declares for network or data fetches) and takes a few minutes. A collection
+     error such as `ModuleNotFoundError: No module named 'ta'` is a failed run: install
+     `requirements.txt` (`python3 -m pip install -r requirements.txt`) and re-run. If the install
+     itself fails, stop and tell the operator; never force it with `--break-system-packages` or
+     swap in another interpreter. Never add `--ignore`, `--deselect` or `-k`, or substitute a
+     shorter file list, to get green.
 6. **Pass verdict.** `PASS` is in the ledger vocabulary (`VERDICTS` in `backtest/tested_cells.py`),
    but write it only under step 5's two conditions. `test_pass_rows_claim_promotable_power` enforces
    the power label; n_w is checked only by this step, because `evaluate_candidate` does not enforce it.
