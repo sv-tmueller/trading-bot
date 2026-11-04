@@ -1,0 +1,88 @@
+{
+  "candidate_id": "etf-daily-r1-xs-momentum",
+  "commit": "2d56cfae046ff12d20c24655591068b86c0bcbc9",
+  "config": {
+    "L": 126,
+    "gross_cap": 1.0,
+    "k": 4,
+    "rebalance_band": 0.02,
+    "skip": 21,
+    "target_vol": 0.1,
+    "variant": "long_only",
+    "vol_lookback": 60
+  },
+  "round_id": "etf-daily-r1",
+  "scorecard": {
+    "avg_holding_days": 53.43448275862069,
+    "benchmark": {
+      "cagr": 0.07849551736525018,
+      "cagr_after_tax": 0.062377201911848035,
+      "calmar": 0.5792551216527166,
+      "max_drawdown": 0.13551113219558367,
+      "max_drawdown_end": "2022-09-30",
+      "max_drawdown_start": "2022-01-03",
+      "n_periods": 1214,
+      "realized_vol": 0.10596389574329167,
+      "sharpe_annual": 0.7765961376024526,
+      "sharpe_daily": 0.048920958314985385,
+      "window_calmars": {
+        "2022": -0.7987103574255716,
+        "2023": 1.8362237353685742,
+        "2024": 1.8893897533037054,
+        "2025": 0.5038669831820134
+      },
+      "worst_year": {
+        "return": -0.09614184346570209,
+        "year": "2022"
+      },
+      "year_returns": {
+        "2022": -0.09614184346570209,
+        "2023": 0.1672682041402782,
+        "2024": 0.19300324506411903,
+        "2025": 0.07842484091798196
+      }
+    },
+    "borrow_cost_per_year": 0.0,
+    "cagr": 0.050340077039748854,
+    "cagr_after_tax": 0.03304892394747627,
+    "calmar": 0.4744754255438928,
+    "cost_drag_per_year": 0.008285402276169708,
+    "double_cost": {
+      "cagr": 0.04171982774405136,
+      "calmar": 0.3774665659977225,
+      "max_drawdown": 0.1105258889188694
+    },
+    "leverage_info": {
+      "cagr": 0.04512517923901105,
+      "calmar": 0.332603745021858,
+      "max_drawdown": 0.13567249291208527
+    },
+    "max_drawdown": 0.10609627881579715,
+    "max_drawdown_end": "2025-04-08",
+    "max_drawdown_start": "2024-10-18",
+    "max_time_share_one_etf": 0.6466227347611203,
+    "n_periods": 1214,
+    "realized_vol": 0.09613835269274844,
+    "round_trips_per_year": 30.006373937677058,
+    "sharpe_annual": 0.5620416104837226,
+    "sharpe_daily": 0.035405293519289595,
+    "target_vol": 0.1,
+    "window_calmars": {
+      "2022": -0.822312403979667,
+      "2023": 1.1402932589798194,
+      "2024": 0.5616795085950644,
+      "2025": 1.2998219837878262
+    },
+    "worst_year": {
+      "return": -0.0550270085684923,
+      "year": "2022"
+    },
+    "year_returns": {
+      "2022": -0.0550270085684923,
+      "2023": 0.08408110378938782,
+      "2024": 0.073392460478378,
+      "2025": 0.14361819694492395
+    }
+  },
+  "selected_trial_id": "etf-daily-r1-xs-momentum-03"
+}

@@ -451,10 +451,11 @@ def test_june_survey_closing_verdicts_pin_tsmom_as_weak_not_closed():
 
 
 def test_june_survey_cumulative_trials():
-    # #694 added a leveraged-vehicle cell to each of faber (2 -> 3) and tsmom (1 -> 2).
+    # #694 added a leveraged-vehicle cell to each of faber (2 -> 3) and tsmom (1 -> 2);
+    # round etf-daily-r1 (#737) added the 8-cell ETF_BASKET_XA14 grid to tsmom (2 -> 10).
     assert tc.cumulative_trials("faber_ma_timing") == 3
     assert tc.cumulative_trials("dual_momentum_gem") == 1
-    assert tc.cumulative_trials("tsmom_timeseries") == 2
+    assert tc.cumulative_trials("tsmom_timeseries") == 10
     assert tc.cumulative_trials("vol_target") == 1
 
 

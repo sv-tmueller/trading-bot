@@ -1,0 +1,86 @@
+{
+  "candidate_id": "etf-daily-r1-tsmom-basket",
+  "commit": "16e728ac60837c4c543ca9d8358e70c6a4776f63",
+  "config": {
+    "L": 63,
+    "gross_cap": 1.0,
+    "rebalance_band": 0.02,
+    "target_vol": 0.1,
+    "variant": "long_flat",
+    "vol_lookback": 60
+  },
+  "round_id": "etf-daily-r1",
+  "scorecard": {
+    "avg_holding_days": 25.633587786259543,
+    "benchmark": {
+      "cagr": 0.0784955268948142,
+      "cagr_after_tax": 0.06237718889535415,
+      "calmar": 0.5792547948460784,
+      "max_drawdown": 0.13551122510029856,
+      "max_drawdown_end": "2022-09-30",
+      "max_drawdown_start": "2022-01-03",
+      "n_periods": 1214,
+      "realized_vol": 0.1059638711019221,
+      "sharpe_annual": 0.7765965956113562,
+      "sharpe_daily": 0.048920987166834365,
+      "window_calmars": {
+        "2022": -0.7987097853513255,
+        "2023": 1.8362169638004795,
+        "2024": 1.8893854747394963,
+        "2025": 0.5038648854517159
+      },
+      "worst_year": {
+        "return": -0.09614166459024209,
+        "year": "2022"
+      },
+      "year_returns": {
+        "2022": -0.09614166459024209,
+        "2023": 0.16726829716409908,
+        "2024": 0.1930031757926567,
+        "2025": 0.07842477017727445
+      }
+    },
+    "borrow_cost_per_year": 0.0,
+    "cagr": -0.004560816042224469,
+    "cagr_after_tax": -0.011312552803883547,
+    "calmar": -0.024359635503843922,
+    "cost_drag_per_year": 0.027553293565278195,
+    "double_cost": {
+      "cagr": -0.03061771346652542,
+      "calmar": -0.13721560026025814,
+      "max_drawdown": 0.22313580531989446
+    },
+    "leverage_info": {
+      "cagr": -0.023970422857319318,
+      "calmar": -0.09838927245843695,
+      "max_drawdown": 0.24362841861083237
+    },
+    "max_drawdown": 0.18722841897633394,
+    "max_drawdown_end": "2023-11-16",
+    "max_drawdown_start": "2022-04-18",
+    "max_time_share_one_etf": 0.6968698517298187,
+    "n_periods": 1214,
+    "realized_vol": 0.07203927165810825,
+    "round_trips_per_year": 108.43682719546743,
+    "sharpe_annual": -0.03366115051269187,
+    "sharpe_daily": -0.0021204531690689767,
+    "target_vol": 0.1,
+    "window_calmars": {
+      "2022": -0.7447058458347152,
+      "2023": 0.2162082174989989,
+      "2024": 0.752742142718103,
+      "2025": 0.4309754998261804
+    },
+    "worst_year": {
+      "return": -0.12378404024929435,
+      "year": "2022"
+    },
+    "year_returns": {
+      "2022": -0.12378404024929435,
+      "2023": 0.017952920281755436,
+      "2024": 0.04749452593453385,
+      "2025": 0.03169683033800075
+    }
+  },
+  "selected_trial_id": "etf-daily-r1-tsmom-basket-04"
+}

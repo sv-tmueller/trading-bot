@@ -190,3 +190,13 @@ Per the skill's Non-goals: no live change, no edits under `supabase/functions/`,
 ---
 
 **Freeze banner.** Everything above this line is the frozen pre-registration. Results land as dated addenda below this line (results PR), never as edits above it.
+
+## Addendum A1 (2026-11-03, results PR #755) -- outcome
+
+Everything above the freeze banner is the frozen pre-registration (merged as commit `7d829a7` in #754) and is unchanged.
+
+- **Data facts observed:** data start 2007-05-30 (as expected), 3,676 development rows, 14 scored development years (2008 to 2021), 1,214 holdout rows (2022-01-03 to 2026-11-03), 4 scored holdout years. No missing open or close on the master index for any ticker.
+- **Trials:** exactly the frozen 8 + 6 configurations were run and stored; the programme store holds 19 trials. Selected: `etf-daily-r1-tsmom-basket-04` (L = 63, `long_flat`) and `etf-daily-r1-xs-momentum-03` (L = 126, `long_only`), by the frozen selection rule.
+- **Holdouts:** run once per candidate by the orchestrating session, recorded in `docs/research/pipeline/<candidate_id>/holdout_result.json`.
+- **Verdicts:** both `NO_GO` at PROMOTABLE power. #750 passes 2 of 5 criteria (drawdown, activity); #751 passes 3 of 5 (drawdown, holdout, activity). Neither beats the benchmark's median development-year after-tax Calmar (0.79 and 0.70 vs 0.96), and neither clears the luck gate (DSR 0.88 and 0.85 over 19 trials; bootstrap uplift intervals include zero). Full tables, readings and recommendations: `docs/research/2026-11-03-etf-daily-r1-verdict.md`.
+- **Deviations from the frozen text:** none. Interpretation details recorded in the runner docstrings (verdict document section 6).
