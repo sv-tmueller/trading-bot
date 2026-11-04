@@ -66,10 +66,8 @@ UNTESTED_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
         "#422 §'where the untested opportunity lives' — named genuinely untested, and daily/swing "
         "rather than intraday, so it clears both of that gate's walls.",
     ),
-    (
-        "cross_sectional_rv", "daily",
-        "#422 same section — relative-value / cross-sectional signals, untested here.",
-    ),
+    # cross_sectional_rv / daily was listed from #422; it was tested in round etf-daily-r1
+    # (#751; ledger row added by #755), NO_GO at PROMOTABLE power, so it is no longer untested.
     (
         "multi_instrument_rotation", "daily",
         "#421 — the concentration concern that cannot be fixed on UPRO alone.",

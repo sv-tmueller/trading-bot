@@ -192,7 +192,8 @@ def test_a_pass_on_an_untested_candidate_family_is_skipped_by_the_proposal(monke
     monkeypatch.setattr(tc, "LEDGER", (_pass_cell(family="vol_regime_gating"),))
     headline, _rationale = wr.propose_next_round(wr.programme_state())
     assert "vol_regime_gating" not in headline
-    assert "cross_sectional_rv" in headline
+    assert "cross_sectional_rv" not in headline  # tested in round etf-daily-r1 (#751), off the list
+    assert "multi_instrument_rotation" in headline
 
 
 def test_live_ledger_headline_is_not_the_superseded_orb_or_hourly_geometry_retry():
