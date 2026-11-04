@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import math
+from datetime import date
 import warnings
 
 import numpy as np
@@ -418,3 +419,96 @@ def test_module_source_has_no_forbidden_references():
     src = inspect.getsource(parity)
     for needle in ("urllib", "/v2/", "paper-api", "anthropic", "openai"):
         assert needle not in src, needle
+
+
+# -- suspect window (#757) --------------------------------------------------
+
+# Alpaca/official close ratios from the #754 diagnostic (March 2020 sessions).
+_BAD_RATIOS = [
+    251.23 / 249.3468,
+    232.07 / 225.5969,
+    91.18 / 95.23,
+    214.29 / 218.2228,
+    221.32 / 222.3870,
+]
+_BAD_IN_WINDOW = ["2020-03-09", "2020-03-12", "2020-03-16", "2020-03-18", "2020-03-24"]
+_BAD_OUT_OF_WINDOW = ["2019-03-11", "2019-03-14", "2019-03-18", "2019-03-20", "2019-03-26"]
+
+
+def _frozen_pair(bad_dates, ratios=None):
+    """Identical closes except Alpaca is multiplied by a ratio on bad_dates."""
+    idx = pd.bdate_range("2019-01-02", "2021-12-31")
+    rets = np.random.default_rng(2).normal(0.0, 0.01, len(idx) - 1)
+    yf = _closes(rets, idx)
+    al = yf.copy()
+    for d, ratio in zip(bad_dates, _BAD_RATIOS if ratios is None else ratios):
+        al[pd.Timestamp(d)] *= ratio
+    return yf, al
+
+
+def test_suspect_window_constants_are_pinned():
+    assert parity.SUSPECT_WINDOW_START == date(2020, 2, 24)
+    assert parity.SUSPECT_WINDOW_END == date(2020, 4, 30)
+    assert parity.WORST_SESSIONS_N == 5
+    assert (
+        parity.WINDOW_START
+        <= parity.SUSPECT_WINDOW_START
+        <= parity.SUSPECT_WINDOW_END
+        <= etf_data.DEV_END
+    )
+
+
+def test_march_2020_bad_closes_are_flagged_not_gated():
+    yf, al = _frozen_pair(_BAD_IN_WINDOW)
+    res = compare_daily_returns(yf, al)
+    assert res["p99_abs_diff_bps"] >= P99_ABS_DIFF_BPS_MAX  # the old gate fails
+    assert res["gated_p99_abs_diff_bps"] == 0.0
+    assert res["passed"] is True
+    assert res["fail_reasons"] == []
+    assert res["n_suspect_over"] == 10
+    assert res["n_gated_over"] == 0
+    in_window = (yf.index >= "2020-02-24") & (yf.index <= "2020-04-30")
+    assert res["n_suspect"] == int(in_window.sum()) + 1  # plus the 2020-05-01 return
+    assert res["n_suspect"] == 50
+    assert res["n_gated"] == res["n_days"] - 50
+    dates = [w[0] for w in res["worst_suspect"]]
+    assert len(dates) == 5
+    assert "2020-03-12" in dates and "2020-03-16" in dates
+    assert res["worst_gated"][0][1] == 0.0
+
+
+def test_same_bad_closes_outside_the_window_still_fail_p99():
+    yf, al = _frozen_pair(_BAD_OUT_OF_WINDOW)
+    res = compare_daily_returns(yf, al)
+    assert res["n_gated_over"] == 10
+    assert res["n_suspect_over"] == 0
+    assert res["passed"] is False
+    assert res["fail_reasons"] == ["p99"]
+
+
+def test_window_edge_before_start_gates_one_day_and_suspects_the_next():
+    yf, al = _frozen_pair(["2020-02-21"], [1.02])
+    res = compare_daily_returns(yf, al)
+    assert [w[0] for w in res["worst_gated"][:1]] == ["2020-02-21"]
+    assert res["n_gated_over"] == 1
+    assert res["n_suspect_over"] == 1
+    assert [w[0] for w in res["worst_suspect"][:1]] == ["2020-02-24"]
+
+
+def test_window_edge_at_end_makes_both_adjacent_returns_suspect():
+    yf, al = _frozen_pair(["2020-04-30"], [1.02])
+    res = compare_daily_returns(yf, al)
+    assert res["n_gated_over"] == 0
+    assert res["n_suspect_over"] == 2
+    assert {w[0] for w in res["worst_suspect"][:2]} == {"2020-04-30", "2020-05-01"}
+
+
+def test_worst_sessions_are_sorted_by_abs_diff_then_date():
+    yf, al = _frozen_pair(_BAD_IN_WINDOW)
+    worst = compare_daily_returns(yf, al)["worst_suspect"]
+    keys = [(-w[1], w[0]) for w in worst]
+    assert keys == sorted(keys)
+    date_str, diff, yf_close, al_close = worst[0]
+    assert isinstance(date_str, str) and len(date_str) == 10
+    assert diff > 100.0
+    assert yf_close > 0 and al_close > 0
