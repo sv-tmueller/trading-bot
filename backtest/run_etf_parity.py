@@ -5,6 +5,17 @@ loader) with Alpaca's split- and dividend-adjusted ``1Day`` bars over the
 development window, and reports the median and 99th percentile of the
 absolute daily-return difference in basis points.
 
+Gate (issue #757). The raw median and p99 are printed, but the verdict uses
+the gated statistics: returns where either close falls in
+``[SUSPECT_WINDOW_START, SUSPECT_WINDOW_END]`` (the March 2020 sessions whose
+Alpaca daily closes differ from the official close by up to about 10%) are
+listed as suspect and not gated. Passes when the gated median is below
+``MEDIAN_ABS_DIFF_BPS_MAX`` plus a cent-rounding allowance (Alpaca adjusted
+closes are whole cents, so low-priced ETFs differ by rounding alone) and the
+gated p99 is below ``P99_ABS_DIFF_BPS_MAX``. The mean signed difference is
+shown, not gated. Each ticker's worst suspect and gated sessions are printed
+after the table.
+
 The only Alpaca reference is the existing read-only bars helper
 (``run_fetch_spy_intraday.fetch_bars``); keys come from the environment.
 There is no start/end flag: the window is fixed to ``[WINDOW_START,
@@ -162,6 +173,17 @@ def run_parity(
             "passed": False,
             "n_yf": 0,
             "n_alpaca": 0,
+            "n_gated": 0,
+            "gated_median_abs_diff_bps": float("nan"),
+            "gated_p99_abs_diff_bps": float("nan"),
+            "gated_mean_diff_bps": float("nan"),
+            "median_max_bps": float("nan"),
+            "n_gated_over": 0,
+            "n_suspect": 0,
+            "n_suspect_over": 0,
+            "worst_gated": [],
+            "worst_suspect": [],
+            "fail_reasons": [],
             "error": None,
         }
         try:
@@ -188,7 +210,8 @@ def run_parity(
 
 _HEADER = (
     f"{'ticker':<8} {'n_days':>7} {'median_bps':>11} {'p99_bps':>9} "
-    f"{'n_yf':>6} {'n_alpaca':>9} verdict"
+    f"{'n_yf':>6} {'n_alpaca':>9} {'n_gated':>8} {'gated_med':>10} "
+    f"{'gated_p99':>10} {'med_max':>8} {'mean_bps':>9} verdict"
 )
 
 
@@ -196,11 +219,37 @@ def format_row(row: dict) -> str:
     verdict = "PASS" if row["passed"] else "FAIL"
     line = (
         f"{row['ticker']:<8} {row['n_days']:>7d} {row['median_abs_diff_bps']:>11.3f} "
-        f"{row['p99_abs_diff_bps']:>9.3f} {row['n_yf']:>6d} {row['n_alpaca']:>9d} {verdict}"
+        f"{row['p99_abs_diff_bps']:>9.3f} {row['n_yf']:>6d} {row['n_alpaca']:>9d} "
+        f"{row['n_gated']:>8d} {row['gated_median_abs_diff_bps']:>10.3f} "
+        f"{row['gated_p99_abs_diff_bps']:>10.3f} {row['median_max_bps']:>8.3f} "
+        f"{row['gated_mean_diff_bps']:>9.3f} {verdict}"
     )
+    if not row["passed"] and row.get("fail_reasons"):
+        line += " " + "+".join(row["fail_reasons"])
     if row.get("error"):
         line += f"  {row['error']}"
     return line
+
+
+def _session_lines(sessions: list, label: str) -> List[str]:
+    return [
+        f"  {d}  |diff| {diff:>8.3f} bps  yf {yf:.4f}  alpaca {al:.4f}  {label}"
+        for d, diff, yf, al in sessions
+    ]
+
+
+def format_sessions(row: dict) -> List[str]:
+    """Per-ticker block: the worst suspect and gated sessions, then counts."""
+    t = row["ticker"]
+    over = f"{P99_ABS_DIFF_BPS_MAX:g}"
+    return [
+        f"{t} suspect window {SUSPECT_WINDOW_START.isoformat()}.."
+        f"{SUSPECT_WINDOW_END.isoformat()} (not gated): "
+        f"{row['n_suspect']} days, {row['n_suspect_over']} >= {over} bps",
+        *_session_lines(row["worst_suspect"], "suspect"),
+        f"{t} gated: {row['n_gated']} days, {row['n_gated_over']} >= {over} bps",
+        *_session_lines(row["worst_gated"], "gated"),
+    ]
 
 
 def main(
@@ -219,6 +268,12 @@ def main(
     print(_HEADER)
     for row in rows:
         print(format_row(row))
+    for row in rows:
+        if row["error"]:
+            continue
+        print()
+        for line in format_sessions(row):
+            print(line)
     return 0 if all(r["passed"] for r in rows) else 1
 
 

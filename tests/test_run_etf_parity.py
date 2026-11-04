@@ -85,6 +85,11 @@ def test_identical_series_pass_with_zero_diffs():
     assert res["median_abs_diff_bps"] == 0.0
     assert res["p99_abs_diff_bps"] == 0.0
     assert res["passed"] is True
+    assert res["fail_reasons"] == []
+    assert res["n_gated"] + res["n_suspect"] == 500
+    assert res["gated_median_abs_diff_bps"] == 0.0
+    assert res["gated_mean_diff_bps"] == 0.0
+    assert res["n_gated_over"] == res["n_suspect_over"] == 0
 
 
 def test_single_outlier_passes_and_p99_is_the_independent_quantile():
@@ -206,6 +211,9 @@ def test_no_overlap_fails_closed(case):
     assert math.isnan(res["median_abs_diff_bps"])
     assert math.isnan(res["p99_abs_diff_bps"])
     assert res["passed"] is False
+    assert res["n_gated"] == 0
+    assert res["fail_reasons"] == ["no_data"]
+    assert res["worst_gated"] == [] and res["worst_suspect"] == []
 
 
 def test_tz_aware_index_raises():
@@ -229,6 +237,22 @@ def test_result_types_are_plain_python():
     assert type(res["n_days"]) is int
     assert type(res["median_abs_diff_bps"]) is float
     assert type(res["p99_abs_diff_bps"]) is float
+    for key in ("n_gated", "n_gated_over", "n_suspect", "n_suspect_over"):
+        assert type(res[key]) is int, key
+    for key in (
+        "gated_median_abs_diff_bps",
+        "gated_p99_abs_diff_bps",
+        "gated_mean_diff_bps",
+        "median_max_bps",
+    ):
+        assert type(res[key]) is float, key
+    assert type(res["fail_reasons"]) is list
+    for key in ("worst_gated", "worst_suspect"):
+        assert type(res[key]) is list
+        for d, diff, yf_close, al_close in res[key]:
+            assert type(d) is str
+            assert type(diff) is float
+            assert type(yf_close) is float and type(al_close) is float
 
 
 # -- driver -----------------------------------------------------------------
@@ -357,20 +381,66 @@ def test_default_wiring_uses_module_level_fetchers(monkeypatch):
 # -- format_row and main ----------------------------------------------------
 
 
-def test_format_row_shows_verdict_and_error():
-    ok = {
+_HEADER_TEXT = (
+    "ticker    n_days  median_bps   p99_bps   n_yf  n_alpaca  n_gated  gated_med  "
+    "gated_p99  med_max  mean_bps verdict"
+)
+
+
+def _ok_row():
+    return {
         "ticker": "SPY",
-        "n_days": 755,
-        "median_abs_diff_bps": 0.12,
-        "p99_abs_diff_bps": 3.4,
+        "n_days": 756,
+        "median_abs_diff_bps": 1.41,
+        "p99_abs_diff_bps": 37.866,
         "passed": True,
-        "n_yf": 756,
-        "n_alpaca": 756,
+        "n_yf": 757,
+        "n_alpaca": 757,
+        "n_gated": 707,
+        "gated_median_abs_diff_bps": 0.35,
+        "gated_p99_abs_diff_bps": 4.1,
+        "gated_mean_diff_bps": -0.093,
+        "median_max_bps": 1.101,
+        "n_gated_over": 0,
+        "n_suspect": 49,
+        "n_suspect_over": 31,
+        "worst_gated": [("2019-06-21", 8.5, 100.1234, 100.2085)],
+        "worst_suspect": [("2020-03-13", 268.83, 244.8822, 245.67)],
+        "fail_reasons": [],
         "error": None,
     }
+
+
+def test_format_row_shows_verdict_and_error():
+    ok = _ok_row()
     bad = dict(ok, passed=False, error="RuntimeError('boom')")
     assert "PASS" in format_row(ok) and "SPY" in format_row(ok)
     assert "FAIL" in format_row(bad) and "boom" in format_row(bad)
+
+
+def test_format_row_columns_and_fail_reasons():
+    ok = _ok_row()
+    assert format_row(ok) == (
+        "SPY          756       1.410    37.866    757       757      707      0.350"
+        "      4.100    1.101    -0.093 PASS"
+    )
+    both = dict(ok, passed=False, fail_reasons=["median", "p99"])
+    assert format_row(both).endswith(" FAIL median+p99")
+    no_data = dict(ok, passed=False, fail_reasons=["no_data"])
+    assert format_row(no_data).endswith(" FAIL no_data")
+    err = dict(ok, passed=False, error="RuntimeError('boom')")
+    assert format_row(err).endswith(" FAIL  RuntimeError('boom')")
+
+
+def test_format_sessions_block_layout():
+    lines = parity.format_sessions(_ok_row())
+    assert lines == [
+        "SPY suspect window 2020-02-24..2020-04-30 (not gated): 49 days, 31 >= 10 bps",
+        "  2020-03-13  |diff|  268.830 bps  yf 244.8822  alpaca 245.6700  suspect",
+        "SPY gated: 707 days, 0 >= 10 bps",
+        "  2019-06-21  |diff|    8.500 bps  yf 100.1234  alpaca 100.2085  gated",
+    ]
+    assert not any("PASS" in ln or "FAIL" in ln for ln in lines)
 
 
 def _main_fakes():
@@ -399,6 +469,68 @@ def test_main_returns_one_when_any_ticker_fails(capsys):
     assert code == 1
     assert out.count("PASS") == 1
     assert out.count("FAIL") == 1
+
+
+def _march_fakes():
+    close = _long_close()
+    idx = close.index
+
+    def with_ratios(dates):
+        s = close.copy()
+        for d, ratio in zip(dates, _BAD_RATIOS):
+            s[pd.Timestamp(d)] *= ratio
+        return s
+
+    alpaca = {
+        "SPY": close,
+        "MAR": with_ratios(_BAD_IN_WINDOW),
+        "P99": with_ratios(_BAD_OUT_OF_WINDOW),
+    }
+    assert all(s.index.equals(idx) for s in alpaca.values())
+    return (
+        lambda t: _frame(close),
+        lambda t, *a, **k: _frame(alpaca[t]),
+    )
+
+
+def test_main_prints_header_sessions_and_reasons(capsys):
+    yf_fetch, alpaca_fetch = _march_fakes()
+    code = main(
+        ["--tickers", "SPY,MAR,P99"], yf_fetch=yf_fetch, alpaca_fetch=alpaca_fetch
+    )
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert code == 1
+    assert lines[0] == _HEADER_TEXT
+    assert any(ln.startswith("P99 ") and ln.endswith(" FAIL p99") for ln in lines)
+    assert out.count("PASS") + out.count("FAIL") == 3
+    assert "MAR suspect window 2020-02-24..2020-04-30 (not gated): " in out
+    suspect_lines = [ln for ln in lines if ln.endswith("suspect")]
+    assert any(ln.startswith("  2020-03-12  |diff|") for ln in suspect_lines)
+    assert any(ln.startswith("  2020-03-16  |diff|") for ln in suspect_lines)
+    # one blank line before each of the three blocks
+    assert lines.count("") == 3
+
+
+def test_error_rows_print_no_session_block(capsys):
+    close = _long_close()
+
+    def alpaca_fetch(ticker, *args, **kwargs):
+        if ticker == "BAD":
+            raise RuntimeError("alpaca down")
+        return _frame(close)
+
+    code = main(
+        ["--tickers", "BAD,SPY"],
+        yf_fetch=lambda t: _frame(close),
+        alpaca_fetch=alpaca_fetch,
+    )
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "alpaca down" in out
+    assert "BAD suspect window" not in out and "BAD gated" not in out
+    assert "SPY suspect window" in out and "SPY gated" in out
+    assert out.count("PASS") + out.count("FAIL") == 2
 
 
 def test_main_requires_tickers():
