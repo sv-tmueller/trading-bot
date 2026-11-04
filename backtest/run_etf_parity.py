@@ -16,6 +16,7 @@ arguments.
 from __future__ import annotations
 
 import argparse
+import math
 from datetime import date
 from typing import Callable, List, Optional
 
@@ -33,6 +34,10 @@ WINDOW_START = date(2019, 1, 1)
 SUSPECT_WINDOW_START = date(2020, 2, 24)
 SUSPECT_WINDOW_END = date(2020, 4, 30)
 WORST_SESSIONS_N = 5
+ONE_CENT = 0.01
+# Median absolute difference produced by cent rounding on one side alone, as a
+# fraction of (one cent / price): 1 - 1/sqrt(2).
+CENT_ROUNDING_MEDIAN_FACTOR = 1 - 1 / math.sqrt(2)
 ALPACA_TIMEFRAME = "1Day"
 ALPACA_ADJUSTMENT = "all"  # splits + dividends, matches yfinance auto_adjust=True
 ALPACA_START = "2019-01-01"
@@ -86,7 +91,13 @@ def compare_daily_returns(yf_close: pd.Series, alpaca_close: pd.Series) -> dict:
         gated_median = float(gated_diffs.median())
         gated_p99 = float(gated_diffs.quantile(0.99))
         gated_mean = float(signed[~suspect].mean())
+    # Alpaca's adjusted closes are whole cents, so on a low-priced ETF cent
+    # rounding alone produces a median difference; allow for it on top of the floor.
     median_max = MEDIAN_ABS_DIFF_BPS_MAX
+    if n_days > 0:
+        median_max += CENT_ROUNDING_MEDIAN_FACTOR * (
+            10_000 * ONE_CENT / float(joined["yf"].median())
+        )
     fail_reasons: List[str] = []
     if n_gated == 0:
         fail_reasons.append("no_data")

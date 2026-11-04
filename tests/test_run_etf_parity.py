@@ -136,11 +136,15 @@ def test_thresholds_are_pinned():
 
 @pytest.mark.parametrize("offset_bps,expected", [(0.9, True), (1.1, False)])
 def test_median_threshold_boundary(offset_bps, expected):
+    # Closes scaled by 1e4 make the one-cent allowance negligible, so this
+    # still pins the 1 bp floor.
     def offset(r):
         r += offset_bps / 10_000
 
     yf, al = _pair(offset)
-    assert compare_daily_returns(yf, al)["passed"] is expected
+    res = compare_daily_returns(yf * 1e4, al * 1e4)
+    assert res["median_max_bps"] == pytest.approx(1.0, abs=1e-3)
+    assert res["passed"] is expected
 
 
 @pytest.mark.parametrize("spike_bps,expected", [(9.5, True), (10.5, False)])
@@ -501,6 +505,66 @@ def test_window_edge_at_end_makes_both_adjacent_returns_suspect():
     assert res["n_gated_over"] == 0
     assert res["n_suspect_over"] == 2
     assert {w[0] for w in res["worst_suspect"][:2]} == {"2020-04-30", "2020-05-01"}
+
+
+# -- cent-rounding allowance on the median (#757) ---------------------------
+
+
+def _level_pair(price: float):
+    """yf closes iid around `price`; Alpaca closes are the same rounded to cents."""
+    idx = pd.bdate_range("2019-01-02", "2021-12-31")
+    noise = np.random.default_rng(3).normal(0.0, 0.01, len(idx))
+    yf = pd.Series(price * (1.0 + noise), index=idx)
+    return yf, yf.round(2)
+
+
+def _scaled_pair(median_price: float, offset_bps: float):
+    """_pair with a constant return offset, closes rescaled to a given median price."""
+
+    def offset(r):
+        r += offset_bps / 10_000
+
+    yf, al = _pair(offset)
+    k = median_price / float(yf.median())
+    return yf * k, al * k
+
+
+def test_cent_rounding_constants_are_pinned():
+    assert parity.ONE_CENT == 0.01
+    assert parity.CENT_ROUNDING_MEDIAN_FACTOR == pytest.approx(1 - 1 / math.sqrt(2))
+
+
+def test_median_max_bps_is_floor_plus_cent_allowance():
+    yf, al = _level_pair(21.0)
+    res = compare_daily_returns(yf, al)
+    expected = 1.0 + (1 - 1 / math.sqrt(2)) * (10_000 * 0.01 / float(yf.median()))
+    assert res["median_max_bps"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("price", [21.0, 12.0])
+def test_cent_rounding_on_low_priced_etf_is_not_a_failure(price):
+    yf, al = _level_pair(price)
+    res = compare_daily_returns(yf, al)
+    assert res["median_abs_diff_bps"] >= 1.0  # the old gate fails on rounding alone
+    assert res["gated_median_abs_diff_bps"] < res["median_max_bps"]
+    assert res["passed"] is True
+    assert res["fail_reasons"] == []
+
+
+def test_constant_offset_at_high_price_still_fails_the_median():
+    yf, al = _scaled_pair(290.0, 1.41)
+    res = compare_daily_returns(yf, al)
+    assert res["median_max_bps"] < 1.2
+    assert res["passed"] is False
+    assert res["fail_reasons"] == ["median"]
+
+
+def test_cent_allowance_is_bounded_at_low_price():
+    yf, al = _scaled_pair(21.0, 3.0)
+    res = compare_daily_returns(yf, al)
+    assert res["median_max_bps"] < 3.0
+    assert res["passed"] is False
+    assert res["fail_reasons"] == ["median"]
 
 
 def test_worst_sessions_are_sorted_by_abs_diff_then_date():
