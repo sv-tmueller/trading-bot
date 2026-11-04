@@ -5,6 +5,17 @@ loader) with Alpaca's split- and dividend-adjusted ``1Day`` bars over the
 development window, and reports the median and 99th percentile of the
 absolute daily-return difference in basis points.
 
+Gate (issue #757). The raw median and p99 are printed, but the verdict uses
+the gated statistics: returns where either close falls in
+``[SUSPECT_WINDOW_START, SUSPECT_WINDOW_END]`` (the March 2020 sessions whose
+Alpaca daily closes differ from the official close by up to about 10%) are
+listed as suspect and not gated. Passes when the gated median is below
+``MEDIAN_ABS_DIFF_BPS_MAX`` plus a cent-rounding allowance (Alpaca adjusted
+closes are whole cents, so low-priced ETFs differ by rounding alone) and the
+gated p99 is below ``P99_ABS_DIFF_BPS_MAX``. The mean signed difference is
+shown, not gated. Each ticker's worst suspect and gated sessions are printed
+after the table.
+
 The only Alpaca reference is the existing read-only bars helper
 (``run_fetch_spy_intraday.fetch_bars``); keys come from the environment.
 There is no start/end flag: the window is fixed to ``[WINDOW_START,
@@ -16,6 +27,7 @@ arguments.
 from __future__ import annotations
 
 import argparse
+import math
 from datetime import date
 from typing import Callable, List, Optional
 
@@ -27,6 +39,16 @@ from backtest.run_fetch_spy_intraday import fetch_bars
 MEDIAN_ABS_DIFF_BPS_MAX = 1.0  # strict <
 P99_ABS_DIFF_BPS_MAX = 10.0  # strict <
 WINDOW_START = date(2019, 1, 1)
+# Sessions in this window (the March 2020 circuit-breaker period) carry Alpaca
+# daily closes that differ from the official close by up to about 10%. Returns
+# touching them are reported but not gated.
+SUSPECT_WINDOW_START = date(2020, 2, 24)
+SUSPECT_WINDOW_END = date(2020, 4, 30)
+WORST_SESSIONS_N = 5
+ONE_CENT = 0.01
+# Median absolute difference produced by cent rounding on one side alone, as a
+# fraction of (one cent / price): 1 - 1/sqrt(2).
+CENT_ROUNDING_MEDIAN_FACTOR = 1 - 1 / math.sqrt(2)
 ALPACA_TIMEFRAME = "1Day"
 ALPACA_ADJUSTMENT = "all"  # splits + dividends, matches yfinance auto_adjust=True
 ALPACA_START = "2019-01-01"
@@ -54,22 +76,79 @@ def compare_daily_returns(yf_close: pd.Series, alpaca_close: pd.Series) -> dict:
     _check_index("alpaca_close", alpaca_close)
     joined = pd.concat([yf_close, alpaca_close], axis=1, join="inner")
     joined.columns = ["yf", "alpaca"]
-    rets = joined.dropna().sort_index().pct_change().dropna()
-    diffs = (rets["alpaca"] - rets["yf"]).abs() * 10_000
+    joined = joined.dropna().sort_index()
+    rets = joined.pct_change().dropna()
+    signed = (rets["alpaca"] - rets["yf"]) * 10_000
+    diffs = signed.abs()
     n_days = int(len(diffs))
+    # A return is suspect when either of its two closes (this joined row or the
+    # previous joined row) falls inside the suspect window.
+    in_win = pd.Series(
+        (joined.index >= pd.Timestamp(SUSPECT_WINDOW_START))
+        & (joined.index <= pd.Timestamp(SUSPECT_WINDOW_END)),
+        index=joined.index,
+    )
+    suspect = (in_win | in_win.shift(1, fill_value=False)).loc[rets.index]
+    gated_diffs = diffs[~suspect]
+    n_gated = int(len(gated_diffs))
     if n_days == 0:
         median = p99 = float("nan")
-        passed = False
     else:
         median = float(diffs.median())
         p99 = float(diffs.quantile(0.99))
-        passed = bool(median < MEDIAN_ABS_DIFF_BPS_MAX and p99 < P99_ABS_DIFF_BPS_MAX)
+    if n_gated == 0:
+        gated_median = gated_p99 = gated_mean = float("nan")
+    else:
+        gated_median = float(gated_diffs.median())
+        gated_p99 = float(gated_diffs.quantile(0.99))
+        gated_mean = float(signed[~suspect].mean())
+    # Alpaca's adjusted closes are whole cents, so on a low-priced ETF cent
+    # rounding alone produces a median difference; allow for it on top of the floor.
+    median_max = MEDIAN_ABS_DIFF_BPS_MAX
+    if n_days > 0:
+        median_max += CENT_ROUNDING_MEDIAN_FACTOR * (
+            10_000 * ONE_CENT / float(joined["yf"].median())
+        )
+    fail_reasons: List[str] = []
+    if n_gated == 0:
+        fail_reasons.append("no_data")
+    else:
+        if not gated_median < median_max:
+            fail_reasons.append("median")
+        if not gated_p99 < P99_ABS_DIFF_BPS_MAX:
+            fail_reasons.append("p99")
     return {
         "n_days": n_days,
         "median_abs_diff_bps": median,
         "p99_abs_diff_bps": p99,
-        "passed": passed,
+        "passed": not fail_reasons,
+        "n_gated": n_gated,
+        "gated_median_abs_diff_bps": gated_median,
+        "gated_p99_abs_diff_bps": gated_p99,
+        "gated_mean_diff_bps": gated_mean,
+        "median_max_bps": float(median_max),
+        "n_gated_over": int((gated_diffs >= P99_ABS_DIFF_BPS_MAX).sum()),
+        "n_suspect": int(suspect.sum()),
+        "n_suspect_over": int((diffs[suspect] >= P99_ABS_DIFF_BPS_MAX).sum()),
+        "worst_gated": _worst(diffs[~suspect], joined),
+        "worst_suspect": _worst(diffs[suspect], joined),
+        "fail_reasons": fail_reasons,
     }
+
+
+def _worst(diffs: pd.Series, joined: pd.DataFrame) -> list:
+    """Top sessions by absolute diff (ties by date ascending), plain Python."""
+    items = [
+        (
+            ts.strftime("%Y-%m-%d"),
+            float(d),
+            float(joined.at[ts, "yf"]),
+            float(joined.at[ts, "alpaca"]),
+        )
+        for ts, d in diffs.items()
+    ]
+    items.sort(key=lambda x: (-x[1], x[0]))
+    return items[:WORST_SESSIONS_N]
 
 
 def _in_window(close: pd.Series) -> pd.Series:
@@ -94,6 +173,17 @@ def run_parity(
             "passed": False,
             "n_yf": 0,
             "n_alpaca": 0,
+            "n_gated": 0,
+            "gated_median_abs_diff_bps": float("nan"),
+            "gated_p99_abs_diff_bps": float("nan"),
+            "gated_mean_diff_bps": float("nan"),
+            "median_max_bps": float("nan"),
+            "n_gated_over": 0,
+            "n_suspect": 0,
+            "n_suspect_over": 0,
+            "worst_gated": [],
+            "worst_suspect": [],
+            "fail_reasons": [],
             "error": None,
         }
         try:
@@ -120,7 +210,8 @@ def run_parity(
 
 _HEADER = (
     f"{'ticker':<8} {'n_days':>7} {'median_bps':>11} {'p99_bps':>9} "
-    f"{'n_yf':>6} {'n_alpaca':>9} verdict"
+    f"{'n_yf':>6} {'n_alpaca':>9} {'n_gated':>8} {'gated_med':>10} "
+    f"{'gated_p99':>10} {'med_max':>8} {'mean_bps':>9} verdict"
 )
 
 
@@ -128,11 +219,37 @@ def format_row(row: dict) -> str:
     verdict = "PASS" if row["passed"] else "FAIL"
     line = (
         f"{row['ticker']:<8} {row['n_days']:>7d} {row['median_abs_diff_bps']:>11.3f} "
-        f"{row['p99_abs_diff_bps']:>9.3f} {row['n_yf']:>6d} {row['n_alpaca']:>9d} {verdict}"
+        f"{row['p99_abs_diff_bps']:>9.3f} {row['n_yf']:>6d} {row['n_alpaca']:>9d} "
+        f"{row['n_gated']:>8d} {row['gated_median_abs_diff_bps']:>10.3f} "
+        f"{row['gated_p99_abs_diff_bps']:>10.3f} {row['median_max_bps']:>8.3f} "
+        f"{row['gated_mean_diff_bps']:>9.3f} {verdict}"
     )
+    if not row["passed"] and row.get("fail_reasons"):
+        line += " " + "+".join(row["fail_reasons"])
     if row.get("error"):
         line += f"  {row['error']}"
     return line
+
+
+def _session_lines(sessions: list, label: str) -> List[str]:
+    return [
+        f"  {d}  |diff| {diff:>8.3f} bps  yf {yf:.4f}  alpaca {al:.4f}  {label}"
+        for d, diff, yf, al in sessions
+    ]
+
+
+def format_sessions(row: dict) -> List[str]:
+    """Per-ticker block: the worst suspect and gated sessions, then counts."""
+    t = row["ticker"]
+    over = f"{P99_ABS_DIFF_BPS_MAX:g}"
+    return [
+        f"{t} suspect window {SUSPECT_WINDOW_START.isoformat()}.."
+        f"{SUSPECT_WINDOW_END.isoformat()} (not gated): "
+        f"{row['n_suspect']} days, {row['n_suspect_over']} >= {over} bps",
+        *_session_lines(row["worst_suspect"], "suspect"),
+        f"{t} gated: {row['n_gated']} days, {row['n_gated_over']} >= {over} bps",
+        *_session_lines(row["worst_gated"], "gated"),
+    ]
 
 
 def main(
@@ -151,6 +268,12 @@ def main(
     print(_HEADER)
     for row in rows:
         print(format_row(row))
+    for row in rows:
+        if row["error"]:
+            continue
+        print()
+        for line in format_sessions(row):
+            print(line)
     return 0 if all(r["passed"] for r in rows) else 1
 
 
