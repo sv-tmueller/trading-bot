@@ -500,6 +500,32 @@ LEDGER: Tuple[TestedCell, ...] = (
              "DSR 0.85 (N=19), PBO 0.09, bootstrap CI on uplift includes 0; holdout CAGR +5.0%, "
              "max DD 10.6% (passes). 3/5 criteria: not better than vol-targeted SPY.",
     ),
+    # --- 2026-11-06 research round etf-daily-r2 (#762; pipeline round 2) -- daily-bar cadence
+    # Same ETF_BASKET_XA14 universe, BIL cash, 10% vol target, gross cap 1.0 and
+    # five-criterion bar as r1 (#737); development 2007-05-30 to 2021-12-31 (n_w=14),
+    # one-shot holdout 2022-01-03 to 2026-11-06.
+    TestedCell(
+        family="vol_regime_gating", cadence="daily", vehicle="ETF_BASKET_XA14",
+        exit_style="gate_on_spy_realised_vol", n_cells=12, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-11-06-etf-daily-r2-verdict.md", date="2026-11-06",
+        note="Exposure fraction on SPY realised vol: L_vol in {21,63} x V in {0.15,0.20,0.25} x "
+             "f_off in {0.25,0.0} over the always-on inverse-vol + 10%-target basket. Selected "
+             "L_vol=21, V=0.25, f_off=0.0: dev CAGR 5.3%, max DD 8.3%, median year Calmar 2.18 "
+             "vs benchmark 0.96 (n_w=14, first beats-benchmark pass in the programme); DSR 0.98 "
+             "(N=37), PBO 0.22, but bootstrap CI on uplift [-0.80, 1.90] includes 0; 14.4 rt/yr "
+             "under the 20/yr floor; holdout CAGR +4.4%, max DD 10.7%. 3/5 criteria.",
+    ),
+    TestedCell(
+        family="donchian_breakout", cadence="daily", vehicle="ETF_BASKET_XA14",
+        exit_style="channel_entry_half_exit", n_cells=6, verdict=NO_GO, power="PROMOTABLE",
+        source="docs/research/2026-11-06-etf-daily-r2-verdict.md", date="2026-11-06",
+        note="Entry close > prior L_e-row high, exit close < prior ceil(L_e/2)-row low, L_e in "
+             "{55,126,252} x {long_flat, long_short}. Selected L_e=252 long_flat: dev CAGR 4.7%, "
+             "max DD 19.0%, median year Calmar 1.13 vs benchmark 0.96 (n_w=14); DSR 0.56 (N=37), "
+             "PBO 0.71, bootstrap CI on uplift includes 0; 6.2 rt/yr under the 20/yr floor "
+             "(exit channel cut r1 TSMOM's 86 rt/yr to 6, cost drag 0.2%/yr); holdout CAGR +4.1%, "
+             "max DD 10.5%. 3/5 criteria.",
+    ),
 )
 
 

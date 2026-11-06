@@ -1,0 +1,133 @@
+{
+  "candidate_id": "etf-daily-r2-vol-regime-gating",
+  "gate_kwargs": {
+    "bootstrap_alpha": 0.05,
+    "bootstrap_block_length": 2,
+    "bootstrap_n_boot": 1000,
+    "bootstrap_seed": 0,
+    "dsr_sr_benchmark": 0.0,
+    "pbo_n_splits": 16
+  },
+  "n_returns_best": 3676,
+  "n_trials_candidate": 12,
+  "n_w_development": 14,
+  "perf_matrix_shape": [
+    3676,
+    12
+  ],
+  "programme_trial_count": 37,
+  "selected_trial_id": "etf-daily-r2-vol-regime-gating-06",
+  "uplift_years": [
+    {
+      "calmar_benchmark": -0.8775540051362808,
+      "calmar_selected": -0.7265228131453805,
+      "year": 2008
+    },
+    {
+      "calmar_benchmark": 2.143256430685709,
+      "calmar_selected": 3.2772809838729264,
+      "year": 2009
+    },
+    {
+      "calmar_benchmark": 0.877524958409888,
+      "calmar_selected": 3.670477242595762,
+      "year": 2010
+    },
+    {
+      "calmar_benchmark": -0.0719946786782159,
+      "calmar_selected": 0.575362168773346,
+      "year": 2011
+    },
+    {
+      "calmar_benchmark": 0.784881411075045,
+      "calmar_selected": 3.0382551021302184,
+      "year": 2012
+    },
+    {
+      "calmar_benchmark": 5.682298825889833,
+      "calmar_selected": 0.3434145761350755,
+      "year": 2013
+    },
+    {
+      "calmar_benchmark": 1.532684796225999,
+      "calmar_selected": 2.3515645269195784,
+      "year": 2014
+    },
+    {
+      "calmar_benchmark": -0.23035131646262147,
+      "calmar_selected": -0.34978598695653845,
+      "year": 2015
+    },
+    {
+      "calmar_benchmark": 1.0929350806198492,
+      "calmar_selected": 2.064188320126498,
+      "year": 2016
+    },
+    {
+      "calmar_benchmark": 8.315912199054708,
+      "calmar_selected": 4.919182808430315,
+      "year": 2017
+    },
+    {
+      "calmar_benchmark": -0.19702812213092719,
+      "calmar_selected": -0.5658577654765211,
+      "year": 2018
+    },
+    {
+      "calmar_benchmark": 2.9287310689071164,
+      "calmar_selected": 9.51022651072418,
+      "year": 2019
+    },
+    {
+      "calmar_benchmark": 0.10663893387214197,
+      "calmar_selected": 1.75403404881509,
+      "year": 2020
+    },
+    {
+      "calmar_benchmark": 4.078625448241413,
+      "calmar_selected": 2.284800339450138,
+      "year": 2021
+    }
+  ],
+  "uplifts": [
+    0.15103119199090032,
+    1.1340245531872175,
+    2.792952284185874,
+    0.6473568474515619,
+    2.2533736910551734,
+    -5.3388842497547575,
+    0.8188797306935793,
+    -0.11943467049391698,
+    0.9712532395066487,
+    -3.396729390624393,
+    -0.3688296433455939,
+    6.581495441817064,
+    1.647395114942948,
+    -1.7938251087912747
+  ],
+  "verdict": {
+    "criteria": {
+      "activity": {
+        "detail": "round trips per year 14.3934 (min 20); max time share in one ETF 0.8534 (max 0.9000)",
+        "passed": false
+      },
+      "beats_benchmark": {
+        "detail": "median window Calmar candidate 2.1835 (n_w=14) vs benchmark 0.9585 (n_w=14)",
+        "passed": true
+      },
+      "drawdown": {
+        "detail": "development 0.0830; holdout 0.1072; cap 0.2000",
+        "passed": true
+      },
+      "holdout": {
+        "detail": "holdout CAGR 0.0441 (need > 0); max drawdown 0.1072",
+        "passed": true
+      },
+      "luck": {
+        "detail": "DSR 0.9806 over N=37 trials; PBO 0.2204; uplift CI [-0.7994, 1.8997]; bootstrap ci_low -0.799434 <= 0",
+        "passed": false
+      }
+    },
+    "passed": false
+  }
+}

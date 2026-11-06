@@ -192,3 +192,16 @@ Per the skill's Non-goals: no live change, no edits under `supabase/functions/`,
 ---
 
 **Freeze banner.** Everything above this line is the frozen pre-registration. Results land as dated addenda below this line (results PR), never as edits above it.
+
+---
+
+## Addendum (2026-11-06): results
+
+Round complete; every figure below is from the committed result files and one `evaluate_round.py` run per candidate (outputs committed in `docs/research/2026-11-06-etf-daily-r2-study/`). Full detail: `docs/research/2026-11-06-etf-daily-r2-verdict.md`; scorecards, gate verdicts and recommendations posted on candidate issues #763 and #764.
+
+- 18 trials appended (programme store 19 to 37). Selected: `etf-daily-r2-vol-regime-gating-06` (`L_vol=21`, `V=0.25`, `f_off=0.0`) and `etf-daily-r2-donchian-trend-breakout-05` (`L_e=252`, `L_x=126`, `long_flat`).
+- Both candidates **fail the five-criterion bar** (3 of 5 each: drawdown, beats_benchmark and holdout pass; luck and activity fail). Both recorded `NO_GO` at `PROMOTABLE` power (n_w = 14).
+- Both holdouts ran exactly once (2022-01-03 to 2026-11-06, 1,217 rows, 4 scored years). #763 holdout: CAGR +4.4%, max DD 10.7%. #764 holdout: CAGR +4.1%, max DD 10.5%.
+- #763 is the programme's first beats-benchmark pass (median development-year after-tax Calmar 2.18 vs 0.96), with DSR 0.98 and PBO 0.22 over N=37, but the bootstrap uplift CI [-0.80, 1.90] includes zero and its 14.4 round trips/yr sit under the 20/yr activity floor.
+- #764's luck leg fails on all three counts (DSR 0.56, PBO 0.71, CI [-0.90, 0.85] includes 0); its exit channel did cut turnover to 6.2 round trips/yr (cost drag 0.2%/yr) as intended.
+- The `vol_regime_gating` ledger row trips `UNTESTED_CANDIDATES` pins in `tests/test_weekly_review.py` (expected; raised on round issue #762, per the round's non-goals). The `donchian_breakout` state pins in `tests/test_tested_cells.py` were updated to the new live counts in the results PR.
