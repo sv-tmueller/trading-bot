@@ -23,15 +23,31 @@ Usage (always from the worktree root)::
     venv/bin/python docs/research/2026-11-06-etf-daily-r2-study/run_vol_regime_gating.py \
         --phase development
 
-The holdout path (``--phase holdout``) is NOT implemented in this script: per
-the dispatch, the analyst implements the development path only; the
-orchestrating session runs the holdout separately.
+The holdout path (``--phase holdout``) is implemented but run ONLY by the
+orchestrating session, once, after the development result is recorded; the
+analyst never executes it.
 
 The development path appends the 12 trials to the programme ledger in one
 ``append_trials`` call (no ``round_budget=``; the round's 18 of 50 is inside
 the budget), writes ``<candidate_id>-development-returns.csv`` and
 ``<candidate_id>-development-payload.json`` into this directory and never
 calls ``record_result``.
+
+Usage (holdout; orchestrating session only, once, after the development
+result is recorded)::
+
+    venv/bin/python docs/research/2026-11-06-etf-daily-r2-study/run_vol_regime_gating.py \
+        --phase holdout --i-am-the-orchestrator
+
+The holdout path reads ``selected_trial_id`` and ``config`` from the committed
+``docs/research/pipeline/etf-daily-r2-vol-regime-gating/development_result.json``,
+loads the full series from the data start with ``phase="holdout"`` (so gate
+state, positions and volatility estimates carry in naturally through
+2021-12-31), runs only the selected configuration plus the benchmark and the
+double-cost and 1.5x re-runs, cuts everything to rows on or after
+2022-01-01 (section 8 holdout method), builds the holdout scorecard and calls
+``record_result`` in the same process. It appends no trial. The analyst
+implements it but never runs it.
 """
 from __future__ import annotations
 
@@ -50,6 +66,7 @@ for p in (str(HERE), str(REPO)):
         sys.path.insert(0, p)
 
 import etf_daily_r2_common as common  # noqa: E402
+from backtest.etf_data import HOLDOUT_START  # noqa: E402
 from backtest.portfolio import PortfolioResult, round_trips_per_year  # noqa: E402
 from backtest.trial_store import DAILY_ALLOCATION, TrialRecord, append_trials  # noqa: E402
 
@@ -240,11 +257,90 @@ def run_development() -> None:
     print(f"commit: {payload['commit']}")
 
 
+# ---------------------------------------------------------------------------
+# Holdout path (orchestrating session only; written by the analyst, never run here)
+# ---------------------------------------------------------------------------
+
+def run_holdout(i_am_the_orchestrator: bool) -> None:
+    if not i_am_the_orchestrator:
+        raise SystemExit(
+            "the holdout path is run once by the orchestrating session; "
+            "pass --i-am-the-orchestrator to confirm"
+        )
+    import json
+
+    from backtest.etf_data import record_result
+
+    dev_path = common.PIPELINE_DIR / CANDIDATE_ID / "development_result.json"
+    dev = json.loads(dev_path.read_text())
+    selected = dev["selected_trial_id"]
+    config = dev["config"]
+    n = int(selected.rsplit("-", 1)[1])
+    if trial_id(n) != selected or not (1 <= n <= len(GRID)):
+        raise ValueError(f"selected_trial_id {selected!r} is not in the section 6 grid")
+    L_vol, V, f_off = GRID[n - 1]
+    if trial_config(L_vol, V, f_off) != config:
+        raise ValueError(
+            f"development_result config {config} does not match grid entry {n} "
+            f"{trial_config(L_vol, V, f_off)}"
+        )
+
+    # Lock-checked load; the loader raises HoldoutLockedError if not released.
+    bars = common.load_basket("holdout", candidate_id=CANDIDATE_ID)
+    full = common.build_basket(bars)
+    dev_only = common.build_basket(common.cut_bars_before(bars, HOLDOUT_START))
+    print(f"data start: {full.data_start.date()}; full rows {len(full.index)} "
+          f"({full.index[0].date()} to {full.index[-1].date()}); "
+          f"development rows {len(dev_only.index)}")
+
+    def both(costs, gross_cap: float) -> PortfolioResult:
+        return common.slice_to_holdout(
+            run_config(full, L_vol, V, f_off, costs=costs, gross_cap=gross_cap),
+            run_config(dev_only, L_vol, V, f_off, costs=costs, gross_cap=gross_cap),
+        )
+
+    result = both(common.VERDICT_COSTS, common.GROSS_CAP)
+    benchmark = common.slice_to_holdout(
+        common.simulate_benchmark(full), common.simulate_benchmark(dev_only)
+    )
+    double = both(common.DOUBLE_COSTS, common.GROSS_CAP)
+    leverage = both(common.VERDICT_COSTS, common.LEVERAGE_GROSS_CAP)
+    scorecard = common.scorecard_for(
+        result, benchmark, double_cost=double, leverage_info=leverage
+    )
+
+    payload = {
+        "round_id": common.ROUND_ID,
+        "candidate_id": CANDIDATE_ID,
+        "selected_trial_id": selected,
+        "config": config,
+        "scorecard": scorecard,
+        "commit": common.git_commit(),
+    }
+    common.strict_json(payload)  # raises on NaN/inf before anything is recorded
+    path = record_result(CANDIDATE_ID, "holdout", payload)  # default pipeline_dir (skill Phase 4 e)
+    print(f"recorded holdout result at {path}")
+    print(common.summary_header())
+    print(common.summary_row(f"{selected} holdout", scorecard))
+    print(f"holdout rows: {len(result.equity)} ({result.equity.index[0].date()} to "
+          f"{result.equity.index[-1].date()}); scored years "
+          f"{list(scorecard['window_calmars'].keys())}")
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--phase", choices=("development",), required=True)
+    parser.add_argument("--phase", choices=("development", "holdout"), required=True)
+    parser.add_argument(
+        "--i-am-the-orchestrator", action="store_true",
+        help="required with --phase holdout; the analyst never passes it",
+    )
     args = parser.parse_args(argv)
-    run_development()
+    if args.phase == "development":
+        if args.i_am_the_orchestrator:
+            raise SystemExit("--i-am-the-orchestrator applies to --phase holdout only")
+        run_development()
+    else:
+        run_holdout(args.i_am_the_orchestrator)
 
 
 if __name__ == "__main__":
