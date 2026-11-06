@@ -420,5 +420,347 @@
     "source": "docs/research/2026-11-03-etf-daily-r1-preregistration.md",
     "space": "daily_allocation",
     "trial_id": "etf-daily-r1-xs-momentum-06"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 55,
+      "L_x": 28,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_flat",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.043817660307190844,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-01"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 55,
+      "L_x": 28,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.020879096605379243,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-02"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 126,
+      "L_x": 63,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_flat",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.0431635156025158,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-03"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 126,
+      "L_x": 63,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.0377467053038319,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-04"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 252,
+      "L_x": 126,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_flat",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.04406605513125923,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-05"
+  },
+  {
+    "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+    "config": {
+      "L_e": 252,
+      "L_x": 126,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "variant": "long_short",
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.02865500844654517,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-donchian-trend-breakout-06"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.15,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.05570226954995227,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-01"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.15,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.04231784965696276,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-02"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.2,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.06590800384216888,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-03"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.2,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.06264284495954443,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-04"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.25,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.07436230574151403,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-05"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 21,
+      "V": 0.25,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.07637618252292236,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-06"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.15,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.056347117622225516,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-07"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.15,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.042023928527582306,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-08"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.2,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.06688102525330619,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-09"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.2,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.06348061263723964,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-10"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.25,
+      "f_off": 0.25,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.06823553805757156,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-11"
+  },
+  {
+    "candidate_id": "etf-daily-r2-vol-regime-gating",
+    "config": {
+      "L_vol": 63,
+      "V": 0.25,
+      "f_off": 0.0,
+      "gross_cap": 1.0,
+      "rebalance_band": 0.02,
+      "target_vol": 0.1,
+      "vol_lookback": 60
+    },
+    "date": "2026-11-06",
+    "n_periods": 3676,
+    "round_id": "etf-daily-r2",
+    "sharpe_daily": 0.07078943758648394,
+    "source": "docs/research/2026-11-06-etf-daily-r2-preregistration.md",
+    "space": "daily_allocation",
+    "trial_id": "etf-daily-r2-vol-regime-gating-12"
   }
 ]
