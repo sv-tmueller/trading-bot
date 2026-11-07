@@ -324,7 +324,7 @@ def evaluate_stopping_rule(
     proposed: Optional[float] = None
     if fired and ci_upper is not None:
         eligible = [c for c in candidates if c >= ci_upper]
-        proposed = min(eligible) if eligible else float(max(candidates))
+        proposed = min(eligible)
     return {
         "fired": fired,
         "proposed_bps": proposed,

@@ -157,8 +157,7 @@ Commit order (load-bearing, per the #566/#571/#572 convention):
 
 1. `5cb9885` -- the frozen pre-registration (no windowed statistic computed before it).
 2. `4202c68` -- `backtest/run_cost_model_slippage_study.py` + `tests/test_run_cost_model_slippage_study.py` (no results).
-3. the results commit (this doc, the artifacts and the rolling CSV; its hash is the PR branch head,
-   listed in the PR body).
+3. `63815c2` -- the results commit (this doc, the artifacts and the rolling CSV). The branch head `a47a893` is the round-1 review fix to section 5's IQR sentence above (markdown-only, listed in the PR body).
 
 The pre-registration hash strictly precedes the results hash. Reproduce from the worktree root:
 
