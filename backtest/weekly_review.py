@@ -61,13 +61,8 @@ from backtest import tested_cells as tc
 #: Families named as genuinely untested by prior research, in the order those docs rank them.
 #: Each entry cites where the claim comes from — this list is evidence, not a wishlist.
 UNTESTED_CANDIDATES: Tuple[Tuple[str, str, str], ...] = (
-    (
-        "vol_regime_gating", "daily",
-        "#422 §'where the untested opportunity lives' — named genuinely untested, and daily/swing "
-        "rather than intraday, so it clears both of that gate's walls.",
-    ),
-    # cross_sectional_rv / daily was listed from #422; it was tested in round etf-daily-r1
-    # (#751; ledger row added by #755), NO_GO at PROMOTABLE power, so it is no longer untested.
+    # vol_regime_gating / daily was listed from #422; it was tested in round etf-daily-r2
+    # (#763; ledger row added by #768), NO_GO at PROMOTABLE power, so it is no longer untested.
     (
         "multi_instrument_rotation", "daily",
         "#421 — the concentration concern that cannot be fixed on UPRO alone.",
