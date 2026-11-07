@@ -148,8 +148,8 @@ def test_find_with_no_filters_returns_everything():
 
 def test_find_filters_are_case_insensitive_and_combine():
     hits = tc.find(family="DONCHIAN_BREAKOUT", cadence="Daily")
-    assert len(hits) == 2                      # SPY + ES
-    assert {c.vehicle for c in hits} == {"SPY", "ES"}
+    assert len(hits) == 3                      # SPY + ES + ETF_BASKET_XA14 (r2, 2026-11-06)
+    assert {c.vehicle for c in hits} == {"SPY", "ES", "ETF_BASKET_XA14"}
 
 
 def test_find_by_verdict():
@@ -367,8 +367,9 @@ def test_cumulative_trials_excludes_grids_that_never_ran():
 
 
 def test_cumulative_trials_sums_multiple_run_records():
-    # donchian: daily SPY 3 + daily ES 3 + hourly SPY 3 + hourly ES 3 = 12
-    assert tc.cumulative_trials("donchian_breakout") == 12
+    # donchian: daily SPY 3 + daily ES 3 + hourly SPY 3 + hourly ES 3 = 12,
+    # + etf-daily-r2 ETF_BASKET_XA14 6 (2026-11-06) = 18
+    assert tc.cumulative_trials("donchian_breakout") == 18
     # forex class kill: 15 + 9 + 9 across three families
     assert (
         tc.cumulative_trials("ma_cross")

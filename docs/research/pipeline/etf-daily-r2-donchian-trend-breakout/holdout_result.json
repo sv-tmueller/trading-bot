@@ -1,0 +1,87 @@
+{
+  "candidate_id": "etf-daily-r2-donchian-trend-breakout",
+  "commit": "902ffd08f9c4f1ece34969b6e7f8d44cdd3fae85",
+  "config": {
+    "L_e": 252,
+    "L_x": 126,
+    "gross_cap": 1.0,
+    "rebalance_band": 0.02,
+    "target_vol": 0.1,
+    "variant": "long_flat",
+    "vol_lookback": 60
+  },
+  "round_id": "etf-daily-r2",
+  "scorecard": {
+    "avg_holding_days": 355.86842105263156,
+    "benchmark": {
+      "cagr": 0.07305151617028716,
+      "cagr_after_tax": 0.05530915670940706,
+      "calmar": 0.5390805707575269,
+      "max_drawdown": 0.1355113133972417,
+      "max_drawdown_end": "2022-09-30",
+      "max_drawdown_start": "2022-01-03",
+      "n_periods": 1217,
+      "realized_vol": 0.10781694467675529,
+      "sharpe_annual": 0.717510057009825,
+      "sharpe_daily": 0.045198885096089846,
+      "window_calmars": {
+        "2022": -0.7987116200610719,
+        "2023": 1.8362197697447586,
+        "2024": 1.8893939438334828,
+        "2025": 0.5038630118176096
+      },
+      "worst_year": {
+        "return": -0.09614187602040192,
+        "year": "2022"
+      },
+      "year_returns": {
+        "2022": -0.09614187602040192,
+        "2023": 0.16726840521530462,
+        "2024": 0.19300324752785158,
+        "2025": 0.07842440980057397
+      }
+    },
+    "borrow_cost_per_year": 0.0,
+    "cagr": 0.04106438298693549,
+    "cagr_after_tax": 0.029697670837469214,
+    "calmar": 0.3895057622430883,
+    "cost_drag_per_year": 0.003117481757888451,
+    "double_cost": {
+      "cagr": 0.038367544919897245,
+      "calmar": 0.3547440744020235,
+      "max_drawdown": 0.10815556252651078
+    },
+    "leverage_info": {
+      "cagr": 0.03974036591689045,
+      "calmar": 0.3389768306473229,
+      "max_drawdown": 0.11723623069163976
+    },
+    "max_drawdown": 0.10542689471512219,
+    "max_drawdown_end": "2023-10-27",
+    "max_drawdown_start": "2022-09-27",
+    "max_time_share_one_etf": 0.695152013147083,
+    "n_periods": 1217,
+    "realized_vol": 0.07372368665897584,
+    "round_trips_per_year": 7.850395927601809,
+    "sharpe_annual": 0.5827812291455622,
+    "sharpe_daily": 0.036711766692278686,
+    "target_vol": 0.1,
+    "window_calmars": {
+      "2022": -0.5122915790201051,
+      "2023": 0.810283771524792,
+      "2024": 2.1667191778018795,
+      "2025": 0.5269896319100779
+    },
+    "worst_year": {
+      "return": -0.0385009123349882,
+      "year": "2022"
+    },
+    "year_returns": {
+      "2022": -0.0385009123349882,
+      "2023": 0.08496455631903754,
+      "2024": 0.09097665226609597,
+      "2025": 0.05474960195060907
+    }
+  },
+  "selected_trial_id": "etf-daily-r2-donchian-trend-breakout-05"
+}

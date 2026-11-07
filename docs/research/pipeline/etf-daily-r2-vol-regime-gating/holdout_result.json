@@ -1,0 +1,87 @@
+{
+  "candidate_id": "etf-daily-r2-vol-regime-gating",
+  "commit": "814612552d32aa2b2d1177b710c962edbf33eca0",
+  "config": {
+    "L_vol": 21,
+    "V": 0.25,
+    "f_off": 0.0,
+    "gross_cap": 1.0,
+    "rebalance_band": 0.02,
+    "target_vol": 0.1,
+    "vol_lookback": 60
+  },
+  "round_id": "etf-daily-r2",
+  "scorecard": {
+    "avg_holding_days": 225.0,
+    "benchmark": {
+      "cagr": 0.07305145071984409,
+      "cagr_after_tax": 0.05530913033531082,
+      "calmar": 0.539078963652109,
+      "max_drawdown": 0.13551159597276988,
+      "max_drawdown_end": "2022-09-30",
+      "max_drawdown_start": "2022-01-03",
+      "n_periods": 1217,
+      "realized_vol": 0.10781689997745986,
+      "sharpe_annual": 0.717509699074851,
+      "sharpe_daily": 0.04519886254830587,
+      "window_calmars": {
+        "2022": -0.7987105449153031,
+        "2023": 1.8362194987655862,
+        "2024": 1.8893906338492343,
+        "2025": 0.5038646322590147
+      },
+      "worst_year": {
+        "return": -0.09614207541219011,
+        "year": "2022"
+      },
+      "year_returns": {
+        "2022": -0.09614207541219011,
+        "2023": 0.16726821707580553,
+        "2024": 0.19300318980461117,
+        "2025": 0.0784245944376547
+      }
+    },
+    "borrow_cost_per_year": 0.0,
+    "cagr": 0.04414415365805624,
+    "cagr_after_tax": 0.033208509098981986,
+    "calmar": 0.4117073796892798,
+    "cost_drag_per_year": 0.002646338419009094,
+    "double_cost": {
+      "cagr": 0.042158857540602224,
+      "calmar": 0.3835570561705534,
+      "max_drawdown": 0.10991547896815582
+    },
+    "leverage_info": {
+      "cagr": 0.03736817190526631,
+      "calmar": 0.27346999740131467,
+      "max_drawdown": 0.13664450309124357
+    },
+    "max_drawdown": 0.10722215786215038,
+    "max_drawdown_end": "2022-09-27",
+    "max_drawdown_start": "2022-01-03",
+    "max_time_share_one_etf": 0.8948233360723089,
+    "n_periods": 1217,
+    "realized_vol": 0.05978930342987127,
+    "round_trips_per_year": 20.245757918552034,
+    "sharpe_annual": 0.7440978415813233,
+    "sharpe_daily": 0.04687375809343138,
+    "target_vol": 0.1,
+    "window_calmars": {
+      "2022": -0.8254721736005848,
+      "2023": 1.5973961069759333,
+      "2024": 2.8322000548982342,
+      "2025": 1.539605671196378
+    },
+    "worst_year": {
+      "return": -0.07941528365427597,
+      "year": "2022"
+    },
+    "year_returns": {
+      "2022": -0.07941528365427597,
+      "2023": 0.0944075339129693,
+      "2024": 0.07863366594582644,
+      "2025": 0.08873851047756487
+    }
+  },
+  "selected_trial_id": "etf-daily-r2-vol-regime-gating-06"
+}
