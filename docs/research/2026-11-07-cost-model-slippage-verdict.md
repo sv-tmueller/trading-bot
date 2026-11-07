@@ -103,9 +103,12 @@ validation ratio 0.145.
 
 Both clauses hold, so **recalibration is proposed at 2.0bps per side** for future research rounds.
 Note the chosen value is well above the realized validation median (0.72bps): the rule is
-deliberately conservative, deliberately refusing to sit at the median. The 2.0bps value also sits
-inside the interquartile band of both sides' realized distributions, i.e. it is a plausible
-central-ish cost, not an outlier-driven one.
+deliberately conservative, deliberately refusing to sit at the median. The 2.0bps value sits
+inside the exit side's interquartile band in both windows (calibration q25-q75 0.38-2.47bps,
+validation 0.40-2.89bps), but above the entry side's q75 (calibration 0.40bps, validation
+1.15bps) and above the pooled q75 (calibration 1.24bps, validation 1.84bps): it is a
+mid-band cost for the dearer exit side and a conservative one for the cheaper entry side,
+not an outlier-driven value.
 
 ## 6. Tail discussion (why 1bps would be wrong) and scope
 
