@@ -159,9 +159,9 @@ def test_weak_result_is_proposed_for_a_full_power_retest():
 
 def test_falls_through_to_an_untested_candidate():
     headline, rationale = wr.propose_next_round(_state())
-    # first untested candidate on record is the vol-regime one
-    assert "vol_regime_gating" in headline
-    assert "#422" in rationale
+    # first untested candidate on record is the multi-instrument rotation one
+    assert "multi_instrument_rotation" in headline
+    assert "#421" in rationale
 
 
 def test_superseded_records_are_never_proposed(monkeypatch):
@@ -183,17 +183,17 @@ def test_superseded_records_are_never_proposed(monkeypatch):
     st = wr.programme_state()
     headline, rationale = wr.propose_next_round(st)
     assert "synthetic_superseded" not in headline  # falls through to the untested-candidate list
-    assert "vol_regime_gating" in headline
+    assert "multi_instrument_rotation" in headline
 
 
 def test_a_pass_on_an_untested_candidate_family_is_skipped_by_the_proposal(monkeypatch):
-    """vol_regime_gating is the first UNTESTED_CANDIDATES entry; once a PASS record sits on it
-    the `not tc.find(family=...)` skip must move the headline to the next candidate."""
-    monkeypatch.setattr(tc, "LEDGER", (_pass_cell(family="vol_regime_gating"),))
+    """multi_instrument_rotation is the first UNTESTED_CANDIDATES entry; once a PASS record
+    sits on it the `not tc.find(family=...)` skip must move the headline to the next candidate."""
+    monkeypatch.setattr(tc, "LEDGER", (_pass_cell(family="multi_instrument_rotation"),))
     headline, _rationale = wr.propose_next_round(wr.programme_state())
-    assert "vol_regime_gating" not in headline
-    assert "cross_sectional_rv" not in headline  # tested in round etf-daily-r1 (#751), off the list
-    assert "multi_instrument_rotation" in headline
+    assert "multi_instrument_rotation" not in headline
+    assert "vol_regime_gating" not in headline  # tested in round etf-daily-r2 (#763), off the list
+    assert "microstructure_order_flow" in headline
 
 
 def test_live_ledger_headline_is_not_the_superseded_orb_or_hourly_geometry_retry():
@@ -313,7 +313,7 @@ def test_pass_records_are_never_proposed(monkeypatch):
     st = wr.programme_state()
     headline, _rationale = wr.propose_next_round(st)
     assert "synthetic_pass" not in headline
-    assert "vol_regime_gating" in headline
+    assert "multi_instrument_rotation" in headline
 
 
 def test_programme_state_counts_pass_cells_as_run_and_records_as_survivors(monkeypatch):
