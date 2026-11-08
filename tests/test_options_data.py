@@ -72,7 +72,13 @@ def test_modeled_mark_legs_decays_to_intrinsic_at_expiry():
     assert ml.mid == pytest.approx(0.0, abs=1e-9)
 
 
-def test_real_source_requires_keys():
+def test_real_source_requires_keys(monkeypatch):
+    # The constructor falls back to os.environ for the two key names, so this
+    # assertion only holds when they are absent from the process environment.
+    # Clear them explicitly so the test is green whether or not the shell that
+    # runs the suite exports real credentials (monkeypatch restores after).
+    monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
     with pytest.raises(RuntimeError):
         RealAlpacaSource(key=None, secret=None)
 
