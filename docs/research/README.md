@@ -88,6 +88,12 @@ Skill location: [`.claude/skills/research-bundle/SKILL.md`](../../.claude/skills
 
 Strategy candidates from the AI research pipeline (issue template, trial ledger, per-candidate result files and the scorecard template) are documented in [`pipeline/`](pipeline/).
 
+### Parity gate: SPY and IWM are known FAIL median
+
+`backtest/run_etf_parity.py` keeps its gated-median floor at 1 bp plus the cent-rounding allowance (issue #761, option 1). Under that floor **SPY and IWM report `FAIL median`** (in practice `FAIL median+p99`) as a known, documented state, not a bug: yfinance's adjusted closes and Alpaca's whole-cent `1Day` closes differ by 1 to 3 cents on ordinary days (for example SPY 2020-03-19: 218.6865 vs 218.71), which is 1.4 to 1.6 bps at their prices. VNQ fails on the gated p99 for a related reason (a dividend-heavy ETF whose sub-cent adjusted closes fatten the 1% tail); EEM passes with a thin margin (gated p99 within ~0.1 bps of the 10 bps bar).
+
+The research pipeline loads yfinance's official closes, so a parity FAIL against the Alpaca cross-check source does not change any round's data or numbers. **Future pre-registrations must state the SPY/IWM `FAIL median` in their section 10 up front** so a later round does not rediscover it as a surprise. The floor and the allowance are pinned by `tests/test_run_etf_parity.py` (`test_cent_rounding_constants_are_pinned`, `test_median_max_bps_is_floor_plus_cent_allowance`), so an accidental threshold change cannot slip through.
+
 ## Existing bundles
 
 - [`swing-trading/`](swing-trading/) — first bundle; produced 2026-04-30 via PR #98. Reference example for the format.
