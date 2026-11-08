@@ -310,7 +310,7 @@ def test_walk_bracket_resolves_at_target():
     )
     assert res is not None
     assert res["exit_reason"] == "target"
-    assert res["exit_price"] == pytest.approx(82.00 * (1 - 5 / 10_000))
+    assert res["exit_price"] == pytest.approx(82.00 * (1 - rfl.SLIPPAGE_BPS / 10_000))
     assert str(res["exit_time"]) == "2026-08-06 15:50:00+00:00"
 
 
@@ -323,7 +323,7 @@ def test_walk_bracket_stop_first_tie_break():
         b5, "LONG", after_time="2026-08-06T15:40:00Z", stop_price=79.0, target_price=82.0,
     )
     assert res["exit_reason"] == "stop"
-    assert res["exit_price"] == pytest.approx(79.0 * (1 - 5 / 10_000))
+    assert res["exit_price"] == pytest.approx(79.0 * (1 - rfl.SLIPPAGE_BPS / 10_000))
 
 
 def test_walk_bracket_flattens_at_cutoff_before_resolution():
@@ -337,7 +337,7 @@ def test_walk_bracket_flattens_at_cutoff_before_resolution():
         flatten_time="2026-08-06T18:40:00Z",
     )
     assert res["exit_reason"] == "flatten"
-    assert res["exit_price"] == pytest.approx(80.60 * (1 - 5 / 10_000))
+    assert res["exit_price"] == pytest.approx(80.60 * (1 - rfl.SLIPPAGE_BPS / 10_000))
     assert str(res["exit_time"]) == "2026-08-06 18:40:00+00:00"
 
 
@@ -361,7 +361,7 @@ def test_walk_bracket_short_mirrors_long():
         b5, "SHORT", after_time="2026-08-06T15:40:00Z", stop_price=81.0, target_price=78.0,
     )
     assert res["exit_reason"] == "target"
-    assert res["exit_price"] == pytest.approx(78.0 * (1 + 5 / 10_000))
+    assert res["exit_price"] == pytest.approx(78.0 * (1 + rfl.SLIPPAGE_BPS / 10_000))
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +430,7 @@ def test_r_target_counterfactual_resolves_earlier_than_2r():
     )
     assert cf["data"] == "ok"
     assert cf["exit_reason"] == "target"
-    assert cf["r"] == pytest.approx((81.00 * (1 - 5 / 10_000) - 80.04) / 1.0)
+    assert cf["r"] == pytest.approx((81.00 * (1 - rfl.SLIPPAGE_BPS / 10_000) - 80.04) / 1.0)
 
 
 def test_r_target_counterfactual_unavailable_when_data_ends():
@@ -488,8 +488,8 @@ def test_stop_width_counterfactual_r_denominated_in_original_risk_per_share():
     )
     assert cf["data"] == "ok"
     assert cf["exit_reason"] == "target"
-    expected_r = (82.00 * (1 - 5 / 10_000) - 80.04) / 1.0  # denominator = original risk_per_share
-    wrong_r_if_scaled_distance_used = (82.00 * (1 - 5 / 10_000) - 80.04) / 2.0
+    expected_r = (82.00 * (1 - rfl.SLIPPAGE_BPS / 10_000) - 80.04) / 1.0  # denominator = original risk_per_share
+    wrong_r_if_scaled_distance_used = (82.00 * (1 - rfl.SLIPPAGE_BPS / 10_000) - 80.04) / 2.0
     assert cf["r"] == pytest.approx(expected_r)
     assert cf["r"] != pytest.approx(wrong_r_if_scaled_distance_used)
 
@@ -971,9 +971,9 @@ def test_compute_cost_check_median_over_fills():
     ]
     cc = rfl.compute_cost_check(window)
     assert cc["n"] == 4
-    assert cc["median_abs_slippage_bps"] == pytest.approx(5.0)
-    assert cc["model_bps"] == pytest.approx(5.0)
-    assert cc["ratio"] == pytest.approx(1.0)
+    assert cc["median_abs_slippage_bps"] == pytest.approx(5.0)  # from the synthetic fills
+    assert cc["model_bps"] == pytest.approx(2.0)  # the live model since #779
+    assert cc["ratio"] == pytest.approx(2.5)
 
 
 def test_compute_trailing20_cumulative_r_and_stop_survival():
@@ -1163,22 +1163,22 @@ def _cost_window(bps):
 
 
 def test_trigger3_does_not_fire_at_exactly_2x():
-    triggers = rfl.compute_triggers(_cost_window(10.0))  # ratio exactly 2.0
+    triggers = rfl.compute_triggers(_cost_window(4.0))  # ratio exactly 2.0
     assert triggers[2]["fired"] is False
 
 
 def test_trigger3_fires_above_2x():
-    triggers = rfl.compute_triggers(_cost_window(10.01))
+    triggers = rfl.compute_triggers(_cost_window(4.01))
     assert triggers[2]["fired"] is True
 
 
 def test_trigger3_does_not_fire_at_exactly_half():
-    triggers = rfl.compute_triggers(_cost_window(2.5))  # ratio exactly 0.5
+    triggers = rfl.compute_triggers(_cost_window(1.0))  # ratio exactly 0.5
     assert triggers[2]["fired"] is False
 
 
 def test_trigger3_fires_below_half():
-    triggers = rfl.compute_triggers(_cost_window(2.49))
+    triggers = rfl.compute_triggers(_cost_window(0.99))
     assert triggers[2]["fired"] is True
 
 

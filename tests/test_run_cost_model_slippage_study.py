@@ -132,7 +132,16 @@ def test_trailing_window_fold_matches_reflection_semantics():
         expected_trades = rfl.build_trailing_window(records[:i], rec["reflection"]["trades"])
         expected = rfl.compute_cost_check(expected_trades)
         got = study.cost_check(study.trailing_window_trades(records, i))
-        assert got == expected, i
+        # The fold (which trades land in the window) and the pooled median are the semantics
+        # under test -- those must match exactly on both sides.
+        assert got["n"] == expected["n"], i
+        assert got["median_abs_slippage_bps"] == expected["median_abs_slippage_bps"], i
+        # The two models intentionally diverge since #779: the study is the frozen 5.0bps
+        # reproducer of the 2026-11-07 verdict, the live reflection engine moved to 2.0bps.
+        assert got["model_bps"] == study.MODEL_BPS == 5.0, i
+        assert expected["model_bps"] == rfl.COST_MODEL_BPS == 2.0, i
+        assert got["ratio"] == pytest.approx(got["median_abs_slippage_bps"] / study.MODEL_BPS), i
+        assert expected["ratio"] == pytest.approx(expected["median_abs_slippage_bps"] / 2.0), i
 
 
 def test_trailing_window_is_capped_at_twenty_trades():
@@ -147,9 +156,13 @@ def test_trailing_window_is_capped_at_twenty_trades():
 def test_cost_check_reproduces_a_stored_value_exactly():
     records = spread(25, dates=["2026-08-{:02d}".format(1 + i) for i in range(25)])
     for i, rec in enumerate(records):
-        rec["reflection"]["cost_check"] = rfl.compute_cost_check(
-            rfl.build_trailing_window(records[:i], rec["reflection"]["trades"])
-        )
+        # Stored values are built with the STUDY's own model (5.0bps), the way the committed
+        # ledger's stored cost_checks were produced. The live engine's rfl.compute_cost_check
+        # would write the 2.0bps model_bps/ratio and so would no longer be a like-for-like
+        # comparison -- the divergence is intentional (#779), not a reproduction failure.
+        stored = study.cost_check(study.trailing_window_trades(records, i))
+        assert stored["model_bps"] == 5.0
+        rec["reflection"]["cost_check"] = stored
 
     reproduced = study.reproduce_cost_checks(records)
 
@@ -157,12 +170,25 @@ def test_cost_check_reproduces_a_stored_value_exactly():
     assert all(entry["match"] for entry in reproduced)
 
 
+def test_live_cost_check_diverges_from_the_frozen_study_only_in_the_model():
+    # The intended #779 divergence, pinned: same window, same median and n, different model.
+    records = spread(25, dates=["2026-08-{:02d}".format(1 + i) for i in range(25)])
+    window = study.trailing_window_trades(records, 24)
+
+    study_side = study.cost_check(window)
+    live_side = rfl.compute_cost_check(window)
+
+    assert study_side["n"] == live_side["n"]
+    assert study_side["median_abs_slippage_bps"] == live_side["median_abs_slippage_bps"]
+    assert study_side["model_bps"] == 5.0
+    assert live_side["model_bps"] == 2.0
+    assert live_side["ratio"] == pytest.approx(study_side["ratio"] * 2.5)
+
+
 def test_reproduce_cost_checks_flags_a_mismatch():
     records = spread(25, dates=["2026-08-{:02d}".format(1 + i) for i in range(25)])
     for i, rec in enumerate(records):
-        rec["reflection"]["cost_check"] = rfl.compute_cost_check(
-            rfl.build_trailing_window(records[:i], rec["reflection"]["trades"])
-        )
+        rec["reflection"]["cost_check"] = study.cost_check(study.trailing_window_trades(records, i))
     records[-1]["reflection"]["cost_check"]["median_abs_slippage_bps"] = 99.0
 
     reproduced = study.reproduce_cost_checks(records)

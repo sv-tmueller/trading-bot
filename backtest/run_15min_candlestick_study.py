@@ -69,7 +69,7 @@ from backtest.regime import COMMISSION_BPS, SLIPPAGE_BPS, STARTING_CASH
 
 # --- Cost-wall constants (reference #422's methodology) ------------------------------
 #: Round-trip cost per trade in basis points: entry + exit slippage + commission.
-ROUND_TRIP_BPS = 2 * (SLIPPAGE_BPS + COMMISSION_BPS)  # 20bp total
+ROUND_TRIP_BPS = 2 * (SLIPPAGE_BPS + COMMISSION_BPS)  # 14bp total (2bps + 5bps per side)
 
 #: #422's 15m cost-wall figure (annualized drag at 3bp/table): 6.1%/yr.
 COST_WALL_REF_422 = 0.061
@@ -413,7 +413,7 @@ def format_cost_wall(diag: dict) -> str:
         f"  {'total trades (R=2 grid)':<40} {d15['total_trades']:>14,} {d60['total_trades']:>14,}",
         f"  {'sessions':<40} {d15['sessions']:>14,} {d60['sessions']:>14,}",
         f"  {'trades/day':<40} {d15['trades_per_day']:>14.1f} {d60['trades_per_day']:>14.1f}",
-        f"  {'annualized drag (%/yr, 20bp RT)':<40} {d15['ann_drag_pct']:>13.1%} {d60['ann_drag_pct']:>13.1%}",
+        f"  {f'annualized drag (%/yr, {ROUND_TRIP_BPS}bp RT)':<40} {d15['ann_drag_pct']:>13.1%} {d60['ann_drag_pct']:>13.1%}",
         f"  {'median stop distance ($)':<40} {d15['median_stop_dist']:>14.4f} {d60['median_stop_dist']:>14.4f}",
         f"  {'median slippage / stop distance':<40} {d15['median_slip_over_stop']:>14.1%} {d60['median_slip_over_stop']:>14.1%}",
         f"  {'% trades slip ≥ stop dist':<40} {d15['pct_slip_ge_stop']:>13.1%} {d60['pct_slip_ge_stop']:>13.1%}",
