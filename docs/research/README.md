@@ -78,6 +78,19 @@ The verdicts are non-negotiable consequences of the invariant. They are not subj
 
 Not every research artefact is a full bundle. Dated `YYYY-MM-DD-<slug>.md` memos sit alongside the bundles in this directory for narrower reads (e.g. [`2026-07-26-candlestick-timestop-preregistration.md`](2026-07-26-candlestick-timestop-preregistration.md)). Pre-registered studies use the two-PR freeze/results discipline, with the freeze merged strictly before any result: PR B of a freeze/results pair adds a dated addendum under the freeze banner.
 
+## Cost-model boundary: results across 2026-11-08 are not comparable
+
+The per-side slippage model moved from **5.0bps to 2.0bps** on **2026-11-08**
+(`backtest/regime.py::SLIPPAGE_BPS`, adopted in #779 on the #772 verdict's recommendation:
+validation median 0.7229bps, one-sided 95% bootstrap upper 1.1728bps). A cost level is part of a
+study's result, not a decoration on it, so **results produced under the 5.0bps model are not
+comparable to results produced under the 2.0bps model without re-running both sides under one
+model.** Rounds pre-registered before 2026-11-08 are 5.0bps rounds; rounds pre-registered on or
+after it are 2.0bps rounds. No earlier verdict, scorecard or holdout is re-scored under the new
+number -- the frozen artifacts stay as written. The full freeze (scope, what is deliberately not
+changing, the non-comparability rule) is in
+[`2026-11-08-cost-model-slippage-adoption-preregistration.md`](2026-11-08-cost-model-slippage-adoption-preregistration.md).
+
 ## Producing a bundle
 
 Use the `research-bundle` skill: `/research-bundle <topic>` (and optionally `<sources=en|de|en+de>`, `<repos=N>`). The skill orchestrates four parallel research agents (keywords, GitHub survey, EN strategies, DE strategies), a merge agent (consolidated top-15), and a roadmap agent (synthesis against the live codebase), then opens a draft PR.

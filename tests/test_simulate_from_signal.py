@@ -76,12 +76,14 @@ def test_nan_signal_treated_as_flat():
     assert result["ending_equity"] > 0
     # Discriminating assertion: NaN→flat means no entry until the first post-NaN
     # True day (day 4, open price 115). The correct path enters at 115 (not 100).
-    # Correct (NaN→flat):  ending_equity ≈ 9980.22  (1 trade, entered at 115)
-    # Bug (NaN→entry):     ending_equity ≈ 11463.72 (incorrectly entered at 100)
-    assert result["ending_equity"] == pytest.approx(9980.22, abs=0.5), (
+    # Correct (NaN→flat):  ending_equity ≈ 9986.15  (1 trade, entered at 115)
+    # Bug (NaN→entry):     ending_equity ≈ 11470.10 (incorrectly entered at 100)
+    # The pinned number moves with SLIPPAGE_BPS (this call uses the module default,
+    # adopted at 2bps on 2026-11-08 per #779; it was 9980.22 under the 5bps model).
+    assert result["ending_equity"] == pytest.approx(9986.15, abs=0.5), (
         f"NaN signal must be treated as flat (no entry). "
         f"Got ending_equity={result['ending_equity']:.2f}; "
-        f"if ~11463 the NaN was incorrectly treated as a buy signal."
+        f"if ~11470 the NaN was incorrectly treated as a buy signal."
     )
 
 

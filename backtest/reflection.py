@@ -133,7 +133,7 @@ target's own counterfactual data is "ok", with that intersection's size as the t
 (never live-over-the-whole-window vs counterfactual-over-its-own-subset, which lets a trade the
 counterfactual has no opinion on dilute or inflate the comparison from only one side) -- fires on
 a strict cumulative-R improvement within that pairing; (3) realized cost (median absolute
-per-fill slippage bps) diverges from the frozen 5bps model by more than 2x or less than 0.5x --
+per-fill slippage bps) diverges from the frozen cost model by more than 2x or less than 0.5x --
 "more than 2x" does NOT fire at exactly 2.0 (strict ``>``/``<``). No minimum-n gate: the engine
 files no issues (the weekly agent and the operator judge noise), so it evaluates whatever window
 it has and always prints ``n``.
@@ -732,7 +732,7 @@ def compute_trade_record(
 
 
 TRAILING_WINDOW = 20
-COST_MODEL_BPS = float(SLIPPAGE_BPS)  # frozen 5bps assumption (spec sec 3)
+COST_MODEL_BPS = float(SLIPPAGE_BPS)  # frozen 2bps since 2026-11-08, was 5bps (spec sec 3)
 
 # Boundary semantics pinned by test (module docstring): trigger 1 fires AT the threshold
 # ("at least"); trigger 3 fires strictly beyond its thresholds ("more than"/"less than").
@@ -760,7 +760,7 @@ def build_trailing_window(
 
 def compute_cost_check(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Median absolute per-fill slippage bps (entry + exit, 2 fills/trade) over the
-    trailing window vs the frozen 5bps model."""
+    trailing window vs the frozen cost model."""
     fills = []
     for t in window:
         if t.get("entry_slippage_bps") is not None:

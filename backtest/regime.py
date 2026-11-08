@@ -34,7 +34,7 @@ class Trade:
 
 
 STARTING_CASH = 100_000.0
-SLIPPAGE_BPS = 5  # 0.05% per side
+SLIPPAGE_BPS = 2  # 0.02% per side (adopted 2026-11-08, #779; was 5)
 COMMISSION_BPS = 5  # 0.05% per side
 
 
